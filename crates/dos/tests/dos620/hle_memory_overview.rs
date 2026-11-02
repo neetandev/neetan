@@ -48,7 +48,7 @@ fn host_memory_overview_reports_hma_allocation_state() {
     let code: &[u8] = &[
         0xBA, 0xFF, 0xFF,                   // MOV DX, FFFFh
         0xB4, 0x01,                         // MOV AH, 01h (request HMA)
-        0xCD, 0xFE,                         // INT FEh
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
         0xFA,                               // CLI
         0xF4,                               // HLT
     ];
@@ -108,7 +108,7 @@ fn host_memory_overview_reports_shared_ems_xms_pool_usage() {
         // Allocate XMS: 64 KB
         0xBA, 0x40, 0x00,                   // MOV DX, 64
         0xB4, 0x09,                         // MOV AH, 09h
-        0xCD, 0xFE,                         // INT FEh
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
         0xFA,                               // CLI
         0xF4,                               // HLT
     ];

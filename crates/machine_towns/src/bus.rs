@@ -6,8 +6,12 @@
 //! decodes the full 16-bit I/O port address, so the dispatch matches on the
 //! whole port value.
 
+mod bios;
+mod dos_adapter;
+mod hle_dos;
 mod io_read;
 mod io_write;
+mod scsi_command;
 
 use common::{
     BeeperKind, Bus, NoTrace, SharedHostDateTimeSource, TraceAccessKind, TraceAccessWidth,
@@ -16,6 +20,7 @@ use common::{
 };
 use device::{
     beeper::Beeper,
+    bios::BiosController,
     cdrom_towns::TownsCdController,
     disk::HddImage,
     electronic_volume_towns::ElectronicVolume,
@@ -198,6 +203,9 @@ pub(crate) struct TownsBusState {
     memcard_reg: bool,
     mt32: Option<TownsMt32State>,
     sc55: Option<TownsSc55State>,
+    bios: device::bios::BiosControllerState,
+    bios_state: bios::TownsBiosState,
+    dos: Option<dos::NeetanDos>,
 }}
 
 /// Default host time source (a fixed timestamp) until the app installs one.
@@ -289,6 +297,13 @@ pub struct TownsBus<T: TraceSink = NoTrace> {
     pub(crate) memcard_reg: bool,
     /// Fractional audio-sample carry used when draining audio during automation.
     pub(crate) automation_audio_remainder: u64,
+    /// BIOS HLE trap latch on port 07F0h.
+    pub(crate) bios: BiosController,
+    /// Runtime state of the HLE system ROM services.
+    pub(crate) bios_state: bios::TownsBiosState,
+    /// NeetanDos as the DOS kernel of the booted `IO.SYS`. Present with the
+    /// HLE firmware.
+    pub(crate) dos: Option<dos::NeetanDos>,
     /// Roland MT-32 sound module, fed by RS-MIDI bytes (optional, requires munt).
     #[cfg(feature = "mt32")]
     mt32: Option<device::mt32::Mt32>,
@@ -323,6 +338,7 @@ impl<T: TraceSink> TownsBus<T> {
     ) -> Self {
         let mut rtc = Msm58321Rtc::new();
         rtc.seed_time(common::default_host_date_time(), 0);
+        let dos = memory.hle_system_rom().then(hle_dos::new_towns_dos);
         let mut bus = Self {
             memory,
             clocks,
@@ -369,6 +385,9 @@ impl<T: TraceSink> TownsBus<T> {
             memcard_bank: 0,
             memcard_reg: false,
             automation_audio_remainder: 0,
+            bios: BiosController::new(),
+            bios_state: bios::TownsBiosState::new(),
+            dos,
             #[cfg(feature = "mt32")]
             mt32: None,
             #[cfg(feature = "sc55")]
@@ -468,6 +487,9 @@ impl<T: TraceSink> TownsBus<T> {
                 .map_err(|error| save_state::SaveStateError::WorkerFailure(error.to_string()))?,
             #[cfg(not(feature = "sc55"))]
             sc55: None,
+            bios: self.bios.capture_state(),
+            bios_state: self.capture_bios_state(),
+            dos: self.dos.clone(),
         })
     }
 
@@ -496,6 +518,7 @@ impl<T: TraceSink> TownsBus<T> {
         let sc55_configuration_differs = false;
         if model != self.model
             || state.machine_id != self.machine_id
+            || state.dos.is_some() != self.dos.is_some()
             || mt32_configuration_differs
             || sc55_configuration_differs
         {
@@ -511,6 +534,12 @@ impl<T: TraceSink> TownsBus<T> {
                 )
                 .into());
             }
+        }
+
+        let mut restored_dos = state.dos;
+        if let Some(dos) = restored_dos.as_mut() {
+            hle_dos::validate_towns_dos(dos)?;
+            dos.prepare_restore(self.rtc_date_time_source())?;
         }
 
         #[cfg(feature = "mt32")]
@@ -580,6 +609,9 @@ impl<T: TraceSink> TownsBus<T> {
             self.last_serial_rom_command = state.last_serial_rom_command;
             self.memcard_bank = state.memcard_bank;
             self.memcard_reg = state.memcard_reg;
+            self.bios.restore_state(state.bios);
+            self.restore_bios_state(state.bios_state)?;
+            self.dos = restored_dos;
             self.next_event_cycle = self.scheduler.next_event_cycle().unwrap_or(u64::MAX);
             Ok(())
         })();
@@ -1126,6 +1158,7 @@ impl<T: TraceSink> TownsBus<T> {
     /// Inserts a CD-ROM disc image into the drive.
     pub(crate) fn insert_cdrom(&mut self, image: device::cdrom::CdImage) {
         self.cdc.insert(image);
+        self.invalidate_dos_cdrom();
         self.refresh_cdrom_irq();
         self.reschedule_cdrom();
     }
@@ -1133,6 +1166,7 @@ impl<T: TraceSink> TownsBus<T> {
     /// Ejects the CD-ROM disc, if any.
     pub(crate) fn eject_cdrom(&mut self) {
         self.cdc.eject();
+        self.invalidate_dos_cdrom();
         self.refresh_cdrom_irq();
         self.reschedule_cdrom();
     }
@@ -1268,6 +1302,7 @@ impl<T: TraceSink> TownsBus<T> {
         backing: common::MediaBacking,
     ) {
         self.fdc.insert_backed(drive, image, backing);
+        self.invalidate_dos_floppy(drive);
         self.refresh_fdc_irq();
     }
 
@@ -1279,6 +1314,7 @@ impl<T: TraceSink> TownsBus<T> {
     /// Ejects a drive's floppy, flushing it.
     pub(crate) fn eject_floppy(&mut self, drive: usize) {
         self.fdc.eject(drive);
+        self.invalidate_dos_floppy(drive);
         self.refresh_fdc_irq();
     }
 
@@ -1374,9 +1410,10 @@ impl<T: TraceSink> TownsBus<T> {
     }
 
     /// Attaches a hard disk image with the requested backing at the given SCSI
-    /// drive index (0-based) and registers its boot partition in the CMOS
-    /// drive-assignment table so the Towns OS mounts a drive letter for it (and
-    /// can therefore boot from it).
+    /// drive index (0-based) and registers its MS-DOS partitions in the CMOS
+    /// drive-assignment table so the Towns OS mounts a drive letter for each
+    /// of them (and can therefore boot from the first one). A disk without an
+    /// FM Towns partition table registers partition 0.
     pub(crate) fn insert_hdd_backed(
         &mut self,
         drive: usize,
@@ -1387,7 +1424,31 @@ impl<T: TraceSink> TownsBus<T> {
             drive,
             device::disk::mounted_hdd_from_backing(image, backing),
         );
-        self.memory.register_scsi_hdd(drive as u8, 0);
+        let partition_count = self.scsi_ms_dos_partition_count(drive).max(1);
+        for partition in 0..partition_count {
+            self.memory.register_scsi_hdd(drive as u8, partition);
+        }
+    }
+
+    /// Returns the number of MS-DOS partitions in the FM Towns partition
+    /// table of the SCSI disk at `drive`.
+    fn scsi_ms_dos_partition_count(&mut self, drive: usize) -> u8 {
+        let Ok(target) = u8::try_from(drive) else {
+            return 0;
+        };
+        let mut disk = dos_adapter::DosDiskIo {
+            floppy: &mut self.fdc,
+            scsi: &mut self.scsi,
+            cdrom: &mut self.cdc,
+            os_rom: crate::rom::hle_os_rom_image(),
+        };
+        dos::filesystem::towns_partition::read_partition_table(
+            dos::drive_map::fm_towns::scsi_device_id(target),
+            &mut disk,
+        )
+        .map_or(0, |table| {
+            u8::try_from(table.ms_dos_partition_count()).unwrap_or(u8::MAX)
+        })
     }
 
     /// Returns the current in-memory bytes of the disk at `drive`, if mounted.
@@ -1875,6 +1936,7 @@ impl<T: TraceSink> Bus for TownsBus<T> {
 
     fn cpu_should_yield(&self) -> bool {
         T::ENABLED && self.tracer.yield_requested()
+            || self.hle_bios() && self.bios.take_yield_requested()
     }
 
     fn io_read_byte(&mut self, port: u16) -> u8 {
@@ -2083,9 +2145,11 @@ mod tests {
 
     fn traced_bus() -> TownsBus<AccessTrace> {
         let roms = LoadedRoms {
-            dos: vec![0; 0x8_0000],
+            firmware: crate::rom::TownsFirmware::Rom {
+                system: vec![0; 0x4_0000],
+                os: vec![0; 0x8_0000],
+            },
             font: vec![0; 0x4_0000],
-            system: vec![0; 0x4_0000],
             f20: vec![0; 0x8_0000],
             dictionary: vec![0; 0x8_0000],
             serial: vec![0; 0x20],
@@ -2198,5 +2262,76 @@ mod tests {
         assert_eq!(bus.tracer().interrupts.len(), 1);
         assert_eq!(bus.tracer().interrupts[0].line, Some(8));
         assert_eq!(bus.tracer().interrupts[0].vector, Some(u32::from(vector)));
+    }
+
+    /// Returns a bus that runs the HLE firmware with the generated serial
+    /// ROM of the MX.
+    fn hle_bus() -> TownsBus {
+        let roms = LoadedRoms {
+            firmware: crate::rom::TownsFirmware::Hle,
+            font: vec![0; 0x4_0000],
+            f20: vec![0xFF; 0x8_0000],
+            dictionary: vec![0xFF; 0x8_0000],
+            serial: crate::serial_rom::generate_serial_rom(TownsModel::FmTownsIIMx),
+        };
+        TownsBus::new(TownsModel::FmTownsIIMx, CpuMode::High, roms, 48_000)
+    }
+
+    /// Reads `count` bits of the serial ROM through I/O `0032h` from bit
+    /// `first` on, least significant bit first.
+    fn read_serial_bits(bus: &mut TownsBus, first: u32, count: u32) -> u32 {
+        /// Clock bit of I/O `0032h`. Its falling edge restarts the bit sequence.
+        const CLOCK: u8 = 0x80;
+        /// ID reset bit of I/O `0032h`. Its rising edge advances to the next bit.
+        const ID_RESET: u8 = 0x40;
+        Bus::io_write_byte(bus, 0x0032, CLOCK);
+        Bus::io_write_byte(bus, 0x0032, 0x00);
+        for _ in 0..first {
+            Bus::io_write_byte(bus, 0x0032, ID_RESET);
+            Bus::io_write_byte(bus, 0x0032, 0x00);
+        }
+        let mut value = 0;
+        for bit in 0..count {
+            value |= u32::from(Bus::io_read_byte(bus, 0x0032) & 0x01) << bit;
+            Bus::io_write_byte(bus, 0x0032, ID_RESET);
+            Bus::io_write_byte(bus, 0x0032, 0x00);
+        }
+        value
+    }
+
+    #[test]
+    fn inserted_hdd_registers_every_ms_dos_partition() {
+        /// CMOS index of the drive assignment slot of D:.
+        const SLOT_D: usize = 0xEE + 3 * 2;
+        let mut image = vec![0u8; 128 * 1024];
+        let table = &mut image[0x200..0x400];
+        table[..6].copy_from_slice(&dos::filesystem::towns_partition::FUJITSU_SIGNATURE);
+        table[0x0E..0x10].copy_from_slice(&0x0200u16.to_le_bytes());
+        for (index, system_type) in [0x01u8, 0x90, 0x01].into_iter().enumerate() {
+            let entry = &mut table[0x20 + index * 0x30..0x50 + index * 0x30];
+            entry[1] = system_type;
+            entry[2..6].copy_from_slice(&(3 + index as u32 * 0x40).to_le_bytes());
+            entry[6..10].copy_from_slice(&0x40u32.to_le_bytes());
+        }
+        let mut bus = traced_bus();
+        bus.insert_hdd_backed(
+            1,
+            device::disk::HddImage::from_raw_flat(image).unwrap(),
+            common::MediaBacking::Ram,
+        );
+        let slots: Vec<u8> = (SLOT_D..SLOT_D + 6)
+            .map(|index| bus.memory.cmos_byte(index))
+            .collect();
+        assert_eq!(slots, [0x02, 0x10, 0x02, 0x11, 0xFF, 0xFF]);
+    }
+
+    #[test]
+    fn generated_serial_rom_reads_back_in_the_port_bit_order() {
+        let mut bus = hle_bus();
+        assert_eq!(read_serial_bits(&mut bus, 72, 16), 0xFFFF);
+        assert_eq!(read_serial_bits(&mut bus, 64, 8), 0x0C);
+        assert_eq!(read_serial_bits(&mut bus, 56, 8), 0x02);
+        assert_eq!(read_serial_bits(&mut bus, 88, 8), 0xFE);
+        assert_eq!(read_serial_bits(&mut bus, 248, 8), 0x04);
     }
 }

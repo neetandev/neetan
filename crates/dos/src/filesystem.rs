@@ -6,12 +6,13 @@ use crate::{DiskIo, DosState, DriveIo, MemoryAccess, dos, process::COMMAND_COM_S
 
 pub mod fat;
 pub mod fat_api;
-pub(crate) mod fat_bpb;
+pub mod fat_bpb;
 pub(crate) mod fat_dir;
 pub(crate) mod fat_file;
 pub(crate) mod fat_partition;
 pub(crate) mod iso9660;
 pub(crate) mod mbr_partition;
+pub mod towns_partition;
 pub(crate) mod virtual_drive;
 
 #[derive(Debug, Clone, Copy)]
@@ -218,8 +219,9 @@ pub(crate) fn find_read_entry(
             Ok(entry.map(ReadDirEntry::from_fat))
         }
         ReadDirectory::Iso(directory) => {
-            let volume = iso9660::IsoVolume::mount(device)?;
-            let entry = iso9660::find_entry(&volume, directory, &path.name, device)?;
+            let cdrom = state.drive_cdrom(path.drive_index, device);
+            let volume = iso9660::IsoVolume::mount(&cdrom)?;
+            let entry = iso9660::find_entry(&volume, directory, &path.name, &cdrom)?;
             Ok(entry.map(ReadDirEntry::from_iso))
         }
     }
@@ -250,14 +252,15 @@ pub(crate) fn find_matching_read_entry(
             Ok(entry.map(|(entry, next_index)| (ReadDirEntry::from_fat(entry), next_index)))
         }
         ReadDirectory::Iso(directory) => {
-            let volume = iso9660::IsoVolume::mount(device)?;
+            let cdrom = state.drive_cdrom(drive_index, device);
+            let volume = iso9660::IsoVolume::mount(&cdrom)?;
             let entry = iso9660::find_matching(
                 &volume,
                 directory,
                 pattern,
                 attr_mask,
                 start_index,
-                device,
+                &cdrom,
             )?;
             Ok(entry.map(|(entry, next_index)| (ReadDirEntry::from_iso(entry), next_index)))
         }
@@ -277,7 +280,9 @@ pub(crate) fn read_entry_all(
                 .ok_or(0x000Fu16)?;
             fat_file::read_all(volume, entry, device)
         }
-        ReadDirEntrySource::Iso(entry) => iso9660::read_all(entry, device),
+        ReadDirEntrySource::Iso(entry) => {
+            iso9660::read_all(entry, &state.drive_cdrom(drive_index, device))
+        }
     }
 }
 
@@ -341,6 +346,36 @@ pub(crate) fn split_path(path: &[u8]) -> (Option<u8>, Vec<&[u8]>, bool) {
     (drive_index, components, is_absolute)
 }
 
+/// Error code of a path whose drive does not exist.
+const ERROR_PATH_NOT_FOUND: u16 = 0x0003;
+
+/// Checks that the drive of a path exists. A drive letter without a drive
+/// fails with "path not found", like the path translation of MS-DOS.
+fn ensure_path_drive_exists(state: &DosState, drive_index: u8) -> Result<(), u16> {
+    if state.drive_map.entry(drive_index).is_none() {
+        return Err(ERROR_PATH_NOT_FOUND);
+    }
+    Ok(())
+}
+
+/// Returns true when the drive of `path`, or the current drive for a path
+/// without one, exists.
+pub(crate) fn path_drive_exists(state: &DosState, path: &[u8]) -> bool {
+    let normalized_path = dos::normalize_path(path);
+    let (drive, _, _) = split_path(&normalized_path);
+    ensure_path_drive_exists(state, drive.unwrap_or(state.current_drive)).is_ok()
+}
+
+/// Mounts the volume of the drive of a path that exists.
+fn ensure_path_volume_mounted(
+    state: &mut DosState,
+    drive_index: u8,
+    disk: &mut dyn DiskIo,
+) -> Result<(), u16> {
+    ensure_path_drive_exists(state, drive_index)?;
+    state.ensure_volume_mounted(drive_index, disk)
+}
+
 /// Resolves a path to `(drive_index, directory_cluster, fcb_name)`.
 /// If the path has no explicit drive, uses `current_drive`.
 pub(crate) fn resolve_file_path(
@@ -358,7 +393,7 @@ pub(crate) fn resolve_file_path(
     }
 
     if drive_index != 25 {
-        state.ensure_volume_mounted(drive_index, mem, disk)?;
+        ensure_path_volume_mounted(state, drive_index, disk)?;
     }
 
     let mut dir_cluster = if is_absolute || drive_index == 25 {
@@ -408,11 +443,12 @@ pub(crate) fn resolve_read_file_path(
         });
     }
 
-    state.ensure_readable_drive_ready(drive_index, mem, device)?;
+    ensure_path_drive_exists(state, drive_index)?;
+    state.ensure_readable_drive_ready(drive_index, device)?;
 
     let mut directory = if is_absolute {
-        if state.drive_has_cdrom_filesystem(drive_index, mem) {
-            let volume = iso9660::IsoVolume::mount(device)?;
+        if state.drive_has_cdrom_filesystem(drive_index) {
+            let volume = iso9660::IsoVolume::mount(&state.drive_cdrom(drive_index, device))?;
             ReadDirectory::Iso(volume.root_directory)
         } else {
             ReadDirectory::Fat(0)
@@ -436,9 +472,10 @@ pub(crate) fn resolve_read_file_path(
                 ReadDirectory::Fat(entry.start_cluster)
             }
             ReadDirectory::Iso(directory) => {
-                let volume = iso9660::IsoVolume::mount(device)?;
+                let cdrom = state.drive_cdrom(drive_index, device);
+                let volume = iso9660::IsoVolume::mount(&cdrom)?;
                 let entry =
-                    iso9660::find_entry(&volume, directory, &fcb, device)?.ok_or(0x0003u16)?;
+                    iso9660::find_entry(&volume, directory, &fcb, &cdrom)?.ok_or(0x0003u16)?;
                 let next_directory = entry.directory.ok_or(0x0003u16)?;
                 ReadDirectory::Iso(next_directory)
             }
@@ -469,7 +506,7 @@ pub(crate) fn resolve_dir_path(
         }
         return Err(0x0003);
     }
-    state.ensure_volume_mounted(drive_index, mem, disk)?;
+    ensure_path_volume_mounted(state, drive_index, disk)?;
 
     let volume = state.fat_volumes[drive_index as usize]
         .as_ref()
@@ -516,11 +553,12 @@ pub(crate) fn resolve_read_dir_path(
         });
     }
 
-    state.ensure_readable_drive_ready(drive_index, mem, device)?;
+    ensure_path_drive_exists(state, drive_index)?;
+    state.ensure_readable_drive_ready(drive_index, device)?;
 
     let mut directory = if is_absolute || components.is_empty() {
-        if state.drive_has_cdrom_filesystem(drive_index, mem) {
-            let volume = iso9660::IsoVolume::mount(device)?;
+        if state.drive_has_cdrom_filesystem(drive_index) {
+            let volume = iso9660::IsoVolume::mount(&state.drive_cdrom(drive_index, device))?;
             ReadDirectory::Iso(volume.root_directory)
         } else if components.is_empty() && !is_absolute {
             current_read_directory(state, drive_index, mem, device)?
@@ -546,9 +584,10 @@ pub(crate) fn resolve_read_dir_path(
                 ReadDirectory::Fat(entry.start_cluster)
             }
             ReadDirectory::Iso(directory) => {
-                let volume = iso9660::IsoVolume::mount(device)?;
+                let cdrom = state.drive_cdrom(drive_index, device);
+                let volume = iso9660::IsoVolume::mount(&cdrom)?;
                 let entry =
-                    iso9660::find_entry(&volume, directory, &fcb, device)?.ok_or(0x0003u16)?;
+                    iso9660::find_entry(&volume, directory, &fcb, &cdrom)?.ok_or(0x0003u16)?;
                 let next_directory = entry.directory.ok_or(0x0003u16)?;
                 ReadDirectory::Iso(next_directory)
             }
@@ -581,10 +620,10 @@ pub(crate) fn change_directory(
         (state.current_drive, 0)
     };
 
-    let cds_addr = tables::CDS_BASE + (drive_index as u32) * tables::CDS_ENTRY_SIZE;
+    let cds_addr = state.cds_entry_addr(drive_index, memory);
     let cds_flags = memory.read_word(cds_addr + tables::CDS_OFF_FLAGS);
     if cds_flags == 0 {
-        return Err(0x000F);
+        return Err(ERROR_PATH_NOT_FOUND);
     }
 
     let remaining = &path_bytes[path_start..];
@@ -599,7 +638,7 @@ pub(crate) fn change_directory(
             new_path.extend_from_slice(remaining);
         }
     } else {
-        let current = read_cds_path(memory, drive_index);
+        let current = read_cds_path(state, memory, drive_index);
         if current.len() > 2 {
             new_path.extend_from_slice(&current[2..]);
         } else {
@@ -1005,7 +1044,7 @@ pub(crate) fn create_dos_mock_files(
         return Err(0x0005);
     }
 
-    let cds_addr = tables::CDS_BASE + (drive_index as u32) * tables::CDS_ENTRY_SIZE;
+    let cds_addr = state.cds_entry_addr(drive_index, memory);
     let cds_flags = memory.read_word(cds_addr + tables::CDS_OFF_FLAGS);
     if cds_flags == 0 {
         return Err(0x000Fu16);
@@ -1014,7 +1053,7 @@ pub(crate) fn create_dos_mock_files(
         return Err(0x0005);
     }
 
-    state.ensure_volume_mounted(drive_index, memory, disk)?;
+    state.ensure_volume_mounted(drive_index, disk)?;
 
     let (time, date) = state.dos_timestamp_now();
     let volume = state.fat_volumes[drive_index as usize]
@@ -1140,7 +1179,7 @@ fn current_dir_cluster(
     mem: &dyn MemoryAccess,
     disk: &mut dyn DiskIo,
 ) -> Result<u16, u16> {
-    let cds_path = read_cds_path(mem, drive_index);
+    let cds_path = read_cds_path(state, mem, drive_index);
     let (_, components, _) = split_path(&cds_path);
     let volume = state.fat_volumes[drive_index as usize]
         .as_ref()
@@ -1165,15 +1204,16 @@ fn current_read_directory(
     mem: &dyn MemoryAccess,
     device: &mut dyn DriveIo,
 ) -> Result<ReadDirectory, u16> {
-    if state.drive_has_cdrom_filesystem(drive_index, mem) {
-        let volume = iso9660::IsoVolume::mount(device)?;
-        let cds_path = read_cds_path(mem, drive_index);
+    if state.drive_has_cdrom_filesystem(drive_index) {
+        let cdrom = state.drive_cdrom(drive_index, device);
+        let volume = iso9660::IsoVolume::mount(&cdrom)?;
+        let cds_path = read_cds_path(state, mem, drive_index);
         let (_, components, _) = split_path(&cds_path);
         let mut directory = volume.root_directory.clone();
 
         for component in &components {
             let fcb = fat_dir::name_to_fcb(component);
-            let entry = iso9660::find_entry(&volume, &directory, &fcb, device)?.ok_or(0x0003u16)?;
+            let entry = iso9660::find_entry(&volume, &directory, &fcb, &cdrom)?.ok_or(0x0003u16)?;
             directory = entry.directory.ok_or(0x0003u16)?;
         }
 
@@ -1188,8 +1228,8 @@ fn current_read_directory(
     }
 }
 
-fn read_cds_path(mem: &dyn MemoryAccess, drive_index: u8) -> Vec<u8> {
-    let cds_addr = tables::CDS_BASE + (drive_index as u32) * tables::CDS_ENTRY_SIZE;
+fn read_cds_path(state: &DosState, mem: &dyn MemoryAccess, drive_index: u8) -> Vec<u8> {
+    let cds_addr = state.cds_entry_addr(drive_index, mem);
     let mut path = Vec::new();
     for i in 0..67u32 {
         let byte = mem.read_byte(cds_addr + tables::CDS_OFF_PATH + i);

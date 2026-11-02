@@ -20,6 +20,7 @@ use dos::{
         dos_display, dos_leaf_basename, dos_now, join_dos, split_dos_parent,
         trim_trailing_separator, validate_dos_basename, validate_dos_components,
     },
+    drive_map::{PartitionScheme, pc98},
     filesystem::fat_api::{FatError, FatFs, Metadata},
 };
 
@@ -601,18 +602,12 @@ fn load_image_as_disk_io(path: &Path) -> crate::Result<FileImageDiskIo> {
 
 fn mount_fat<'a>(io: &'a mut FileImageDiskIo) -> crate::Result<FatFs<'a>> {
     let drive_da = io.drive_da();
-    if drive_da & 0xF0 == 0x80 {
-        if io.uses_mbr_partitions() {
-            FatFs::mount_hdd_mbr(io, drive_da)
-                .map_err(|e| StringError(format!("failed to mount FAT: {e}")).into())
-        } else {
-            FatFs::mount_hdd(io, drive_da)
-                .map_err(|e| StringError(format!("failed to mount FAT: {e}")).into())
-        }
-    } else {
-        FatFs::mount_fdd(io, drive_da)
-            .map_err(|e| StringError(format!("failed to mount FAT: {e}")).into())
+    let mut entry = pc98::drive_entry(drive_da)
+        .ok_or_else(|| StringError(format!("unsupported DA/UA {drive_da:#04X}")))?;
+    if io.uses_mbr_partitions() {
+        entry.partition_scheme = PartitionScheme::MasterBootRecord;
     }
+    FatFs::mount(io, &entry).map_err(|e| StringError(format!("failed to mount FAT: {e}")).into())
 }
 
 fn write_image_back(path: &Path, io: FileImageDiskIo) -> crate::Result<()> {

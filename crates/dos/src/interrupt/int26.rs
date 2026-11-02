@@ -1,12 +1,14 @@
 //! INT 26h: Absolute Disk Write.
 
-use crate::{CpuAccess, DiskIo, MemoryAccess, NeetanDos, SegmentRegister, tables};
+use crate::{CpuAccess, DiskIo, MemoryAccess, NeetanDos, SegmentRegister};
 
 impl NeetanDos {
     /// INT 26h: Absolute disk write.
     /// AL = drive number (0=A), CX = sector count, DX = start sector, DS:BX = buffer.
+    /// The sectors are logical sectors of the volume. The write flushes the
+    /// cached FAT first and drops the mounted volume afterwards.
     pub(crate) fn int26h(
-        &self,
+        &mut self,
         cpu: &mut dyn CpuAccess,
         memory: &mut dyn MemoryAccess,
         disk: &mut dyn DiskIo,
@@ -16,20 +18,31 @@ impl NeetanDos {
         let start_sector = cpu.dx() as u32;
         let buf_addr = cpu.linear_address(SegmentRegister::DS, cpu.bx());
 
-        let da_ua = memory
-            .read_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_DAUA_TABLE + drive_index as u32);
-        if da_ua == 0 {
-            set_int26_carry(cpu, memory, true);
-            cpu.set_ax(0x000F);
-            return;
+        let span =
+            match self
+                .state
+                .logical_sector_span(drive_index, start_sector, sector_count, disk)
+            {
+                Ok(span) => span,
+                Err(error) => {
+                    cpu.set_ax(error);
+                    set_int26_carry(cpu, memory, true);
+                    return;
+                }
+            };
+
+        let slot = usize::from(drive_index);
+        if let Some(volume) = self.state.fat_volumes[slot].as_mut() {
+            let _ = volume.flush_fat(disk);
         }
 
-        let sector_size = disk.sector_size(da_ua).unwrap_or(512) as usize;
-        let total_bytes = sector_count as usize * sector_size;
-        let mut data = vec![0u8; total_bytes];
+        let sector_size = disk.sector_size(span.device_id).unwrap_or(512) as usize;
+        let mut data = vec![0u8; span.sector_count as usize * sector_size];
         memory.read_block(buf_addr, &mut data);
 
-        match disk.write_sectors(da_ua, start_sector, &data) {
+        let result = disk.write_sectors(span.device_id, span.first_lba, &data);
+        self.state.fat_volumes[slot] = None;
+        match result {
             Ok(()) => set_int26_carry(cpu, memory, false),
             Err(err) => {
                 cpu.set_ax(err as u16);

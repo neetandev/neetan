@@ -832,16 +832,23 @@ where
     let model = config.towns_model;
     info!("Selected machine model {model}");
 
-    let rom_dir = config.towns_roms.as_ref().ok_or_else(|| {
-        InitError::rom_missing("FM Towns requires a ROM directory (--towns-roms <DIR>)")
-    })?;
-
-    let roms = machine_towns::load_rom_set(model, rom_dir).map_err(|error| {
-        StringError(format!(
-            "Failed to load FM Towns ROM set from {}: {error}",
-            rom_dir.display()
-        ))
-    })?;
+    let roms = if config.bios {
+        let rom_dir = config
+            .towns_roms
+            .as_ref()
+            .ok_or_else(|| InitError::rom_missing("--bios requires --towns-roms <DIR>"))?;
+        let roms = machine_towns::load_rom_set(model, rom_dir).map_err(|error| {
+            StringError(format!(
+                "Failed to load FM Towns ROM set from {}: {error}",
+                rom_dir.display()
+            ))
+        })?;
+        info!("Loaded FM Towns ROM set from {}", rom_dir.display());
+        roms
+    } else {
+        info!("No BIOS ROM selected - running in HLE BIOS mode with the built-in font ROM");
+        machine_towns::LoadedRoms::builtin_hle_set(model)
+    };
 
     let boot_device = match config.boot_device {
         BootDevice::Auto => TownsBootDevice::Auto,
@@ -1135,11 +1142,11 @@ where
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "msx")]
+    #[cfg(any(feature = "msx", feature = "towns"))]
     use super::initialize_machine;
     #[cfg(feature = "at")]
     use super::resolve_at_boot_device;
-    #[cfg(feature = "msx")]
+    #[cfg(any(feature = "msx", feature = "towns"))]
     use crate::config::{EmulatorConfig, MachineSelection};
 
     #[cfg(feature = "at")]
@@ -1175,6 +1182,51 @@ mod tests {
             error
                 .to_string()
                 .contains("MSX requires a ROM directory (--msx-roms <DIR>)")
+        );
+    }
+
+    #[cfg(feature = "towns")]
+    #[test]
+    fn towns_hle_firmware_reads_no_rom_directory() {
+        for model in [
+            machine_towns::TownsModel::FmTowns,
+            machine_towns::TownsModel::FmTownsIICx,
+            machine_towns::TownsModel::FmTownsIIMx,
+        ] {
+            let config = EmulatorConfig::for_model(MachineSelection::Towns(model));
+            assert!(!config.bios);
+            assert!(config.towns_roms.is_none());
+            let absent_folder = EmulatorConfig {
+                towns_roms: Some(std::path::PathBuf::from("/absent/towns/roms")),
+                ..config.clone()
+            };
+            for config in [config, absent_folder] {
+                assert!(
+                    initialize_machine(&config, 48_000, common::default_host_date_time_source())
+                        .is_ok(),
+                    "{model}"
+                );
+            }
+        }
+    }
+
+    #[cfg(feature = "towns")]
+    #[test]
+    fn towns_real_firmware_requires_its_rom_directory() {
+        let config = EmulatorConfig {
+            bios: true,
+            ..EmulatorConfig::for_model(MachineSelection::Towns(
+                machine_towns::TownsModel::FmTownsIIMx,
+            ))
+        };
+        let error = initialize_machine(&config, 48_000, common::default_host_date_time_source())
+            .err()
+            .expect("the real FM Towns firmware without a ROM directory must fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("--bios requires --towns-roms <DIR>")
         );
     }
 }

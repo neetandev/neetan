@@ -3,15 +3,38 @@
 use common::warn;
 
 use crate::{
-    CpuAccess, DiskIo, DosState, DriveIo, MemoryAccess, NeetanDos, SegmentRegister,
+    CpuAccess, DiskIo, DosState, DriveIo, FarPointer, MemoryAccess, NeetanDos, SegmentRegister,
+    device_chain,
+    device_request::{COMMAND_IOCTL_INPUT, COMMAND_IOCTL_OUTPUT},
     dos::{StdoutRoute, route_for_character_device},
     filesystem::{
         self, FatHandleMetadata, ReadDirEntrySource, ReadDirectory, fat_dir,
         fat_file::FatFileCursor, find_matching_read_entry, find_read_entry, iso9660, split_path,
         virtual_drive::VirtualEntry,
     },
-    set_iret_carry, tables,
+    guest_character::DeviceTransfer,
+    layout::SystemFileTableLayout,
+    tables,
 };
+
+/// DOS error code of an invalid handle.
+const ERROR_INVALID_HANDLE: u16 = 0x0006;
+/// Access bits of an `INT 21h AH=3Dh` open mode: 0 read, 1 write, 2 both.
+const OPEN_ACCESS_MASK: u8 = 0x03;
+/// DOS error code of an invalid function.
+const ERROR_INVALID_FUNCTION: u16 = 0x0001;
+/// Function number of `INT 21h AH=3Eh`. The kernel puts it back into AH
+/// after a successful close.
+const CLOSE_FUNCTION: u16 = 0x3E;
+/// AL of `INT 2Fh AX=1120h` (network flush) without a redirector. Disk
+/// reset of the DOS 3 kernel returns it.
+const NETWORK_FLUSH_AL: u8 = 0x01;
+/// AX of the share check `INT 2Ah AX=0300h` without a network. IOCTL
+/// `AL=09h` returns it.
+const SHARE_CHECK_AX: u16 = 0x0300;
+/// AL after the close of a CD-ROM file: the answer of the redirector close
+/// (`INT 2Fh AX=1106h`).
+const REDIRECTOR_CLOSE_CODE: u8 = 0x00;
 
 /// Writes a 32-bit value to emulated memory.
 fn write_dword(mem: &mut dyn MemoryAccess, addr: u32, value: u32) {
@@ -24,7 +47,24 @@ fn read_dword(mem: &dyn MemoryAccess, addr: u32) -> u32 {
     mem.read_word(addr) as u32 | ((mem.read_word(addr + 2) as u32) << 16)
 }
 
-fn path_is_named_device(path: &[u8], device_name: &[u8; 8]) -> bool {
+/// Character device that an open of a device name reaches.
+struct CharacterDeviceOpen {
+    /// Name field of the SFT entry.
+    sft_name: [u8; 11],
+    /// Device driver header.
+    device: FarPointer,
+    /// Device information word of the SFT entry.
+    device_info: u16,
+}
+
+/// Attribute bits that the device information word of an SFT entry copies:
+/// standard input, standard output, NUL, CLOCK, fast console and IOCTL
+/// support.
+const DEVICE_INFO_ATTRIBUTE_BITS: u16 = 0x401F;
+
+/// Returns the device name of the last component of `path` blank padded,
+/// `None` for a component of more than eight characters.
+fn path_device_name(path: &[u8]) -> Option<[u8; 8]> {
     let mut component = path;
     if component.len() >= 2 && component[1] == b':' {
         component = &component[2..];
@@ -42,53 +82,46 @@ fn path_is_named_device(path: &[u8], device_name: &[u8; 8]) -> bool {
         component = &component[..component.len() - 1];
     }
     if component.is_empty() || component.len() > 8 {
-        return false;
+        return None;
     }
     let mut padded = [b' '; 8];
     padded[..component.len()].copy_from_slice(component);
     padded.make_ascii_uppercase();
-    &padded == device_name
+    Some(padded)
 }
 
-struct CharacterDeviceOpen {
-    sft_name: &'static [u8; 11],
-    device_offset: u16,
-    device_info: u16,
-}
-
-fn path_character_device(path: &[u8]) -> Option<CharacterDeviceOpen> {
-    if path_is_named_device(path, b"CON     ") {
+/// Returns the character device of the device chain whose name matches the
+/// last component of `path`. `AUX` and `PRN` fall back to the NUL device
+/// when the chain holds no such device.
+fn path_character_device(
+    memory: &dyn MemoryAccess,
+    path: &[u8],
+    nul: FarPointer,
+) -> Option<CharacterDeviceOpen> {
+    let name = path_device_name(path)?;
+    let mut sft_name = [b' '; 11];
+    sft_name[..8].copy_from_slice(&name);
+    if let Some(device) = device_chain::find_character_device(memory, nul, &name) {
+        let attribute = memory.read_word(device.linear() + tables::DEVHDR_OFF_ATTRIBUTE);
         return Some(CharacterDeviceOpen {
-            sft_name: b"CON        ",
-            device_offset: tables::DEV_CON_OFFSET,
+            sft_name,
+            device,
             device_info: tables::SFT_DEVINFO_CHAR_DEVICE_COMMON
-                | tables::SFT_DEVINFO_SPECIAL
-                | tables::SFT_DEVINFO_STDIN
-                | tables::SFT_DEVINFO_STDOUT,
+                | (attribute & DEVICE_INFO_ATTRIBUTE_BITS),
         });
     }
-    if path_is_named_device(path, b"NUL     ") {
+    if &name == b"AUX     " || &name == b"PRN     " {
         return Some(CharacterDeviceOpen {
-            sft_name: b"NUL        ",
-            device_offset: tables::DEV_NUL_OFFSET,
-            device_info: tables::SFT_DEVINFO_CHAR_DEVICE_COMMON | tables::SFT_DEVINFO_NUL,
-        });
-    }
-    if path_is_named_device(path, b"AUX     ") {
-        return Some(CharacterDeviceOpen {
-            sft_name: b"AUX        ",
-            device_offset: tables::DEV_NUL_OFFSET,
-            device_info: tables::SFT_DEVINFO_CHAR_DEVICE_COMMON,
-        });
-    }
-    if path_is_named_device(path, b"PRN     ") {
-        return Some(CharacterDeviceOpen {
-            sft_name: b"PRN        ",
-            device_offset: tables::DEV_NUL_OFFSET,
+            sft_name,
+            device: nul,
             device_info: tables::SFT_DEVINFO_CHAR_DEVICE_COMMON,
         });
     }
     None
+}
+
+fn path_is_named_device(path: &[u8], device_name: &[u8; 8]) -> bool {
+    path_device_name(path).is_some_and(|name| &name == device_name)
 }
 
 fn path_is_ems_device(path: &[u8]) -> bool {
@@ -113,18 +146,18 @@ fn cdrom_sft_name(device_name: &[u8]) -> [u8; 11] {
     name
 }
 
-fn sft_is_cdrom_device(memory: &dyn MemoryAccess, sft_addr: u32) -> bool {
+fn sft_is_cdrom_device(memory: &dyn MemoryAccess, sft_addr: u32, dos_data_segment: u16) -> bool {
     memory.read_word(sft_addr + tables::SFT_ENT_DEV_PTR) == tables::DEV_CDROM_OFFSET
-        && memory.read_word(sft_addr + tables::SFT_ENT_DEV_PTR + 2) == tables::DOS_DATA_SEGMENT
+        && memory.read_word(sft_addr + tables::SFT_ENT_DEV_PTR + 2) == dos_data_segment
 }
 
 fn read_fat_handle_metadata(
     memory: &mut dyn MemoryAccess,
+    sft: &SystemFileTableLayout,
     sft_addr: u32,
     drive_index: u8,
 ) -> FatHandleMetadata {
-    let dir_sector = memory.read_word(sft_addr + tables::SFT_ENT_DIR_SECTOR) as u32;
-    let dir_index = memory.read_byte(sft_addr + tables::SFT_ENT_DIR_INDEX);
+    let (dir_sector, dir_index) = sft.read_directory_location(memory, sft_addr);
     let mut name = [0u8; 11];
     memory.read_block(sft_addr + tables::SFT_ENT_NAME, &mut name);
 
@@ -144,6 +177,7 @@ fn read_fat_handle_metadata(
 
 fn write_fat_handle_metadata(
     memory: &mut dyn MemoryAccess,
+    sft: &SystemFileTableLayout,
     sft_addr: u32,
     metadata: &FatHandleMetadata,
 ) {
@@ -164,34 +198,35 @@ fn write_fat_handle_metadata(
         sft_addr + tables::SFT_ENT_FILE_POS,
         metadata.position,
     );
-    memory.write_word(
-        sft_addr + tables::SFT_ENT_CUR_CLUSTER,
-        metadata.start_cluster,
-    );
-    memory.write_word(
-        sft_addr + tables::SFT_ENT_DIR_SECTOR,
-        metadata.dir_sector as u16,
-    );
-    memory.write_byte(
-        sft_addr + tables::SFT_ENT_DIR_INDEX,
+    memory.write_word(sft_addr + sft.last_cluster, metadata.start_cluster);
+    sft.write_directory_location(
+        memory,
+        sft_addr,
+        metadata.dir_sector,
         (metadata.dir_offset / fat_dir::DIR_ENTRY_SIZE as u16) as u8,
     );
     memory.write_block(sft_addr + tables::SFT_ENT_NAME, &metadata.name);
 }
 
 impl NeetanDos {
-    /// AH=0Dh: Disk reset - flush all dirty FAT caches.
-    pub(crate) fn int21h_0dh_disk_reset(&mut self, disk: &mut dyn DiskIo) {
+    /// AH=0Dh: Disk reset - flush all dirty FAT caches. On a DOS 3 kernel AL
+    /// is `01h`, the AL of the network flush `INT 2Fh AX=1120h` without a
+    /// redirector. Other kernels keep AX.
+    pub(crate) fn int21h_0dh_disk_reset(&mut self, cpu: &mut dyn CpuAccess, disk: &mut dyn DiskIo) {
         for vol in self.state.fat_volumes.iter_mut().flatten() {
             let _ = vol.flush_fat(disk);
+        }
+        if self.state.is_dos3_kernel() {
+            cpu.set_ax(cpu.ax() & 0xFF00 | u16::from(NETWORK_FLUSH_AL));
         }
     }
 
     /// AH=1Ch: Get allocation information for specific drive.
     pub(crate) fn int21h_1ch_get_alloc_info(
-        &self,
+        &mut self,
         cpu: &mut dyn CpuAccess,
         memory: &mut dyn MemoryAccess,
+        disk: &mut dyn DiskIo,
     ) {
         let dl = (cpu.dx() & 0xFF) as u8;
         let drive_index = if dl == 0 {
@@ -199,9 +234,11 @@ impl NeetanDos {
         } else {
             dl - 1
         };
+        self.state.refresh_drive_geometry(drive_index, memory, disk);
 
         // Read DPB for the drive
-        let dpb_ptr_addr = self.state.sysvars_base + tables::SYSVARS_OFF_DPB_PTR;
+        let dpb_layout = &self.state.structures().drive_parameter_block;
+        let dpb_ptr_addr = self.state.list_of_lists_address() + tables::SYSVARS_OFF_DPB_PTR;
         let mut dpb_off = memory.read_word(dpb_ptr_addr);
         let mut dpb_seg = memory.read_word(dpb_ptr_addr + 2);
         let mut found = false;
@@ -216,7 +253,7 @@ impl NeetanDos {
                 let spc = memory.read_byte(dpb_addr + tables::DPB_OFF_CLUSTER_MASK) as u16 + 1;
                 let bps = memory.read_word(dpb_addr + tables::DPB_OFF_BYTES_PER_SECTOR);
                 let max_cluster = memory.read_word(dpb_addr + tables::DPB_OFF_MAX_CLUSTER);
-                let media = memory.read_byte(dpb_addr + tables::DPB_OFF_MEDIA_DESC);
+                let media = memory.read_byte(dpb_addr + dpb_layout.media_descriptor);
 
                 cpu.set_ax((cpu.ax() & 0xFF00) | spc);
                 cpu.set_cx(bps);
@@ -229,8 +266,8 @@ impl NeetanDos {
                 break;
             }
             // Follow chain
-            let next_off = memory.read_word(dpb_addr + tables::DPB_OFF_NEXT_DPB);
-            let next_seg = memory.read_word(dpb_addr + tables::DPB_OFF_NEXT_DPB + 2);
+            let next_off = memory.read_word(dpb_addr + dpb_layout.next);
+            let next_seg = memory.read_word(dpb_addr + dpb_layout.next + 2);
             dpb_off = next_off;
             dpb_seg = next_seg;
         }
@@ -267,28 +304,29 @@ impl NeetanDos {
             return;
         }
 
-        let cds_addr = tables::CDS_BASE + (drive_index as u32) * tables::CDS_ENTRY_SIZE;
+        let cds_addr = self.state.cds_entry_addr(drive_index, memory);
         let cds_flags = memory.read_word(cds_addr + tables::CDS_OFF_FLAGS);
         if cds_flags == 0 {
             cpu.set_ax(0xFFFF);
             return;
         }
 
-        if self.state.mscdex.drive_letter == drive_index
-            && cds_flags & tables::CDS_FLAG_PHYSICAL == 0
+        if self
+            .state
+            .drive_map
+            .entry(drive_index)
+            .is_some_and(|entry| entry.device.has_cdrom_file_system())
         {
+            let total_sectors =
+                crate::CdromIo::total_sectors(&self.state.drive_cdrom(drive_index, disk));
             cpu.set_ax(1);
             cpu.set_bx(0);
             cpu.set_cx(2048);
-            cpu.set_dx(0);
+            cpu.set_dx(u16::try_from(total_sectors).unwrap_or(u16::MAX));
             return;
         }
 
-        if self
-            .state
-            .ensure_volume_mounted(drive_index, memory, disk)
-            .is_err()
-        {
+        if self.state.ensure_volume_mounted(drive_index, disk).is_err() {
             cpu.set_ax(0xFFFF);
             return;
         }
@@ -373,10 +411,10 @@ impl NeetanDos {
         let path = DosState::read_asciiz(memory, path_addr, 128);
 
         match filesystem::create_directory(&mut self.state, memory, disk, &path) {
-            Ok(()) => set_iret_carry(cpu, memory, false),
+            Ok(()) => self.state.set_iret_carry(cpu, memory, false),
             Err(error) => {
                 cpu.set_ax(error);
-                set_iret_carry(cpu, memory, true);
+                self.state.set_iret_carry(cpu, memory, true);
             }
         }
     }
@@ -408,11 +446,11 @@ impl NeetanDos {
         match result {
             Ok(handle) => {
                 cpu.set_ax(handle);
-                set_iret_carry(cpu, memory, false);
+                self.state.set_iret_carry(cpu, memory, false);
             }
             Err(error) => {
                 cpu.set_ax(error);
-                set_iret_carry(cpu, memory, true);
+                self.state.set_iret_carry(cpu, memory, true);
             }
         }
     }
@@ -425,7 +463,8 @@ impl NeetanDos {
         disk: &mut dyn DriveIo,
     ) {
         let path_addr = cpu.linear_address(SegmentRegister::DS, cpu.dx());
-        let open_mode = cpu.ax() as u8 & 0x03;
+        let open_mode = cpu.ax() as u8;
+        let access_mode = open_mode & OPEN_ACCESS_MASK;
         let path = DosState::read_asciiz(memory, path_addr, 128);
         let is_ems_probe = path_is_ems_device(&path)
             && self.state.ems_enabled
@@ -443,7 +482,7 @@ impl NeetanDos {
                     memory,
                     sft_index,
                     b"EMMXXXX0   ",
-                    tables::DEV_EMS_OFFSET,
+                    FarPointer::new(self.state.dos_data_segment(), tables::DEV_EMS_OFFSET),
                     tables::SFT_DEVINFO_DRIVER_CHAR
                         | tables::SFT_DEVINFO_CHAR
                         | tables::SFT_DEVINFO_EOF
@@ -458,7 +497,7 @@ impl NeetanDos {
                     memory,
                     sft_index,
                     b"XMSXXXX0   ",
-                    tables::DEV_XMS_OFFSET,
+                    FarPointer::new(self.state.dos_data_segment(), tables::DEV_XMS_OFFSET),
                     tables::SFT_DEVINFO_DRIVER_CHAR
                         | tables::SFT_DEVINFO_CHAR
                         | tables::SFT_DEVINFO_EOF
@@ -473,7 +512,7 @@ impl NeetanDos {
                     memory,
                     sft_index,
                     &cdrom_sft_name(&self.state.mscdex.device_name),
-                    tables::DEV_CDROM_OFFSET,
+                    FarPointer::new(self.state.dos_data_segment(), tables::DEV_CDROM_OFFSET),
                     tables::SFT_DEVINFO_DRIVER_CHAR
                         | tables::SFT_DEVINFO_CHAR
                         | tables::SFT_DEVINFO_EOF
@@ -482,13 +521,17 @@ impl NeetanDos {
                 );
                 return Ok(handle);
             }
-            if let Some(device) = path_character_device(&path) {
+            let nul = FarPointer::new(
+                self.state.dos_data_segment(),
+                self.state.nul_device_offset(),
+            );
+            if let Some(device) = path_character_device(memory, &path, nul) {
                 let (handle, sft_index) = self.state.allocate_handle(memory)?;
                 self.write_sft_for_character_device(
                     memory,
                     sft_index,
-                    device.sft_name,
-                    device.device_offset,
+                    &device.sft_name,
+                    device.device,
                     device.device_info,
                     open_mode as u16,
                 );
@@ -500,7 +543,7 @@ impl NeetanDos {
             let drive_index = read_path.drive_index;
 
             if drive_index == 25 {
-                if open_mode != 0x00 {
+                if access_mode != 0x00 {
                     return Err(0x0005); // Z: is read-only
                 }
                 let (_, _, fcb_name) =
@@ -532,7 +575,7 @@ impl NeetanDos {
                     self.state.open_iso_files[sft_index as usize] = None;
                 }
                 ReadDirEntrySource::Iso(entry) => {
-                    if open_mode != 0x00 {
+                    if access_mode != 0x00 {
                         return Err(0x0005);
                     }
                     self.write_sft_for_iso_file(
@@ -551,16 +594,21 @@ impl NeetanDos {
         match result {
             Ok(handle) => {
                 cpu.set_ax(handle);
-                set_iret_carry(cpu, memory, false);
+                self.state.set_iret_carry(cpu, memory, false);
             }
             Err(error) => {
                 cpu.set_ax(error);
-                set_iret_carry(cpu, memory, true);
+                self.state.set_iret_carry(cpu, memory, true);
             }
         }
     }
 
     /// AH=3Eh: Close file handle.
+    ///
+    /// On success AH keeps `3Eh` and AL holds the value the kernel close
+    /// leaves: the low byte of the reference count before the close for a
+    /// device or an unwritten file, the drive number for a written file and
+    /// `00h` for a CD-ROM file of the redirector.
     pub(crate) fn int21h_3eh_close_handle(
         &mut self,
         cpu: &mut dyn CpuAccess,
@@ -569,9 +617,12 @@ impl NeetanDos {
     ) {
         let handle = cpu.bx();
 
-        let result = (|| -> Result<(), u16> {
+        let result = (|| -> Result<u8, u16> {
             let sft_index = self.state.handle_to_sft_index(handle, memory)?;
-            let sft_addr = self.state.sft_entry_addr(sft_index).ok_or(0x0006u16)?;
+            let sft_addr = self
+                .state
+                .sft_entry_addr(sft_index, memory)
+                .ok_or(ERROR_INVALID_HANDLE)?;
             let ref_count = memory.read_word(sft_addr + tables::SFT_ENT_REF_COUNT);
 
             let dev_info = memory.read_word(sft_addr + tables::SFT_ENT_DEV_INFO);
@@ -579,22 +630,37 @@ impl NeetanDos {
 
             if !is_device {
                 let drive_index = (dev_info & 0x003F) as u8;
-                let metadata = read_fat_handle_metadata(memory, sft_addr, drive_index);
+                let metadata = read_fat_handle_metadata(
+                    memory,
+                    &self.state.structures().system_file_table,
+                    sft_addr,
+                    drive_index,
+                );
                 let _ = filesystem::flush_fat_handle(&mut self.state, disk, &metadata);
             }
 
+            let close_code = if self.state.open_iso_files[sft_index as usize].is_some() {
+                REDIRECTOR_CLOSE_CODE
+            } else if !is_device && dev_info & tables::SFT_DEVINFO_EOF == 0 {
+                (dev_info & tables::SFT_DEVINFO_DRIVE_MASK) as u8
+            } else {
+                ref_count as u8
+            };
             self.state.free_handle(handle, memory);
             if ref_count <= 1 {
                 self.state.open_iso_files[sft_index as usize] = None;
             }
-            Ok(())
+            Ok(close_code)
         })();
 
         match result {
-            Ok(()) => set_iret_carry(cpu, memory, false),
+            Ok(close_code) => {
+                cpu.set_ax(CLOSE_FUNCTION << 8 | u16::from(close_code));
+                self.state.set_iret_carry(cpu, memory, false);
+            }
             Err(error) => {
                 cpu.set_ax(error);
-                set_iret_carry(cpu, memory, true);
+                self.state.set_iret_carry(cpu, memory, true);
             }
         }
     }
@@ -610,13 +676,31 @@ impl NeetanDos {
         let count = cpu.cx() as u32;
         let buf_addr = cpu.linear_address(SegmentRegister::DS, cpu.dx());
 
+        let console_device_info = self
+            .state
+            .handle_to_sft_index(handle, memory)
+            .ok()
+            .and_then(|sft_index| self.state.sft_entry_addr(sft_index, memory))
+            .map(|sft_addr| memory.read_word(sft_addr + tables::SFT_ENT_DEV_INFO))
+            .filter(|&device_info| crate::console_line::is_console_input(device_info));
+        if let Some(device_info) = console_device_info {
+            if device_info & tables::SFT_DEVINFO_RAW != 0 {
+                self.read_console_raw(cpu, memory);
+            } else {
+                self.read_console_line(cpu, memory);
+            }
+            return;
+        }
+
         let result = (|| -> Result<u16, u16> {
             let sft_index = self.state.handle_to_sft_index(handle, memory)?;
-            let sft_addr = self.state.sft_entry_addr(sft_index).ok_or(0x0006u16)?;
+            let sft_addr = self
+                .state
+                .sft_entry_addr(sft_index, memory)
+                .ok_or(ERROR_INVALID_HANDLE)?;
 
             let dev_info = memory.read_word(sft_addr + tables::SFT_ENT_DEV_INFO);
             if dev_info & tables::SFT_DEVINFO_CHAR != 0 {
-                // Device read: return 0 bytes for now
                 return Ok(0);
             }
 
@@ -651,7 +735,8 @@ impl NeetanDos {
 
             let bytes_to_read = count.min(file_size - position) as usize;
             if let Some(entry) = self.state.open_iso_files[sft_index as usize].as_ref() {
-                let read_data = iso9660::read_file_chunk(entry, position, bytes_to_read, disk)?;
+                let cdrom = self.state.drive_cdrom(drive_index, disk);
+                let read_data = iso9660::read_file_chunk(entry, position, bytes_to_read, &cdrom)?;
                 memory.write_block(buf_addr, &read_data);
                 position = position.saturating_add(read_data.len() as u32);
                 write_dword(memory, sft_addr + tables::SFT_ENT_FILE_POS, position);
@@ -679,11 +764,11 @@ impl NeetanDos {
         match result {
             Ok(read_count) => {
                 cpu.set_ax(read_count);
-                set_iret_carry(cpu, memory, false);
+                self.state.set_iret_carry(cpu, memory, false);
             }
             Err(error) => {
                 cpu.set_ax(error);
-                set_iret_carry(cpu, memory, true);
+                self.state.set_iret_carry(cpu, memory, true);
             }
         }
     }
@@ -701,7 +786,10 @@ impl NeetanDos {
 
         let result = (|| -> Result<u16, u16> {
             let sft_index = self.state.handle_to_sft_index(handle, memory)?;
-            let sft_addr = self.state.sft_entry_addr(sft_index).ok_or(0x0006u16)?;
+            let sft_addr = self
+                .state
+                .sft_entry_addr(sft_index, memory)
+                .ok_or(ERROR_INVALID_HANDLE)?;
 
             let dev_info = memory.read_word(sft_addr + tables::SFT_ENT_DEV_INFO);
             if dev_info & tables::SFT_DEVINFO_CHAR != 0 {
@@ -729,12 +817,22 @@ impl NeetanDos {
 
             // File write
             let drive_index = (dev_info & 0x003F) as u8;
-            let mut metadata = read_fat_handle_metadata(memory, sft_addr, drive_index);
+            let mut metadata = read_fat_handle_metadata(
+                memory,
+                &self.state.structures().system_file_table,
+                sft_addr,
+                drive_index,
+            );
 
             if count == 0 {
                 if metadata.position < metadata.file_size {
                     metadata.file_size = metadata.position;
-                    write_fat_handle_metadata(memory, sft_addr, &metadata);
+                    write_fat_handle_metadata(
+                        memory,
+                        &self.state.structures().system_file_table,
+                        sft_addr,
+                        &metadata,
+                    );
                 }
                 memory.write_word(
                     sft_addr + tables::SFT_ENT_DEV_INFO,
@@ -750,7 +848,12 @@ impl NeetanDos {
             metadata.date = date;
             let (written, metadata) =
                 filesystem::write_fat_handle(&mut self.state, disk, metadata, &write_data)?;
-            write_fat_handle_metadata(memory, sft_addr, &metadata);
+            write_fat_handle_metadata(
+                memory,
+                &self.state.structures().system_file_table,
+                sft_addr,
+                &metadata,
+            );
             memory.write_word(
                 sft_addr + tables::SFT_ENT_DEV_INFO,
                 dev_info & !tables::SFT_DEVINFO_EOF,
@@ -761,11 +864,11 @@ impl NeetanDos {
         match result {
             Ok(count) => {
                 cpu.set_ax(count);
-                set_iret_carry(cpu, memory, false);
+                self.state.set_iret_carry(cpu, memory, false);
             }
             Err(error) => {
                 cpu.set_ax(error);
-                set_iret_carry(cpu, memory, true);
+                self.state.set_iret_carry(cpu, memory, true);
             }
         }
     }
@@ -783,10 +886,10 @@ impl NeetanDos {
         let result = filesystem::delete_file(&mut self.state, memory, disk, &path);
 
         match result {
-            Ok(()) => set_iret_carry(cpu, memory, false),
+            Ok(()) => self.state.set_iret_carry(cpu, memory, false),
             Err(error) => {
                 cpu.set_ax(error);
-                set_iret_carry(cpu, memory, true);
+                self.state.set_iret_carry(cpu, memory, true);
             }
         }
     }
@@ -803,7 +906,10 @@ impl NeetanDos {
 
         let result = (|| -> Result<u32, u16> {
             let sft_index = self.state.handle_to_sft_index(handle, memory)?;
-            let sft_addr = self.state.sft_entry_addr(sft_index).ok_or(0x0006u16)?;
+            let sft_addr = self
+                .state
+                .sft_entry_addr(sft_index, memory)
+                .ok_or(ERROR_INVALID_HANDLE)?;
 
             let file_size = read_dword(memory, sft_addr + tables::SFT_ENT_FILE_SIZE);
             let current_pos = read_dword(memory, sft_addr + tables::SFT_ENT_FILE_POS);
@@ -823,11 +929,11 @@ impl NeetanDos {
             Ok(pos) => {
                 cpu.set_ax(pos as u16);
                 cpu.set_dx((pos >> 16) as u16);
-                set_iret_carry(cpu, memory, false);
+                self.state.set_iret_carry(cpu, memory, false);
             }
             Err(error) => {
                 cpu.set_ax(error);
-                set_iret_carry(cpu, memory, true);
+                self.state.set_iret_carry(cpu, memory, true);
             }
         }
     }
@@ -855,11 +961,15 @@ impl NeetanDos {
         match result {
             Ok(attr) => {
                 cpu.set_cx(attr);
-                set_iret_carry(cpu, memory, false);
+                if al == 0x00 {
+                    // MS-DOS returns the attributes in AX as well.
+                    cpu.set_ax(attr);
+                }
+                self.state.set_iret_carry(cpu, memory, false);
             }
             Err(error) => {
                 cpu.set_ax(error);
-                set_iret_carry(cpu, memory, true);
+                self.state.set_iret_carry(cpu, memory, true);
             }
         }
     }
@@ -879,7 +989,10 @@ impl NeetanDos {
                 // Get device information
                 let result = (|| -> Result<u16, u16> {
                     let sft_index = self.state.handle_to_sft_index(handle, memory)?;
-                    let sft_addr = self.state.sft_entry_addr(sft_index).ok_or(0x0006u16)?;
+                    let sft_addr = self
+                        .state
+                        .sft_entry_addr(sft_index, memory)
+                        .ok_or(ERROR_INVALID_HANDLE)?;
                     let dev_info = memory.read_word(sft_addr + tables::SFT_ENT_DEV_INFO);
                     Ok(dev_info)
                 })();
@@ -887,11 +1000,11 @@ impl NeetanDos {
                     Ok(info) => {
                         cpu.set_ax(info);
                         cpu.set_dx(info);
-                        set_iret_carry(cpu, memory, false);
+                        self.state.set_iret_carry(cpu, memory, false);
                     }
                     Err(e) => {
                         cpu.set_ax(e);
-                        set_iret_carry(cpu, memory, true);
+                        self.state.set_iret_carry(cpu, memory, true);
                     }
                 }
             }
@@ -899,103 +1012,146 @@ impl NeetanDos {
                 // Set device information
                 let result = (|| -> Result<(), u16> {
                     let sft_index = self.state.handle_to_sft_index(handle, memory)?;
-                    let sft_addr = self.state.sft_entry_addr(sft_index).ok_or(0x0006u16)?;
+                    let sft_addr = self
+                        .state
+                        .sft_entry_addr(sft_index, memory)
+                        .ok_or(ERROR_INVALID_HANDLE)?;
                     let mut dev_info = memory.read_word(sft_addr + tables::SFT_ENT_DEV_INFO);
                     dev_info = (dev_info & 0xFF00) | (cpu.dx() & 0x00FF);
                     memory.write_word(sft_addr + tables::SFT_ENT_DEV_INFO, dev_info);
                     Ok(())
                 })();
                 match result {
-                    Ok(()) => set_iret_carry(cpu, memory, false),
+                    Ok(()) => self.state.set_iret_carry(cpu, memory, false),
                     Err(e) => {
                         cpu.set_ax(e);
-                        set_iret_carry(cpu, memory, true);
+                        self.state.set_iret_carry(cpu, memory, true);
                     }
                 }
             }
-            0x02 => {
-                // Read from character-device control channel.
-                let result = (|| -> Result<u16, u16> {
-                    let sft_index = self.state.handle_to_sft_index(handle, memory)?;
-                    let sft_addr = self.state.sft_entry_addr(sft_index).ok_or(0x0006u16)?;
-                    let dev_info = memory.read_word(sft_addr + tables::SFT_ENT_DEV_INFO);
-                    if dev_info & tables::SFT_DEVINFO_CHAR == 0
-                        || dev_info & tables::SFT_DEVINFO_IOCTL == 0
-                    {
-                        return Err(0x0001);
-                    }
-                    if !sft_is_cdrom_device(memory, sft_addr) {
-                        return Err(0x0001);
-                    }
-
-                    let transfer_addr = cpu.linear_address(SegmentRegister::DS, cpu.dx());
-                    self.read_cdrom_control_channel(memory, drive, transfer_addr)?;
-                    Ok(cpu.cx())
-                })();
+            0x02 | 0x03 => {
+                // Read from or write to the control channel of a character device.
+                let Some(result) = self.ioctl_control_channel(cpu, memory, drive, al) else {
+                    return;
+                };
                 match result {
-                    Ok(bytes_read) => {
-                        cpu.set_ax(bytes_read);
-                        set_iret_carry(cpu, memory, false);
+                    Ok(count) => {
+                        cpu.set_ax(count);
+                        self.state.set_iret_carry(cpu, memory, false);
                     }
                     Err(e) => {
                         cpu.set_ax(e);
-                        set_iret_carry(cpu, memory, true);
-                    }
-                }
-            }
-            0x03 => {
-                // Write to character-device control channel.
-                let result = (|| -> Result<u16, u16> {
-                    let sft_index = self.state.handle_to_sft_index(handle, memory)?;
-                    let sft_addr = self.state.sft_entry_addr(sft_index).ok_or(0x0006u16)?;
-                    let dev_info = memory.read_word(sft_addr + tables::SFT_ENT_DEV_INFO);
-                    if dev_info & tables::SFT_DEVINFO_CHAR == 0
-                        || dev_info & tables::SFT_DEVINFO_IOCTL == 0
-                    {
-                        return Err(0x0001);
-                    }
-                    if !sft_is_cdrom_device(memory, sft_addr) {
-                        return Err(0x0001);
-                    }
-
-                    let transfer_addr = cpu.linear_address(SegmentRegister::DS, cpu.dx());
-                    self.write_cdrom_control_channel(memory, drive, transfer_addr)?;
-                    Ok(cpu.cx())
-                })();
-                match result {
-                    Ok(bytes_written) => {
-                        cpu.set_ax(bytes_written);
-                        set_iret_carry(cpu, memory, false);
-                    }
-                    Err(e) => {
-                        cpu.set_ax(e);
-                        set_iret_carry(cpu, memory, true);
+                        self.state.set_iret_carry(cpu, memory, true);
                     }
                 }
             }
             0x06 => {
                 // Get input status
                 cpu.set_ax((cpu.ax() & 0xFF00) | 0xFF);
-                set_iret_carry(cpu, memory, false);
+                self.state.set_iret_carry(cpu, memory, false);
             }
             0x07 => {
                 // Get output status
                 cpu.set_ax((cpu.ax() & 0xFF00) | 0xFF);
-                set_iret_carry(cpu, memory, false);
+                self.state.set_iret_carry(cpu, memory, false);
             }
             0x08 => {
-                // Is removable?
-                let drive = cpu.bx() as u8;
-                let da_ua = memory
-                    .read_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_DAUA_TABLE + drive as u32);
-                let removable = matches!(da_ua & 0xF0, 0x90 | 0x70);
-                cpu.set_ax((cpu.ax() & 0xFF00) | if removable { 0x00 } else { 0x01 });
-                set_iret_carry(cpu, memory, false);
+                // Is removable? BL = drive (0 = default, 1 = A:).
+                let drive_number = cpu.bx() as u8;
+                let drive_index = if drive_number == 0 {
+                    self.state.current_drive
+                } else {
+                    drive_number - 1
+                };
+                match self.state.drive_map.entry(drive_index) {
+                    Some(entry) => {
+                        let removable = entry.device.is_removable();
+                        cpu.set_ax(if removable { 0x0000 } else { 0x0001 });
+                        self.state.set_iret_carry(cpu, memory, false);
+                    }
+                    None => {
+                        cpu.set_ax(crate::ERROR_INVALID_DRIVE);
+                        self.state.set_iret_carry(cpu, memory, true);
+                    }
+                }
+            }
+            0x09 => {
+                // Is the drive remote? BL = drive (0 = default, 1 = A:).
+                let drive_number = cpu.bx() as u8;
+                let drive_index = if drive_number == 0 {
+                    self.state.current_drive
+                } else {
+                    drive_number - 1
+                };
+                match self.state.drive_device_attributes(drive_index, memory) {
+                    Some(attributes) => {
+                        cpu.set_dx(attributes);
+                        cpu.set_ax(SHARE_CHECK_AX);
+                        self.state.set_iret_carry(cpu, memory, false);
+                    }
+                    None => {
+                        cpu.set_ax(crate::ERROR_INVALID_DRIVE);
+                        self.state.set_iret_carry(cpu, memory, true);
+                    }
+                }
             }
             _ => {
                 warn!("INT 21h AH=44h AL={al:#04X}: IOCTL subfunction is unimplemented");
             }
         }
+    }
+
+    /// IOCTL `AL=02h` (read) and `AL=03h` (write) of the control channel of
+    /// the character device behind handle BX: the CD-ROM device of NeetanDos
+    /// or a guest driver with IOCTL support. Returns `None` while the request
+    /// to a guest driver is pending.
+    fn ioctl_control_channel(
+        &mut self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+        drive: &mut dyn DriveIo,
+        subfunction: u8,
+    ) -> Option<Result<u16, u16>> {
+        let handle = cpu.bx();
+        let sft_addr = match self.state.handle_to_sft_index(handle, memory) {
+            Ok(sft_index) => match self.state.sft_entry_addr(sft_index, memory) {
+                Some(address) => address,
+                None => return Some(Err(ERROR_INVALID_HANDLE)),
+            },
+            Err(error) => return Some(Err(error)),
+        };
+        let dev_info = memory.read_word(sft_addr + tables::SFT_ENT_DEV_INFO);
+        if dev_info & tables::SFT_DEVINFO_CHAR == 0 || dev_info & tables::SFT_DEVINFO_IOCTL == 0 {
+            return Some(Err(ERROR_INVALID_FUNCTION));
+        }
+        let dos_data_segment = self.state.dos_data_segment();
+        let transfer_addr = cpu.linear_address(SegmentRegister::DS, cpu.dx());
+        if sft_is_cdrom_device(memory, sft_addr, dos_data_segment) {
+            let result = if subfunction == 0x02 {
+                self.read_cdrom_control_channel(memory, drive, transfer_addr)
+            } else {
+                self.write_cdrom_control_channel(memory, drive, transfer_addr)
+            };
+            return Some(result.map(|()| cpu.cx()));
+        }
+        let device = FarPointer::new(
+            memory.read_word(sft_addr + tables::SFT_ENT_DEV_PTR + 2),
+            memory.read_word(sft_addr + tables::SFT_ENT_DEV_PTR),
+        );
+        if device.segment == dos_data_segment {
+            return Some(Err(ERROR_INVALID_FUNCTION));
+        }
+        let command = if subfunction == 0x02 {
+            COMMAND_IOCTL_INPUT
+        } else {
+            COMMAND_IOCTL_OUTPUT
+        };
+        self.state.guest_device_transfer(DeviceTransfer {
+            device,
+            command,
+            buffer: FarPointer::new(cpu.ds(), cpu.dx()),
+            count: cpu.cx(),
+        })
     }
 
     /// AH=45h: Duplicate file handle (DUP).
@@ -1008,7 +1164,10 @@ impl NeetanDos {
 
         let result = (|| -> Result<u16, u16> {
             let sft_index = self.state.handle_to_sft_index(handle, memory)?;
-            let sft_addr = self.state.sft_entry_addr(sft_index).ok_or(0x0006u16)?;
+            let sft_addr = self
+                .state
+                .sft_entry_addr(sft_index, memory)
+                .ok_or(ERROR_INVALID_HANDLE)?;
 
             let new_handle = self.state.find_free_jft_handle(memory)?;
 
@@ -1023,11 +1182,11 @@ impl NeetanDos {
         match result {
             Ok(h) => {
                 cpu.set_ax(h);
-                set_iret_carry(cpu, memory, false);
+                self.state.set_iret_carry(cpu, memory, false);
             }
             Err(error) => {
                 cpu.set_ax(error);
-                set_iret_carry(cpu, memory, true);
+                self.state.set_iret_carry(cpu, memory, true);
             }
         }
     }
@@ -1081,10 +1240,13 @@ impl NeetanDos {
         })();
 
         match result {
-            Ok(()) => set_iret_carry(cpu, memory, false),
+            Ok(()) => {
+                cpu.set_ax(0);
+                self.state.set_iret_carry(cpu, memory, false);
+            }
             Err(error) => {
                 cpu.set_ax(error);
-                set_iret_carry(cpu, memory, true);
+                self.state.set_iret_carry(cpu, memory, true);
             }
         }
     }
@@ -1097,10 +1259,13 @@ impl NeetanDos {
         disk: &mut dyn DriveIo,
     ) {
         match self.do_find_next(memory, disk) {
-            Ok(()) => set_iret_carry(cpu, memory, false),
+            Ok(()) => {
+                cpu.set_ax(0);
+                self.state.set_iret_carry(cpu, memory, false);
+            }
             Err(error) => {
                 cpu.set_ax(error);
-                set_iret_carry(cpu, memory, true);
+                self.state.set_iret_carry(cpu, memory, true);
             }
         }
     }
@@ -1200,10 +1365,10 @@ impl NeetanDos {
         let result = filesystem::rename_entry(&mut self.state, memory, disk, &old_path, &new_path);
 
         match result {
-            Ok(()) => set_iret_carry(cpu, memory, false),
+            Ok(()) => self.state.set_iret_carry(cpu, memory, false),
             Err(error) => {
                 cpu.set_ax(error);
-                set_iret_carry(cpu, memory, true);
+                self.state.set_iret_carry(cpu, memory, true);
             }
         }
     }
@@ -1220,13 +1385,16 @@ impl NeetanDos {
         let handle = cpu.bx();
 
         if matches!(al, 0x02..=0x04) {
-            set_iret_carry(cpu, memory, false);
+            self.state.set_iret_carry(cpu, memory, false);
             return;
         }
 
         let result = (|| -> Result<(u16, u16), u16> {
             let sft_index = self.state.handle_to_sft_index(handle, memory)?;
-            let sft_addr = self.state.sft_entry_addr(sft_index).ok_or(0x0006u16)?;
+            let sft_addr = self
+                .state
+                .sft_entry_addr(sft_index, memory)
+                .ok_or(ERROR_INVALID_HANDLE)?;
 
             match al {
                 0x00 => {
@@ -1247,18 +1415,22 @@ impl NeetanDos {
             Ok((time, date)) => {
                 cpu.set_cx(time);
                 cpu.set_dx(date);
-                set_iret_carry(cpu, memory, false);
+                self.state.set_iret_carry(cpu, memory, false);
             }
             Err(error) => {
                 cpu.set_ax(error);
-                set_iret_carry(cpu, memory, true);
+                self.state.set_iret_carry(cpu, memory, true);
             }
         }
     }
 
     /// AH=5Dh: Server function call (undocumented).
     /// AL=06h: Get swappable data area pointer.
-    /// AL=0Ah: Set extended error information (no-op).
+    /// AL=07h-09h: Get and set the redirected printer mode, flush the
+    /// redirected printer output. DOS hands these to a network redirector
+    /// through `INT 2Fh AX=1125h`. NeetanDos has no redirector and answers
+    /// like the default `INT 2Fh` handler of DOS: invalid function.
+    /// AL=0Ah: Set extended error information.
     /// Other subfunctions: not supported.
     pub(crate) fn int21h_5dh_server_call(
         &self,
@@ -1269,19 +1441,17 @@ impl NeetanDos {
         match al {
             0x06 => {
                 self.write_swappable_data_area(memory);
-                let (segment, offset) = tables::dos_data_far(tables::SDA_OFFSET);
-                cpu.set_ds(segment);
-                cpu.set_si(offset);
-                cpu.set_cx(tables::SDA_SIZE);
-                cpu.set_dx(tables::SDA_SWAP_ALWAYS_SIZE);
-                set_iret_carry(cpu, memory, false);
+                let sda = &self.state.structures().swappable_data_area;
+                cpu.set_ds(self.state.dos_data_segment());
+                cpu.set_si(sda.data_offset);
+                cpu.set_cx(sda.size);
+                cpu.set_dx(sda.always_swapped_size);
+                self.state.set_iret_carry(cpu, memory, false);
             }
-            0x0A => {
-                set_iret_carry(cpu, memory, false);
-            }
+            0x0A => self.int21h_5d0ah_set_extended_error(cpu, memory),
             _ => {
                 cpu.set_ax(0x0001);
-                set_iret_carry(cpu, memory, true);
+                self.state.set_iret_carry(cpu, memory, true);
             }
         }
     }
@@ -1291,19 +1461,35 @@ impl NeetanDos {
     /// are owned by the INT 21h dispatcher and INT 24h critical-error path
     /// and must not be touched here, or the dispatcher's pre/post InDOS
     /// counter rebalance would observe a stale value.
-    fn write_swappable_data_area(&self, memory: &mut dyn MemoryAccess) {
-        let base = tables::SDA_ADDR;
+    pub(crate) fn write_swappable_data_area(&self, memory: &mut dyn MemoryAccess) {
+        use tables::{
+            SDA_OFF_BREAK_FLAG, SDA_OFF_CURRENT_DRIVE, SDA_OFF_CURRENT_PSP, SDA_OFF_DTA,
+            SDA_OFF_INT23_STACK_POINTER, SDA_OFF_RETURN_CODE,
+        };
+        let base = self.state.sda_address();
         tables::write_far_ptr(
             memory,
-            base + 0x0C,
+            base + u32::from(SDA_OFF_DTA),
             self.state.dta_segment,
             self.state.dta_offset,
         );
-        memory.write_word(base + 0x10, self.state.current_psp);
-        memory.write_word(base + 0x12, 0x0000);
-        memory.write_word(base + 0x14, self.state.last_return_code as u16);
-        memory.write_byte(base + 0x16, self.state.current_drive);
-        memory.write_byte(base + 0x17, self.state.ctrl_break as u8);
+        memory.write_word(
+            base + u32::from(SDA_OFF_CURRENT_PSP),
+            self.state.current_psp,
+        );
+        memory.write_word(base + u32::from(SDA_OFF_INT23_STACK_POINTER), 0x0000);
+        memory.write_word(
+            base + u32::from(SDA_OFF_RETURN_CODE),
+            self.state.last_return_code as u16,
+        );
+        memory.write_byte(
+            base + u32::from(SDA_OFF_CURRENT_DRIVE),
+            self.state.current_drive,
+        );
+        memory.write_byte(
+            base + u32::from(SDA_OFF_BREAK_FLAG),
+            self.state.ctrl_break as u8,
+        );
     }
 
     /// Helper: populates an SFT entry for a newly opened/created file.
@@ -1315,7 +1501,7 @@ impl NeetanDos {
         drive_index: u8,
         open_mode: u16,
     ) {
-        let sft_addr = match self.state.sft_entry_addr(sft_index) {
+        let sft_addr = match self.state.sft_entry_addr(sft_index, mem) {
             Some(a) => a,
             None => return,
         };
@@ -1332,8 +1518,8 @@ impl NeetanDos {
         tables::write_far_ptr(
             mem,
             sft_addr + tables::SFT_ENT_DEV_PTR,
-            tables::DOS_DATA_SEGMENT,
-            tables::DEV_NUL_OFFSET,
+            self.state.dos_data_segment(),
+            self.state.nul_device_offset(),
         );
         mem.write_word(
             sft_addr + tables::SFT_ENT_START_CLUSTER,
@@ -1343,14 +1529,12 @@ impl NeetanDos {
         mem.write_word(sft_addr + tables::SFT_ENT_FILE_DATE, entry.date);
         write_dword(mem, sft_addr + tables::SFT_ENT_FILE_SIZE, entry.file_size);
         write_dword(mem, sft_addr + tables::SFT_ENT_FILE_POS, 0);
-        mem.write_word(sft_addr + tables::SFT_ENT_REL_CLUSTER, 0);
-        mem.write_word(sft_addr + tables::SFT_ENT_CUR_CLUSTER, entry.start_cluster);
-        mem.write_word(
-            sft_addr + tables::SFT_ENT_DIR_SECTOR,
-            entry.dir_sector as u16,
-        );
-        mem.write_byte(
-            sft_addr + tables::SFT_ENT_DIR_INDEX,
+        let sft = &self.state.structures().system_file_table;
+        sft.write_cluster_position(mem, sft_addr, 0, entry.start_cluster);
+        sft.write_directory_location(
+            mem,
+            sft_addr,
+            entry.dir_sector,
             (entry.dir_offset / fat_dir::DIR_ENTRY_SIZE as u16) as u8,
         );
         mem.write_block(sft_addr + tables::SFT_ENT_NAME, &entry.name);
@@ -1362,11 +1546,11 @@ impl NeetanDos {
         mem: &mut dyn MemoryAccess,
         sft_index: u8,
         name: &[u8; 11],
-        device_offset: u16,
+        device: FarPointer,
         device_info: u16,
         open_mode: u16,
     ) {
-        let sft_addr = match self.state.sft_entry_addr(sft_index) {
+        let sft_addr = match self.state.sft_entry_addr(sft_index, mem) {
             Some(address) => address,
             None => return,
         };
@@ -1378,18 +1562,17 @@ impl NeetanDos {
         tables::write_far_ptr(
             mem,
             sft_addr + tables::SFT_ENT_DEV_PTR,
-            tables::DOS_DATA_SEGMENT,
-            device_offset,
+            device.segment,
+            device.offset,
         );
         mem.write_word(sft_addr + tables::SFT_ENT_START_CLUSTER, 0);
         mem.write_word(sft_addr + tables::SFT_ENT_FILE_TIME, 0);
         mem.write_word(sft_addr + tables::SFT_ENT_FILE_DATE, 0);
         write_dword(mem, sft_addr + tables::SFT_ENT_FILE_SIZE, 0);
         write_dword(mem, sft_addr + tables::SFT_ENT_FILE_POS, 0);
-        mem.write_word(sft_addr + tables::SFT_ENT_REL_CLUSTER, 0);
-        mem.write_word(sft_addr + tables::SFT_ENT_CUR_CLUSTER, 0);
-        mem.write_word(sft_addr + tables::SFT_ENT_DIR_SECTOR, 0);
-        mem.write_byte(sft_addr + tables::SFT_ENT_DIR_INDEX, 0);
+        let sft = &self.state.structures().system_file_table;
+        sft.write_cluster_position(mem, sft_addr, 0, 0);
+        sft.write_directory_location(mem, sft_addr, 0, 0);
         mem.write_block(sft_addr + tables::SFT_ENT_NAME, name);
         mem.write_word(sft_addr + tables::SFT_ENT_PSP_OWNER, self.state.current_psp);
     }
@@ -1402,7 +1585,7 @@ impl NeetanDos {
         drive_index: u8,
         open_mode: u16,
     ) {
-        let sft_addr = match self.state.sft_entry_addr(sft_index) {
+        let sft_addr = match self.state.sft_entry_addr(sft_index, mem) {
             Some(address) => address,
             None => return,
         };
@@ -1417,18 +1600,17 @@ impl NeetanDos {
         tables::write_far_ptr(
             mem,
             sft_addr + tables::SFT_ENT_DEV_PTR,
-            tables::DOS_DATA_SEGMENT,
-            tables::DEV_NUL_OFFSET,
+            self.state.dos_data_segment(),
+            self.state.nul_device_offset(),
         );
         mem.write_word(sft_addr + tables::SFT_ENT_START_CLUSTER, 0);
         mem.write_word(sft_addr + tables::SFT_ENT_FILE_TIME, entry.time);
         mem.write_word(sft_addr + tables::SFT_ENT_FILE_DATE, entry.date);
         write_dword(mem, sft_addr + tables::SFT_ENT_FILE_SIZE, entry.file_size);
         write_dword(mem, sft_addr + tables::SFT_ENT_FILE_POS, 0);
-        mem.write_word(sft_addr + tables::SFT_ENT_REL_CLUSTER, 0);
-        mem.write_word(sft_addr + tables::SFT_ENT_CUR_CLUSTER, 0);
-        mem.write_word(sft_addr + tables::SFT_ENT_DIR_SECTOR, 0);
-        mem.write_byte(sft_addr + tables::SFT_ENT_DIR_INDEX, 0);
+        let sft = &self.state.structures().system_file_table;
+        sft.write_cluster_position(mem, sft_addr, 0, 0);
+        sft.write_directory_location(mem, sft_addr, 0, 0);
         mem.write_block(sft_addr + tables::SFT_ENT_NAME, &entry.name);
         mem.write_word(sft_addr + tables::SFT_ENT_PSP_OWNER, self.state.current_psp);
     }
@@ -1441,7 +1623,7 @@ impl NeetanDos {
         entry: &VirtualEntry,
         open_mode: u16,
     ) {
-        let sft_addr = match self.state.sft_entry_addr(sft_index) {
+        let sft_addr = match self.state.sft_entry_addr(sft_index, mem) {
             Some(a) => a,
             None => return,
         };
@@ -1456,18 +1638,17 @@ impl NeetanDos {
         tables::write_far_ptr(
             mem,
             sft_addr + tables::SFT_ENT_DEV_PTR,
-            tables::DOS_DATA_SEGMENT,
-            tables::DEV_NUL_OFFSET,
+            self.state.dos_data_segment(),
+            self.state.nul_device_offset(),
         );
         mem.write_word(sft_addr + tables::SFT_ENT_START_CLUSTER, 0);
         mem.write_word(sft_addr + tables::SFT_ENT_FILE_TIME, entry.time);
         mem.write_word(sft_addr + tables::SFT_ENT_FILE_DATE, entry.date);
         write_dword(mem, sft_addr + tables::SFT_ENT_FILE_SIZE, entry.file_size);
         write_dword(mem, sft_addr + tables::SFT_ENT_FILE_POS, 0);
-        mem.write_word(sft_addr + tables::SFT_ENT_REL_CLUSTER, 0);
-        mem.write_word(sft_addr + tables::SFT_ENT_CUR_CLUSTER, 0);
-        mem.write_word(sft_addr + tables::SFT_ENT_DIR_SECTOR, 0);
-        mem.write_byte(sft_addr + tables::SFT_ENT_DIR_INDEX, 0);
+        let sft = &self.state.structures().system_file_table;
+        sft.write_cluster_position(mem, sft_addr, 0, 0);
+        sft.write_directory_location(mem, sft_addr, 0, 0);
         mem.write_block(sft_addr + tables::SFT_ENT_NAME, &entry.name);
         mem.write_word(sft_addr + tables::SFT_ENT_PSP_OWNER, self.state.current_psp);
     }

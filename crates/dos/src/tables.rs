@@ -1,27 +1,19 @@
 //! DOS internal data structures (SYSVARS, SFT, CDS, DPB layout).
 //!
-//! Constants define the memory layout for NEETAN DOS boot data structures.
-//! The IO.SYS work area lives at segment 0060h (linear 0x0600).
-//! SYSVARS and DOS structures live at segment 0x0200 (linear 0x2000)
-//! to avoid field offset conflicts with the IO.SYS work area.
+//! Field offsets in this module hold for the DOS 3.10 and the DOS 6.20
+//! layout. The `layout` module holds the values that differ between them.
+//!
+//! Offsets named `*_OFFSET` are offsets in the DOS data segment of the
+//! platform placement. They describe the self boot data area that NeetanDos
+//! builds on the PC-98: device headers, the initial CDS array and DPBs, the
+//! disk buffer and the private stubs. The IO.SYS work area lives at segment
+//! 0060h (linear 0x0600).
 
 use crate::MemoryAccess;
 
-pub const DOS_DATA_SEGMENT: u16 = 0x0200;
-pub const DOS_DATA_BASE: u32 = (DOS_DATA_SEGMENT as u32) << 4;
-
-// SYSVARS / List of Lists
-pub const SYSVARS_SEGMENT: u16 = DOS_DATA_SEGMENT;
-pub const SYSVARS_OFFSET: u16 = 0x0000;
-pub const SYSVARS_BASE: u32 = DOS_DATA_BASE;
-// Pointer returned by INT 21h AH=52h. It resolves to the same linear address
-// as SYSVARS_BASE but carries a non-zero offset so callers can read the
-// negative-offset fields (e.g. the first-MCB pointer at SYSVARS-2).
-pub const SYSVARS_LIST_SEGMENT: u16 = DOS_DATA_SEGMENT - 1;
-pub const SYSVARS_LIST_OFFSET: u16 = 0x0010;
-
-// SYSVARS field offsets (relative to SYSVARS_BASE)
-pub const SYSVARS_OFF_FIRST_MCB: u32 = 0x02; // at SYSVARS - 2 (written to SYSVARS_BASE - 2)
+// List of lists field offsets (relative to the list of lists).
+/// Distance of the first MCB segment word below the list of lists.
+pub const SYSVARS_FIRST_MCB_DISTANCE: u32 = 0x02;
 pub const SYSVARS_OFF_DPB_PTR: u32 = 0x00;
 pub const SYSVARS_OFF_SFT_PTR: u32 = 0x04;
 pub const SYSVARS_OFF_CLOCK_PTR: u32 = 0x08;
@@ -34,16 +26,8 @@ pub const SYSVARS_OFF_PROT_FCBS: u32 = 0x1E;
 pub const SYSVARS_OFF_BLOCK_DEVS: u32 = 0x20;
 pub const SYSVARS_OFF_LASTDRIVE: u32 = 0x21;
 pub const SYSVARS_OFF_NUL_HEADER: u32 = 0x22;
-pub const SYSVARS_OFF_JOIN_DRIVES: u32 = 0x34;
-pub const SYSVARS_OFF_SETVER_PTR: u32 = 0x37;
-pub const SYSVARS_OFF_BUFFERS: u32 = 0x3F;
-pub const SYSVARS_OFF_LOOKAHEAD: u32 = 0x41;
-pub const SYSVARS_OFF_BOOT_DRIVE: u32 = 0x43;
-pub const SYSVARS_OFF_386_FLAG: u32 = 0x44;
-pub const SYSVARS_OFF_EXT_MEM: u32 = 0x45;
 
-// Device headers - offsets from DOS_DATA_BASE
-pub const DEV_NUL_OFFSET: u16 = 0x0022; // Embedded in SYSVARS
+// Device headers of the self boot data area. NUL lives inside the list of lists.
 pub const DEV_CON_OFFSET: u16 = 0x0048;
 pub const DEV_CLOCK_OFFSET: u16 = 0x005A;
 pub const DEV_AID_NEC_OFFSET: u16 = 0x006C;
@@ -70,26 +54,28 @@ pub const DEVATTR_NUL: u16 = 0x0004;
 pub const DEVATTR_STDOUT: u16 = 0x0002;
 pub const DEVATTR_STDIN: u16 = 0x0001;
 
-// SFT (System File Table)
-pub const SFT_OFFSET: u16 = 0x0090;
-pub const SFT_BASE: u32 = DOS_DATA_BASE + SFT_OFFSET as u32;
+// SFT (System File Table) block header
 pub const SFT_HEADER_SIZE: u32 = 6; // DWORD next + WORD count
-pub const SFT_ENTRY_SIZE: u32 = 59;
+/// Offset of the far pointer to the next SFT block.
+pub const SFT_BLOCK_OFF_NEXT: u32 = 0x00;
+/// Offset of the entry count word of an SFT block.
+pub const SFT_BLOCK_OFF_COUNT: u32 = 0x04;
 
-// SFT entry field offsets (within each 59-byte entry)
+// SFT entry field offsets
 pub const SFT_ENT_REF_COUNT: u32 = 0x00;
 pub const SFT_ENT_OPEN_MODE: u32 = 0x02;
 pub const SFT_ENT_FILE_ATTR: u32 = 0x04;
 pub const SFT_ENT_DEV_INFO: u32 = 0x05;
 pub const SFT_ENT_DEV_PTR: u32 = 0x07;
+/// Open mode bit of a handle that a child process does not inherit.
+pub const OPEN_MODE_NO_INHERIT: u16 = 0x0080;
 pub const SFT_ENT_START_CLUSTER: u32 = 0x0B;
 pub const SFT_ENT_FILE_TIME: u32 = 0x0D;
 pub const SFT_ENT_FILE_DATE: u32 = 0x0F;
 pub const SFT_ENT_FILE_SIZE: u32 = 0x11;
 pub const SFT_ENT_FILE_POS: u32 = 0x15;
 pub const SFT_ENT_REL_CLUSTER: u32 = 0x19;
-pub const SFT_ENT_CUR_CLUSTER: u32 = 0x1B;
-pub const SFT_ENT_DIR_SECTOR: u32 = 0x1D;
+/// Offset of the byte index of the directory entry in its sector.
 pub const SFT_ENT_DIR_INDEX: u32 = 0x1F;
 pub const SFT_ENT_NAME: u32 = 0x20;
 pub const SFT_ENT_PSP_OWNER: u32 = 0x31;
@@ -97,10 +83,11 @@ pub const SFT_ENT_PSP_OWNER: u32 = 0x31;
 // SFT block counts
 pub const SFT_INITIAL_COUNT: u16 = 5;
 pub const SFT_EXTENDED_COUNT: u16 = 15;
-pub const SFT_TOTAL_COUNT: u16 = SFT_INITIAL_COUNT + SFT_EXTENDED_COUNT;
 
 // Device info word flags (SFT entry +0x05)
 pub const SFT_DEVINFO_CHAR: u16 = 0x0080;
+/// Drive index of a file handle in the device information word.
+pub const SFT_DEVINFO_DRIVE_MASK: u16 = 0x003F;
 pub const SFT_DEVINFO_EOF: u16 = 0x0040;
 pub const SFT_DEVINFO_IOCTL: u16 = 0x4000;
 // Bit-15 mirror of DEVATTR_CHAR. Real DOS always copies it into the SFT
@@ -111,29 +98,26 @@ pub const SFT_DEVINFO_STDOUT: u16 = 0x0002;
 pub const SFT_DEVINFO_NUL: u16 = 0x0004;
 pub const SFT_DEVINFO_CLOCK: u16 = 0x0008;
 pub const SFT_DEVINFO_SPECIAL: u16 = 0x0010;
+/// Raw (binary) mode of a character device: reads and writes skip the
+/// line editing, the echo and the control character checks.
+pub const SFT_DEVINFO_RAW: u16 = 0x0020;
 // Base device-info bits real DOS 6.20 sets on every character-device SFT
 // entry: bit 15 (mirror of DEVATTR_CHAR), bit 7 (CHAR), and bit 6 (no-EOF).
 pub const SFT_DEVINFO_CHAR_DEVICE_COMMON: u16 =
     SFT_DEVINFO_DRIVER_CHAR | SFT_DEVINFO_CHAR | SFT_DEVINFO_EOF;
 
-// CDS (Current Directory Structure)
+// CDS (Current Directory Structure) array of the self boot data area
 pub const CDS_OFFSET: u16 = 0x01C0;
-pub const CDS_BASE: u32 = DOS_DATA_BASE + CDS_OFFSET as u32;
-pub const CDS_ENTRY_SIZE: u32 = 0x58; // 88 bytes per entry
 pub const CDS_ENTRIES: u32 = 26;
 
 // CDS entry field offsets
 pub const CDS_OFF_PATH: u32 = 0x00; // 67 bytes, null-terminated
 pub const CDS_OFF_FLAGS: u32 = 0x43;
 pub const CDS_OFF_DPB_PTR: u32 = 0x45;
-pub const CDS_OFF_BACKSLASH_OFFSET: u32 = 0x49;
+/// Offset of the word that holds the length of the root part of the path.
+pub const CDS_OFF_ROOT_LENGTH: u32 = 0x4F;
 pub const CDS_FLAG_PHYSICAL: u16 = 0x4000;
 pub const CDS_FLAG_NETWORK: u16 = 0x8000;
-
-// DPB (Disk Parameter Block)
-pub const DPB_OFFSET: u16 = 0x0AB0;
-pub const DPB_BASE: u32 = DOS_DATA_BASE + DPB_OFFSET as u32;
-pub const DPB_ENTRY_SIZE: u32 = 0x21; // 33 bytes per entry (DOS 4.0+)
 
 // DPB entry field offsets
 pub const DPB_OFF_DRIVE_NUM: u32 = 0x00;
@@ -146,53 +130,45 @@ pub const DPB_OFF_NUM_FATS: u32 = 0x08;
 pub const DPB_OFF_ROOT_ENTRIES: u32 = 0x09;
 pub const DPB_OFF_FIRST_DATA_SECTOR: u32 = 0x0B;
 pub const DPB_OFF_MAX_CLUSTER: u32 = 0x0D;
-pub const DPB_OFF_SECTORS_PER_FAT: u32 = 0x0F;
-pub const DPB_OFF_FIRST_ROOT_SECTOR: u32 = 0x11;
-pub const DPB_OFF_DEVICE_PTR: u32 = 0x13;
-pub const DPB_OFF_MEDIA_DESC: u32 = 0x17;
-pub const DPB_OFF_ACCESS_FLAG: u32 = 0x18;
-pub const DPB_OFF_NEXT_DPB: u32 = 0x19;
 
-// Disk buffer
-pub const DISK_BUFFER_OFFSET: u16 = 0x0B20;
-pub const DISK_BUFFER_BASE: u32 = DOS_DATA_BASE + DISK_BUFFER_OFFSET as u32;
+/// Offset of the far pointer to the next buffer header.
+pub const BUFFER_OFF_NEXT: u32 = 0x00;
+/// Offset of the drive byte of a buffer header (`FFh` = unused).
+pub const BUFFER_OFF_DRIVE: u32 = 0x04;
 
 // DOS swappable data area returned by INT 21h AX=5D06h. The critical-error
 // flag is at SDA+0, the InDOS flag at SDA+1, both of which Windows DOSMGR
-// expects to find via the patch table. CX/DX returned by 5D06h advertise the
-// kernel-internal "swap while in DOS" and "always swap" region sizes; we
-// publish the real-DOS-6.20 values so DOS extenders see the same layout.
-pub const SDA_OFFSET: u16 = 0x0F40;
-pub const SDA_ADDR: u32 = DOS_DATA_BASE + SDA_OFFSET as u32;
-pub const SDA_SIZE: u16 = 0x078C;
-pub const SDA_SWAP_ALWAYS_SIZE: u16 = 0x001A;
-
-// InDOS and critical error flags. The kernel keeps them as the first two
-// bytes of the SDA header so 5D06h callers, INT 28h idlers, and the DOSMGR
-// patch table all see the same memory.
-pub const CRITICAL_ERROR_FLAG_OFFSET: u16 = SDA_OFFSET;
-pub const CRITICAL_ERROR_FLAG_ADDR: u32 = SDA_ADDR;
-pub const INDOS_FLAG_OFFSET: u16 = SDA_OFFSET + 1;
-pub const INDOS_FLAG_ADDR: u32 = DOS_DATA_BASE + INDOS_FLAG_OFFSET as u32;
-
-// DBCS lead byte table (6 bytes: 81,9F, E0,FC, 00,00)
-pub const DBCS_TABLE_OFFSET: u16 = 0x0D3E;
-pub const DBCS_TABLE_ADDR: u32 = DOS_DATA_BASE + DBCS_TABLE_OFFSET as u32;
+// expects to find via the patch table. The layout places the SDA and gives
+// its sizes. These field offsets hold for DOS 3.10 and later.
+/// Critical error flag byte.
+pub const SDA_OFF_CRITICAL_ERROR: u16 = 0x00;
+/// InDOS flag byte.
+pub const SDA_OFF_INDOS: u16 = 0x01;
+/// Drive of the last critical error (`FFh` outside of an INT 24h handler).
+pub const SDA_OFF_ERROR_DRIVE: u16 = 0x02;
+/// Far pointer to the current DTA.
+pub const SDA_OFF_DTA: u16 = 0x0C;
+/// Segment of the current PSP.
+pub const SDA_OFF_CURRENT_PSP: u16 = 0x10;
+/// Stack pointer saved across an INT 23h call.
+pub const SDA_OFF_INT23_STACK_POINTER: u16 = 0x12;
+/// Return code of the last terminated process.
+pub const SDA_OFF_RETURN_CODE: u16 = 0x14;
+/// Current drive byte.
+pub const SDA_OFF_CURRENT_DRIVE: u16 = 0x16;
+/// Extended break flag byte.
+pub const SDA_OFF_BREAK_FLAG: u16 = 0x17;
 
 // FCB-SFT
 pub const FCB_SFT_OFFSET: u16 = 0x0D38;
-pub const FCB_SFT_BASE: u32 = DOS_DATA_BASE + FCB_SFT_OFFSET as u32;
 
-// XMS driver entry stub (8 bytes: JMP +3 / NOP / NOP / NOP / INT FEh / RETF).
+// XMS driver entry stub (14 bytes: JMP +3 / NOP / NOP / NOP / far trap stub).
 // The JMP / three NOP prologue matches the HIMEM.SYS entry-point shape that
 // Windows enhanced mode validates before talking to the XMS provider.
 pub const XMS_ENTRY_STUB_OFFSET: u16 = 0x0D44;
-pub const XMS_ENTRY_STUB_ADDR: u32 = DOS_DATA_BASE + XMS_ENTRY_STUB_OFFSET as u32;
-pub const XMS_ENTRY_STUB_SEGMENT: u16 = DOS_DATA_SEGMENT;
 
 // XMSXXXX0 strategy/interrupt stub (6 bytes: set DONE bit + RETF)
-pub const XMS_DEV_STUB_OFFSET: u16 = 0x0D4C;
-pub const XMS_DEV_STUB_ADDR: u32 = DOS_DATA_BASE + XMS_DEV_STUB_OFFSET as u32;
+pub const XMS_DEV_STUB_OFFSET: u16 = 0x0D9F;
 
 // EMS INT 67h trap stub + device name (18 bytes: 10 code + 8 "EMMXXXX0").
 // Applications using the EMS spec's "get interrupt vector" installation
@@ -200,31 +176,15 @@ pub const XMS_DEV_STUB_ADDR: u32 = DOS_DATA_BASE + XMS_DEV_STUB_OFFSET as u32;
 // IVT[67h] points here; the first 10 bytes are executable code that fires
 // the BIOS HLE trap via OUT 07F0h, AL.
 pub const EMS_INT67_STUB_OFFSET: u16 = 0x0D76;
-pub const EMS_INT67_STUB_ADDR: u32 = DOS_DATA_BASE + EMS_INT67_STUB_OFFSET as u32;
 
-pub const EMS_PGMAPRET_VECTOR: u8 = 0xE7;
 pub const EMS_PGMAPRET_STUB_OFFSET: u16 = 0x0D88;
-pub const EMS_PGMAPRET_STUB_ADDR: u32 = DOS_DATA_BASE + EMS_PGMAPRET_STUB_OFFSET as u32;
-pub const EMS_PGMAPRET_STUB_SEGMENT: u16 = DOS_DATA_SEGMENT;
-
-// INT 24h default critical-error handler (3 bytes: MOV AL,3 / IRET).
-pub const INT24_STUB_OFFSET: u16 = 0x0D92;
-pub const INT24_STUB_ADDR: u32 = DOS_DATA_BASE + INT24_STUB_OFFSET as u32;
 
 // INT 5Ch default NetBIOS handler (1 byte: IRET). Installed by boot init
 // only if the IVT entry is otherwise zero, so a native NetBIOS driver
 // loaded later keeps priority.
 pub const INT5C_STUB_OFFSET: u16 = 0x0D95;
-pub const INT5C_STUB_ADDR: u32 = DOS_DATA_BASE + INT5C_STUB_OFFSET as u32;
 
-// INT 2Fh AX=122Eh error message retriever far-callback (9 bytes).
-pub const ERROR_RETRIEVER_VECTOR: u8 = 0xFD;
-pub const ERROR_RETRIEVER_STUB_OFFSET: u16 = 0x0D96;
-pub const ERROR_RETRIEVER_STUB_ADDR: u32 = DOS_DATA_BASE + ERROR_RETRIEVER_STUB_OFFSET as u32;
-
-// Counted message buffer filled by the AX=122Eh retriever.
-pub const ERROR_MESSAGE_BUFFER_OFFSET: u16 = 0x0DA8;
-pub const ERROR_MESSAGE_BUFFER_ADDR: u32 = DOS_DATA_BASE + ERROR_MESSAGE_BUFFER_OFFSET as u32;
+// Size of the counted message buffer of the AX=122Eh retriever.
 pub const ERROR_MESSAGE_BUFFER_SIZE: usize = 0x78;
 
 // HLE tokens returned by AX=122Eh DL=00h/02h/04h/06h. Real DOS 5+ returns far
@@ -240,122 +200,46 @@ pub const ERROR_TABLE_CRITICAL_TOKEN: u16 = 0x0300;
 // kernel keeps the InDOS flag, the save-DS/save-BX scratch words, the
 // critical-section table, and the UMB MCB chain head.
 pub const WINDOWS_DOSMGR_SIGNATURE_BANK_OFFSET: u16 = 0x0E28;
-pub const WINDOWS_DOSMGR_SIGNATURE_BANK_ADDR: u32 =
-    DOS_DATA_BASE + WINDOWS_DOSMGR_SIGNATURE_BANK_OFFSET as u32;
 pub const WINDOWS_DOSMGR_SIGNATURE_BANK_SIZE: usize = 0x100;
 pub const WINDOWS_DOSMGR_PATCH_TABLE_OFFSET: u16 = 0x0F28;
-pub const WINDOWS_DOSMGR_PATCH_TABLE_ADDR: u32 =
-    DOS_DATA_BASE + WINDOWS_DOSMGR_PATCH_TABLE_OFFSET as u32;
 pub const WINDOWS_DOSMGR_UMB_HEAD_OFFSET: u16 = 0x0F36;
-pub const WINDOWS_DOSMGR_UMB_HEAD_ADDR: u32 = DOS_DATA_BASE + WINDOWS_DOSMGR_UMB_HEAD_OFFSET as u32;
 pub const WINDOWS_DOSMGR_SAVEDS_OFFSET: u16 = 0x0F38;
 pub const WINDOWS_DOSMGR_SAVEBX_OFFSET: u16 = 0x0F3A;
 pub const WINDOWS_DOSMGR_CRITICAL_SECTION_TABLE_OFFSET: u16 = 0x0F3C;
-pub const WINDOWS_DOSMGR_CRITICAL_SECTION_TABLE_ADDR: u32 =
-    DOS_DATA_BASE + WINDOWS_DOSMGR_CRITICAL_SECTION_TABLE_OFFSET as u32;
-
-// UMB region with EMS: MCB chain at segment D000h (64 KB at D0000-DFFFF).
-// UMB region without EMS starts at C000h and reuses the would-be EMS page frame.
-pub const UMB_NOEMS_FIRST_MCB_SEGMENT: u16 = 0xC000;
-pub const UMB_NOEMS_BLOCK_PARAGRAPHS: u16 = 0x1700;
-pub const UMB_FIRST_MCB_SEGMENT: u16 = 0xD000;
-pub const UMB_BLOCK_PARAGRAPHS: u16 = 0x0700;
-pub const UMB_RESERVED_MCB_SEGMENT: u16 = UMB_FIRST_MCB_SEGMENT + UMB_BLOCK_PARAGRAPHS + 1;
-pub const UMB_RESERVED_PARAGRAPHS: u16 = 0x00FD;
-pub const UMB_SECOND_MCB_SEGMENT: u16 = UMB_RESERVED_MCB_SEGMENT + UMB_RESERVED_PARAGRAPHS + 1;
-pub const UMB_TRAILING_RESERVED_MCB_SEGMENT: u16 =
-    UMB_SECOND_MCB_SEGMENT + UMB_BLOCK_PARAGRAPHS + 1;
-pub const UMB_TRAILING_RESERVED_PARAGRAPHS: u16 = 0x00FF;
 
 // Synthetic CD-ROM device strategy/interrupt bridge. These live after the
 // DOS swappable data area and before the first MCB. The mirror header is
 // paragraph-aligned so callers that ignore the device-header offset can still
 // call the strategy and interrupt entries through segment:0000.
-pub const CDROM_DEVICE_VECTOR: u8 = 0xEE;
 pub const CDROM_MIRROR_HEADER_OFFSET: u16 = 0x16D0;
-pub const CDROM_MIRROR_HEADER_ADDR: u32 = DOS_DATA_BASE + CDROM_MIRROR_HEADER_OFFSET as u32;
-pub const CDROM_MIRROR_HEADER_SEGMENT: u16 = DOS_DATA_SEGMENT + (CDROM_MIRROR_HEADER_OFFSET >> 4);
 pub const CDROM_REQUEST_PTR_OFFSET: u16 = 0x16CC;
-pub const CDROM_REQUEST_PTR_ADDR: u32 = DOS_DATA_BASE + CDROM_REQUEST_PTR_OFFSET as u32;
 pub const CDROM_STRATEGY_STUB_OFFSET: u16 = 0x16E4;
-pub const CDROM_STRATEGY_STUB_ADDR: u32 = DOS_DATA_BASE + CDROM_STRATEGY_STUB_OFFSET as u32;
 pub const CDROM_INTERRUPT_STUB_OFFSET: u16 = 0x16F7;
-pub const CDROM_INTERRUPT_STUB_ADDR: u32 = DOS_DATA_BASE + CDROM_INTERRUPT_STUB_OFFSET as u32;
 pub const CDROM_MIRROR_STRATEGY_OFFSET: u16 =
     CDROM_STRATEGY_STUB_OFFSET - CDROM_MIRROR_HEADER_OFFSET;
 pub const CDROM_MIRROR_INTERRUPT_OFFSET: u16 =
     CDROM_INTERRUPT_STUB_OFFSET - CDROM_MIRROR_HEADER_OFFSET;
-
-// EMS page frame at C0000h (4 x 16 KB physical pages)
-pub const EMS_PAGE_FRAME_SEGMENT: u16 = 0xC000;
-pub const EMS_PAGE_SIZE: u32 = 0x4000;
-
-// First MCB (sentinel). Pushed up to 0x1700 so the AX=122Eh error message
-// buffer and (later) Windows DOSMGR signature/patch table fit between the
-// stub area and the MCB chain.
-pub const FIRST_MCB_OFFSET: u16 = 0x1700;
-pub const FIRST_MCB_ADDR: u32 = DOS_DATA_BASE + FIRST_MCB_OFFSET as u32;
-pub const FIRST_MCB_SEGMENT: u16 = (FIRST_MCB_ADDR >> 4) as u16;
+/// Paragraphs from the DOS data segment to the CD-ROM mirror header.
+pub const CDROM_MIRROR_HEADER_PARAGRAPHS: u16 = CDROM_MIRROR_HEADER_OFFSET / 16;
 
 // MCB structure field offsets (within the 16-byte MCB header)
 pub const MCB_OFF_TYPE: u32 = 0x00;
 pub const MCB_OFF_OWNER: u32 = 0x01;
 pub const MCB_OFF_SIZE: u32 = 0x03;
 pub const MCB_OFF_NAME: u32 = 0x08;
+/// Size of an MCB header in bytes.
+pub const MCB_HEADER_SIZE: u32 = 16;
 
 // MCB owner special values
 pub const MCB_OWNER_FREE: u16 = 0x0000;
 pub const MCB_OWNER_DOS: u16 = 0x0008;
 
-// MCB chain layout after boot:
-//   MCB[0] at FIRST_MCB_SEGMENT: env block (owner=DOS)
-//   MCB[1] at COMMAND_MCB_SEGMENT: COMMAND.COM PSP+code (owner=PSP_SEGMENT)
-//   MCB[2] at FREE_MCB_SEGMENT: free memory (owner=0)
+// MCB chain layout after boot, starting at the first MCB of the placement:
+//   MCB[0]: env block (owner=DOS)
+//   MCB[1]: COMMAND.COM PSP+code (owner=PSP)
+//   MCB[2]: free memory (owner=0)
 pub const ENV_BLOCK_PARAGRAPHS: u16 = 15;
-pub const ENV_SEGMENT: u16 = FIRST_MCB_SEGMENT + 1;
-pub const COMMAND_MCB_SEGMENT: u16 = ENV_SEGMENT + ENV_BLOCK_PARAGRAPHS;
 pub const COMMAND_BLOCK_PARAGRAPHS: u16 = 36;
-pub const PSP_SEGMENT: u16 = COMMAND_MCB_SEGMENT + 1;
-pub const FREE_MCB_SEGMENT: u16 = PSP_SEGMENT + COMMAND_BLOCK_PARAGRAPHS;
-
-// Top of conventional memory (640 KB boundary)
-pub const MEMORY_TOP_SEGMENT: u16 = 0xA000;
-
-// PC-98 keyboard buffer in BDA (circular buffer, 16 entries of 2 bytes each)
-pub const KB_BUF_START: u32 = 0x0502;
-pub const KB_BUF_END: u32 = 0x0522;
-pub const KB_BUF_HEAD: u32 = 0x0524;
-pub const KB_BUF_TAIL: u32 = 0x0526;
-pub const KB_BUF_COUNT: u32 = 0x0528;
-
-pub(crate) fn key_available(memory: &dyn MemoryAccess) -> bool {
-    memory.read_byte(KB_BUF_COUNT) > 0
-}
-
-pub(crate) fn read_key(memory: &mut dyn MemoryAccess) -> (u8, u8) {
-    let head = memory.read_word(KB_BUF_HEAD) as u32;
-    let ch = memory.read_byte(head);
-    let scan = memory.read_byte(head + 1);
-
-    let mut new_head = head + 2;
-    if new_head >= KB_BUF_END {
-        new_head = KB_BUF_START;
-    }
-    memory.write_word(KB_BUF_HEAD, new_head as u16);
-
-    let count = memory.read_byte(KB_BUF_COUNT);
-    if count > 0 {
-        memory.write_byte(KB_BUF_COUNT, count - 1);
-    }
-
-    (scan, ch)
-}
-
-pub(crate) fn flush_keyboard_buffer(memory: &mut dyn MemoryAccess) {
-    memory.write_byte(KB_BUF_COUNT, 0);
-    let head = memory.read_word(KB_BUF_HEAD);
-    memory.write_word(KB_BUF_TAIL, head);
-}
 
 // PSP field offsets (within the 256-byte PSP)
 pub const PSP_OFF_INT20: u32 = 0x00;
@@ -445,9 +329,4 @@ pub fn write_device_header(
     mem.write_word(addr + DEVHDR_OFF_STRATEGY, 0x0000);
     mem.write_word(addr + DEVHDR_OFF_INTERRUPT, 0x0000);
     mem.write_block(addr + DEVHDR_OFF_NAME, name);
-}
-
-/// Converts a DOS_DATA_BASE-relative offset to a far pointer in DOS_DATA_SEGMENT.
-pub fn dos_data_far(offset: u16) -> (u16, u16) {
-    (DOS_DATA_SEGMENT, offset)
 }

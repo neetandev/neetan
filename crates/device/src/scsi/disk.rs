@@ -76,7 +76,7 @@ impl ScsiDisk {
     }
 
     /// Total number of 512-byte blocks on the disk.
-    fn block_count(&self) -> u32 {
+    pub fn block_count(&self) -> u32 {
         (self.drive.image().data().len() / SCSI_BLOCK_SIZE) as u32
     }
 

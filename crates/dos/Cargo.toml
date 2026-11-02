@@ -12,6 +12,7 @@ blake3.workspace = true
 common = { workspace = true, features = ["std"] }
 device.workspace = true
 save_state = { workspace = true, features = ["std"] }
+stack_vec.workspace = true
 
 [dev-dependencies]
 cpu.workspace = true

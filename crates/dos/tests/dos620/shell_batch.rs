@@ -4,6 +4,10 @@ use common::temporary::TemporaryFolder;
 
 use crate::{file_copy_harness::*, harness::*};
 
+/// Cycles that the shells of a recursive `COMMAND /C` need to unwind after
+/// the insufficient-memory error.
+const BOMB_UNWIND_CYCLES: u64 = 500_000_000;
+
 fn boot_with_batch_file(batch_content: &[u8]) -> machine_98::Pc9801Ra {
     let floppy_image = create_test_floppy_with_program(b"TEST    BAT", batch_content);
     boot_hle_with_floppy_image(floppy_image)
@@ -448,6 +452,30 @@ fn batch_external_command_output_redirect_restores_stdout_for_next_external_comm
 }
 
 #[test]
+fn child_with_output_redirected_to_nul_inherits_only_the_standard_handles() {
+    #[rustfmt::skip]
+    let duplicate_stdin_com: &[u8] = &[
+        0xBB, 0x00, 0x00,       // MOV BX, 0000h
+        0xB4, 0x45,             // MOV AH, 45h
+        0xCD, 0x21,             // INT 21h
+        0xB4, 0x4C,             // MOV AH, 4Ch
+        0xCD, 0x21,             // INT 21h
+    ];
+    let first_floppy_image = create_test_floppy_with_program(
+        b"TEST    BAT",
+        b"@ECHO OFF\r\nB:\\RUNME.COM>NUL\r\nIF ERRORLEVEL 6 GOTO LEAK\r\nIF ERRORLEVEL 5 ECHO HANDLEFIVE\r\nGOTO END\r\n:LEAK\r\nECHO LEAKED\r\n:END\r\n",
+    );
+    let second_floppy_image = create_test_floppy_with_program(b"RUNME   COM", duplicate_stdin_com);
+    let machine = run_test_batch_with_two_floppy_images(first_floppy_image, second_floppy_image);
+    assert_screen_contains(
+        &machine,
+        "HANDLEFIVE",
+        "the first free handle of the child follows the five standard handles",
+    );
+    assert_screen_lacks(&machine, "LEAKED", "the redirect handle must not leak");
+}
+
+#[test]
 fn batch_if_can_run_external_program() {
     let first_floppy_image = create_test_floppy_with_program(
         b"TEST    BAT",
@@ -764,13 +792,14 @@ fn batch_command_c_bomb_reports_oom_and_returns_to_root_shell() {
     let root_program_segment_prefix = current_shell_program_segment_prefix(&mut machine);
 
     prepare_test_batch(&mut machine);
-    submit_command(&mut machine, b"TEST\r");
-
-    assert_screen_contains(
-        &machine,
+    type_string(&mut machine.bus, b"TEST\r");
+    run_until_screen_contains(
+        &mut machine,
         "Error loading program (8)",
         "Recursive COMMAND /C should stop with insufficient-memory error",
     );
+    machine.run_for(BOMB_UNWIND_CYCLES);
+    run_until_prompt(&mut machine);
 
     let restored_program_segment_prefix = current_shell_program_segment_prefix(&mut machine);
     assert_eq!(

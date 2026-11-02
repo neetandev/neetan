@@ -536,6 +536,74 @@ fn tsr_keeps_memory_resident() {
     );
 }
 
+/// A TSR keeps its handles open: the SFT entry of the inherited standard
+/// handles keeps the references of the resident program, like
+/// `$KEEP_PROCESS` of MS-DOS.
+#[test]
+fn tsr_keeps_its_handles_open() {
+    let mut machine = boot_hle_with_floppy();
+
+    let base = INJECT_CODE_BASE;
+    let seg = INJECT_CODE_SEGMENT;
+    let tsr_com: &[u8] = &[
+        0xBA, 0x20, 0x00, // MOV DX, 0020h (keep 32 paragraphs)
+        0xB8, 0x00, 0x31, // MOV AX, 3100h (TSR, exit code 0)
+        0xCD, 0x21, // INT 21h
+    ];
+    machine.bus.eject_floppy(0);
+    let floppy = create_test_floppy_with_program(b"TEST    COM", tsr_com);
+    machine.bus.insert_floppy(0, floppy, None);
+
+    write_bytes(&mut machine.bus, base + 0x0200, b"A:\\TEST.COM\x00");
+    machine.bus.write_byte(base + 0x0220, 0x00);
+    machine.bus.write_byte(base + 0x0221, 0x0D);
+    let seg_lo = (seg & 0xFF) as u8;
+    let seg_hi = (seg >> 8) as u8;
+    #[rustfmt::skip]
+    let param_block: [u8; 14] = [
+        0x00, 0x00,
+        0x20, 0x02, seg_lo, seg_hi,
+        0x30, 0x02, seg_lo, seg_hi,
+        0x40, 0x02, seg_lo, seg_hi,
+    ];
+    write_bytes(&mut machine.bus, base + 0x0210, &param_block);
+
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB4, 0x45,                            // MOV AH, 45h
+        0x31, 0xDB,                            // XOR BX, BX
+        0xCD, 0x21,                            // INT 21h
+        0x89, 0xC3,                            // MOV BX, AX
+        0xB4, 0x3E,                            // MOV AH, 3Eh
+        0xCD, 0x21,                            // INT 21h
+        0x2E, 0xA3, 0x00, 0x01,                // MOV CS:[0100], AX
+        0xBA, 0x00, 0x02,                      // MOV DX, 0200h (filename)
+        0xBB, 0x10, 0x02,                      // MOV BX, 0210h (param block)
+        0xB8, 0x00, 0x4B,                      // MOV AX, 4B00h (EXEC)
+        0xCD, 0x21,                            // INT 21h
+        0xB8, seg_lo, seg_hi,                  // MOV AX, INJECT_CODE_SEGMENT
+        0x8E, 0xD8,                            // MOV DS, AX
+        0xB4, 0x45,                            // MOV AH, 45h
+        0x31, 0xDB,                            // XOR BX, BX
+        0xCD, 0x21,                            // INT 21h
+        0x89, 0xC3,                            // MOV BX, AX
+        0xB4, 0x3E,                            // MOV AH, 3Eh
+        0xCD, 0x21,                            // INT 21h
+        0x2E, 0xA3, 0x02, 0x01,                // MOV CS:[0102], AX
+        0xFA,                                  // CLI
+        0xF4,                                  // HLT
+    ];
+    inject_and_run_with_budget(&mut machine, code, INJECT_BUDGET_DISK_IO);
+
+    let before = result_word(&machine.bus, 0);
+    let after = result_word(&machine.bus, 2);
+    assert_eq!(before >> 8, 0x3E, "close of the duplicate succeeds");
+    assert!(
+        after > before,
+        "the resident program keeps its inherited handle 0 ({before:#06X}, {after:#06X})"
+    );
+}
+
 /// Build a minimal MZ EXE that executes `code_bytes` with the given stack size.
 /// init_cs and init_ip are relative to the load segment (image base).
 fn build_exe(code_bytes: &[u8], init_cs: u16, init_ip: u16, stack_size: u16) -> Vec<u8> {

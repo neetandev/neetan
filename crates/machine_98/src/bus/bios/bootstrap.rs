@@ -230,7 +230,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
         }
 
         // No bootable device found (or Dos selected): activate NEETAN DOS HLE.
-        let mut neetan_dos = dos::NeetanDos::new();
+        let mut neetan_dos = dos::NeetanDos::new(dos::DosPlatform::pc98());
         neetan_dos.set_host_date_time_source(self.host_date_time_source.clone());
         neetan_dos.set_ems_enabled(self.ems_enabled);
         neetan_dos.set_xms_enabled(self.xms_enabled);

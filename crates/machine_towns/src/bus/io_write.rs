@@ -67,6 +67,9 @@ impl<T: TraceSink> TownsBus<T> {
             // Serial machine-ID EEPROM clock/select/reset lines.
             0x0032 => self.write_serial_rom(value),
 
+            // BIOS HLE trap port, decoded only while the HLE system ROM runs.
+            0x07F0 if self.hle_bios() => self.bios.write_trap_port(value),
+
             // CMOS / backup RAM via the I/O window.
             0x3000..=0x3FFF => self.memory.write_cmos_io(port, value),
 

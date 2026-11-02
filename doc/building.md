@@ -78,3 +78,16 @@ cargo build --release --no-default-features --features gui,auto,all-machines,mt3
 # SC-55 only
 cargo build --release --no-default-features --features gui,auto,all-machines,sc55
 ```
+
+## HLE BIOS ROM images
+
+The HLE BIOS stub ROMs are small [nasm](https://www.nasm.us/) images. The generated
+`.rom` files are checked in next to their sources and embedded into the binary, so a
+normal build does not need nasm. Rebuild an image after a change to its assembly source:
+
+```bash
+make -C utils/bios        # PC-98 BIOS stub and font ROM (bios.rom, fonts/font.rom)
+make -C utils/bios_at     # PC/AT system BIOS and VGA BIOS stubs (bios.rom, vgabios.rom)
+make -C utils/bios_towns  # FM Towns system ROM stub (sysrom.rom)
+make -C utils/dos_towns   # FM Towns OS ROM image with the DOS stubs (osrom.rom)
+```

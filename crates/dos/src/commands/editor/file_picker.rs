@@ -210,8 +210,12 @@ pub(crate) fn load_entries(
     Ok(())
 }
 
-pub(crate) fn current_directory_path(memory: &dyn MemoryAccess, drive_index: u8) -> Vec<u8> {
-    let cds_addr = tables::CDS_BASE + drive_index as u32 * tables::CDS_ENTRY_SIZE;
+pub(crate) fn current_directory_path(
+    state: &DosState,
+    memory: &dyn MemoryAccess,
+    drive_index: u8,
+) -> Vec<u8> {
+    let cds_addr = state.cds_entry_addr(drive_index, memory);
     let mut path = Vec::new();
     for index in 0..67u32 {
         let byte = memory.read_byte(cds_addr + tables::CDS_OFF_PATH + index);
@@ -273,10 +277,10 @@ pub(crate) fn join_path(directory: &[u8], name: &[u8]) -> Vec<u8> {
     full_path
 }
 
-pub(crate) fn drive_choices(memory: &dyn MemoryAccess) -> Vec<u8> {
+pub(crate) fn drive_choices(state: &DosState, memory: &dyn MemoryAccess) -> Vec<u8> {
     let mut drives = Vec::new();
     for drive_index in 0..26u8 {
-        let cds_addr = tables::CDS_BASE + drive_index as u32 * tables::CDS_ENTRY_SIZE;
+        let cds_addr = state.cds_entry_addr(drive_index, memory);
         if memory.read_word(cds_addr + tables::CDS_OFF_FLAGS) != 0 {
             drives.push(drive_index);
         }

@@ -173,6 +173,10 @@ int_1fh_handler:    hle_stub 0x1F            ; Extended
 int_d2h_handler:    hle_stub 0xD2            ; Sound BIOS
 
 ; --- DOS interrupt handler stubs (routed to the HLE DOS when active) ---
+;
+; NeetanDos also has private trap codes (E7h-EAh, EEh, EFh, FDh, FEh). Its own
+; stubs in guest memory write them to the trap port. No vector of this table
+; points to them.
 
 int_20h_handler:    hle_stub 0x20            ; DOS: Terminate Program
 int_21h_handler:    hle_stub 0x21            ; DOS: Function Dispatch
@@ -189,7 +193,6 @@ int_2fh_handler:    hle_stub 0x2F            ; DOS: Multiplex
 int_33h_handler:    hle_stub 0x33            ; Mouse Driver
 int_dch_handler:    hle_stub 0xDC            ; NEC DOS Extension (IO.SYS)
 int_67h_handler:    hle_stub 0x67            ; EMS: Expanded Memory Manager
-int_feh_handler:    hle_stub 0xFE            ; XMS: Extended Memory Manager
 
 ; --- Special HLE entry points (pseudo-vectors) ---
 
@@ -253,7 +256,6 @@ vector_table:
     dw 0x33, int_33h_handler - BIOS_BASE_OFF   ; INT 33h - Mouse driver
     dw 0x67, int_67h_handler - BIOS_BASE_OFF   ; INT 67h - EMS
     dw 0xDC, int_dch_handler - BIOS_BASE_OFF   ; INT DCh - NEC DOS extension
-    dw 0xFE, int_feh_handler - BIOS_BASE_OFF   ; INT FEh - XMS entry
     dw 0xFFFF                                  ; Sentinel
 
 

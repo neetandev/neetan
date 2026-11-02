@@ -471,10 +471,10 @@ fn dir_z_drive_shows_correct_size() {
     harness::type_string(&mut machine.bus, b"DIR Z:\\\r");
     harness::run_until_prompt(&mut machine);
 
-    // The file size "15" should appear in the listing.
-    let size_15 = [0x0031, 0x0035]; // "15"
+    // The file size "25" of the COMMAND.COM stub should appear in the listing.
+    let size_25 = [0x0032, 0x0035]; // "25"
     assert!(
-        harness::find_string_in_text_vram(&machine.bus, &size_15),
-        "DIR Z:\\ should show file size 15"
+        harness::find_string_in_text_vram(&machine.bus, &size_25),
+        "DIR Z:\\ should show file size 25"
     );
 }

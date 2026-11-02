@@ -6,7 +6,7 @@
 //! vector, or issues INT 24h explicitly, so the vector must point at a
 //! well-behaved handler.
 //!
-//! `boot()` installs a 3-byte in-RAM stub at `tables::INT24_STUB_ADDR`
+//! The boot installs a 3-byte in-RAM stub at the critical error stub offset of the private area
 //! in the DOS data segment (`MOV AL,3` / `IRET`) and points IVT[24h]
 //! at it. AL=3 is "Fail" on DOS 3.3+. Because the stub executes
 //! natively on the guest CPU, no Rust dispatch handler lives here.

@@ -10,7 +10,10 @@
 //! the bus: 0x0404 (FMR VRAM vs main RAM for 0xC0000-0xDFFFF), 0x0480 (SYSROM
 //! shadow and DIC/CMOS mapping), and 0x0484 (DIC ROM bank).
 
-use crate::{config::TownsModel, rom::LoadedRoms};
+use crate::{
+    config::TownsModel,
+    rom::{self, LoadedRoms, TownsFirmware},
+};
 
 /// Main RAM below the banked window region.
 const MAIN_RAM_END: u32 = 0x000C_0000;
@@ -240,6 +243,8 @@ pub(crate) struct TownsMemory {
     cmos: Box<[u8]>,
     /// SYSROM image (256 KiB).
     system_rom: Box<[u8]>,
+    /// Whether `system_rom` and `os_rom` hold the embedded HLE firmware.
+    hle_system_rom: bool,
     /// OS (DOS) ROM image (512 KiB).
     os_rom: Box<[u8]>,
     /// DIC dictionary ROM image (512 KiB).
@@ -304,13 +309,22 @@ impl TownsMemory {
     /// Builds the memory map for `model` from a loaded ROM set.
     pub(crate) fn new(model: TownsModel, roms: LoadedRoms) -> Self {
         let total_ram = EXTENDED_RAM_BASE as usize + model.extended_ram_size();
+        let hle_system_rom = roms.uses_hle_firmware();
+        let (system_rom, os_rom) = match roms.firmware {
+            TownsFirmware::Hle => (
+                rom::hle_system_rom_image().to_vec(),
+                rom::hle_os_rom_image().to_vec(),
+            ),
+            TownsFirmware::Rom { system, os } => (system, os),
+        };
         let mut memory = Self {
             ram: vec![0u8; total_ram].into_boxed_slice(),
             vram: vec![0u8; VRAM_SIZE].into_boxed_slice(),
             sprite_ram: vec![0u8; SPRITE_RAM_SIZE].into_boxed_slice(),
             cmos: default_cmos(model).to_vec().into_boxed_slice(),
-            system_rom: roms.system.into_boxed_slice(),
-            os_rom: roms.dos.into_boxed_slice(),
+            system_rom: system_rom.into_boxed_slice(),
+            hle_system_rom,
+            os_rom: os_rom.into_boxed_slice(),
             dic_rom: roms.dictionary.into_boxed_slice(),
             font_rom: roms.font.into_boxed_slice(),
             font20_rom: roms.f20.into_boxed_slice(),
@@ -415,9 +429,14 @@ impl TownsMemory {
     pub(crate) fn resource_bindings(
         &self,
     ) -> Result<Vec<save_state::ResourceBinding>, save_state::StateValidationError> {
+        let (system_identifier, os_identifier) = if self.hle_system_rom {
+            ("rom:system-hle", "rom:dos-hle")
+        } else {
+            ("rom:system", "rom:dos")
+        };
         let resources = [
-            ("rom:system", self.system_rom.as_ref()),
-            ("rom:dos", self.os_rom.as_ref()),
+            (system_identifier, self.system_rom.as_ref()),
+            (os_identifier, self.os_rom.as_ref()),
             ("rom:dictionary", self.dic_rom.as_ref()),
             ("rom:font", self.font_rom.as_ref()),
             ("rom:f20", self.font20_rom.as_ref()),
@@ -692,9 +711,17 @@ impl TownsMemory {
     /// Registers a SCSI hard-disk partition in the CMOS drive-assignment table
     /// so the Towns OS mounts a drive letter for it. Without this the OS never
     /// sees the disk and cannot boot from it. The partition is placed in the
-    /// first free slot (drive letter) and the block checksum is repaired.
+    /// first free slot (drive letter) and the block checksum is repaired. A
+    /// partition with a slot keeps it.
     pub(crate) fn register_scsi_hdd(&mut self, scsi_id: u8, partition: u8) {
         let unit = (scsi_id << 4) | (partition & 0x0F);
+        let registered = (0..CMOS_DRIVE_ASSIGN_SLOTS).any(|slot| {
+            let type_index = CMOS_DRIVE_ASSIGN_INDEX + slot * 2;
+            self.cmos[type_index] == CMOS_DRIVE_TYPE_SCSI && self.cmos[type_index + 1] == unit
+        });
+        if registered {
+            return;
+        }
         for slot in 0..CMOS_DRIVE_ASSIGN_SLOTS {
             let type_index = CMOS_DRIVE_ASSIGN_INDEX + slot * 2;
             let unit_index = type_index + 1;
@@ -720,6 +747,43 @@ impl TownsMemory {
         if let Some(byte) = self.cmos.get_mut(CMOS_BOOT_DEV_INDEX) {
             *byte = boot_device;
         }
+    }
+
+    /// Whether the system ROM is the embedded HLE system ROM.
+    pub(crate) fn hle_system_rom(&self) -> bool {
+        self.hle_system_rom
+    }
+
+    /// Reads a little-endian word of the system ROM image at `offset`.
+    pub(crate) fn system_rom_word(&self, offset: usize) -> u16 {
+        u16::from_le_bytes([self.system_rom[offset], self.system_rom[offset + 1]])
+    }
+
+    /// Reads CMOS byte `index` (I/O port `3000h + 2 * index`).
+    pub(crate) fn cmos_byte(&self, index: usize) -> u8 {
+        self.cmos.get(index).copied().unwrap_or(0xFF)
+    }
+
+    /// Writes CMOS byte `index` (I/O port `3000h + 2 * index`).
+    pub(crate) fn set_cmos_byte(&mut self, index: usize, value: u8) {
+        if let Some(byte) = self.cmos.get_mut(index) {
+            *byte = value;
+        }
+    }
+
+    /// Replaces the CMOS with the default image of `model`.
+    pub(crate) fn restore_default_cmos(&mut self, model: TownsModel) {
+        self.cmos.copy_from_slice(default_cmos(model));
+    }
+
+    /// Clears the main and extended RAM.
+    pub(crate) fn clear_ram(&mut self) {
+        self.ram.fill(0);
+    }
+
+    /// Clears the native VRAM.
+    pub(crate) fn clear_vram(&mut self) {
+        self.vram.fill(0);
     }
 
     /// Total installed RAM in megabytes, for the 0x05E8 MEMSIZE query.
@@ -915,11 +979,11 @@ impl TownsMemory {
             }
             FMR_REG_KANJI_JIS_HIGH => 0x80,
             FMR_REG_KANJI_PTN_HIGH => {
-                let code = self.font_rom_code() & KANJI_CODE_MASK;
+                let code = font_rom_code(self.kanji_jis_high, self.kanji_jis_low) & KANJI_CODE_MASK;
                 self.font_rom[KANJI_GLYPH_BYTES * code + usize::from(self.kanji_row) * 2]
             }
             FMR_REG_KANJI_PTN_LOW => {
-                let code = self.font_rom_code() & KANJI_CODE_MASK;
+                let code = font_rom_code(self.kanji_jis_high, self.kanji_jis_low) & KANJI_CODE_MASK;
                 let byte =
                     self.font_rom[KANJI_GLYPH_BYTES * code + usize::from(self.kanji_row) * 2 + 1];
                 self.kanji_row = (self.kanji_row + 1) & 0x0F;
@@ -970,30 +1034,26 @@ impl TownsMemory {
             _ => {}
         }
     }
+}
 
-    /// Maps the latched JIS code to a FONT ROM glyph index, matching the FM Towns
-    /// kanji ROM layout (32x8 blocks below JIS row 0x28, 32x16 blocks above).
-    fn font_rom_code(&self) -> usize {
-        let jis_high = usize::from(self.kanji_jis_high);
-        let jis_low = usize::from(self.kanji_jis_low);
-        if jis_high < 0x28 {
-            let mut block = (jis_low.wrapping_sub(0x20)) >> 5;
-            let x = jis_low & 0x1F;
-            let y = jis_high & 7;
-            if block == 1 {
-                block = 2;
-            } else if block == 2 {
-                block = 1;
-            }
-            block * 32 * 8 + y * 32 + x
-        } else {
-            let block_x = (jis_low.wrapping_sub(0x20)) >> 5;
-            let block_y = (jis_high.wrapping_sub(0x30)) >> 4;
-            let block = block_y * 3 + block_x;
-            let x = jis_low & 0x1F;
-            let y = jis_high & 0x0F;
-            0x400 + block * 32 * 16 + y * 32 + x
+/// Maps a latched JIS code to a font ROM glyph index. Rows 20h-2Fh fill the
+/// indices 0000h-02FFh in three blocks of 8 rows and 32 cells (cells 20h-3Fh,
+/// 60h-7Fh, 40h-5Fh), rows 30h-6Fh fill 0400h-1BFFh in blocks of 16 rows and
+/// 32 cells, rows 70h-7Fh repeat the first layout from 1C00h.
+fn font_rom_code(jis_high: u8, jis_low: u8) -> usize {
+    let column = usize::from(jis_low & 0x1F);
+    let cell_block = usize::from(jis_low.wrapping_sub(0x20) & 0x60);
+    let swapped_block = ((cell_block & 0x20) << 4) | ((cell_block & 0x40) << 2);
+    match jis_high {
+        0x00..=0x2F => swapped_block + usize::from(jis_high & 0x07) * 0x20 + column,
+        0x30..=0x6F => {
+            let row_group = usize::from((jis_high - 0x30) >> 4);
+            0x400
+                + (row_group * 3 + (cell_block >> 5)) * 0x200
+                + usize::from(jis_high & 0x0F) * 0x20
+                + column
         }
+        _ => 0x1C00 + swapped_block + usize::from(jis_high & 0x07) * 0x20 + column,
     }
 }
 
@@ -1016,9 +1076,11 @@ mod tests {
 
     fn test_roms() -> LoadedRoms {
         LoadedRoms {
-            dos: vec![0x11; 0x8_0000],
+            firmware: TownsFirmware::Rom {
+                system: (0..0x4_0000).map(|i| i as u8).collect(),
+                os: vec![0x11; 0x8_0000],
+            },
             font: vec![0x22; 0x4_0000],
-            system: (0..0x4_0000).map(|i| i as u8).collect(),
             f20: vec![0x33; 0x8_0000],
             // Each 32 KiB DIC bank gets a distinct constant (its bank index).
             dictionary: (0..0x8_0000).map(|i| (i / 0x8000) as u8).collect(),
@@ -1149,6 +1211,21 @@ mod tests {
     }
 
     #[test]
+    fn register_scsi_hdd_keeps_the_slot_of_a_registered_partition() {
+        let mut memory = test_memory();
+        let table = CMOS_DRIVE_ASSIGN_INDEX;
+        memory.register_scsi_hdd(0, 0);
+        let checksum = memory.cmos[CMOS_DRIVE_CHECKSUM_INDEX];
+        memory.register_scsi_hdd(0, 0);
+        memory.register_scsi_hdd(0, 1);
+        assert_eq!(memory.cmos[table + 7], 0x00);
+        assert_eq!(memory.cmos[table + 8], CMOS_DRIVE_TYPE_SCSI);
+        assert_eq!(memory.cmos[table + 9], 0x01);
+        assert_eq!(memory.cmos[table + 10], CMOS_DRIVE_TYPE_FREE);
+        assert_ne!(memory.cmos[CMOS_DRIVE_CHECKSUM_INDEX], checksum);
+    }
+
+    #[test]
     fn dic_rom_bank_selects_window_contents() {
         let mut memory = test_memory();
         memory.write_sysrom_dic_select(0x01); // map DIC/CMOS
@@ -1233,6 +1310,199 @@ mod tests {
         // The test font ROM is filled with 0x22.
         assert_eq!(memory.read_byte(0x000C_A000), 0x22);
         assert_eq!(memory.read_byte(0x000C_B000), 0x22);
+    }
+
+    #[test]
+    fn font_rom_code_maps_rows_21_to_28() {
+        assert_eq!(font_rom_code(0x21, 0x21), 0x0021);
+        assert_eq!(font_rom_code(0x24, 0x22), 0x0082);
+        assert_eq!(font_rom_code(0x27, 0x7E), 0x01FE);
+        assert_eq!(font_rom_code(0x21, 0x40), 0x0220);
+        assert_eq!(font_rom_code(0x28, 0x21), 0x0001);
+        assert_eq!(font_rom_code(0x28, 0x3F), 0x001F);
+        assert_eq!(font_rom_code(0x28, 0x40), 0x0200);
+        assert_eq!(font_rom_code(0x28, 0x41), 0x0201);
+        assert_eq!(font_rom_code(0x28, 0x5F), 0x021F);
+        assert_eq!(font_rom_code(0x28, 0x60), 0x0100);
+        assert_eq!(font_rom_code(0x28, 0x7A), 0x011A);
+    }
+
+    #[test]
+    fn font_rom_code_maps_kanji_rows_30_to_6f() {
+        assert_eq!(font_rom_code(0x30, 0x21), 0x0401);
+        assert_eq!(font_rom_code(0x30, 0x40), 0x0600);
+        assert_eq!(font_rom_code(0x3F, 0x7E), 0x09FE);
+        assert_eq!(font_rom_code(0x40, 0x21), 0x0A01);
+        assert_eq!(font_rom_code(0x4F, 0x53), 0x0DF3);
+        assert_eq!(font_rom_code(0x6F, 0x7E), 0x1BFE);
+    }
+
+    #[test]
+    fn font_rom_code_maps_rows_70_to_74() {
+        assert_eq!(font_rom_code(0x70, 0x21), 0x1C01);
+        assert_eq!(font_rom_code(0x70, 0x40), 0x1E00);
+        assert_eq!(font_rom_code(0x70, 0x60), 0x1D00);
+        assert_eq!(font_rom_code(0x71, 0x60), 0x1D20);
+        assert_eq!(font_rom_code(0x72, 0x7E), 0x1D5E);
+        assert_eq!(font_rom_code(0x73, 0x7E), 0x1D7E);
+        assert_eq!(font_rom_code(0x74, 0x26), 0x1C86);
+    }
+
+    #[test]
+    fn font_rom_code_covers_every_latch_without_overflow() {
+        let mut seen = vec![false; 0x2000];
+        for jis_high in 0..=0xFFu8 {
+            for jis_low in 0..=0xFFu8 {
+                let index = font_rom_code(jis_high, jis_low) & KANJI_CODE_MASK;
+                let canonical_row = matches!(jis_high, 0x21..=0x28 | 0x30..=0x77);
+                if canonical_row && (0x20..0x80).contains(&jis_low) {
+                    assert!(
+                        !seen[index],
+                        "{jis_high:02X}{jis_low:02X} reuses {index:04X}"
+                    );
+                    seen[index] = true;
+                }
+            }
+        }
+        assert_eq!(seen.iter().filter(|&&used| used).count(), 7680);
+        assert!(seen[0x0300..0x0400].iter().all(|&used| !used));
+        assert!(seen[0x1F00..0x2000].iter().all(|&used| !used));
+    }
+
+    #[test]
+    fn kanji_pattern_registers_read_the_glyph_of_the_latched_code() {
+        let mut roms = test_roms();
+        for (index, cell) in roms.font.chunks_mut(KANJI_GLYPH_BYTES).enumerate() {
+            cell[0] = (index >> 8) as u8;
+            cell[1] = index as u8;
+        }
+        let mut memory = TownsMemory::new(TownsModel::FmTownsIIMx, roms);
+        for (jis_high, jis_low, index) in [(0x28u8, 0x21u8, 0x0001u16), (0x73, 0x7E, 0x1D7E)] {
+            memory.write_byte(FMR_REG_KANJI_JIS_HIGH, jis_high);
+            memory.write_byte(FMR_REG_KANJI_JIS_LOW, jis_low);
+            let high = memory.read_byte(FMR_REG_KANJI_PTN_HIGH);
+            let low = memory.read_byte(FMR_REG_KANJI_PTN_LOW);
+            assert_eq!(u16::from_be_bytes([high, low]), index);
+        }
+    }
+
+    /// The glyph of JIS 3021h in the 16x16 font: two bytes per row, left byte first.
+    const KANJI_3021_GLYPH: [u8; 32] = [
+        0x00, 0x00, 0x7F, 0xFC, 0x04, 0x40, 0x04, 0x40, 0x04, 0x40, 0x7F, 0xFC, 0x44, 0x44, 0x44,
+        0x44, 0x44, 0x44, 0x44, 0x44, 0x7F, 0xFC, 0x44, 0x44, 0x04, 0x40, 0x04, 0x40, 0x04, 0x40,
+        0xFF, 0xFE,
+    ];
+
+    /// The glyph of JIS 2821h (box drawing, horizontal line) in the 16x16 font.
+    const BOX_2821_GLYPH: [u8; 32] = [
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF,
+        0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00,
+    ];
+
+    /// The glyph of `A` in the 8x8 ANK font.
+    const ANK_8X8_LETTER_A: [u8; 8] = [0x18, 0x24, 0x42, 0x7E, 0x42, 0x42, 0x42, 0x00];
+
+    /// The glyph of `A` in the 8x16 ANK font.
+    const ANK_8X16_LETTER_A: [u8; 16] = [
+        0x00, 0x18, 0x24, 0x42, 0x42, 0x42, 0x42, 0x42, 0x7E, 0x42, 0x42, 0x42, 0x42, 0x42, 0x00,
+        0x00,
+    ];
+
+    /// The glyph of `A` in the 8x12 ANK font of the 12-dot area.
+    const ANK_8X12_LETTER_A: [u8; 12] = [
+        0x00, 0x20, 0x20, 0x50, 0x50, 0x50, 0x88, 0x88, 0xF8, 0x88, 0x88, 0x00,
+    ];
+
+    /// The glyph of JIS 3021h in the 12x12 font of the 12-dot area: two bytes per row.
+    const JIS_12X12_3021_GLYPH: [u8; 24] = [
+        0xFF, 0xE0, 0x0A, 0x00, 0x0A, 0x00, 0x7F, 0xC0, 0x4A, 0x40, 0x4A, 0x40, 0x4A, 0x40, 0x7F,
+        0xC0, 0x0A, 0x00, 0x0A, 0x00, 0x0A, 0x00, 0xFF, 0xE0,
+    ];
+
+    /// Builds the memory of an MX with only the built-in ROM images.
+    fn builtin_memory() -> TownsMemory {
+        TownsMemory::new(
+            TownsModel::FmTownsIIMx,
+            LoadedRoms::builtin_hle_set(TownsModel::FmTownsIIMx),
+        )
+    }
+
+    /// Reads `length` bytes from `base` on.
+    fn read_bytes(memory: &mut TownsMemory, base: u32, length: usize) -> Vec<u8> {
+        (base..base + length as u32)
+            .map(|address| memory.read_byte(address))
+            .collect()
+    }
+
+    #[test]
+    fn builtin_font_reads_through_the_kanji_cg_registers() {
+        let mut memory = builtin_memory();
+        for (jis_high, jis_low, glyph) in [
+            (0x30u8, 0x21u8, &KANJI_3021_GLYPH),
+            (0x28, 0x21, &BOX_2821_GLYPH),
+        ] {
+            memory.write_byte(FMR_REG_KANJI_JIS_HIGH, jis_high);
+            memory.write_byte(FMR_REG_KANJI_JIS_LOW, jis_low);
+            let mut rows = Vec::new();
+            for _ in 0..16 {
+                rows.push(memory.read_byte(FMR_REG_KANJI_PTN_HIGH));
+                rows.push(memory.read_byte(FMR_REG_KANJI_PTN_LOW));
+            }
+            assert_eq!(rows, glyph, "{jis_high:02X}{jis_low:02X}");
+
+            memory.write_fmr_io_register(0xFF94, jis_high);
+            memory.write_fmr_io_register(0xFF95, jis_low);
+            let high = memory.read_fmr_io_register(0xFF96);
+            let low = memory.read_fmr_io_register(0xFF97);
+            assert_eq!([high, low], glyph[..2], "{jis_high:02X}{jis_low:02X}");
+        }
+    }
+
+    #[test]
+    fn builtin_font_reads_through_the_ank_windows() {
+        let mut memory = builtin_memory();
+        memory.write_byte(FMR_REG_KVRAM_OR_ANKFONT, 0x01);
+        let letter_a = u32::from(b'A');
+        assert_eq!(
+            read_bytes(&mut memory, FMR_ANK8_BASE + letter_a * 8, 8),
+            ANK_8X8_LETTER_A
+        );
+        assert_eq!(
+            read_bytes(&mut memory, FMR_ANK16_BASE + letter_a * 16, 16),
+            ANK_8X16_LETTER_A
+        );
+    }
+
+    #[test]
+    fn builtin_font_reads_through_the_font_rom_mapping() {
+        let mut memory = builtin_memory();
+        let kanji_3021_cell = (font_rom_code(0x30, 0x21) * KANJI_GLYPH_BYTES) as u32;
+        assert_eq!(
+            read_bytes(&mut memory, FONT_ROM_BASE + kanji_3021_cell, 32),
+            KANJI_3021_GLYPH
+        );
+        let ank16_letter_a = (FONT_ANK16_OFFSET + usize::from(b'A') * 16) as u32;
+        assert_eq!(
+            read_bytes(&mut memory, FONT_ROM_BASE + ank16_letter_a, 16),
+            ANK_8X16_LETTER_A
+        );
+    }
+
+    #[test]
+    fn hle_system_rom_reads_the_12_dot_font() {
+        /// Offset of the JIS 12x12 glyphs in the 12-dot area.
+        const JIS_12X12_OFFSET: u32 = 0xC00;
+        let mut memory = builtin_memory();
+        assert_eq!(
+            read_bytes(&mut memory, SYSROM_BASE + u32::from(b'A') * 12, 12),
+            ANK_8X12_LETTER_A
+        );
+        let jis_3021 = JIS_12X12_OFFSET + ((0x30 - 0x21) * 94) * 24;
+        assert_eq!(
+            read_bytes(&mut memory, SYSROM_BASE + jis_3021, 24),
+            JIS_12X12_3021_GLYPH
+        );
     }
 
     #[test]

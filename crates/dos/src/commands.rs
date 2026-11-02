@@ -2,8 +2,8 @@
 //!
 //! All shell commands implement the unified Command/RunningCommand trait system.
 //! Commands are stateless factories (Command) that produce stateful running
-//! instances (RunningCommand). The shell calls step() once per INT 21h AH=FFh
-//! dispatch - commands must return quickly and never block.
+//! instances (RunningCommand). The shell calls step() once per shell step
+//! trap. Commands must return quickly and never block.
 
 use std::any::Any;
 
@@ -23,6 +23,7 @@ pub mod md;
 pub mod mem;
 pub mod more;
 pub mod path;
+pub mod prompt;
 pub mod rd;
 pub mod rem;
 pub mod ren;
@@ -39,7 +40,7 @@ pub(crate) enum StepResult {
     Done(u8),
     /// Command completed without changing the previous exit code.
     DonePreserve,
-    /// Command yielded; call step() again on the next AH=FFh dispatch.
+    /// Command yielded. The shell calls step() again on the next shell step trap.
     Continue,
 }
 
@@ -88,7 +89,7 @@ where
 pub(crate) trait RunningCommand: RunningCommandObject + Send {
     /// Execute one step of the command.
     ///
-    /// Called once per AH=FFh dispatch while this command is active.
+    /// Called once per shell step trap while this command is active.
     /// Must return quickly - never block.
     /// Simple commands (CLS, VER) return Done on the first call.
     /// Long commands (COPY, FORMAT) process one chunk and return Continue.
@@ -141,6 +142,8 @@ pub(crate) fn running_command_name(command: &dyn RunningCommand) -> &'static str
         "MORE"
     } else if command.is::<path::RunningPath>() {
         "PATH"
+    } else if command.is::<prompt::RunningPrompt>() {
+        "PROMPT"
     } else if command.is::<rd::RunningRd>() {
         "RD"
     } else if command.is::<rem::RunningRem>() {
@@ -192,6 +195,7 @@ impl save_state::StateEncode for Box<dyn RunningCommand> {
             || encode_command::<ver::RunningVer>(command, 22, output)
             || encode_command::<xcopy::RunningXcopy>(command, 23, output)
             || encode_command::<crate::shell::batch::WaitingForChildCommand>(command, 24, output)
+            || encode_command::<prompt::RunningPrompt>(command, 25, output)
         {
             return;
         }
@@ -251,6 +255,7 @@ impl save_state::StateDecode for Box<dyn RunningCommand> {
             22 => decode_command!(ver::RunningVer),
             23 => decode_command!(xcopy::RunningXcopy),
             24 => decode_command!(crate::shell::batch::WaitingForChildCommand),
+            25 => decode_command!(prompt::RunningPrompt),
             _ => Err(save_state::StateDecodeError::InvalidTag),
         }
     }

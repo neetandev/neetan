@@ -172,3 +172,32 @@ fn shell_exec_command_com_c_echo_returns_to_parent_shell() {
         "COMMAND.COM /C should execute the requested built-in command"
     );
 }
+
+/// The command tail of a program started from the shell holds everything
+/// behind the program name, the separators in front of the first argument
+/// included, like COMMAND.COM passes it.
+#[test]
+fn shell_exec_passes_the_tail_with_its_leading_separators() {
+    #[rustfmt::skip]
+    let program: &[u8] = &[
+        0xBE, 0x80, 0x00,                   // MOV SI, 0080h
+        0xB8, 0x00, 0x20,                   // MOV AX, 2000h
+        0x8E, 0xC0,                         // MOV ES, AX
+        0xBF, 0x00, 0x03,                   // MOV DI, 0300h
+        0xB9, 0x20, 0x00,                   // MOV CX, 0020h
+        0xFC,                               // CLD
+        0xF3, 0xA4,                         // REP MOVSB
+        0xB8, 0x00, 0x4C,                   // MOV AX, 4C00h
+        0xCD, 0x21,                         // INT 21h
+    ];
+    let floppy = create_test_floppy_with_program(b"TAIL    COM", program);
+    let mut machine = boot_hle_with_floppy_image(floppy);
+
+    type_string(&mut machine.bus, b"A:\r");
+    run_until_prompt(&mut machine);
+    type_string(&mut machine.bus, b"tail  a b\r");
+    run_until_prompt(&mut machine);
+
+    let tail = read_bytes(&machine.bus, 0x2_0300, 7);
+    assert_eq!(tail, b"\x05  a b\r");
+}

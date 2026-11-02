@@ -58,7 +58,7 @@ single family are listed on the page of that family:
 | `--boot-mode <MODE>`        | PC-88, FM-7                                                       | Boot mode. PC-88: `v1s`, `v1h`, `v2`, `n`, `n80`, `n80sr`. FM-7: `basic`, `dos` | `v2` / `basic`               |
 | `--monitor <MODE>`          | PC-88, X1                                                         | Monitor timing: `auto`, `15k`, `24k`                                            | `auto`                       |
 | `--boot-device <DEVICE>`    | PC-98, FM Towns, PC/AT                                            | Boot device: `auto`, `fdd1`, `fdd2`, `hdd1`, `hdd2`, `dos`                      | `auto`                       |
-| `--bios [on\|off]`          | PC-98, PC/AT                                                      | Boot the real BIOS of the ROM set instead of the HLE BIOS                       | HLE BIOS                     |
+| `--bios [on\|off]`          | PC-98, FM Towns, PC/AT                                            | Boot the real BIOS of the ROM set instead of the HLE BIOS                       | HLE BIOS                     |
 | `--fdd1 <PATH>`             | All                                                               | Floppy disk image for drive 1 (repeatable)                                      | -                            |
 | `--fdd2 <PATH>`             | PC-98, PC-88, PC-88VA, PC-6000, FM Towns, X68000, X1, FM-7, PC/AT | Floppy disk image for drive 2 (repeatable)                                      | -                            |
 | `--hdd1 <PATH>`             | PC-98, FM Towns, X68000, PC/AT                                    | Hard disk image for hard disk drive 1                                           | -                            |
@@ -99,6 +99,8 @@ each set.
 | `--x68k-roms <PATH>`   | X68000   | `roms/x68k`   |
 | `--x1-roms <PATH>`     | X1       | `roms/x1`     |
 | `--at-roms <PATH>`     | PC/AT    | `roms/at`     |
+
+The PC-98, the FM Towns and the PC/AT run without a ROM set on the HLE BIOS.
 
 ## Machine types
 

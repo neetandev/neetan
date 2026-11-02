@@ -1199,7 +1199,7 @@ pub static SETTINGS: &[Setting] = &[
         key: "bios",
         scope: Scope::System,
         kind: ValueKind::OnOff,
-        families: Families::PC98.with(Families::AT),
+        families: Families::PC98.with(Families::TOWNS).with(Families::AT),
         model_limits: &[ModelLimit {
             family: Families::PC98,
             models: PC98_REAL_BIOS_MODELS,

@@ -24,8 +24,6 @@ impl Command for Xcopy {
     }
 }
 
-const KB_BUF_COUNT: u32 = 0x0528;
-
 #[derive(Clone)]
 /// Authoritative XCOPY traversal and prompt state.
 struct XcopyState {
@@ -295,11 +293,11 @@ impl RunningXcopy {
         entry: ReadDirEntry,
         io: &mut IoAccess,
     ) -> StepResult {
-        if io.memory.read_byte(KB_BUF_COUNT) == 0 {
+        if !io.key_available() {
             self.phase = XcopyPhase::PromptFile(xcopy_state, entry);
             return StepResult::Continue;
         }
-        let key = consume_key(io);
+        let key = io.take_key_character();
         io.output_byte(b'\r');
         io.output_byte(b'\n');
 
@@ -349,7 +347,8 @@ impl RunningXcopy {
                     return StepResult::Continue;
                 }
 
-                match iso9660::read_file_chunk(entry, *position, dst_cluster_size, drive) {
+                let cdrom = state.drive_cdrom(file_state.src_drive, drive);
+                match iso9660::read_file_chunk(entry, *position, dst_cluster_size, &cdrom) {
                     Ok(data) => {
                         *position += data.len() as u32;
                         data
@@ -722,19 +721,4 @@ fn init_xcopy(
         prompt_each,
         dir_stack: Vec::new(),
     })
-}
-
-fn consume_key(io: &mut IoAccess) -> u8 {
-    let head = io.memory.read_word(0x0524) as u32;
-    let ch = io.memory.read_byte(head);
-    let mut new_head = head + 2;
-    if new_head >= 0x0522 {
-        new_head = 0x0502;
-    }
-    io.memory.write_word(0x0524, new_head as u16);
-    let count = io.memory.read_byte(KB_BUF_COUNT);
-    if count > 0 {
-        io.memory.write_byte(KB_BUF_COUNT, count - 1);
-    }
-    ch
 }

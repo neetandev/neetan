@@ -704,7 +704,7 @@ mod tests {
             0
         }
 
-        fn char_available(&self) -> bool {
+        fn char_available(&mut self) -> bool {
             false
         }
 

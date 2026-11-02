@@ -12,12 +12,18 @@
 //!
 //! The 32-byte serial machine-identity ROM (`mytownsmx.rom`) is matched the same
 //! way.
+//!
+//! The real firmware set needs every slot. The HLE firmware set reads no ROM
+//! file. It runs the embedded HLE system ROM (`utils/bios_towns/sysrom.asm`),
+//! the embedded HLE OS ROM image (`utils/dos_towns`) and the embedded font ROM
+//! (`utils/bios_towns/fonts`). Its dictionary and F20 ROMs read `FFh` and its
+//! serial ROM is generated.
 
 use std::path::Path;
 
 use rom_loader::{RomError, RomIndex, RomSlot, ScanOptions};
 
-use crate::config::TownsModel;
+use crate::{config::TownsModel, serial_rom};
 
 /// Size of each ROM image, in bytes.
 const DOS_SIZE: usize = 0x8_0000;
@@ -25,7 +31,19 @@ const FONT_SIZE: usize = 0x4_0000;
 const SYSTEM_SIZE: usize = 0x4_0000;
 const F20_SIZE: usize = 0x8_0000;
 const DIC_SIZE: usize = 0x8_0000;
-const SERIAL_SIZE: usize = 0x20;
+const SERIAL_SIZE: usize = serial_rom::SERIAL_ROM_SIZE;
+
+/// Content of the dictionary and F20 ROMs when the ROM folder has no image.
+const EMPTY_ROM_FILL: u8 = 0xFF;
+
+/// Embedded HLE system ROM stub (256 KiB), built from `utils/bios_towns/sysrom.asm`.
+static HLE_SYSTEM_ROM: &[u8; SYSTEM_SIZE] = include_bytes!("../../../utils/bios_towns/sysrom.rom");
+
+/// Embedded HLE OS ROM image (512 KiB), built by `utils/dos_towns`.
+static HLE_OS_ROM: &[u8; DOS_SIZE] = include_bytes!("../../../utils/dos_towns/osrom.rom");
+
+/// Embedded font ROM (256 KiB), built from the `.bit` files of `utils/bios_towns/fonts`.
+static HLE_FONT_ROM: &[u8; FONT_SIZE] = include_bytes!("../../../utils/bios_towns/fonts/font.rom");
 
 /// Size and slice layout of the packed `fmtownsiimxbios.m79` image. The chunks
 /// appear in flash-chip order, which differs from the memory-map order.
@@ -89,16 +107,29 @@ const fn tables_for(model: TownsModel) -> &'static RomTables {
     }
 }
 
+/// System ROM and OS ROM of a loaded ROM set.
+#[derive(Debug)]
+pub enum TownsFirmware {
+    /// The embedded HLE system ROM and the embedded HLE OS ROM image. NeetanDos
+    /// serves as the DOS kernel of the `IO.SYS` that the machine boots.
+    Hle,
+    /// The real firmware of the ROM folder.
+    Rom {
+        /// SYSTEM ROM (256 KiB), mapped at 0xFFFC0000 with its last 32 KiB
+        /// shadowed at 0x000F8000.
+        system: Vec<u8>,
+        /// OS ROM (FMT_DOS, 512 KiB), mapped at 0xC2000000.
+        os: Vec<u8>,
+    },
+}
+
 /// Raw bytes of a successfully loaded and validated FM Towns ROM set.
 #[derive(Debug)]
 pub struct LoadedRoms {
-    /// OS ROM (FMT_DOS, 512 KiB), mapped at 0xC2000000.
-    pub dos: Vec<u8>,
+    /// System ROM and OS ROM.
+    pub firmware: TownsFirmware,
     /// FONT ROM (256 KiB), mapped at 0xC2100000; also backs the ANK glyph banks.
     pub font: Vec<u8>,
-    /// SYSTEM ROM (256 KiB), mapped at 0xFFFC0000 with its last 32 KiB shadowed
-    /// at 0x000F8000.
-    pub system: Vec<u8>,
     /// F20 font ROM (512 KiB), mapped at 0xC2180000.
     pub f20: Vec<u8>,
     /// DIC dictionary ROM (512 KiB), mapped at 0xC2080000.
@@ -107,14 +138,45 @@ pub struct LoadedRoms {
     pub serial: Vec<u8>,
 }
 
-/// Loads and validates the FM Towns ROM set for `model`.
+impl LoadedRoms {
+    /// Returns the HLE firmware ROM set of `model`. It holds only built-in images.
+    pub fn builtin_hle_set(model: TownsModel) -> Self {
+        Self {
+            firmware: TownsFirmware::Hle,
+            font: HLE_FONT_ROM.to_vec(),
+            f20: vec![EMPTY_ROM_FILL; F20_SIZE],
+            dictionary: vec![EMPTY_ROM_FILL; DIC_SIZE],
+            serial: serial_rom::generate_serial_rom(model),
+        }
+    }
+
+    /// Whether the set runs the HLE firmware.
+    pub fn uses_hle_firmware(&self) -> bool {
+        matches!(self.firmware, TownsFirmware::Hle)
+    }
+}
+
+/// Returns the bytes of the embedded HLE system ROM.
+pub(crate) fn hle_system_rom_image() -> &'static [u8] {
+    HLE_SYSTEM_ROM
+}
+
+/// Returns the bytes of the embedded HLE OS ROM image.
+pub(crate) fn hle_os_rom_image() -> &'static [u8] {
+    HLE_OS_ROM
+}
+
+/// Loads and validates the real ROM set for `model`.
 ///
 /// Every file in `rom_dir` is scanned; a packed 2 MiB BIOS image is sliced into
 /// its five component ROMs, and loose images are taken as-is. Each candidate is
 /// matched against the accepted digests for every ROM slot, so file names do not
 /// matter. All slots are required.
 pub fn load_rom_set(model: TownsModel, rom_dir: &Path) -> Result<LoadedRoms, RomError> {
-    load_rom_set_with_tables(rom_dir, tables_for(model))
+    take_tables(
+        &scan_with_sizes(rom_dir, &rom_sizes(tables_for(model)))?,
+        tables_for(model),
+    )
 }
 
 /// Scans `rom_dir` for the ROMs of every model. Each accepted file is read and hashed once.
@@ -132,7 +194,7 @@ pub fn scan_rom_directory(rom_dir: &Path) -> Result<RomIndex, RomError> {
     scan_with_sizes(rom_dir, &sizes)
 }
 
-/// Loads and validates the ROM set of `model` from a scanned ROM directory.
+/// Loads and validates the real ROM set of `model` from a scanned ROM directory.
 pub fn load_rom_set_from_index(
     model: TownsModel,
     index: &RomIndex,
@@ -150,18 +212,16 @@ fn scan_with_sizes(rom_dir: &Path, sizes: &[usize]) -> Result<RomIndex, RomError
     Ok(rom_loader::scan_directory(rom_dir, &options)?)
 }
 
-fn load_rom_set_with_tables(rom_dir: &Path, tables: &RomTables) -> Result<LoadedRoms, RomError> {
-    take_tables(&scan_with_sizes(rom_dir, &rom_sizes(tables))?, tables)
-}
-
-/// Takes the slots of `tables` from a scanned ROM directory.
+/// Takes every slot of `tables` from a scanned ROM directory.
 fn take_tables(index: &RomIndex, tables: &RomTables) -> Result<LoadedRoms, RomError> {
     let take = |slot: &RomSlot| index.take(slot);
 
     Ok(LoadedRoms {
-        dos: take(&tables.dos)?,
+        firmware: TownsFirmware::Rom {
+            system: take(&tables.system)?,
+            os: take(&tables.dos)?,
+        },
         font: take(&tables.font)?,
-        system: take(&tables.system)?,
         f20: take(&tables.f20)?,
         dictionary: take(&tables.dictionary)?,
         serial: take(&tables.serial)?,
@@ -208,6 +268,7 @@ mod tests {
         (0..size).map(|i| seed.wrapping_add(i as u8)).collect()
     }
 
+    /// Distinct ROM images of every slot.
     struct FakeRoms {
         dos: Vec<u8>,
         font: Vec<u8>,
@@ -267,6 +328,19 @@ mod tests {
         image
     }
 
+    /// Loads the real ROM set of `tables` from `dir`.
+    fn load_real(dir: &TemporaryFolder, tables: &RomTables) -> Result<LoadedRoms, RomError> {
+        take_tables(&scan_with_sizes(dir.path(), &rom_sizes(tables))?, tables)
+    }
+
+    /// Returns the system ROM and the OS ROM of a real firmware set.
+    fn real_firmware(roms: &LoadedRoms) -> (&[u8], &[u8]) {
+        match &roms.firmware {
+            TownsFirmware::Rom { system, os } => (system, os),
+            TownsFirmware::Hle => panic!("expected the real firmware"),
+        }
+    }
+
     #[test]
     fn loads_from_packed_bios_and_serial() {
         let roms = fake_roms();
@@ -274,11 +348,9 @@ mod tests {
         dir.write_file("fmtownsiimxbios.m79", &packed(&roms));
         dir.write_file("mytownsmx.rom", &roms.serial);
 
-        let tables = tables_from(&roms);
-        let loaded = load_rom_set_with_tables(dir.path(), &tables).expect("load");
-        assert_eq!(loaded.dos, roms.dos);
+        let loaded = load_real(&dir, &tables_from(&roms)).expect("load");
+        assert_eq!(real_firmware(&loaded), (&roms.system[..], &roms.dos[..]));
         assert_eq!(loaded.font, roms.font);
-        assert_eq!(loaded.system, roms.system);
         assert_eq!(loaded.f20, roms.f20);
         assert_eq!(loaded.dictionary, roms.dictionary);
         assert_eq!(loaded.serial, roms.serial);
@@ -296,10 +368,8 @@ mod tests {
         dir.write_file("mytownsmx.rom", &roms.serial);
         dir.write_file("readme.txt", b"stray");
 
-        let tables = tables_from(&roms);
-        let loaded = load_rom_set_with_tables(dir.path(), &tables).expect("load");
-        assert_eq!(loaded.dos, roms.dos);
-        assert_eq!(loaded.system, roms.system);
+        let loaded = load_real(&dir, &tables_from(&roms)).expect("load");
+        assert_eq!(real_firmware(&loaded), (&roms.system[..], &roms.dos[..]));
         assert_eq!(loaded.serial, roms.serial);
     }
 
@@ -309,11 +379,95 @@ mod tests {
         let dir = TemporaryFolder::new("towns_rom_noserial");
         dir.write_file("fmtownsiimxbios.m79", &packed(&roms));
 
-        let tables = tables_from(&roms);
-        match load_rom_set_with_tables(dir.path(), &tables) {
+        match load_real(&dir, &tables_from(&roms)) {
             Err(RomError::Missing { label, .. }) => assert_eq!(label, "serial"),
             other => panic!("expected Missing(serial), got {other:?}"),
         }
+    }
+
+    #[test]
+    fn real_set_requires_the_system_rom() {
+        let roms = fake_roms();
+        let dir = TemporaryFolder::new("towns_rom_nosystem");
+        dir.write_file("FMT_DOS.ROM", &roms.dos);
+        dir.write_file("FMT_FNT.ROM", &roms.font);
+        dir.write_file("FMT_F20.ROM", &roms.f20);
+        dir.write_file("FMT_DIC.ROM", &roms.dictionary);
+        dir.write_file("mytownsmx.rom", &roms.serial);
+
+        match load_real(&dir, &tables_from(&roms)) {
+            Err(RomError::Missing { label, .. }) => assert_eq!(label, "system"),
+            other => panic!("expected Missing(system), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn builtin_hle_set_holds_only_builtin_images() {
+        for model in [
+            TownsModel::FmTowns,
+            TownsModel::FmTownsIICx,
+            TownsModel::FmTownsIIMx,
+        ] {
+            let loaded = LoadedRoms::builtin_hle_set(model);
+            assert!(loaded.uses_hle_firmware());
+            assert_eq!(loaded.font, HLE_FONT_ROM);
+            assert_eq!(loaded.f20, vec![EMPTY_ROM_FILL; F20_SIZE]);
+            assert_eq!(loaded.dictionary, vec![EMPTY_ROM_FILL; DIC_SIZE]);
+            assert_eq!(loaded.serial, serial_rom::generate_serial_rom(model));
+        }
+    }
+
+    #[test]
+    fn builtin_font_rom_carries_the_tripwire_glyph() {
+        /// Offset of the tripwire cell (index 1FFFh) in the font ROM.
+        const TRIPWIRE_OFFSET: usize = 0x3_FFE0;
+        /// The Neetan glyph of the tripwire cell: an N in a frame.
+        const TRIPWIRE_GLYPH: [u8; 32] = [
+            0xFF, 0xFF, 0x80, 0x01, 0x80, 0x01, 0x9C, 0x19, 0x9E, 0x19, 0x9B, 0x19, 0x9B, 0x19,
+            0x99, 0x99, 0x98, 0xD9, 0x98, 0x79, 0x98, 0x79, 0x98, 0x39, 0x98, 0x19, 0x80, 0x01,
+            0x80, 0x01, 0xFF, 0xFF,
+        ];
+        let font = &LoadedRoms::builtin_hle_set(TownsModel::FmTownsIIMx).font;
+        assert_eq!(font.len(), FONT_SIZE);
+        assert_eq!(
+            font[TRIPWIRE_OFFSET..TRIPWIRE_OFFSET + TRIPWIRE_GLYPH.len()],
+            TRIPWIRE_GLYPH
+        );
+    }
+
+    #[test]
+    fn hle_os_rom_is_the_dos_towns_image() {
+        let image = hle_os_rom_image();
+        assert_eq!(image.len(), DOS_SIZE);
+        assert_eq!(&image[..5], b"IPL4\xCB");
+    }
+
+    #[test]
+    fn hle_system_rom_carries_entry_table_and_machine_id() {
+        /// Offset of the FMR family machine ID byte (physical FFFF5h).
+        const MACHINE_ID_OFFSET: usize = 0x3_FFF5;
+        /// FMR family machine ID of every FM Towns.
+        const FM_TOWNS_MACHINE_ID: u8 = 0x51;
+
+        let image = hle_system_rom_image();
+        assert_eq!(image.len(), SYSTEM_SIZE);
+        assert_eq!(image[MACHINE_ID_OFFSET], FM_TOWNS_MACHINE_ID);
+        // Reset vector and the eight far jumps of the FFFB entry table.
+        assert_eq!(image[0x3_FFF0], 0xEA);
+        for entry in 0..8 {
+            assert_eq!(image[0x3_FFB0 + entry * 5], 0xEA);
+        }
+        // Below the code segment the image holds the 12-dot font area at
+        // 00000h-1AFFFh and the system icons at 28000h-2FFFFh.
+        let ank_12_letter_a = 0x41 * 12;
+        assert!(
+            image[ank_12_letter_a..ank_12_letter_a + 12]
+                .iter()
+                .any(|&byte| byte != 0)
+        );
+        assert!(image[0x1_B000..0x2_8000].iter().all(|&byte| byte == 0xFF));
+        assert!(image[0x2_8000..0x3_0000].iter().any(|&byte| byte != 0xFF));
+        assert!(image[0x3_0000..0x3_C000].iter().all(|&byte| byte == 0xFF));
     }
 
     #[test]

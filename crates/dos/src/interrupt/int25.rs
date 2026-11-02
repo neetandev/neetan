@@ -1,12 +1,13 @@
 //! INT 25h: Absolute Disk Read.
 
-use crate::{CpuAccess, DiskIo, MemoryAccess, NeetanDos, SegmentRegister, tables};
+use crate::{CpuAccess, DiskIo, MemoryAccess, NeetanDos, SegmentRegister};
 
 impl NeetanDos {
     /// INT 25h: Absolute disk read.
     /// AL = drive number (0=A), CX = sector count, DX = start sector, DS:BX = buffer.
+    /// The sectors are logical sectors of the volume.
     pub(crate) fn int25h(
-        &self,
+        &mut self,
         cpu: &mut dyn CpuAccess,
         memory: &mut dyn MemoryAccess,
         disk: &mut dyn DiskIo,
@@ -16,15 +17,20 @@ impl NeetanDos {
         let start_sector = cpu.dx() as u32;
         let buf_addr = cpu.linear_address(SegmentRegister::DS, cpu.bx());
 
-        let da_ua = memory
-            .read_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_DAUA_TABLE + drive_index as u32);
-        if da_ua == 0 {
-            set_int25_carry(cpu, memory, true);
-            cpu.set_ax(0x000F);
-            return;
-        }
+        let span =
+            match self
+                .state
+                .logical_sector_span(drive_index, start_sector, sector_count, disk)
+            {
+                Ok(span) => span,
+                Err(error) => {
+                    cpu.set_ax(error);
+                    set_int25_carry(cpu, memory, true);
+                    return;
+                }
+            };
 
-        match disk.read_sectors(da_ua, start_sector, sector_count) {
+        match disk.read_sectors(span.device_id, span.first_lba, span.sector_count) {
             Ok(data) => {
                 memory.write_block(buf_addr, &data);
                 set_int25_carry(cpu, memory, false);

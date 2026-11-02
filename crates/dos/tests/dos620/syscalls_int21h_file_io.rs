@@ -51,13 +51,17 @@ fn sft_addr_for_handle(machine: &mut machine_98::Pc9801Ra, handle: u16) -> u32 {
         psp_base + tables::PSP_OFF_JFT + u32::from(handle),
     ));
 
+    let structures = harness::pc98_structures();
+    let first_sft_block =
+        harness::dos_data_address(structures.system_file_table.first_block_offset);
+    let entry_size = structures.system_file_table.entry_size;
     if sft_index < tables::SFT_INITIAL_COUNT {
-        tables::SFT_BASE + tables::SFT_HEADER_SIZE + u32::from(sft_index) * tables::SFT_ENTRY_SIZE
+        first_sft_block + tables::SFT_HEADER_SIZE + u32::from(sft_index) * entry_size
     } else {
-        let (segment, offset) = harness::read_far_ptr(&machine.bus, tables::SFT_BASE);
+        let (segment, offset) = harness::read_far_ptr(&machine.bus, first_sft_block);
         let sft2_base = harness::far_to_linear(segment, offset);
         let local_index = u32::from(sft_index - tables::SFT_INITIAL_COUNT);
-        sft2_base + tables::SFT_HEADER_SIZE + local_index * tables::SFT_ENTRY_SIZE
+        sft2_base + tables::SFT_HEADER_SIZE + local_index * entry_size
     }
 }
 
@@ -200,6 +204,36 @@ fn open_existing_file() {
 }
 
 #[test]
+fn open_file_sft_entry_uses_the_dos_4_fields() {
+    let mut machine = harness::boot_hle_with_floppy();
+
+    let handle = open_file(&mut machine, b"A:\\COMMAND.COM\0");
+    let sft_addr = sft_addr_for_handle(&mut machine, handle);
+    let sft = &harness::pc98_structures().system_file_table;
+
+    let start_cluster = harness::read_word(&machine.bus, sft_addr + tables::SFT_ENT_START_CLUSTER);
+    assert_ne!(start_cluster, 0);
+    assert_eq!(
+        harness::read_word(&machine.bus, sft_addr + sft.last_cluster),
+        start_cluster
+    );
+    assert_eq!(sft.last_cluster, 0x35);
+
+    // The directory sector is a dword at +1Bh. The root directory of the
+    // floppy lies in the first sectors of the disk.
+    assert_eq!(sft.directory_sector, 0x1B);
+    let directory_sector_low = harness::read_word(&machine.bus, sft_addr + 0x1B);
+    let directory_sector_high = harness::read_word(&machine.bus, sft_addr + 0x1D);
+    assert_ne!(directory_sector_low, 0);
+    assert_eq!(directory_sector_high, 0);
+    assert_eq!(
+        harness::read_bytes(&machine.bus, sft_addr + tables::SFT_ENT_NAME, 11),
+        b"COMMAND COM"
+    );
+    close_file(&mut machine, handle);
+}
+
+#[test]
 fn failed_open_does_not_consume_file_handle() {
     let mut machine = harness::boot_hle_with_floppy();
 
@@ -237,7 +271,7 @@ fn open_emmxxxx0_as_character_device() {
     );
     assert_eq!(
         harness::read_word(&machine.bus, sft_addr + tables::SFT_ENT_DEV_PTR + 2),
-        tables::DOS_DATA_SEGMENT
+        harness::dos_data_segment()
     );
     assert_eq!(
         harness::read_bytes(&machine.bus, sft_addr + tables::SFT_ENT_NAME, 11),
@@ -269,7 +303,7 @@ fn open_xmsxxxx0_as_character_device() {
     );
     assert_eq!(
         harness::read_word(&machine.bus, sft_addr + tables::SFT_ENT_DEV_PTR + 2),
-        tables::DOS_DATA_SEGMENT
+        harness::dos_data_segment()
     );
     assert_eq!(
         harness::read_bytes(&machine.bus, sft_addr + tables::SFT_ENT_NAME, 11),
@@ -386,7 +420,7 @@ fn ioctl_read_cdrom_control_channel_device_header_address() {
     );
     assert_eq!(
         header_seg,
-        tables::CDROM_MIRROR_HEADER_SEGMENT,
+        harness::dos_data_segment() + tables::CDROM_MIRROR_HEADER_PARAGRAPHS,
         "CD-ROM header segment should point at the mirror header, got {header_seg:#06X}"
     );
     let header_addr = (u32::from(header_seg) << 4) + u32::from(header_off);
@@ -435,7 +469,7 @@ fn cdrom_device_strategy_interrupt_processes_request() {
     let interrupt = tables::CDROM_MIRROR_INTERRUPT_OFFSET;
     let interrupt_lo = (interrupt & 0xFF) as u8;
     let interrupt_hi = (interrupt >> 8) as u8;
-    let cdrom_seg = tables::CDROM_MIRROR_HEADER_SEGMENT;
+    let cdrom_seg = harness::dos_data_segment() + tables::CDROM_MIRROR_HEADER_PARAGRAPHS;
     let cdrom_seg_lo = (cdrom_seg & 0xFF) as u8;
     let cdrom_seg_hi = (cdrom_seg >> 8) as u8;
     #[rustfmt::skip]
@@ -505,7 +539,7 @@ fn open_con_as_character_device() {
     );
     assert_eq!(
         harness::read_word(&machine.bus, sft_addr + tables::SFT_ENT_DEV_PTR + 2),
-        tables::DOS_DATA_SEGMENT
+        harness::dos_data_segment()
     );
     assert_eq!(
         harness::read_bytes(&machine.bus, sft_addr + tables::SFT_ENT_NAME, 11),
@@ -1685,4 +1719,294 @@ fn ioctl_get_device_info_standard_handles_set_bit15() {
             "AX=4400h handle {handle} must clear CF, flags={flags:#06X}"
         );
     }
+}
+
+#[test]
+fn get_file_attributes_returns_them_in_ax_too() {
+    let mut machine = harness::boot_hle_with_floppy();
+    let path_addr = harness::INJECT_CODE_BASE + 0x200;
+    harness::write_bytes(&mut machine.bus, path_addr, b"A:\\COMMAND.COM\0");
+
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB8, 0x00, 0x43,                   // MOV AX, 4300h
+        0xBA, 0x00, 0x02,                   // MOV DX, 0200h
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
+        0x89, 0x0E, 0x02, 0x01,             // MOV [0x0102], CX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run_with_budget(&mut machine, code, harness::INJECT_BUDGET_DISK_IO);
+
+    let ax = harness::result_word(&machine.bus, 0);
+    let cx = harness::result_word(&machine.bus, 2);
+    assert_eq!(ax, cx, "AX holds the attributes of CX");
+    assert_ne!(ax & 0x20, 0, "COMMAND.COM has the archive attribute");
+}
+
+#[test]
+fn find_first_and_find_next_clear_ax_on_success() {
+    let mut machine = harness::boot_hle_with_floppy();
+    let path_addr = harness::INJECT_CODE_BASE + 0x200;
+    harness::write_bytes(&mut machine.bus, path_addr, b"A:\\*.*\0");
+
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB4, 0x4E,                         // MOV AH, 4Eh
+        0xB9, 0x00, 0x00,                   // MOV CX, 0
+        0xBA, 0x00, 0x02,                   // MOV DX, 0200h
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
+        0xB4, 0x4F,                         // MOV AH, 4Fh
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x02, 0x01,                   // MOV [0x0102], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run_with_budget(&mut machine, code, harness::INJECT_BUDGET_DISK_IO);
+
+    assert_eq!(harness::result_word(&machine.bus, 0), 0x0000);
+    assert_eq!(harness::result_word(&machine.bus, 2), 0x0000);
+}
+
+#[test]
+fn find_first_of_volume_labels_skips_the_files_of_a_disk_without_label() {
+    let mut machine = harness::boot_hle_with_floppy();
+    let path_addr = harness::INJECT_CODE_BASE + 0x200;
+    harness::write_bytes(&mut machine.bus, path_addr, b"A:\\*.*\0");
+
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB4, 0x4E,                         // MOV AH, 4Eh
+        0xB9, 0x08, 0x00,                   // MOV CX, 0008h (volume label)
+        0xBA, 0x00, 0x02,                   // MOV DX, 0200h
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x02, 0x01,                   // MOV [0x0102], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run_with_budget(&mut machine, code, harness::INJECT_BUDGET_DISK_IO);
+
+    assert_eq!(harness::result_word(&machine.bus, 0), 0x0012);
+    assert_eq!(harness::result_word(&machine.bus, 2) & 0x0001, 1);
+}
+
+#[test]
+fn ioctl_reports_local_and_invalid_drives() {
+    let mut machine = harness::boot_hle_with_floppy();
+
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB8, 0x09, 0x44,                   // MOV AX, 4409h
+        0xB3, 0x01,                         // MOV BL, 01h (A:)
+        0xCD, 0x21,                         // INT 21h
+        0x89, 0x16, 0x00, 0x01,             // MOV [0x0100], DX
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x02, 0x01,                   // MOV [0x0102], AX
+        0xB8, 0x09, 0x44,                   // MOV AX, 4409h
+        0xB3, 0x18,                         // MOV BL, 18h (X:)
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x04, 0x01,                   // MOV [0x0104], AX
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x06, 0x01,                   // MOV [0x0106], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run_with_budget(&mut machine, code, harness::INJECT_BUDGET_DISK_IO);
+
+    assert_eq!(
+        harness::result_word(&machine.bus, 0) & 0x1000,
+        0,
+        "A: is local"
+    );
+    assert_eq!(harness::result_word(&machine.bus, 2) & 0x0001, 0);
+    assert_eq!(harness::result_word(&machine.bus, 4), 0x000F);
+    assert_eq!(harness::result_word(&machine.bus, 6) & 0x0001, 1);
+}
+
+#[test]
+fn child_psp_leaves_out_handles_opened_without_inheritance() {
+    let mut machine = harness::boot_hle_with_floppy();
+    let path_addr = harness::INJECT_CODE_BASE + 0x200;
+    harness::write_bytes(&mut machine.bus, path_addr, b"A:\\COMMAND.COM\0");
+
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xBA, 0x00, 0x02,                   // MOV DX, 0200h
+        0xB8, 0x80, 0x3D,                   // MOV AX, 3D80h (read, no inherit)
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
+        0xB8, 0x00, 0x3D,                   // MOV AX, 3D00h (read)
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x02, 0x01,                   // MOV [0x0102], AX
+        0xBA, 0x00, 0x30,                   // MOV DX, 3000h
+        0xBE, 0x00, 0x40,                   // MOV SI, 4000h
+        0xB4, 0x55,                         // MOV AH, 55h
+        0xCD, 0x21,                         // INT 21h
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run_with_budget(&mut machine, code, harness::INJECT_BUDGET_DISK_IO);
+
+    let private_handle = u32::from(harness::result_word(&machine.bus, 0));
+    let shared_handle = u32::from(harness::result_word(&machine.bus, 2));
+    let child_jft = 0x3_0000 + 0x18;
+    assert_eq!(
+        harness::read_byte(&machine.bus, child_jft + private_handle),
+        0xFF
+    );
+    assert_ne!(
+        harness::read_byte(&machine.bus, child_jft + shared_handle),
+        0xFF
+    );
+}
+
+#[test]
+fn cdrom_drive_is_remote_and_reports_its_free_space_like_mscdex() {
+    let mut machine = harness::boot_hle_with_cdrom();
+
+    #[rustfmt::skip]
+    let code: Vec<u8> = vec![
+        0xB8, 0x09, 0x44,                   // MOV AX, 4409h
+        0xB3, 0x11,                         // MOV BL, 11h (Q:)
+        0xCD, 0x21,                         // INT 21h
+        0x89, 0x16, 0x00, 0x01,             // MOV [0100h], DX
+        0xB4, 0x36,                         // MOV AH, 36h
+        0xB2, 0x11,                         // MOV DL, 11h (Q:)
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x02, 0x01,                   // MOV [0102h], AX
+        0x89, 0x1E, 0x04, 0x01,             // MOV [0104h], BX
+        0x89, 0x0E, 0x06, 0x01,             // MOV [0106h], CX
+        0x89, 0x16, 0x08, 0x01,             // MOV [0108h], DX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run_generic_with_budget(
+        &mut machine,
+        &code,
+        harness::INJECT_BUDGET_DISK_IO,
+    );
+
+    assert_ne!(
+        harness::result_word(&machine.bus, 0) & 0x1000,
+        0,
+        "Q: is remote"
+    );
+    assert_eq!(harness::result_word(&machine.bus, 2), 1);
+    assert_eq!(harness::result_word(&machine.bus, 4), 0);
+    assert_eq!(harness::result_word(&machine.bus, 6), 2048);
+    assert_ne!(harness::result_word(&machine.bus, 8), 0);
+}
+
+/// Runs `MOV BX, handle; MOV AH, 3Eh; INT 21h` and returns AX and the flags.
+fn close_file_raw(machine: &mut machine_98::Pc9801Ra, handle: u16) -> (u16, u16) {
+    let handle_lo = (handle & 0xFF) as u8;
+    let handle_hi = (handle >> 8) as u8;
+    #[rustfmt::skip]
+    let code: Vec<u8> = vec![
+        0xBB, handle_lo, handle_hi,          // MOV BX, handle
+        0xB8, 0x77, 0x3E,                   // MOV AX, 3E77h
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x02, 0x01,                   // MOV [0x0102], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run_with_budget(machine, &code, harness::INJECT_BUDGET_DISK_IO);
+    (
+        harness::result_word(&machine.bus, 0),
+        harness::result_word(&machine.bus, 2),
+    )
+}
+
+#[test]
+fn close_returns_the_reference_count_or_the_drive_of_a_written_file_in_al() {
+    let mut machine = harness::boot_hle_with_floppy();
+
+    let handle = open_file(&mut machine, b"A:\\COMMAND.COM\0");
+    let (ax, flags) = close_file_raw(&mut machine, handle);
+    assert_eq!(flags & 0x0001, 0);
+    assert_eq!(ax, 0x3E01, "an unwritten file returns its reference count");
+
+    let handle = create_file(&mut machine, b"A:\\CLOSEAX.TXT\0");
+    write_zero_bytes(&mut machine, handle);
+    let (ax, flags) = close_file_raw(&mut machine, handle);
+    assert_eq!(flags & 0x0001, 0);
+    assert_eq!(ax, 0x3E00, "a written file returns its drive, A: is 0");
+}
+
+/// Runs `code`, which stores AX at `0100h`, and returns the stored AX.
+fn run_and_read_ax(machine: &mut machine_98::Pc9801Ra, code: &[u8]) -> u16 {
+    harness::inject_and_run_with_budget(machine, code, harness::INJECT_BUDGET_DISK_IO);
+    harness::result_word(&machine.bus, 0)
+}
+
+#[test]
+fn successful_calls_leave_the_ax_of_the_kernel() {
+    let mut machine = harness::boot_hle_with_floppy();
+    harness::write_bytes(
+        &mut machine.bus,
+        harness::INJECT_CODE_BASE + 0x200,
+        b"A:\\\0",
+    );
+
+    #[rustfmt::skip]
+    let disk_reset: &[u8] = &[
+        0xB8, 0x77, 0x0D,                   // MOV AX, 0D77h
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    assert_eq!(
+        run_and_read_ax(&mut machine, disk_reset),
+        0x0D77,
+        "the DOS 6.20 disk reset keeps AX"
+    );
+
+    #[rustfmt::skip]
+    let change_directory: &[u8] = &[
+        0xB8, 0x77, 0x3B,                   // MOV AX, 3B77h
+        0xBA, 0x00, 0x02,                   // MOV DX, 0200h
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    assert_eq!(
+        run_and_read_ax(&mut machine, change_directory),
+        0x3B77,
+        "the DOS 6.20 change of directory keeps AX"
+    );
+
+    #[rustfmt::skip]
+    let current_directory: &[u8] = &[
+        0xB8, 0x77, 0x47,                   // MOV AX, 4777h
+        0xB2, 0x01,                         // MOV DL, 01h
+        0xBE, 0x00, 0x03,                   // MOV SI, 0300h
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    assert_eq!(run_and_read_ax(&mut machine, current_directory), 0x0100);
+
+    #[rustfmt::skip]
+    let drive_is_remote: &[u8] = &[
+        0xB8, 0x09, 0x44,                   // MOV AX, 4409h
+        0xB3, 0x01,                         // MOV BL, 01h
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    assert_eq!(run_and_read_ax(&mut machine, drive_is_remote), 0x0300);
 }

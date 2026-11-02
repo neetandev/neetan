@@ -367,6 +367,30 @@ impl TownsScsiController {
         self.targets.iter().any(Option::is_some)
     }
 
+    /// Whether a target is attached at SCSI ID `id`.
+    pub fn has_target(&self, id: usize) -> bool {
+        self.targets.get(id).is_some_and(Option::is_some)
+    }
+
+    /// Returns the number of 512-byte blocks of the hard disk at `id`.
+    pub fn disk_block_count(&self, id: usize) -> Option<u32> {
+        self.targets.get(id)?.as_ref()?.disk_block_count()
+    }
+
+    /// Runs a read-type command on the target at `id` without a bus phase and
+    /// returns its DATA IN bytes and STATUS byte. Returns `None` without a target.
+    pub fn execute_data_in_direct(&mut self, id: usize, cdb: &[u8]) -> Option<(Vec<u8>, u8)> {
+        let target = self.targets.get_mut(id)?.as_mut()?;
+        Some(target.data_in(cdb))
+    }
+
+    /// Runs a write-type command with `data` on the target at `id` without a bus
+    /// phase and returns its STATUS byte. Returns `None` without a target.
+    pub fn execute_data_out_direct(&mut self, id: usize, cdb: &[u8], data: &[u8]) -> Option<u8> {
+        let target = self.targets.get_mut(id)?.as_mut()?;
+        Some(target.write_data_out(cdb, data))
+    }
+
     /// The interrupt line into the PIC (IRQ 8), gated by IMSK.
     pub fn irq_line(&self) -> bool {
         self.interrupt && self.imsk

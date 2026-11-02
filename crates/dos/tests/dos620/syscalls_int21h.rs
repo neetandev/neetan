@@ -2354,3 +2354,182 @@ fn int21h_48h_umb_only_strategy_allocates_from_umb_arena() {
         segment
     );
 }
+
+#[test]
+fn oem_function_ffh_clears_al_and_keeps_the_other_registers() {
+    let mut machine = harness::boot_hle();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB8, 0x34, 0xFF,                   // MOV AX, FF34h
+        0xBB, 0x78, 0x56,                   // MOV BX, 5678h
+        0xB9, 0xBC, 0x9A,                   // MOV CX, 9ABCh
+        0xBA, 0xF0, 0xDE,                   // MOV DX, DEF0h
+        0xF8,                               // CLC
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
+        0x89, 0x1E, 0x02, 0x01,             // MOV [0x0102], BX
+        0x89, 0x0E, 0x04, 0x01,             // MOV [0x0104], CX
+        0x89, 0x16, 0x06, 0x01,             // MOV [0x0106], DX
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x08, 0x01,                   // MOV [0x0108], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+
+    assert_eq!(harness::result_word(&machine.bus, 0), 0xFF00);
+    assert_eq!(harness::result_word(&machine.bus, 2), 0x5678);
+    assert_eq!(harness::result_word(&machine.bus, 4), 0x9ABC);
+    assert_eq!(harness::result_word(&machine.bus, 6), 0xDEF0);
+    assert_eq!(harness::result_word(&machine.bus, 8) & 0x0001, 0);
+    assert!(
+        machine.bus.hle_active_command_name().is_none(),
+        "AH=FFh must not run a shell step"
+    );
+}
+
+/// Segment that the overlay tests load to.
+const OVERLAY_LOAD_SEGMENT: u16 = 0x3000;
+
+/// Runs `INT 21h AX=4B03h` for `path` with the load segment and the
+/// relocation factor. Returns AX and the flags.
+fn load_overlay(
+    machine: &mut machine_98::Pc9801Ra,
+    path: &[u8],
+    relocation_factor: u16,
+) -> (u16, u16) {
+    harness::write_bytes(&mut machine.bus, harness::INJECT_CODE_BASE + 0x200, path);
+    let mut parameter_block = OVERLAY_LOAD_SEGMENT.to_le_bytes().to_vec();
+    parameter_block.extend_from_slice(&relocation_factor.to_le_bytes());
+    harness::write_bytes(
+        &mut machine.bus,
+        harness::INJECT_CODE_BASE + 0x180,
+        &parameter_block,
+    );
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB8, 0x03, 0x4B,                   // MOV AX, 4B03h
+        0xBA, 0x00, 0x02,                   // MOV DX, 0200h
+        0xBB, 0x80, 0x01,                   // MOV BX, 0180h
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x02, 0x01,                   // MOV [0x0102], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run_with_budget(machine, code, harness::INJECT_BUDGET_DISK_IO);
+    (
+        harness::result_word(&machine.bus, 0),
+        harness::result_word(&machine.bus, 2),
+    )
+}
+
+#[test]
+fn load_overlay_copies_a_com_file_to_the_load_segment() {
+    let floppy = harness::create_test_floppy_with_program(b"OVL     COM", b"OVERLAY!");
+    let mut machine = harness::boot_hle_with_floppy_image(floppy);
+    let (_, flags) = load_overlay(&mut machine, b"A:\\OVL.COM\0", 0);
+    assert_eq!(flags & 0x0001, 0);
+    let loaded = harness::read_bytes(
+        &machine.bus,
+        harness::far_to_linear(OVERLAY_LOAD_SEGMENT, 0),
+        8,
+    );
+    assert_eq!(loaded, b"OVERLAY!");
+}
+
+#[test]
+fn load_overlay_relocates_an_exe_image_by_the_factor() {
+    #[rustfmt::skip]
+    let mut exe: Vec<u8> = vec![
+        b'M', b'Z',
+        48, 0,                              // bytes in the last page
+        1, 0,                               // pages
+        1, 0,                               // relocations
+        2, 0,                               // header paragraphs
+        0, 0, 0xFF, 0xFF,                   // min and max allocation
+        0, 0, 0, 0,                         // SS, SP
+        0, 0,                               // checksum
+        0, 0, 0, 0,                         // IP, CS
+        0x1C, 0,                            // relocation table
+        0, 0,                               // overlay number
+        0x02, 0x00, 0x00, 0x00,             // relocation at 0000:0002
+    ];
+    exe.extend_from_slice(&[0xAA, 0xBB, 0x10, 0x00, 0xCC, 0xDD]);
+    exe.resize(48, 0xEE);
+    let floppy = harness::create_test_floppy_with_program(b"OVL     EXE", &exe);
+    let mut machine = harness::boot_hle_with_floppy_image(floppy);
+    let (_, flags) = load_overlay(&mut machine, b"A:\\OVL.EXE\0", 0x1234);
+    assert_eq!(flags & 0x0001, 0);
+    let loaded = harness::read_bytes(
+        &machine.bus,
+        harness::far_to_linear(OVERLAY_LOAD_SEGMENT, 0),
+        6,
+    );
+    assert_eq!(loaded, [0xAA, 0xBB, 0x44, 0x12, 0xCC, 0xDD]);
+}
+
+#[test]
+fn load_overlay_of_a_missing_file_fails_with_file_not_found() {
+    let mut machine = harness::boot_hle_with_floppy();
+    let (ax, flags) = load_overlay(&mut machine, b"A:\\MISSING.OVL\0", 0);
+    assert_eq!(flags & 0x0001, 1);
+    assert_eq!(ax, 0x0002);
+}
+
+#[test]
+fn extended_error_reports_the_last_failed_call() {
+    let mut machine = harness::boot_hle_with_floppy();
+    harness::write_bytes(
+        &mut machine.bus,
+        harness::INJECT_CODE_BASE + 0x200,
+        b"A:\\NOPE.TXT\0",
+    );
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB8, 0x00, 0x3D,                   // MOV AX, 3D00h
+        0xBA, 0x00, 0x02,                   // MOV DX, 0200h
+        0xCD, 0x21,                         // INT 21h (fails with 2)
+        0xB4, 0x30,                         // MOV AH, 30h
+        0xCD, 0x21,                         // INT 21h (succeeds)
+        0xB4, 0x59,                         // MOV AH, 59h
+        0x31, 0xDB,                         // XOR BX, BX
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
+        0x89, 0x1E, 0x02, 0x01,             // MOV [0x0102], BX
+        0x89, 0x0E, 0x04, 0x01,             // MOV [0x0104], CX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run_with_budget(&mut machine, code, harness::INJECT_BUDGET_DISK_IO);
+    assert_eq!(harness::result_word(&machine.bus, 0), 0x0002);
+    assert_eq!(harness::result_word(&machine.bus, 2), 0x0803);
+    // AH=30h starts with the locus of an unknown place.
+    assert_eq!(harness::result_word(&machine.bus, 4) >> 8, 0x01);
+}
+
+#[test]
+fn redirected_printer_mode_and_flush_fail_without_a_redirector() {
+    for subfunction in [0x08u8, 0x09] {
+        let mut machine = harness::boot_hle();
+        #[rustfmt::skip]
+        let code: &[u8] = &[
+            0xF8,                           // CLC
+            0xB8, subfunction, 0x5D,        // MOV AX, 5D0xh
+            0xB2, 0x01,                     // MOV DL, 01h
+            0xCD, 0x21,                     // INT 21h
+            0xA3, 0x00, 0x01,               // MOV [0x0100], AX
+            0x9C,                           // PUSHF
+            0x58,                           // POP AX
+            0xA3, 0x02, 0x01,               // MOV [0x0102], AX
+            0xFA,                           // CLI
+            0xF4,                           // HLT
+        ];
+        harness::inject_and_run(&mut machine, code);
+        assert_eq!(harness::result_word(&machine.bus, 0), 0x0001);
+        assert_eq!(harness::result_word(&machine.bus, 2) & 0x0001, 1);
+    }
+}

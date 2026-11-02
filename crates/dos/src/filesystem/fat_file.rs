@@ -295,7 +295,7 @@ mod tests {
     use crate::filesystem::fat::FatVolume;
 
     struct MockDisk {
-        drive_da: u8,
+        device_id: u8,
         sector_size: u16,
         sectors_per_track: u8,
         heads: u8,
@@ -304,14 +304,14 @@ mod tests {
 
     impl MockDisk {
         fn new(
-            drive_da: u8,
+            device_id: u8,
             sector_size: u16,
             sectors_per_track: u8,
             heads: u8,
             total_sectors: u32,
         ) -> Self {
             Self {
-                drive_da,
+                device_id,
                 sector_size,
                 sectors_per_track,
                 heads,
@@ -326,8 +326,8 @@ mod tests {
     }
 
     impl DiskIo for MockDisk {
-        fn read_sectors(&mut self, drive_da: u8, lba: u32, count: u32) -> Result<Vec<u8>, u8> {
-            if drive_da != self.drive_da {
+        fn read_sectors(&mut self, device_id: u8, lba: u32, count: u32) -> Result<Vec<u8>, u8> {
+            if device_id != self.device_id {
                 return Err(0x02);
             }
             let start = lba as usize * self.sector_size as usize;
@@ -335,8 +335,8 @@ mod tests {
             self.data.get(start..end).map(|s| s.to_vec()).ok_or(0x10)
         }
 
-        fn write_sectors(&mut self, drive_da: u8, lba: u32, data: &[u8]) -> Result<(), u8> {
-            if drive_da != self.drive_da {
+        fn write_sectors(&mut self, device_id: u8, lba: u32, data: &[u8]) -> Result<(), u8> {
+            if device_id != self.device_id {
                 return Err(0x02);
             }
             let start = lba as usize * self.sector_size as usize;
@@ -348,17 +348,18 @@ mod tests {
             Ok(())
         }
 
-        fn sector_size(&self, drive_da: u8) -> Option<u16> {
-            (drive_da == self.drive_da).then_some(self.sector_size)
+        fn sector_size(&self, device_id: u8) -> Option<u16> {
+            (device_id == self.device_id).then_some(self.sector_size)
         }
 
-        fn total_sectors(&self, drive_da: u8) -> Option<u32> {
-            (drive_da == self.drive_da).then_some(self.data.len() as u32 / self.sector_size as u32)
+        fn total_sectors(&self, device_id: u8) -> Option<u32> {
+            (device_id == self.device_id)
+                .then_some(self.data.len() as u32 / self.sector_size as u32)
         }
 
-        fn drive_geometry(&self, drive_da: u8) -> Option<(u16, u8, u8)> {
-            (drive_da == self.drive_da).then_some((
-                self.total_sectors(drive_da)? as u16
+        fn drive_geometry(&self, device_id: u8) -> Option<(u16, u8, u8)> {
+            (device_id == self.device_id).then_some((
+                self.total_sectors(device_id)? as u16
                     / self.heads as u16
                     / self.sectors_per_track as u16,
                 self.heads,
@@ -382,7 +383,7 @@ mod tests {
         start_cluster: u16,
         file_size: u32,
     ) -> (MockDisk, FatVolume, DirEntry, Vec<u8>) {
-        let drive_da = 0x90;
+        let device_id = 0x90;
         let sector_size = 1024u16;
         let reserved = 1u16;
         let sectors_per_fat = 2u16;
@@ -391,7 +392,7 @@ mod tests {
         let data_clusters = 1221u32;
         let total_sectors =
             reserved as u32 + sectors_per_fat as u32 + root_dir_sectors + data_clusters;
-        let mut disk = MockDisk::new(drive_da, sector_size, 8, 2, total_sectors);
+        let mut disk = MockDisk::new(device_id, sector_size, 8, 2, total_sectors);
 
         let mut boot = vec![0u8; sector_size as usize];
         boot[11..13].copy_from_slice(&sector_size.to_le_bytes());
@@ -435,13 +436,19 @@ mod tests {
         }
 
         let mut mount_disk = MockDisk {
-            drive_da: disk.drive_da,
+            device_id: disk.device_id,
             sector_size: disk.sector_size,
             sectors_per_track: disk.sectors_per_track,
             heads: disk.heads,
             data: disk.data.clone(),
         };
-        let volume = FatVolume::mount(drive_da, 0, &mut mount_disk).expect("mount FAT12");
+        let volume = FatVolume::mount(
+            device_id,
+            0,
+            &crate::drive_map::pc98::fixed_disk_geometry(),
+            &mut mount_disk,
+        )
+        .expect("mount FAT12");
         let entry = DirEntry {
             name: *b"BIGFILE BIN",
             attribute: 0x20,
@@ -459,7 +466,7 @@ mod tests {
         start_cluster: u16,
         file_size: u32,
     ) -> (MockDisk, FatVolume, DirEntry, Vec<u8>) {
-        let drive_da = 0x80;
+        let device_id = 0x80;
         let sector_size = 512u16;
         let reserved = 1u16;
         let sectors_per_fat = 32u16;
@@ -468,7 +475,7 @@ mod tests {
         let data_clusters = 5000u32;
         let total_sectors =
             reserved as u32 + sectors_per_fat as u32 + root_dir_sectors + data_clusters;
-        let mut disk = MockDisk::new(drive_da, sector_size, 17, 4, total_sectors);
+        let mut disk = MockDisk::new(device_id, sector_size, 17, 4, total_sectors);
 
         let mut boot = vec![0u8; sector_size as usize];
         boot[11..13].copy_from_slice(&sector_size.to_le_bytes());
@@ -516,13 +523,19 @@ mod tests {
         }
 
         let mut mount_disk = MockDisk {
-            drive_da: disk.drive_da,
+            device_id: disk.device_id,
             sector_size: disk.sector_size,
             sectors_per_track: disk.sectors_per_track,
             heads: disk.heads,
             data: disk.data.clone(),
         };
-        let volume = FatVolume::mount(drive_da, 0, &mut mount_disk).expect("mount FAT16");
+        let volume = FatVolume::mount(
+            device_id,
+            0,
+            &crate::drive_map::pc98::fixed_disk_geometry(),
+            &mut mount_disk,
+        )
+        .expect("mount FAT16");
         let entry = DirEntry {
             name: *b"BIGFILE BIN",
             attribute: 0x20,

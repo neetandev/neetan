@@ -110,6 +110,8 @@ pub mod trace_id {
         pub const PC98_BIOS: &str = "pc98.bios";
         /// PC/AT BIOS HLE provider.
         pub const AT_BIOS: &str = "at.bios";
+        /// FM Towns system ROM HLE provider.
+        pub const TOWNS_BIOS: &str = "towns.bios";
         /// NEETAN DOS HLE provider.
         pub const NEETAN_DOS: &str = "neetan.dos";
         /// PC-98 640 KiB floppy extension provider.

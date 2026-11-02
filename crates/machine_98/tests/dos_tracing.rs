@@ -41,9 +41,11 @@ fn machine_owned_tracer_receives_hle_os_trace_callbacks() {
                 && call.interface == common::TraceCallInterface::Named("boot")
                 && call.phase == common::TraceCallPhase::Exit
         });
+        let shell_step =
+            common::TraceCallInterface::EntryPoint(u64::from(dos::DosTrapCode::ShellStep.code()));
         let saw_os_dispatch = tracer.calls.iter().any(|call| {
             call.provider == "neetan.dos"
-                && call.interface == common::TraceCallInterface::Interrupt(0x21)
+                && call.interface == shell_step
                 && call.phase == common::TraceCallPhase::Enter
         });
         if saw_boot_end && saw_os_dispatch {

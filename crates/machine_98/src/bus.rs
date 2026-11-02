@@ -5,7 +5,6 @@
 
 mod bios;
 mod dos_adapter;
-mod dos_trace;
 mod fdc;
 mod fdd_hle;
 mod graphics;
@@ -55,6 +54,7 @@ use device::{
     upd7220_gdc::{DISPLAY_MODE_GRAPHICS, Gdc},
     upd52611_crtc::Upd52611Crtc,
 };
+use dos::drive_map::pc98 as pc98_drives;
 use software_renderer::{
     Ga1280aCursorRenderInputs, Ga1280aRenderInputs, Ga1280aRenderMode, GdcGraphicsInput,
     GraphicsInput, PegcRenderInputs, RenderInputs, SoftwareRenderer, compose_ga1280a,
@@ -585,11 +585,11 @@ impl<T: TraceSink> Pc9801Bus<T> {
 
     /// Enables the NEETAN DOS HLE DOS subsystem.
     ///
-    /// When enabled, DOS interrupt vectors (INT 20h-2Ah, 2Fh, 33h, DCh) are
-    /// routed to the built-in Rust implementation instead of being passed
-    /// through to a real DOS loaded from disk.
+    /// When enabled, DOS interrupt vectors (INT 20h-2Ah, 2Fh, 33h, 67h, DCh)
+    /// and the NeetanDos trap codes go to the built-in Rust implementation.
+    /// A real DOS loaded from disk receives none of them.
     pub fn enable_neetan_dos(&mut self) {
-        let mut dos = dos::NeetanDos::new();
+        let mut dos = dos::NeetanDos::new(dos::DosPlatform::pc98());
         dos.set_host_date_time_source(self.host_date_time_source.clone());
         self.dos = Some(dos);
     }
@@ -654,17 +654,9 @@ impl<T: TraceSink> Pc9801Bus<T> {
         if install_fdd640k_hle {
             self.fdd640k_hle.install_rom();
         }
-        let access_page = self.access_page_index();
-        let b_bank_ems = self.b_bank_ems;
-        let vram_ems_bank = self.vram_ems_bank;
         if let Some(dos) = self.dos.as_mut() {
-            let memory = dos_adapter::DosMemoryAccess::new(
-                &mut self.memory,
-                access_page,
-                b_bank_ems,
-                vram_ems_bank,
-            );
-            dos.invalidate_drive_caches(&memory, 0x90 | drive as u8);
+            dos.invalidate_drive_caches(pc98_drives::FLOPPY_2HD_CLASS | drive as u8);
+            dos.invalidate_drive_caches(pc98_drives::FLOPPY_2DD_CLASS | drive as u8);
         }
     }
 
@@ -686,17 +678,9 @@ impl<T: TraceSink> Pc9801Bus<T> {
     /// Ejects the floppy disk from the specified drive, flushing if dirty.
     pub fn eject_floppy(&mut self, drive: usize) {
         self.floppy.eject_drive(drive);
-        let access_page = self.access_page_index();
-        let b_bank_ems = self.b_bank_ems;
-        let vram_ems_bank = self.vram_ems_bank;
         if let Some(dos) = self.dos.as_mut() {
-            let memory = dos_adapter::DosMemoryAccess::new(
-                &mut self.memory,
-                access_page,
-                b_bank_ems,
-                vram_ems_bank,
-            );
-            dos.invalidate_drive_caches(&memory, 0x90 | drive as u8);
+            dos.invalidate_drive_caches(pc98_drives::FLOPPY_2HD_CLASS | drive as u8);
+            dos.invalidate_drive_caches(pc98_drives::FLOPPY_2DD_CLASS | drive as u8);
         }
     }
 
@@ -741,17 +725,8 @@ impl<T: TraceSink> Pc9801Bus<T> {
                 }
             }
         }
-        let access_page = self.access_page_index();
-        let b_bank_ems = self.b_bank_ems;
-        let vram_ems_bank = self.vram_ems_bank;
         if let Some(dos) = self.dos.as_mut() {
-            let memory = dos_adapter::DosMemoryAccess::new(
-                &mut self.memory,
-                access_page,
-                b_bank_ems,
-                vram_ems_bank,
-            );
-            dos.invalidate_drive_caches(&memory, 0x80 | drive as u8);
+            dos.invalidate_drive_caches(pc98_drives::FIXED_DISK_CLASS | drive as u8);
         }
     }
 
@@ -2074,6 +2049,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
         }
         if let Some(dos) = &state.dos {
             dos.validate_state(
+                &dos::DosPlatform::pc98(),
                 state.ems_enabled,
                 state.xms_enabled,
                 state.xms_32_enabled,

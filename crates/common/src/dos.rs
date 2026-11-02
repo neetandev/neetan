@@ -2,7 +2,7 @@
 
 use alloc::vec::Vec;
 
-use crate::{SegmentRegister, jis::JisChar};
+use crate::{Cpu, SegmentRegister, jis::JisChar};
 
 /// CPU register access for the HLE DOS.
 pub trait CpuAccess {
@@ -102,6 +102,118 @@ pub trait CpuAccess {
     }
 }
 
+/// [`CpuAccess`] over the live registers of a [`Cpu`]. A segment write loads
+/// a real mode segment.
+pub struct CpuRegisterAccess<'a, C: Cpu>(pub &'a mut C);
+
+impl<C: Cpu> CpuAccess for CpuRegisterAccess<'_, C> {
+    fn ax(&self) -> u16 {
+        self.0.ax()
+    }
+    fn set_ax(&mut self, value: u16) {
+        self.0.set_ax(value);
+    }
+    fn bx(&self) -> u16 {
+        self.0.bx()
+    }
+    fn set_bx(&mut self, value: u16) {
+        self.0.set_bx(value);
+    }
+    fn cx(&self) -> u16 {
+        self.0.cx()
+    }
+    fn set_cx(&mut self, value: u16) {
+        self.0.set_cx(value);
+    }
+    fn dx(&self) -> u16 {
+        self.0.dx()
+    }
+    fn set_dx(&mut self, value: u16) {
+        self.0.set_dx(value);
+    }
+    fn si(&self) -> u16 {
+        self.0.si()
+    }
+    fn set_si(&mut self, value: u16) {
+        self.0.set_si(value);
+    }
+    fn di(&self) -> u16 {
+        self.0.di()
+    }
+    fn set_di(&mut self, value: u16) {
+        self.0.set_di(value);
+    }
+    fn bp(&self) -> u16 {
+        self.0.bp()
+    }
+    fn set_bp(&mut self, value: u16) {
+        self.0.set_bp(value);
+    }
+    fn ds(&self) -> u16 {
+        self.0.ds()
+    }
+    fn set_ds(&mut self, value: u16) {
+        self.0.load_segment_real_mode(SegmentRegister::DS, value);
+    }
+    fn es(&self) -> u16 {
+        self.0.es()
+    }
+    fn set_es(&mut self, value: u16) {
+        self.0.load_segment_real_mode(SegmentRegister::ES, value);
+    }
+    fn ss(&self) -> u16 {
+        self.0.ss()
+    }
+    fn set_ss(&mut self, value: u16) {
+        self.0.load_segment_real_mode(SegmentRegister::SS, value);
+    }
+    fn sp(&self) -> u16 {
+        self.0.sp()
+    }
+    fn set_sp(&mut self, value: u16) {
+        self.0.set_sp(value);
+    }
+    fn cs(&self) -> u16 {
+        self.0.cs()
+    }
+    fn set_carry(&mut self, carry: bool) {
+        let mut flags = self.0.flags();
+        if carry {
+            flags |= 0x0001;
+        } else {
+            flags &= !0x0001;
+        }
+        self.0.set_flags(flags);
+    }
+    fn segment_base(&self, segment: SegmentRegister) -> u32 {
+        self.0.segment_base(segment)
+    }
+    fn eax(&self) -> u32 {
+        self.0.eax()
+    }
+    fn set_eax(&mut self, value: u32) {
+        self.0.set_eax(value);
+    }
+    fn ebx(&self) -> u32 {
+        self.0.ebx()
+    }
+    fn set_ebx(&mut self, value: u32) {
+        self.0.set_ebx(value);
+    }
+    fn ecx(&self) -> u32 {
+        self.0.ecx()
+    }
+    fn set_ecx(&mut self, value: u32) {
+        self.0.set_ecx(value);
+    }
+    fn edx(&self) -> u32 {
+        self.0.edx()
+    }
+    fn set_edx(&mut self, value: u32) {
+        self.0.set_edx(value);
+    }
+}
+
 /// Emulated memory access for the HLE DOS.
 pub trait MemoryAccess {
     /// Reads a byte from the given linear address.
@@ -133,17 +245,20 @@ pub trait MemoryAccess {
 }
 
 /// Disk I/O for the filesystem layer.
+///
+/// `device_id` names a physical device in the numbering of the platform: the
+/// DA/UA on the PC-98, the disk BIOS device code on the FM Towns.
 pub trait DiskIo {
     /// Read sectors from a physical drive.
-    fn read_sectors(&mut self, drive_da: u8, lba: u32, count: u32) -> Result<Vec<u8>, u8>;
+    fn read_sectors(&mut self, device_id: u8, lba: u32, count: u32) -> Result<Vec<u8>, u8>;
     /// Write sectors to a physical drive.
-    fn write_sectors(&mut self, drive_da: u8, lba: u32, data: &[u8]) -> Result<(), u8>;
+    fn write_sectors(&mut self, device_id: u8, lba: u32, data: &[u8]) -> Result<(), u8>;
     /// Get the sector size for a drive.
-    fn sector_size(&self, drive_da: u8) -> Option<u16>;
+    fn sector_size(&self, device_id: u8) -> Option<u16>;
     /// Get total sector count for a drive.
-    fn total_sectors(&self, drive_da: u8) -> Option<u32>;
+    fn total_sectors(&self, device_id: u8) -> Option<u32>;
     /// Get drive geometry (cylinders, heads, sectors per track).
-    fn drive_geometry(&self, drive_da: u8) -> Option<(u16, u8, u8)>;
+    fn drive_geometry(&self, device_id: u8) -> Option<(u16, u8, u8)>;
 }
 
 /// CD-ROM access for the MSCDEX layer.
@@ -297,7 +412,7 @@ pub trait ConsoleIo {
     /// Read a character from the keyboard buffer (blocking).
     fn read_char(&mut self) -> u8;
     /// Check if a character is available in the keyboard buffer.
-    fn char_available(&self) -> bool;
+    fn char_available(&mut self) -> bool;
     /// Read a scan code + character pair.
     fn read_key(&mut self) -> (u8, u8);
     /// Get current cursor position.

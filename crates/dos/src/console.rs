@@ -1,9 +1,14 @@
-//! Console I/O and text VRAM interaction.
+//! PC-98 text VRAM console: the console output backend of the PC-98.
+//!
+//! It writes the console bytes into the text VRAM and keeps the cursor and
+//! the screen state in the IO.SYS work area. The ESC sequence parser lives in
+//! `console_esc`.
 
 use common::JisChar;
 
 use crate::{
     MemoryAccess,
+    console_device::ConsoleOutput,
     console_esc::EscParser,
     tables,
     trace::{DosCellWriteEvent, DosClearEvent, DosScrollEvent, DosTraceEvent, DosTraceLog},
@@ -22,21 +27,21 @@ fn vram_attr_addr(row: u8, col: u8) -> u32 {
 }
 
 #[derive(Clone, Default)]
-/// Authoritative DOS console escape-processing state.
-pub(crate) struct Console {
+/// PC-98 text VRAM console with its escape sequence state.
+pub(crate) struct TextVramConsole {
     pub(crate) esc_parser: EscParser,
     /// Transient trace log, filled only while a dispatch is armed. Excluded from
     /// save-state.
     pub(crate) dos_trace: DosTraceLog,
 }
 
-impl save_state::StateEncode for Console {
+impl save_state::StateEncode for TextVramConsole {
     fn encode_state(&self, output: &mut Vec<u8>) {
         save_state::StateEncode::encode_state(&self.esc_parser, output);
     }
 }
 
-impl save_state::StateDecode for Console {
+impl save_state::StateDecode for TextVramConsole {
     fn decode_state(
         decoder: &mut save_state::StateDecoder<'_>,
     ) -> Result<Self, save_state::StateDecodeError> {
@@ -47,7 +52,13 @@ impl save_state::StateDecode for Console {
     }
 }
 
-impl Console {
+impl ConsoleOutput for TextVramConsole {
+    fn write_byte(&mut self, memory: &mut dyn MemoryAccess, byte: u8) {
+        self.process_byte(memory, byte);
+    }
+}
+
+impl TextVramConsole {
     pub(crate) fn cursor_row(&self, memory: &dyn MemoryAccess) -> u8 {
         memory.read_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_CURSOR_Y)
     }
@@ -599,8 +610,8 @@ mod tests {
         }
     }
 
-    fn make_console() -> Console {
-        Console::default()
+    fn make_console() -> TextVramConsole {
+        TextVramConsole::default()
     }
 
     fn make_memory() -> MockMemory {
@@ -616,7 +627,7 @@ mod tests {
         memory.read_word(vram_attr_addr(row, col))
     }
 
-    fn assert_cursor(console: &Console, memory: &MockMemory, row: u8, col: u8) {
+    fn assert_cursor(console: &TextVramConsole, memory: &MockMemory, row: u8, col: u8) {
         assert_eq!(
             (console.cursor_row(memory), console.cursor_col(memory)),
             (row, col),
@@ -686,19 +697,19 @@ mod tests {
         }
     }
 
-    fn feed_str(console: &mut Console, memory: &mut MockMemory, s: &str) {
+    fn feed_str(console: &mut TextVramConsole, memory: &mut MockMemory, s: &str) {
         for byte in s.bytes() {
             console.process_byte(memory, byte);
         }
     }
 
-    fn armed_console() -> Console {
-        let console = Console::default();
+    fn armed_console() -> TextVramConsole {
+        let console = TextVramConsole::default();
         console.dos_trace.arm(crate::trace::DosTraceInterest::all());
         console
     }
 
-    fn recorded_events(console: &Console) -> Vec<crate::trace::DosTraceEvent> {
+    fn recorded_events(console: &TextVramConsole) -> Vec<crate::trace::DosTraceEvent> {
         console.dos_trace.events.borrow().clone()
     }
 
@@ -810,7 +821,7 @@ mod tests {
 
     #[test]
     fn disabled_log_records_nothing() {
-        let mut console = Console::default();
+        let mut console = TextVramConsole::default();
         let mut memory = make_memory();
         feed_str(&mut console, &mut memory, "\u{1b}[7mABC");
         assert!(console.dos_trace.events.borrow().is_empty());
@@ -900,7 +911,7 @@ mod tests {
     #[test]
     fn per_action_arming_skips_sibling_console_events() {
         use crate::trace::{DosTraceEvent, DosTraceInterest};
-        let mut console = Console::default();
+        let mut console = TextVramConsole::default();
         console.dos_trace.arm(DosTraceInterest {
             console_escape: true,
             ..DosTraceInterest::default()

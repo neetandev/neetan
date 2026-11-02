@@ -559,6 +559,109 @@ impl<const PLATFORM: u8> Wd17xxFdc<PLATFORM> {
         self.drives.iter().any(Option::is_some)
     }
 
+    /// Whether `drive` holds a floppy.
+    pub fn drive_has_media(&self, drive: usize) -> bool {
+        self.drives.get(drive).is_some_and(Option::is_some)
+    }
+
+    /// Whether the floppy in `drive` is write protected.
+    pub fn drive_write_protected(&self, drive: usize) -> bool {
+        self.drives
+            .get(drive)
+            .and_then(Option::as_ref)
+            .is_some_and(|mounted| mounted.image().write_protected)
+    }
+
+    /// Number of track slots (cylinder * 2 + head) of the floppy in `drive`.
+    pub fn drive_track_slot_count(&self, drive: usize) -> usize {
+        self.drives
+            .get(drive)
+            .and_then(Option::as_ref)
+            .map_or(0, |mounted| mounted.image().track_slot_count())
+    }
+
+    /// Number of sectors on the physical track `cylinder`/`head` of `drive`.
+    pub fn drive_sector_count(&self, drive: usize, cylinder: u8, head: u8) -> usize {
+        self.drives
+            .get(drive)
+            .and_then(Option::as_ref)
+            .map_or(0, |mounted| {
+                mounted
+                    .image()
+                    .sector_count(usize::from(cylinder) * 2 + usize::from(head))
+            })
+    }
+
+    /// Reads the sector with the ID `cylinder`/`head`/`record` of `drive`
+    /// directly from the medium. Returns the data and whether the sector
+    /// carries a CRC error status.
+    pub fn read_sector_direct(
+        &self,
+        drive: usize,
+        cylinder: u8,
+        head: u8,
+        record: u8,
+    ) -> Option<(Vec<u8>, bool)> {
+        let mounted = self.drives.get(drive)?.as_ref()?;
+        let track_index = usize::from(cylinder) * 2 + usize::from(head);
+        let sector =
+            mounted
+                .image()
+                .find_sector_id_near_track_index(track_index, cylinder, head, record)?;
+        Some((sector.data.clone(), sector.status != 0))
+    }
+
+    /// Returns the size code of the sector with the ID `cylinder`/`head`/`record`
+    /// of `drive`.
+    pub fn sector_size_code_direct(
+        &self,
+        drive: usize,
+        cylinder: u8,
+        head: u8,
+        record: u8,
+    ) -> Option<u8> {
+        let mounted = self.drives.get(drive)?.as_ref()?;
+        let track_index = usize::from(cylinder) * 2 + usize::from(head);
+        mounted
+            .image()
+            .find_sector_id_near_track_index(track_index, cylinder, head, record)
+            .map(|sector| sector.size_code)
+    }
+
+    /// Writes the sector with the ID `cylinder`/`head`/`record` of `drive`
+    /// directly to the medium. Returns whether the sector was found.
+    pub fn write_sector_direct(
+        &mut self,
+        drive: usize,
+        cylinder: u8,
+        head: u8,
+        record: u8,
+        data: &[u8],
+    ) -> bool {
+        let Some(size_code) = self.sector_size_code_direct(drive, cylinder, head, record) else {
+            return false;
+        };
+        let Some(mounted) = self.drives.get_mut(drive).and_then(Option::as_mut) else {
+            return false;
+        };
+        let track_index = usize::from(cylinder) * 2 + usize::from(head);
+        mounted.write_sector_data(track_index, cylinder, head, record, size_code, data)
+    }
+
+    /// Positions the head of `drive` on `cylinder` and selects the drive and
+    /// `head`, as a seek of the firmware leaves the controller. The track
+    /// register follows the head and the media-change latch clears.
+    pub fn position_head_direct(&mut self, drive: usize, cylinder: u8, head: u8) {
+        if drive >= DRIVE_COUNT {
+            return;
+        }
+        self.drive_select = drive;
+        self.side = head & 1;
+        self.track_pos[drive] = i32::from(cylinder);
+        self.track_reg = cylinder;
+        self.disk_changed[drive] = false;
+    }
+
     /// The interrupt line level into PIC IRQ 6.
     pub fn irq_line(&self) -> bool {
         self.irq_pending

@@ -106,7 +106,12 @@ dependencies = [
  "device",
  "machine_98",
  "save_state",
+ "stack_vec",
 ]
+
+[[package]]
+name = "dos_towns"
+version = "0.1.0"
 
 [[package]]
 name = "find-msvc-tools"
@@ -252,6 +257,7 @@ dependencies = [
  "common",
  "cpu",
  "device",
+ "dos",
  "rom_loader",
  "save_state",
  "software_renderer",

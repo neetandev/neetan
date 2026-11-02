@@ -32,6 +32,14 @@ impl ScsiTarget {
         }
     }
 
+    /// Returns the number of 512-byte blocks of a disk target.
+    pub fn disk_block_count(&self) -> Option<u32> {
+        match self {
+            ScsiTarget::Disk(disk) => Some(disk.block_count()),
+            ScsiTarget::Cdrom(_) => None,
+        }
+    }
+
     /// Captures a disk target's command sense latch.
     pub fn capture_disk_state(&self) -> Option<crate::scsi::command::SenseData> {
         match self {

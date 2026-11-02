@@ -276,3 +276,34 @@ fn shell_cd_nonexistent_directory() {
         "second CD YUNO should also display 'Invalid directory' error"
     );
 }
+
+#[test]
+fn prompt_after_a_command_follows_an_empty_line() {
+    let mut machine = boot_hle();
+    type_string(&mut machine.bus, b"VER\r");
+    run_until_prompt(&mut machine);
+    let ver_row = find_row_containing(&machine.bus, "Z:\\>VER").expect("command line");
+    assert_eq!(
+        text_vram_row_to_string(&machine.bus, ver_row + 1).trim(),
+        ""
+    );
+    assert_eq!(
+        text_vram_row_to_string(&machine.bus, ver_row + 2).trim(),
+        "Neetan DOS 6.20"
+    );
+    assert_eq!(
+        text_vram_row_to_string(&machine.bus, ver_row + 3).trim(),
+        ""
+    );
+    assert_eq!(
+        text_vram_row_to_string(&machine.bus, ver_row + 4).trim(),
+        "Z:\\>"
+    );
+
+    type_string(&mut machine.bus, b"\r");
+    run_until_prompt(&mut machine);
+    assert_eq!(
+        text_vram_row_to_string(&machine.bus, ver_row + 5).trim(),
+        "Z:\\>"
+    );
+}

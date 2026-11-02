@@ -5,7 +5,7 @@
 //! tracks which byte ranges within extended RAM are allocated.
 
 use super::best_fit::{ALIGN_MASK, Allocation, BestFitAllocator};
-use crate::{MemoryAccess, memory, tables::*};
+use crate::{EmsWindow, MemoryAccess, UmbBlockKind, UmbWindow, memory, tables::*};
 
 pub(crate) const EXTENDED_RAM_BASE: u32 = 0x100000;
 
@@ -33,12 +33,13 @@ state_struct_codec!(EmsMoveParams {
     dst_offset,
     dst_seg_page,
 });
-const EMS_PAGE_FRAME_BASE: u32 = 0xC0000;
-const EMS_PAGE_SIZE: u32 = 0x4000;
+/// Size of one EMS page in bytes.
+const EMS_PAGE_SIZE: u32 = EmsWindow::PAGE_SIZE;
 const PAGE_SIZE_4K: u32 = 0x1000;
 const MAX_EMS_HANDLES: usize = 255;
 const MAX_XMS_HANDLES: usize = 255;
-const PHYSICAL_PAGES: usize = 4;
+/// Number of physical pages in the EMS page frame.
+const PHYSICAL_PAGES: usize = EmsWindow::PHYSICAL_PAGE_COUNT;
 const HMA_POOL_RESERVATION_BYTES: u32 = 64 * 1024;
 const UMB_BACKING_BYTES: u32 = 128 * 1024;
 const EMS_OS_RESERVED_HANDLE: usize = 0;
@@ -65,15 +66,11 @@ state_struct_codec!(EmsPageMapCallContext {
     old_map_addr,
 });
 
-fn physical_page_for_segment(segment: u16) -> Option<usize> {
-    match segment {
-        0xC000 => Some(0),
-        0xC400 => Some(1),
-        0xC800 => Some(2),
-        0xCC00 => Some(3),
-        _ => None,
-    }
-}
+/// MCB name of a reserved UMB block.
+const UMB_RESERVED_NAME: &[u8; 8] = b"UMBRES  ";
+
+/// MCB name of a free UMB block.
+const UMB_FREE_NAME: &[u8; 8] = b"\0\0\0\0\0\0\0\0";
 
 #[derive(Debug, Clone, Copy)]
 /// One logical-to-physical EMS page mapping.
@@ -151,7 +148,8 @@ pub(crate) struct MemoryManager {
     allocator_base_offset: u32,
     hma_exists: bool,
 
-    ems_enabled: bool,
+    /// EMS page frame window. `None` when EMS is disabled.
+    ems_window: Option<EmsWindow>,
     ems_handles: Vec<EmsHandle>,
     ems_page_mapping: [Option<EmsMapping>; PHYSICAL_PAGES],
 
@@ -186,7 +184,7 @@ state_struct_codec!(MemoryManager {
     extended_memory_size,
     allocator_base_offset,
     hma_exists,
-    ems_enabled,
+    ems_window,
     ems_handles,
     ems_page_mapping,
     xms_enabled,
@@ -222,13 +220,17 @@ impl MemoryManager {
         Ok(())
     }
 
+    /// Creates the manager. EMS is active when `ems_window` is `Some`. The UMB
+    /// chain of `umb_window` is built when EMS or XMS is active.
     pub(crate) fn new(
         extended_memory_size: u32,
-        ems_enabled: bool,
+        ems_window: Option<EmsWindow>,
         xms_enabled: bool,
         xms_32_enabled: bool,
+        umb_window: Option<&UmbWindow>,
         mem: &mut dyn MemoryAccess,
     ) -> Self {
+        let ems_enabled = ems_window.is_some();
         let hma_exists = xms_enabled && extended_memory_size >= HMA_POOL_RESERVATION_BYTES;
         let allocator_base_offset = if hma_exists {
             HMA_POOL_RESERVATION_BYTES
@@ -242,55 +244,22 @@ impl MemoryManager {
             mem.enable_ems_page_frame();
         }
 
-        let requested_umb_enabled = ems_enabled || xms_enabled;
-        let umb_backing_allocation = if requested_umb_enabled {
+        let umb_window = umb_window.filter(|_| ems_enabled || xms_enabled);
+        let umb_backing_allocation = if umb_window.is_some() {
             allocator.allocate_aligned(UMB_BACKING_BYTES, PAGE_SIZE_4K)
         } else {
             None
         };
-        let umb_enabled = requested_umb_enabled && umb_backing_allocation.is_some();
-        let (umb_first_mcb_segment, umb_first_block_paragraphs) = if ems_enabled {
-            (UMB_FIRST_MCB_SEGMENT, UMB_BLOCK_PARAGRAPHS)
-        } else {
-            (UMB_NOEMS_FIRST_MCB_SEGMENT, UMB_NOEMS_BLOCK_PARAGRAPHS)
-        };
-        if umb_enabled {
+        let umb_window = umb_window.filter(|_| umb_backing_allocation.is_some());
+        let umb_enabled = umb_window.is_some();
+        let umb_first_mcb_segment =
+            umb_window.map_or(0, |window| window.leading_block(ems_enabled).mcb_segment);
+        if let Some(window) = umb_window {
             let backing = umb_backing_allocation
                 .as_ref()
                 .map(|allocation| EXTENDED_RAM_BASE + allocator_base_offset + allocation.offset());
             mem.enable_umb_region(backing);
-            memory::write_mcb(
-                mem,
-                umb_first_mcb_segment,
-                0x4D,
-                MCB_OWNER_FREE,
-                umb_first_block_paragraphs,
-                b"\0\0\0\0\0\0\0\0",
-            );
-            memory::write_mcb(
-                mem,
-                UMB_RESERVED_MCB_SEGMENT,
-                0x4D,
-                MCB_OWNER_DOS,
-                UMB_RESERVED_PARAGRAPHS,
-                b"UMBRES  ",
-            );
-            memory::write_mcb(
-                mem,
-                UMB_SECOND_MCB_SEGMENT,
-                0x4D,
-                MCB_OWNER_FREE,
-                UMB_BLOCK_PARAGRAPHS,
-                b"\0\0\0\0\0\0\0\0",
-            );
-            memory::write_mcb(
-                mem,
-                UMB_TRAILING_RESERVED_MCB_SEGMENT,
-                0x5A,
-                MCB_OWNER_DOS,
-                UMB_TRAILING_RESERVED_PARAGRAPHS,
-                b"UMBRES  ",
-            );
+            Self::write_umb_chain(mem, window, ems_enabled);
         }
 
         let mut ems_handles = Vec::with_capacity(MAX_EMS_HANDLES);
@@ -309,7 +278,7 @@ impl MemoryManager {
             extended_memory_size,
             allocator_base_offset,
             hma_exists,
-            ems_enabled,
+            ems_window,
             ems_handles,
             ems_page_mapping: [None; PHYSICAL_PAGES],
             xms_enabled,
@@ -331,8 +300,54 @@ impl MemoryManager {
         }
     }
 
-    /// Sets the /HMAMIN= threshold (in KB). Consulted by `xms_request_hma`
-    /// to prioritize HMA for larger consumers.
+    /// Creates the manager with the EMS and UMB windows of `platform`.
+    #[cfg(test)]
+    pub(crate) fn new_for_platform(
+        platform: &crate::DosPlatform,
+        extended_memory_size: u32,
+        ems_enabled: bool,
+        xms_enabled: bool,
+        xms_32_enabled: bool,
+        mem: &mut dyn MemoryAccess,
+    ) -> Self {
+        Self::new(
+            extended_memory_size,
+            platform.ems_window.filter(|_| ems_enabled),
+            xms_enabled,
+            xms_32_enabled,
+            platform.umb_window.as_ref(),
+            mem,
+        )
+    }
+
+    /// Writes the initial MCB chain of the UMB window. The leading block
+    /// depends on the EMS state. The last block ends the chain.
+    fn write_umb_chain(mem: &mut dyn MemoryAccess, window: &UmbWindow, ems_enabled: bool) {
+        let blocks = core::iter::once(window.leading_block(ems_enabled))
+            .chain(window.trailing_blocks.iter().copied());
+        let block_count = 1 + window.trailing_blocks.len();
+        for (index, block) in blocks.enumerate() {
+            let block_type = if index + 1 == block_count {
+                memory::MCB_TYPE_Z
+            } else {
+                memory::MCB_TYPE_M
+            };
+            let (owner, name) = match block.kind {
+                UmbBlockKind::Free => (MCB_OWNER_FREE, UMB_FREE_NAME),
+                UmbBlockKind::Reserved => (MCB_OWNER_DOS, UMB_RESERVED_NAME),
+            };
+            memory::write_mcb(
+                mem,
+                block.mcb_segment,
+                block_type,
+                owner,
+                block.paragraphs,
+                name,
+            );
+        }
+    }
+
+    /// Sets the /HMAMIN= threshold in KiB. HMA requests below it fail.
     pub(crate) fn set_hmamin_kb(&mut self, hmamin_kb: u16) {
         self.hmamin_kb = hmamin_kb;
     }
@@ -472,15 +487,20 @@ impl MemoryManager {
     }
 
     pub(crate) fn ems_status(&self) -> u8 {
-        if self.ems_enabled { 0x00 } else { 0x84 }
+        if self.ems_window.is_some() {
+            0x00
+        } else {
+            0x84
+        }
     }
 
     pub(crate) fn ems_page_frame_segment(&self) -> u16 {
-        EMS_PAGE_FRAME_SEGMENT
+        self.ems_window
+            .map_or(0, |window| window.page_frame_segment)
     }
 
     pub(crate) fn ems_unallocated_pages(&self) -> (u16, u16) {
-        if !self.ems_enabled {
+        if self.ems_window.is_none() {
             return (0, 0);
         }
         let total = self.total_ems_pages();
@@ -709,7 +729,7 @@ impl MemoryManager {
         let mut out = Vec::with_capacity(1 + segments.len() * 6);
         out.push(segments.len() as u8);
         for &seg in segments {
-            let slot = match physical_page_for_segment(seg) {
+            let slot = match self.physical_page_for_segment(seg) {
                 Some(s) => s,
                 None => return Err(0x8B),
             };
@@ -747,7 +767,7 @@ impl MemoryManager {
             let seg = u16::from_le_bytes([src[base], src[base + 1]]);
             let handle = u16::from_le_bytes([src[base + 2], src[base + 3]]);
             let logical = u16::from_le_bytes([src[base + 4], src[base + 5]]);
-            let physical = match physical_page_for_segment(seg) {
+            let physical = match self.physical_page_for_segment(seg) {
                 Some(p) => p as u8,
                 None => return 0x8B,
             };
@@ -1105,12 +1125,21 @@ impl MemoryManager {
         }
     }
 
+    /// Returns the physical page that starts at `segment` in the EMS window.
+    fn physical_page_for_segment(&self, segment: u16) -> Option<usize> {
+        self.ems_window
+            .and_then(|window| window.physical_page_for_segment(segment))
+    }
+
     fn ems_regions_overlap_page_frame(
         &self,
         src_region: EmsTransferRegion,
         dst_region: EmsTransferRegion,
         region_length: u32,
     ) -> bool {
+        let Some(window) = self.ems_window else {
+            return false;
+        };
         match (src_region, dst_region) {
             (
                 EmsTransferRegion::Conventional { linear_address },
@@ -1122,8 +1151,8 @@ impl MemoryManager {
             ) => Self::ranges_overlap(
                 linear_address,
                 region_length,
-                EMS_PAGE_FRAME_BASE,
-                (PHYSICAL_PAGES as u32) * EMS_PAGE_SIZE,
+                window.base_address(),
+                window.size(),
             ),
             _ => false,
         }
@@ -1504,15 +1533,8 @@ impl MemoryManager {
         }
     }
 
-    pub(crate) fn umb_free(&self, segment: u16, mem: &mut dyn MemoryAccess) -> Result<(), u8> {
-        if !self.umb_enabled {
-            return Err(0xB2);
-        }
-        memory::free(mem, self.umb_first_mcb_segment, segment).map_err(|_| 0xB2)
-    }
-
     pub(crate) fn ems_total_kb(&self) -> u32 {
-        if self.ems_enabled {
+        if self.ems_window.is_some() {
             self.allocator_total_bytes() / 1024
         } else {
             0
@@ -1520,7 +1542,7 @@ impl MemoryManager {
     }
 
     pub(crate) fn ems_free_kb(&self) -> u32 {
-        if self.ems_enabled {
+        if self.ems_window.is_some() {
             let (free_pages, _) = self.ems_unallocated_pages();
             (free_pages as u32) * (EMS_PAGE_SIZE / 1024)
         } else {
@@ -1529,7 +1551,7 @@ impl MemoryManager {
     }
 
     pub(crate) fn ems_allocated_kb(&self) -> u32 {
-        if !self.ems_enabled {
+        if self.ems_window.is_none() {
             return 0;
         }
         self.ems_handles
@@ -1574,7 +1596,7 @@ impl MemoryManager {
     }
 
     pub(crate) fn is_ems_enabled(&self) -> bool {
-        self.ems_enabled
+        self.ems_window.is_some()
     }
 
     pub(crate) fn is_xms_enabled(&self) -> bool {
@@ -1742,6 +1764,45 @@ mod tests {
 
     use super::*;
 
+    /// Linear address of the PC-98 EMS page frame.
+    const EMS_PAGE_FRAME_BASE: u32 = 0xC0000;
+    /// PC-98 UMB chain: MCB of the leading block with EMS.
+    const UMB_FIRST_MCB_SEGMENT: u16 = 0xD000;
+    /// PC-98 UMB chain: size of a free block with EMS.
+    const UMB_BLOCK_PARAGRAPHS: u16 = 0x0700;
+    /// PC-98 UMB chain: MCB of the leading block without EMS.
+    const UMB_NOEMS_FIRST_MCB_SEGMENT: u16 = 0xC000;
+    /// PC-98 UMB chain: size of the leading block without EMS.
+    const UMB_NOEMS_BLOCK_PARAGRAPHS: u16 = 0x1700;
+    /// PC-98 UMB chain: MCB of the first reserved block.
+    const UMB_RESERVED_MCB_SEGMENT: u16 = 0xD701;
+    /// PC-98 UMB chain: size of the first reserved block.
+    const UMB_RESERVED_PARAGRAPHS: u16 = 0x00FD;
+    /// PC-98 UMB chain: MCB of the second free block.
+    const UMB_SECOND_MCB_SEGMENT: u16 = 0xD7FF;
+    /// PC-98 UMB chain: MCB of the trailing reserved block.
+    const UMB_TRAILING_RESERVED_MCB_SEGMENT: u16 = 0xDF00;
+    /// PC-98 UMB chain: size of the trailing reserved block.
+    const UMB_TRAILING_RESERVED_PARAGRAPHS: u16 = 0x00FF;
+
+    /// Creates a manager with the PC-98 windows.
+    fn pc98_manager(
+        extended_memory_size: u32,
+        ems: bool,
+        xms: bool,
+        xms_32: bool,
+        mem: &mut dyn MemoryAccess,
+    ) -> MemoryManager {
+        MemoryManager::new_for_platform(
+            &crate::DosPlatform::pc98(),
+            extended_memory_size,
+            ems,
+            xms,
+            xms_32,
+            mem,
+        )
+    }
+
     struct MockMemory {
         data: HashMap<u32, u8>,
         ext_mem_size: u32,
@@ -1831,7 +1892,7 @@ mod tests {
 
     fn create_manager_selective(pool_kb: u32, ems: bool, xms: bool) -> (MemoryManager, MockMemory) {
         let mut mem = MockMemory::new(pool_kb);
-        let mm = MemoryManager::new(pool_kb * 1024, ems, xms, true, &mut mem);
+        let mm = pc98_manager(pool_kb * 1024, ems, xms, true, &mut mem);
         (mm, mem)
     }
 
@@ -3256,13 +3317,6 @@ mod tests {
     }
 
     #[test]
-    fn test_umb_free_basic() {
-        let (mm, mut mem) = create_manager(1024);
-        let (segment, _) = mm.umb_allocate(16, &mut mem).unwrap();
-        assert!(mm.umb_free(segment, &mut mem).is_ok());
-    }
-
-    #[test]
     fn test_ems_and_xms_share_pool() {
         let (mut mm, _mem) = create_manager(1024);
         let (free_pages, _) = mm.ems_unallocated_pages();
@@ -3296,7 +3350,7 @@ mod tests {
         assert!(mm.is_xms_32_enabled());
 
         let mut mem = MockMemory::new(1024);
-        let mm2 = MemoryManager::new(1024 * 1024, true, true, false, &mut mem);
+        let mm2 = pc98_manager(1024 * 1024, true, true, false, &mut mem);
         assert!(!mm2.is_xms_32_enabled());
     }
 

@@ -1,9 +1,10 @@
-//! NEETAN DOS - HLE DOS implementation for PC-98.
+//! NEETAN DOS - HLE DOS implementation.
 //!
-//! Provides a high-level emulation of MS-DOS 6.20 compatible OS services
-//! for the PC-9801 series. The `NeetanDos` struct receives DOS interrupt
-//! dispatch calls from the machine bus and delegates to per-interrupt
-//! handler modules.
+//! Provides a high-level emulation of MS-DOS compatible OS services. A
+//! `DosPlatform` describes the machine: the reported DOS version, the
+//! structure layout of the DOS internal tables, the memory placement and the
+//! optional EMS and UMB windows. The `NeetanDos` struct receives DOS entries
+//! from the machine bus and delegates to per-interrupt handler modules.
 
 extern crate alloc;
 
@@ -67,24 +68,42 @@ mod commands;
 mod config;
 mod console;
 mod console_adapter;
+mod console_device;
 mod console_esc;
+mod console_line;
 pub mod copy_common;
 mod country;
+mod critical_error;
+mod device_chain;
+mod device_request;
 mod dos;
+pub mod drive_map;
 mod environment;
+mod extended_error;
 mod file_io;
 pub mod filesystem;
+mod guest_call;
+mod guest_cdrom;
+mod guest_character;
+mod guest_volume;
 mod interrupt;
 mod ioctl;
+mod kernel;
+pub mod layout;
 mod memory;
+mod mscdex;
 mod native_driver;
+pub mod platform;
 mod process;
 mod shell;
 mod state;
+mod system_data;
 pub mod tables;
 #[cfg(test)]
 mod test_support;
 pub mod trace;
+pub mod trace_bridge;
+pub mod trap;
 
 use std::collections::BTreeMap;
 
@@ -95,24 +114,89 @@ pub use common::{
 };
 
 use crate::{
+    console_device::{ConsoleDevice, ConsoleOutput, KeyboardInput},
+    guest_call::{GuestOperation, GuestRequests},
+    guest_character::GuestClock,
+    guest_volume::{GuestVolumeDisk, GuestVolumes},
+    layout::StructureLayout,
     memory::memory_manager::MemoryManager,
     trace::{DosTraceKind, DosTraceSink},
 };
+pub use crate::{
+    guest_call::FarPointer,
+    kernel::KERNEL_INTERRUPT_VECTORS,
+    layout::DosLayout,
+    platform::{DosMachine, DosPlacement, DosPlatform, EmsWindow, UmbBlockKind, UmbWindow},
+    trap::{DosEntry, DosTrapCode},
+};
 
-/// Information about a discovered drive for CDS/DPB/DAUA population.
-struct DriveInfo {
-    /// 0-based drive index (0=A, 1=B, ..., 25=Z).
-    drive_index: u8,
-    /// Device address (0x90=1MB FDD0, 0x80=HDD0, 0x00=virtual).
-    da_ua: u8,
-    /// True for the virtual Z: drive.
-    is_virtual: bool,
-}
+/// Size of one interrupt vector table entry in bytes.
+const IVT_ENTRY_SIZE: u32 = 4;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum DriveClass {
-    Floppy,
-    HardDisk,
+/// Divide error vector.
+const DIVIDE_ERROR_VECTOR: u8 = 0x00;
+
+/// Critical error handler vector.
+const INT24_VECTOR: u8 = 0x24;
+
+/// NetBIOS vector.
+const NETBIOS_VECTOR: u8 = 0x5C;
+
+/// EMS driver vector.
+const EMS_VECTOR: u8 = 0x67;
+
+/// Bits of the drive index in the first byte of the find data in the DTA.
+const FIND_DRIVE_MASK: u8 = 0x7F;
+
+/// Default critical error handler: `MOV AL, 3` (fail), `IRET`.
+pub(crate) const CRITICAL_ERROR_FAIL_STUB: [u8; 3] = [0xB0, 0x03, 0xCF];
+
+/// HIMEM.SYS entry prologue (`JMP +3`, three `NOP`) in front of the XMS trap stub.
+const XMS_ENTRY_PROLOGUE: [u8; 5] = [0xEB, 0x03, 0x90, 0x90, 0x90];
+
+/// DOS error code of an invalid drive.
+pub(crate) const ERROR_INVALID_DRIVE: u16 = 0x000F;
+
+/// IOCTL `AX=4409h` attribute bit of a redirected (remote) drive.
+pub(crate) const DEVICE_ATTRIBUTE_REMOTE: u16 = 0x1000;
+
+/// First major DOS version whose IOCTL `AX=4409h` returns the device
+/// attribute word of a local drive.
+const LOCAL_DRIVE_ATTRIBUTES_MAJOR_VERSION: u8 = 4;
+
+/// Major version of the DOS 3 kernel.
+const DOS3_MAJOR_VERSION: u8 = 3;
+
+/// DOS error code of a missing file.
+const ERROR_FILE_NOT_FOUND: u16 = 0x0002;
+
+/// DOS error code of a general failure.
+const ERROR_GENERAL_FAILURE: u16 = 0x001F;
+
+/// DPB access flag of a drive that DOS has not accessed yet.
+const DPB_NOT_ACCESSED: u8 = 0xFF;
+
+/// Value of a free JFN entry.
+const FREE_JFT_ENTRY: u8 = 0xFF;
+
+/// DPB access flag of an accessed drive.
+const DPB_ACCESSED: u8 = 0x00;
+
+/// DOS error code of a full system file table.
+const ERROR_TOO_MANY_OPEN_FILES: u16 = 0x0004;
+
+/// Far pointer value that ends a DOS chain.
+const END_OF_CHAIN: (u16, u16) = (0xFFFF, 0xFFFF);
+
+/// A run of physical sectors on a `DiskIo` device.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PhysicalSectorSpan {
+    /// `DiskIo` device id.
+    pub(crate) device_id: u8,
+    /// First physical sector.
+    pub(crate) first_lba: u32,
+    /// Number of physical sectors.
+    pub(crate) sector_count: u32,
 }
 
 /// State accessible to commands during step() execution.
@@ -121,14 +205,10 @@ enum DriveClass {
 /// while `Shell` holds the `Box<dyn RunningCommand>`.
 #[derive(Clone)]
 pub(crate) struct DosState {
-    /// Linear address of SYSVARS (List of Lists) in emulated RAM.
-    pub(crate) sysvars_base: u32,
-    /// Linear address of the InDOS flag byte.
-    pub(crate) indos_addr: u32,
+    /// Machine description: version, structure layout, placement and windows.
+    pub(crate) platform: DosPlatform,
     /// Boot drive number (1=A, 2=B, ...). Default is 26 (Z:).
     pub(crate) boot_drive: u8,
-    /// DOS version reported to programs: (major, minor) = (6, 20).
-    pub(crate) version: (u8, u8),
     /// Segment of the current PSP (set during boot and EXEC).
     pub(crate) current_psp: u16,
     /// Current default drive (0-based: 0=A, 1=B, ...).
@@ -155,10 +235,12 @@ pub(crate) struct DosState {
     pub(crate) last_termination_type: u8,
     /// Linear address of DBCS lead byte table in emulated RAM.
     pub(crate) dbcs_table_addr: u32,
+    /// Drive letters and the devices, partition schemes and geometries behind them.
+    pub(crate) drive_map: drive_map::DriveMap,
+    /// Drives whose DPB in memory differs from the drive map (bit n = drive n).
+    pub(crate) stale_parameter_blocks: u32,
     /// Mounted FAT volumes, indexed by drive number (0=A..25=Z). Lazy-mounted.
     pub(crate) fat_volumes: Vec<Option<filesystem::fat::FatVolume>>,
-    /// Base address of the second SFT block in emulated RAM.
-    pub(crate) sft2_base: u32,
     /// Virtual Z: drive.
     pub(crate) virtual_drive: filesystem::virtual_drive::VirtualDrive,
     /// Process stack for nested EXEC calls.
@@ -199,14 +281,39 @@ pub(crate) struct DosState {
     pub(crate) xms_hmamin_kb: u16,
     /// Unified EMS/XMS/UMB memory manager. `None` if EMS/XMS both disabled or no extended RAM.
     pub(crate) memory_manager: Option<MemoryManager>,
+    /// True when writes verify (`INT 21h AH=2Eh`).
+    pub(crate) verify_writes: bool,
+    /// The `INT 24h` handler failed a request of the current entry. The
+    /// failed DOS call reports the extended error `53h`.
+    pub(crate) critical_error_failed: bool,
+    /// Native drives whose medium the `INT 24h` handler failed in the
+    /// current entry (bit n = drive n).
+    pub(crate) media_failed: u32,
+    /// Volume images of the guest block units.
+    pub(crate) guest_volumes: GuestVolumes,
+    /// Volume images of the guest CD-ROM drives.
+    pub(crate) guest_cdroms: guest_cdrom::GuestCdroms,
+    /// Console line of `INT 21h AH=3Fh` reads from CON.
+    pub(crate) console_line: ConsoleLine,
+    /// CLOCK$ driver of a guest device chain, if one serves the DOS clock.
+    pub(crate) guest_clock: Option<GuestClock>,
+    /// Result of the guest character device transfer of the current entry.
+    pub(crate) device_transfer: Option<guest_character::DeviceTransferResult>,
+    /// Guest work that the current handler run asked for. Empty between traps.
+    pub(crate) guest_requests: GuestRequests,
+    /// Carry that the running handler wrote into the IRET frame, `None` while
+    /// it wrote none. Reset at the start of every `INT 21h` handler run and
+    /// read at its end, inside one trap.
+    pub(crate) handler_carry: core::cell::Cell<Option<bool>>,
+    /// True while an `INT 21h` handler runs, inside one trap. Only a DOS
+    /// call asks the `INT 24h` handler for an unknown medium.
+    pub(crate) in_dos_call: bool,
 }
 
 state_struct_codec_with_resources!(DosState {
     state {
-        sysvars_base,
-        indos_addr,
+        platform,
         boot_drive,
-        version,
         current_psp,
         current_drive,
         dta_segment,
@@ -219,8 +326,9 @@ state_struct_codec_with_resources!(DosState {
         last_return_code,
         last_termination_type,
         dbcs_table_addr,
+        drive_map,
+        stale_parameter_blocks,
         fat_volumes,
-        sft2_base,
         virtual_drive,
         process_stack,
         country_code,
@@ -238,11 +346,36 @@ state_struct_codec_with_resources!(DosState {
         xms_32_enabled,
         xms_hmamin_kb,
         memory_manager,
+        verify_writes,
+        critical_error_failed,
+        media_failed,
+        guest_volumes,
+        guest_cdroms,
+        console_line,
+        guest_clock,
+        device_transfer,
     }
     resources {
         host_date_time_source: default_host_local_time_source(),
+        guest_requests: GuestRequests::default(),
+        handler_carry: core::cell::Cell::new(None),
+        in_dos_call: false,
     }
 });
+
+save_state::runtime_state! {
+    /// Cooked line input of `INT 21h AH=3Fh` from CON.
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    pub(crate) struct ConsoleLine {
+        /// Line that the user edits.
+        pub(crate) edited: Vec<u8>,
+        /// Bytes of the finished line, CR and LF included, that reads did
+        /// not take yet.
+        pub(crate) pending: std::collections::VecDeque<u8>,
+        /// Bytes that a raw read collected while it waits for the rest.
+        pub(crate) raw: Vec<u8>,
+    }
+}
 
 #[derive(Clone)]
 /// Pending DOS buffered-console input request.
@@ -267,11 +400,15 @@ pub struct BootEntryPoint {
 }
 
 impl BootEntryPoint {
-    fn command_com(psp_segment: u16) -> Self {
+    /// Flags of a program entry: interrupts enabled, the reserved bit 1 set.
+    pub(crate) const COMMAND_COM_FLAGS: u16 = 0x0202;
+
+    /// Returns the entry of COMMAND.COM at `PSP:0100h`.
+    pub(crate) fn command_com(psp_segment: u16) -> Self {
         Self {
             segment: psp_segment,
             offset: 0x0100,
-            flags: 0x0202,
+            flags: Self::COMMAND_COM_FLAGS,
         }
     }
 }
@@ -280,24 +417,6 @@ state_struct_codec!(BootEntryPoint {
     segment,
     offset,
     flags,
-});
-
-#[derive(Clone)]
-/// Native DOS driver awaiting completion of its initialization call.
-pub(crate) struct LoadedNativeDriver {
-    pub display_name: Vec<u8>,
-    pub segment: u16,
-    pub request_segment: u16,
-    pub request_offset: u16,
-    pub request_high: bool,
-}
-
-state_struct_codec!(LoadedNativeDriver {
-    display_name,
-    segment,
-    request_segment,
-    request_offset,
-    request_high,
 });
 
 fn from_bcd(value: u8) -> u8 {
@@ -435,16 +554,20 @@ pub(crate) struct RedirectInput {
     pub position: usize,
 }
 
-/// Bundles `Console` + `MemoryAccess` for shell and command I/O.
+/// Bundles the console and the memory for shell and command I/O.
 ///
-/// When `redirect_output` is `Some`, command output is captured into the
-/// buffer instead of being sent to the console. When `redirect_input` is
-/// `Some`, commands read from the buffer instead of the keyboard.
+/// When `redirect_output` is `Some`, the buffer captures the command output.
+/// When `redirect_input` is `Some`, commands read from the buffer. Console
+/// output goes to the backend of `console_device`. With `console_nul` the
+/// console is the NUL device: it drops the output and has no key. Cursor
+/// positioning and the cell API need the PC-98 text VRAM console.
 pub(crate) struct IoAccess<'a> {
-    pub console: &'a mut console::Console,
+    pub console: &'a mut console::TextVramConsole,
+    pub console_device: &'a mut ConsoleDevice,
     pub memory: &'a mut dyn MemoryAccess,
     pub redirect_output: Option<Vec<u8>>,
     pub redirect_input: Option<RedirectInput>,
+    pub console_nul: bool,
 }
 
 impl IoAccess<'_> {
@@ -453,8 +576,24 @@ impl IoAccess<'_> {
         if let Some(ref mut buf) = self.redirect_output {
             buf.push(byte);
         } else {
-            self.console.process_byte(self.memory, byte);
+            self.write_console(byte);
         }
+    }
+
+    /// Writes a byte to the console backend, past any redirection.
+    pub(crate) fn write_console(&mut self, byte: u8) {
+        if self.console_nul {
+            return;
+        }
+        self.console_device
+            .output(self.console)
+            .write_byte(self.memory, byte);
+    }
+
+    /// Returns true when the console is the PC-98 text VRAM console with
+    /// cursor positioning and cells.
+    pub(crate) fn has_text_screen(&self) -> bool {
+        self.console_device.is_text_vram()
     }
 
     /// Prints the given message to the current output target.
@@ -471,8 +610,35 @@ impl IoAccess<'_> {
         self.output_byte(b'\n');
     }
 
-    pub(crate) fn console_io(&mut self) -> console_adapter::ConsoleAdapter<'_> {
-        console_adapter::ConsoleAdapter::new(self.console, self.memory)
+    /// Returns true when a key waits at the keyboard backend.
+    pub(crate) fn key_available(&mut self) -> bool {
+        !self.console_nul && self.console_device.keyboard().key_available(self.memory)
+    }
+
+    /// Takes the next key and returns its character byte, zero without a key.
+    pub(crate) fn take_key_character(&mut self) -> u8 {
+        self.read_key().map_or(0, |key| key.character)
+    }
+
+    /// Takes the next key.
+    pub(crate) fn read_key(&mut self) -> Option<console_device::KeyStroke> {
+        if self.console_nul {
+            return None;
+        }
+        self.console_device.keyboard().read_key(self.memory)
+    }
+
+    /// Returns the cell console of the text VRAM. `None` for a console
+    /// without cells.
+    pub(crate) fn console_io(&mut self) -> Option<console_adapter::ConsoleAdapter<'_>> {
+        if !self.console_device.is_text_vram() {
+            return None;
+        }
+        Some(console_adapter::ConsoleAdapter::new(
+            self.console,
+            self.console_device.keyboard(),
+            self.memory,
+        ))
     }
 }
 
@@ -485,16 +651,20 @@ impl IoAccess<'_> {
 pub struct NeetanDos {
     /// DOS state accessible to commands.
     pub(crate) state: DosState,
-    /// Console output state (cursor tracking, ESC parser).
-    pub(crate) console: console::Console,
+    /// PC-98 text VRAM console (cursor tracking, ESC parser).
+    pub(crate) console: console::TextVramConsole,
+    /// Backend that serves CON output and keyboard input.
+    pub(crate) console_device: ConsoleDevice,
     /// Root COMMAND.COM PSP segment.
     pub(crate) root_command_com_psp: u16,
     /// First guest entry after HLE bootstrap finishes.
     pub(crate) boot_entry_point: BootEntryPoint,
-    /// Native CONFIG.SYS drivers whose INIT trampoline has not completed yet.
-    pub(crate) pending_native_drivers: Vec<LoadedNativeDriver>,
+    /// Pending guest operations, the innermost last.
+    pub(crate) guest_calls: Vec<GuestOperation>,
     /// Active shell sessions keyed by PSP segment.
     pub(crate) shells: BTreeMap<u16, shell::Shell>,
+    /// Progress of the kernel entry while the INIT calls of the chain run.
+    pub(crate) kernel_init: Option<kernel::KernelInit>,
     /// Cursor state as of the last syscall-boundary reconciliation. Used to
     /// detect which side (IOSYS bytes or hardware GDC) the guest changed
     /// between syscalls so `dispatch` can propagate the real change.
@@ -504,10 +674,12 @@ pub struct NeetanDos {
 state_struct_codec!(NeetanDos {
     state,
     console,
+    console_device,
     root_command_com_psp,
     boot_entry_point,
-    pending_native_drivers,
+    guest_calls,
     shells,
+    kernel_init,
     last_cursor,
 });
 
@@ -516,12 +688,6 @@ struct RootShellBootConfig {
     command_tail: Vec<u8>,
     env_paragraphs: u16,
     initial_drive: u8,
-}
-
-impl Default for NeetanDos {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 fn read_iosys_cursor(memory: &dyn MemoryAccess) -> HardwareCursorState {
@@ -542,14 +708,13 @@ fn write_iosys_cursor(memory: &mut dyn MemoryAccess, state: HardwareCursorState)
 }
 
 impl NeetanDos {
-    /// Creates a new NeetanDos instance.
-    pub fn new() -> Self {
+    /// Creates a new NeetanDos instance for the given platform.
+    pub fn new(platform: DosPlatform) -> Self {
+        let country_code = platform.country_code;
         Self {
             state: DosState {
-                sysvars_base: tables::SYSVARS_BASE,
-                indos_addr: tables::INDOS_FLAG_ADDR,
+                platform,
                 boot_drive: 26,
-                version: (6, 20),
                 current_psp: 0,
                 current_drive: 0,
                 dta_segment: 0,
@@ -562,16 +727,17 @@ impl NeetanDos {
                 last_return_code: 0,
                 last_termination_type: 0,
                 dbcs_table_addr: 0,
+                drive_map: drive_map::DriveMap::new(),
+                stale_parameter_blocks: 0,
                 fat_volumes: (0..26).map(|_| None).collect(),
-                sft2_base: 0,
                 virtual_drive: filesystem::virtual_drive::VirtualDrive::new(),
                 process_stack: Vec::new(),
-                country_code: 81,
+                country_code,
                 mscdex: cdrom::MscdexState::new(),
-                sft2_count: 15,
+                sft2_count: tables::SFT_EXTENDED_COUNT,
                 buffered_input: None,
                 flush_input_function: None,
-                open_iso_files: vec![None; tables::SFT_TOTAL_COUNT as usize],
+                open_iso_files: vec![None; layout::SFT_INDEX_COUNT],
                 read_find_directory: None,
                 fn_key_map: build_default_fn_key_map(),
                 pending_key_bytes: std::collections::VecDeque::new(),
@@ -582,12 +748,25 @@ impl NeetanDos {
                 xms_32_enabled: false,
                 xms_hmamin_kb: 0,
                 memory_manager: None,
+                verify_writes: false,
+                critical_error_failed: false,
+                media_failed: 0,
+                guest_volumes: GuestVolumes::default(),
+                guest_cdroms: guest_cdrom::GuestCdroms::default(),
+                console_line: ConsoleLine::default(),
+                guest_clock: None,
+                device_transfer: None,
+                guest_requests: GuestRequests::default(),
+                handler_carry: core::cell::Cell::new(None),
+                in_dos_call: false,
             },
-            console: console::Console::default(),
+            console: console::TextVramConsole::default(),
+            console_device: ConsoleDevice::TextVram(console_device::BdaKeyboard),
             root_command_com_psp: 0,
             boot_entry_point: BootEntryPoint::command_com(0),
-            pending_native_drivers: Vec::new(),
+            guest_calls: Vec::new(),
             shells: BTreeMap::new(),
+            kernel_init: None,
             last_cursor: HardwareCursorState {
                 visible: true,
                 row: 0,
@@ -616,21 +795,29 @@ impl NeetanDos {
     }
 
     /// Validates guest-visible DOS state against the active HLE configuration.
+    ///
+    /// The restored platform must report the version and use the structure
+    /// layout and windows of `platform`. `DosPlatform::accepts_placement`
+    /// checks its placement.
     pub fn validate_state(
         &self,
+        platform: &DosPlatform,
         ems_enabled: bool,
         xms_enabled: bool,
         xms_32_enabled: bool,
         xms_hmamin_kb: u16,
     ) -> Result<(), save_state::StateValidationError> {
         let state = &self.state;
-        if state.version != (6, 20)
+        if !state.platform.has_same_configuration(platform)
+            || !platform.accepts_placement(&state.platform.placement)
             || !(1..=26).contains(&state.boot_drive)
             || state.current_drive >= 26
             || state.dta_address
                 != (u32::from(state.dta_segment) << 4).wrapping_add(u32::from(state.dta_offset))
             || state.fat_volumes.len() != 26
-            || state.open_iso_files.len() != tables::SFT_TOTAL_COUNT as usize
+            || !state.drive_map.is_valid()
+            || state.stale_parameter_blocks >> drive_map::DRIVE_LETTER_COUNT != 0
+            || state.open_iso_files.len() != layout::SFT_INDEX_COUNT
             || state.fn_key_map.len() != 386
             || state.pending_key_bytes.len() > 4096
             || state.process_stack.len() > 1024
@@ -657,6 +844,11 @@ impl NeetanDos {
             memory_manager.validate_state()?;
         }
         Ok(())
+    }
+
+    /// Returns the platform description of this instance.
+    pub fn platform(&self) -> &DosPlatform {
+        &self.state.platform
     }
 
     /// Returns the COMMAND.COM PSP segment.
@@ -717,45 +909,100 @@ impl NeetanDos {
             .map(|memory_manager| memory_manager.xms_query_a20())
     }
 
-    /// Drops mounted FAT caches for any DOS drive backed by the given DA/UA.
-    pub fn invalidate_drive_caches(&mut self, memory: &dyn MemoryAccess, da_ua: u8) {
-        for drive_index in 0..26usize {
-            let mapped_da_ua = memory
-                .read_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_DAUA_TABLE + drive_index as u32);
-            if mapped_da_ua == da_ua {
-                self.state.fat_volumes[drive_index] = None;
+    /// Drops the mounted FAT caches of every drive on the `DiskIo` device
+    /// `device_id`.
+    pub fn invalidate_drive_caches(&mut self, device_id: u8) {
+        let drives: Vec<u8> = self
+            .state
+            .drive_map
+            .drives_on_disk_device(device_id)
+            .collect();
+        for drive_index in drives {
+            self.state.fat_volumes[usize::from(drive_index)] = None;
+        }
+    }
+
+    /// Drops the state of the files and the directory search on the native
+    /// CD-ROM drive after a media change. Open files of the old disc read no
+    /// further data. The files and the search of a guest CD-ROM drive stay.
+    pub fn invalidate_cdrom_caches(&mut self, memory: &dyn MemoryAccess) {
+        let is_native_cdrom = |drive_index: u8| {
+            self.state
+                .drive_map
+                .entry(drive_index)
+                .is_some_and(|entry| entry.device == drive_map::DriveDevice::Cdrom)
+        };
+        for sft_index in 0..self.state.open_iso_files.len() {
+            if self.state.open_iso_files[sft_index].is_none() {
+                continue;
             }
+            let drive_index = self
+                .state
+                .sft_entry_addr(sft_index as u8, memory)
+                .map(|address| {
+                    (memory.read_word(address + tables::SFT_ENT_DEV_INFO)
+                        & tables::SFT_DEVINFO_DRIVE_MASK) as u8
+                });
+            if drive_index.is_none_or(is_native_cdrom) {
+                self.state.open_iso_files[sft_index] = None;
+            }
+        }
+        let search_drive = memory.read_byte(self.state.dta_address) & FIND_DRIVE_MASK;
+        if matches!(
+            self.state.read_find_directory,
+            Some(filesystem::ReadDirectory::Iso(_))
+        ) && is_native_cdrom(search_drive)
+        {
+            self.state.read_find_directory = None;
         }
     }
 
     /// Performs the DOS boot sequence: writes data structures into emulated RAM,
     /// mounts drives, parses CONFIG.SYS, and creates the COMMAND.COM process.
     pub fn boot(&mut self, memory: &mut dyn MemoryAccess, device: &mut (impl DiskIo + CdromIo)) {
-        self.write_dos_data_structures(memory);
+        self.build_pc98_drive_map(memory, device);
+        let system_data = self.state.system_data_area();
+        self.state.platform.placement.first_mcb_segment =
+            system_data.first_mcb_segment(self.state.dos_data_segment());
+
+        self.write_dos_data_structures(memory, &system_data);
         self.write_iosys_work_area(memory);
+        self.guest_call_area().write_stub(memory);
 
-        Self::install_int24h_stub(memory);
-        Self::install_int5ch_stub(memory);
-        Self::install_error_retriever_stub(memory);
-        Self::install_cdrom_device_stubs(memory);
+        self.install_int24h_stub(memory);
+        self.install_int5ch_stub(memory);
+        self.install_error_retriever_stub(memory);
+        self.install_cdrom_device_stubs(memory);
 
-        let drives = Self::discover_drives(memory, device);
-        self.write_drive_structures(memory, &drives);
+        self.write_drive_structures(memory, &system_data);
+        self.state.stale_parameter_blocks = 0;
+        drive_map::pc98::write_iosys_drive_tables(memory, &self.state.drive_map);
 
         // Boot to the first physical drive that has media, otherwise Z:.
-        if let Some(first) = drives.iter().find(|d| !d.is_virtual)
-            && DiskIo::total_sectors(device, first.da_ua).is_some()
+        if let Some((drive_index, device_id)) =
+            self.state
+                .drive_map
+                .drives()
+                .find_map(|(drive_index, entry)| {
+                    entry
+                        .device
+                        .disk_device_id()
+                        .map(|device_id| (drive_index, device_id))
+                })
+            && DiskIo::total_sectors(device, device_id).is_some()
         {
-            self.state.boot_drive = first.drive_index + 1;
-            memory.write_byte(tables::BDA_BOOT_DEVICE, first.da_ua);
-            memory.write_byte(
-                tables::SYSVARS_BASE + tables::SYSVARS_OFF_BOOT_DRIVE,
-                self.state.boot_drive,
-            );
+            self.state.boot_drive = drive_index + 1;
+            drive_map::pc98::write_boot_device(memory, device_id);
+            if let Some(extension) = self.state.structures().list_of_lists.extension {
+                memory.write_byte(
+                    self.state.list_of_lists_address() + extension.boot_drive,
+                    self.state.boot_drive,
+                );
+            }
         }
 
         // Parse CONFIG.SYS if present on the boot drive root.
-        let cfg = self.try_parse_config_sys(memory, device, &drives);
+        let cfg = self.try_parse_config_sys(device);
         self.apply_config(&cfg, memory);
         self.write_device_chain(memory);
 
@@ -769,18 +1016,20 @@ impl NeetanDos {
 
         // Initialize EMS/XMS memory manager if extended RAM is available.
         let ext_mem_size = memory.extended_memory_size();
-        if ext_mem_size > 0 && (self.state.ems_enabled || self.state.xms_enabled) {
-            if self.state.ems_enabled {
-                Self::install_ems_stub(memory);
+        let ems_window = self.state.active_ems_window();
+        if ext_mem_size > 0 && (ems_window.is_some() || self.state.xms_enabled) {
+            if ems_window.is_some() {
+                self.install_ems_stub(memory);
             }
 
-            Self::install_xms_stubs(memory);
+            self.install_xms_stubs(memory);
 
             let mut mm = MemoryManager::new(
                 ext_mem_size,
-                self.state.ems_enabled,
+                ems_window,
                 self.state.xms_enabled,
                 self.state.xms_32_enabled,
+                self.state.platform.umb_window.as_ref(),
                 memory,
             );
             mm.set_hmamin_kb(self.state.xms_hmamin_kb);
@@ -790,10 +1039,11 @@ impl NeetanDos {
         self.install_native_config_drivers(&cfg, memory, device);
 
         // Load AUTOEXEC.BAT if present on any mounted drive.
-        let autoexec_lines = self.try_load_autoexec_bat(memory, device, &drives);
+        let autoexec_lines = self.try_load_autoexec_bat(device);
 
         let psp = self.state.current_psp;
         self.root_command_com_psp = psp;
+        self.state.store_process_fields(memory);
         if let Some((lines, bat_path)) = autoexec_lines {
             self.shells
                 .insert(psp, shell::Shell::new_with_autoexec(psp, lines, bat_path));
@@ -802,58 +1052,59 @@ impl NeetanDos {
         }
     }
 
-    /// Install default INT 24h critical-error stub (MOV AL,3 / IRET).
-    /// Returns AL=3 (Fail) to any caller. The HLE DOS never raises critical
-    /// errors itself; this exists purely so apps that read IVT[24h] or
-    /// save it into PSP+12h see a valid, well-behaved handler.
-    fn install_int24h_stub(memory: &mut dyn MemoryAccess) {
-        let int24_stub = tables::INT24_STUB_ADDR;
-        memory.write_byte(int24_stub, 0xB0);
-        memory.write_byte(int24_stub + 1, 0x03);
-        memory.write_byte(int24_stub + 2, 0xCF);
-        let ivt_24h_addr: u32 = 0x24 * 4;
-        memory.write_word(ivt_24h_addr, tables::INT24_STUB_OFFSET);
-        memory.write_word(ivt_24h_addr + 2, tables::DOS_DATA_SEGMENT);
+    /// Installs the critical error stub (`MOV AL,3`, `IRET`) as the `INT 24h`
+    /// handler, like COMMAND.COM installs its handler at its start. It
+    /// answers fail. The programs that the shell starts inherit it.
+    fn install_int24h_stub(&self, memory: &mut dyn MemoryAccess) {
+        let stub_offset = self.state.structures().private_area.critical_error_stub;
+        memory.write_block(
+            self.state.dos_data_address(stub_offset),
+            &CRITICAL_ERROR_FAIL_STUB,
+        );
+        self.install_vector(memory, INT24_VECTOR, stub_offset);
+    }
+
+    /// Points `vector` at `offset` in the DOS data segment unless the vector
+    /// belongs to the guest on this platform.
+    fn install_vector(&self, memory: &mut dyn MemoryAccess, vector: u8, offset: u16) {
+        if !self.state.platform.installs_vector(vector) {
+            return;
+        }
+        let ivt_address = u32::from(vector) * IVT_ENTRY_SIZE;
+        memory.write_word(ivt_address, offset);
+        memory.write_word(ivt_address + 2, self.state.dos_data_segment());
     }
 
     /// Installs the INT 2Fh AX=122Eh error message retriever callback.
     ///
-    /// Programs invoke it via CALL FAR to the stub address. The stub fires
-    /// the HLE BIOS trap (OUT 07F0h, AL with AL = `ERROR_RETRIEVER_VECTOR`);
-    /// AX/DX are saved across the OUT and restored before RETF so the Rust
-    /// handler can fill ES:DI with a counted message buffer.
-    ///   50              push ax
-    ///   52              push dx
-    ///   B0 FD           mov  al, FDh
-    ///   BA F0 07        mov  dx, 07F0h
-    ///   EE              out  dx, al
-    ///   CB              retf
-    fn install_error_retriever_stub(memory: &mut dyn MemoryAccess) {
-        let stub = tables::ERROR_RETRIEVER_STUB_ADDR;
-        memory.write_byte(stub, 0x50);
-        memory.write_byte(stub + 1, 0x52);
-        memory.write_byte(stub + 2, 0xB0);
-        memory.write_byte(stub + 3, tables::ERROR_RETRIEVER_VECTOR);
-        memory.write_byte(stub + 4, 0xBA);
-        memory.write_byte(stub + 5, 0xF0);
-        memory.write_byte(stub + 6, 0x07);
-        memory.write_byte(stub + 7, 0xEE);
-        memory.write_byte(stub + 8, 0xCB);
+    /// Programs invoke it via CALL FAR to the stub address. The stub is a far
+    /// trap stub with the trap code `ErrorMessageRetriever`. AX/DX are saved
+    /// across the OUT and restored before RETF so the Rust handler can fill
+    /// ES:DI with a counted message buffer.
+    fn install_error_retriever_stub(&self, memory: &mut dyn MemoryAccess) {
+        trap::write_far_trap_stub(
+            memory,
+            self.state
+                .dos_data_address(self.state.structures().private_area.error_retriever_stub),
+            DosTrapCode::ErrorMessageRetriever,
+        );
     }
 
     /// Installs the synthetic CD-ROM device strategy and interrupt entries.
     ///
     /// The strategy entry stores ES:BX as the active request header pointer.
     /// The interrupt entry fires a BIOS HLE trap, then returns to the caller.
-    fn install_cdrom_device_stubs(memory: &mut dyn MemoryAccess) {
+    fn install_cdrom_device_stubs(&self, memory: &mut dyn MemoryAccess) {
         let request_off = tables::CDROM_REQUEST_PTR_OFFSET;
         let request_seg = tables::CDROM_REQUEST_PTR_OFFSET + 2;
 
-        let strategy = tables::CDROM_STRATEGY_STUB_ADDR;
+        let strategy = self
+            .state
+            .dos_data_address(tables::CDROM_STRATEGY_STUB_OFFSET);
         memory.write_byte(strategy, 0x1E);
         memory.write_byte(strategy + 1, 0x50);
         memory.write_byte(strategy + 2, 0xB8);
-        memory.write_word(strategy + 3, tables::DOS_DATA_SEGMENT);
+        memory.write_word(strategy + 3, self.state.dos_data_segment());
         memory.write_byte(strategy + 5, 0x8E);
         memory.write_byte(strategy + 6, 0xD8);
         memory.write_byte(strategy + 7, 0x8C);
@@ -867,16 +1118,12 @@ impl NeetanDos {
         memory.write_byte(strategy + 17, 0x1F);
         memory.write_byte(strategy + 18, 0xCB);
 
-        let interrupt = tables::CDROM_INTERRUPT_STUB_ADDR;
-        memory.write_byte(interrupt, 0x50);
-        memory.write_byte(interrupt + 1, 0x52);
-        memory.write_byte(interrupt + 2, 0xB0);
-        memory.write_byte(interrupt + 3, tables::CDROM_DEVICE_VECTOR);
-        memory.write_byte(interrupt + 4, 0xBA);
-        memory.write_byte(interrupt + 5, 0xF0);
-        memory.write_byte(interrupt + 6, 0x07);
-        memory.write_byte(interrupt + 7, 0xEE);
-        memory.write_byte(interrupt + 8, 0xCB);
+        trap::write_far_trap_stub(
+            memory,
+            self.state
+                .dos_data_address(tables::CDROM_INTERRUPT_STUB_OFFSET),
+            DosTrapCode::CdromDeviceInterrupt,
+        );
     }
 
     /// EMS INT 67h trap stub + device name. When an app does
@@ -892,12 +1139,12 @@ impl NeetanDos {
     ///   CF              iret                  ; return to caller
     ///   90              nop                   ; pad to +0Ah
     ///   "EMMXXXX0"      at offset 0x0A
-    fn install_ems_stub(memory: &mut dyn MemoryAccess) {
-        let stub = tables::EMS_INT67_STUB_ADDR;
+    fn install_ems_stub(&self, memory: &mut dyn MemoryAccess) {
+        let stub = self.state.dos_data_address(tables::EMS_INT67_STUB_OFFSET);
         memory.write_byte(stub, 0x50);
         memory.write_byte(stub + 1, 0x52);
         memory.write_byte(stub + 2, 0xB0);
-        memory.write_byte(stub + 3, 0x67);
+        memory.write_byte(stub + 3, EMS_VECTOR);
         memory.write_byte(stub + 4, 0xBA);
         memory.write_byte(stub + 5, 0xF0);
         memory.write_byte(stub + 6, 0x07);
@@ -906,11 +1153,13 @@ impl NeetanDos {
         memory.write_byte(stub + 9, 0x90);
         memory.write_block(stub + 0x0A, b"EMMXXXX0");
 
-        let pgmapret_stub = tables::EMS_PGMAPRET_STUB_ADDR;
+        let pgmapret_stub = self
+            .state
+            .dos_data_address(tables::EMS_PGMAPRET_STUB_OFFSET);
         memory.write_byte(pgmapret_stub, 0x50);
         memory.write_byte(pgmapret_stub + 1, 0x52);
         memory.write_byte(pgmapret_stub + 2, 0xB0);
-        memory.write_byte(pgmapret_stub + 3, tables::EMS_PGMAPRET_VECTOR);
+        memory.write_byte(pgmapret_stub + 3, DosTrapCode::EmsPageMapReturn.code());
         memory.write_byte(pgmapret_stub + 4, 0xBA);
         memory.write_byte(pgmapret_stub + 5, 0xF0);
         memory.write_byte(pgmapret_stub + 6, 0x07);
@@ -918,21 +1167,22 @@ impl NeetanDos {
         memory.write_byte(pgmapret_stub + 8, 0xCF);
         memory.write_byte(pgmapret_stub + 9, 0x90);
 
-        let ivt_67h_addr: u32 = 0x67 * 4;
-        memory.write_word(ivt_67h_addr, tables::EMS_INT67_STUB_OFFSET);
-        memory.write_word(ivt_67h_addr + 2, tables::DOS_DATA_SEGMENT);
+        self.install_vector(memory, EMS_VECTOR, tables::EMS_INT67_STUB_OFFSET);
     }
 
     /// Installs the two extended-memory plumbing stubs in the DOS data segment.
     ///
     /// 1. XMS driver entry point. Programs obtain its far address via INT 2Fh
-    ///    AX=4310h and call it to invoke XMS functions; INT FEh traps to our
-    ///    HLE XMS handler. The jump/NOP prologue matches the HIMEM.SYS entry
-    ///    shape that Windows enhanced mode validates before talking to the
-    ///    XMS provider.
+    ///    AX=4310h and call it to invoke XMS functions. A far trap stub with
+    ///    the trap code `XmsEntry` follows the jump/NOP prologue. The
+    ///    prologue matches the HIMEM.SYS entry shape that Windows enhanced
+    ///    mode validates before talking to the XMS provider.
     ///    EB 03             jmp  +3
     ///    90 90 90          nop  nop  nop
-    ///    CD FE             int  0FEh
+    ///    50 52             push ax, push dx
+    ///    B0 FE             mov  al, FEh
+    ///    BA F0 07          mov  dx, 07F0h
+    ///    EE                out  dx, al
     ///    CB                retf
     ///
     /// 2. Shared strategy/interrupt routine for the XMSXXXX0 and EMMXXXX0 DOS
@@ -941,18 +1191,16 @@ impl NeetanDos {
     ///    high byte is equivalent to OR-ing the word with 0x0100.
     ///    26 80 4F 04 01    or   byte ptr es:[bx+4], 0x01
     ///    CB                retf
-    fn install_xms_stubs(memory: &mut dyn MemoryAccess) {
-        let stub_addr = tables::XMS_ENTRY_STUB_ADDR;
-        memory.write_byte(stub_addr, 0xEB);
-        memory.write_byte(stub_addr + 1, 0x03);
-        memory.write_byte(stub_addr + 2, 0x90);
-        memory.write_byte(stub_addr + 3, 0x90);
-        memory.write_byte(stub_addr + 4, 0x90);
-        memory.write_byte(stub_addr + 5, 0xCD);
-        memory.write_byte(stub_addr + 6, 0xFE);
-        memory.write_byte(stub_addr + 7, 0xCB);
+    fn install_xms_stubs(&self, memory: &mut dyn MemoryAccess) {
+        let stub_addr = self.state.dos_data_address(tables::XMS_ENTRY_STUB_OFFSET);
+        memory.write_block(stub_addr, &XMS_ENTRY_PROLOGUE);
+        trap::write_far_trap_stub(
+            memory,
+            stub_addr + XMS_ENTRY_PROLOGUE.len() as u32,
+            DosTrapCode::XmsEntry,
+        );
 
-        let dev_stub_addr = tables::XMS_DEV_STUB_ADDR;
+        let dev_stub_addr = self.state.dos_data_address(tables::XMS_DEV_STUB_OFFSET);
         memory.write_byte(dev_stub_addr, 0x26);
         memory.write_byte(dev_stub_addr + 1, 0x80);
         memory.write_byte(dev_stub_addr + 2, 0x4F);
@@ -964,35 +1212,23 @@ impl NeetanDos {
     /// Installs a no-op IRET stub at INT5C_STUB_ADDR and points the INT 5Ch
     /// vector at it, but only if no NetBIOS provider has already claimed the
     /// vector. NetBIOS drivers loaded later via DEVICE= overwrite it.
-    fn install_int5ch_stub(memory: &mut dyn MemoryAccess) {
-        memory.write_byte(tables::INT5C_STUB_ADDR, 0xCF);
+    fn install_int5ch_stub(&self, memory: &mut dyn MemoryAccess) {
+        memory.write_byte(self.state.dos_data_address(tables::INT5C_STUB_OFFSET), 0xCF);
 
-        let ivt_5ch_addr: u32 = 0x5C * 4;
+        let ivt_5ch_addr = u32::from(NETBIOS_VECTOR) * IVT_ENTRY_SIZE;
         if memory.read_word(ivt_5ch_addr) == 0 && memory.read_word(ivt_5ch_addr + 2) == 0 {
-            memory.write_word(ivt_5ch_addr, tables::INT5C_STUB_OFFSET);
-            memory.write_word(ivt_5ch_addr + 2, tables::DOS_DATA_SEGMENT);
+            self.install_vector(memory, NETBIOS_VECTOR, tables::INT5C_STUB_OFFSET);
         }
     }
 
     /// Searches the boot drive root for CONFIG.SYS and parses it.
-    fn try_parse_config_sys(
-        &mut self,
-        memory: &dyn MemoryAccess,
-        disk: &mut dyn DiskIo,
-        drives: &[DriveInfo],
-    ) -> config::ConfigSys {
+    fn try_parse_config_sys(&mut self, disk: &mut dyn DiskIo) -> config::ConfigSys {
         let Some(boot_drive_index) = self.state.boot_drive.checked_sub(1) else {
             return config::ConfigSys::default();
         };
-        if !drives
-            .iter()
-            .any(|drive| !drive.is_virtual && drive.drive_index == boot_drive_index)
-        {
-            return config::ConfigSys::default();
-        }
         if self
             .state
-            .ensure_volume_mounted(boot_drive_index, memory, disk)
+            .ensure_volume_mounted(boot_drive_index, disk)
             .is_err()
         {
             return config::ConfigSys::default();
@@ -1022,14 +1258,16 @@ impl NeetanDos {
         self.state.sft2_count = sft2_count.max(1);
 
         // BUFFERS=
-        memory.write_word(
-            self.state.sysvars_base + tables::SYSVARS_OFF_BUFFERS,
-            cfg.buffers,
-        );
+        if let Some(extension) = self.state.structures().list_of_lists.extension {
+            memory.write_word(
+                self.state.list_of_lists_address() + extension.buffer_count,
+                cfg.buffers,
+            );
+        }
 
         // LASTDRIVE=
         memory.write_byte(
-            self.state.sysvars_base + tables::SYSVARS_OFF_LASTDRIVE,
+            self.state.list_of_lists_address() + tables::SYSVARS_OFF_LASTDRIVE,
             cfg.lastdrive,
         );
 
@@ -1087,24 +1325,19 @@ impl NeetanDos {
     }
 
     /// Searches mounted drives for AUTOEXEC.BAT and loads its lines.
-    fn try_load_autoexec_bat(
-        &mut self,
-        memory: &dyn MemoryAccess,
-        disk: &mut dyn DiskIo,
-        drives: &[DriveInfo],
-    ) -> Option<(Vec<Vec<u8>>, Vec<u8>)> {
-        for drive in drives {
-            if drive.is_virtual {
+    fn try_load_autoexec_bat(&mut self, disk: &mut dyn DiskIo) -> Option<(Vec<Vec<u8>>, Vec<u8>)> {
+        let drives: Vec<u8> = self
+            .state
+            .drive_map
+            .drives()
+            .filter(|(_, entry)| entry.device.disk_device_id().is_some())
+            .map(|(drive_index, _)| drive_index)
+            .collect();
+        for drive_index in drives {
+            if self.state.ensure_volume_mounted(drive_index, disk).is_err() {
                 continue;
             }
-            if self
-                .state
-                .ensure_volume_mounted(drive.drive_index, memory, disk)
-                .is_err()
-            {
-                continue;
-            }
-            let vol = match self.state.fat_volumes[drive.drive_index as usize].as_ref() {
+            let vol = match self.state.fat_volumes[drive_index as usize].as_ref() {
                 Some(v) => v,
                 None => continue,
             };
@@ -1118,7 +1351,7 @@ impl NeetanDos {
             }
             if let Ok(data) = process::read_file_data(vol, &entry, disk) {
                 let lines = shell::batch::split_bat_lines(&data);
-                let drive_letter = b'A' + drive.drive_index;
+                let drive_letter = b'A' + drive_index;
                 let mut bat_path = vec![drive_letter, b':', b'\\'];
                 bat_path.extend_from_slice(b"AUTOEXEC.BAT");
                 return Some((lines, bat_path));
@@ -1127,7 +1360,11 @@ impl NeetanDos {
         None
     }
 
-    fn read_psp_command_tail(&self, memory: &dyn MemoryAccess, psp_segment: u16) -> Vec<u8> {
+    pub(crate) fn read_psp_command_tail(
+        &self,
+        memory: &dyn MemoryAccess,
+        psp_segment: u16,
+    ) -> Vec<u8> {
         let psp_base = (psp_segment as u32) << 4;
         let tail_len = memory.read_byte(psp_base + tables::PSP_OFF_CMD_TAIL_LEN) as usize;
         let tail_len = tail_len.min(127);
@@ -1139,8 +1376,26 @@ impl NeetanDos {
         command_tail
     }
 
-    /// INT 21h AH=FFh: Shell prompt/command cycle step.
-    pub(crate) fn int21h_ffh_shell_step(
+    /// Reads `\AUTOEXEC.BAT` of the current drive for a permanent shell
+    /// (`/P`). A guest drive asks for its load first and fails with "not
+    /// ready".
+    fn load_current_drive_autoexec(
+        &mut self,
+        memory: &mut dyn MemoryAccess,
+        disk: &mut dyn DriveIo,
+    ) -> Result<(Vec<Vec<u8>>, Vec<u8>), u16> {
+        let mut bat_path = vec![b'A' + self.state.current_drive, b':', b'\\'];
+        bat_path.extend_from_slice(b"AUTOEXEC.BAT");
+        let read_path =
+            filesystem::resolve_read_file_path(&mut self.state, &bat_path, memory, disk)?;
+        let entry = filesystem::find_read_entry(&self.state, &read_path, disk)?
+            .ok_or(ERROR_FILE_NOT_FOUND)?;
+        let data = filesystem::read_entry_all(&self.state, read_path.drive_index, &entry, disk)?;
+        Ok((shell::batch::split_bat_lines(&data), bat_path))
+    }
+
+    /// Trap `ShellStep`: one prompt/command cycle step of the built-in shell.
+    pub(crate) fn shell_step(
         &mut self,
         cpu: &mut dyn CpuAccess,
         memory: &mut dyn MemoryAccess,
@@ -1148,9 +1403,23 @@ impl NeetanDos {
     ) {
         let shell_psp = self.state.current_psp;
         if !self.shells.contains_key(&shell_psp) {
+            self.install_int24h_stub(memory);
             let command_tail = self.read_psp_command_tail(memory, shell_psp);
-            self.shells
-                .insert(shell_psp, shell::Shell::new_child(shell_psp, &command_tail));
+            let mut session = if shell::is_permanent_tail(&command_tail) {
+                match self.load_current_drive_autoexec(memory, disk) {
+                    Err(_) if self.state.guest_requests.redispatch => return,
+                    Ok((lines, bat_path)) => {
+                        shell::Shell::new_with_autoexec(shell_psp, lines, bat_path)
+                    }
+                    Err(_) => shell::Shell::new(shell_psp),
+                }
+            } else {
+                shell::Shell::new_child(shell_psp, &command_tail)
+            };
+            if shell::names_nul_console(&command_tail) {
+                session.console_nul = self.redirect_standard_handles_to_nul(memory).is_ok();
+            }
+            self.shells.insert(shell_psp, session);
         }
 
         let mut shell = self
@@ -1160,9 +1429,11 @@ impl NeetanDos {
         {
             let mut io = IoAccess {
                 console: &mut self.console,
+                console_device: &mut self.console_device,
                 memory,
                 redirect_output: None,
                 redirect_input: None,
+                console_nul: shell.console_nul,
             };
             shell.step(&mut self.state, &mut io, disk);
         }
@@ -1171,20 +1442,24 @@ impl NeetanDos {
         if let Some(exec) = shell.pending_exec.take() {
             let exec_result = self
                 .setup_shell_output_redirect(memory, &mut shell, exec.output_redirect.as_ref())
-                .and_then(|()| self.exec_from_shell(cpu, memory, disk, &exec.path, &exec.args));
+                .and_then(|()| self.exec_from_shell(cpu, memory, disk, &exec.path, &exec.tail));
             if let Err(error_code) = exec_result {
                 shell.restore_child_output_redirect(
                     &mut self.state,
                     &mut IoAccess {
                         console: &mut self.console,
+                        console_device: &mut self.console_device,
                         memory,
                         redirect_output: None,
                         redirect_input: None,
+                        console_nul: shell.console_nul,
                     },
                 );
-                let msg = format!("Error loading program ({})\r\n", error_code);
-                for &byte in msg.as_bytes() {
-                    self.console.process_byte(memory, byte);
+                if !shell.console_nul {
+                    let msg = format!("Error loading program ({})\r\n", error_code);
+                    for &byte in msg.as_bytes() {
+                        self.console_output().write_byte(memory, byte);
+                    }
                 }
                 shell.handle_exec_failure(1);
             }
@@ -1215,16 +1490,41 @@ impl NeetanDos {
         let saved_stdout_sft = self.state.read_jft_entry(1, memory)?;
         let (redirect_handle, redirect_sft) = self.open_nul_device_handle(memory)?;
         self.state.write_jft_entry(1, redirect_sft, memory)?;
-        shell.child_output_redirect = Some(shell::ChildOutputRedirect {
-            saved_stdout_sft,
-            redirect_handle,
-        });
+        self.state
+            .write_jft_entry(redirect_handle, FREE_JFT_ENTRY, memory)?;
+        shell.child_output_redirect = Some(shell::ChildOutputRedirect { saved_stdout_sft });
+        Ok(())
+    }
+
+    /// Points the standard handles 0, 1 and 2 of the current PSP to one SFT
+    /// entry of the NUL device, like the console device argument of
+    /// COMMAND.COM: it closes the three handles and duplicates a NUL handle
+    /// into them.
+    fn redirect_standard_handles_to_nul(
+        &mut self,
+        memory: &mut dyn MemoryAccess,
+    ) -> Result<(), u16> {
+        let (nul_handle, nul_sft) = self.open_nul_device_handle(memory)?;
+        let sft_addr = self
+            .state
+            .sft_entry_addr(nul_sft, memory)
+            .ok_or(ERROR_TOO_MANY_OPEN_FILES)?;
+        for handle in 0..3 {
+            self.state.free_handle(handle, memory);
+            self.state.write_jft_entry(handle, nul_sft, memory)?;
+            let references = memory.read_word(sft_addr + tables::SFT_ENT_REF_COUNT);
+            memory.write_word(sft_addr + tables::SFT_ENT_REF_COUNT, references + 1);
+        }
+        self.state.free_handle(nul_handle, memory);
         Ok(())
     }
 
     fn open_nul_device_handle(&mut self, memory: &mut dyn MemoryAccess) -> Result<(u16, u8), u16> {
         let (handle, sft_index) = self.state.allocate_handle(memory)?;
-        let sft_addr = self.state.sft_entry_addr(sft_index).ok_or(0x0004u16)?;
+        let sft_addr = self
+            .state
+            .sft_entry_addr(sft_index, memory)
+            .ok_or(ERROR_TOO_MANY_OPEN_FILES)?;
         memory.write_word(sft_addr + tables::SFT_ENT_REF_COUNT, 1);
         memory.write_word(sft_addr + tables::SFT_ENT_OPEN_MODE, 0x0001);
         memory.write_byte(sft_addr + tables::SFT_ENT_FILE_ATTR, 0x00);
@@ -1238,8 +1538,8 @@ impl NeetanDos {
         tables::write_far_ptr(
             memory,
             sft_addr + tables::SFT_ENT_DEV_PTR,
-            tables::DOS_DATA_SEGMENT,
-            tables::DEV_NUL_OFFSET,
+            self.state.dos_data_segment(),
+            self.state.nul_device_offset(),
         );
         memory.write_word(sft_addr + tables::SFT_ENT_START_CLUSTER, 0);
         memory.write_word(sft_addr + tables::SFT_ENT_FILE_TIME, 0);
@@ -1248,10 +1548,9 @@ impl NeetanDos {
         memory.write_word(sft_addr + tables::SFT_ENT_FILE_SIZE + 2, 0);
         memory.write_word(sft_addr + tables::SFT_ENT_FILE_POS, 0);
         memory.write_word(sft_addr + tables::SFT_ENT_FILE_POS + 2, 0);
-        memory.write_word(sft_addr + tables::SFT_ENT_REL_CLUSTER, 0);
-        memory.write_word(sft_addr + tables::SFT_ENT_CUR_CLUSTER, 0);
-        memory.write_word(sft_addr + tables::SFT_ENT_DIR_SECTOR, 0);
-        memory.write_byte(sft_addr + tables::SFT_ENT_DIR_INDEX, 0);
+        let sft = &self.state.structures().system_file_table;
+        sft.write_cluster_position(memory, sft_addr, 0, 0);
+        sft.write_directory_location(memory, sft_addr, 0, 0);
         memory.write_block(sft_addr + tables::SFT_ENT_NAME, b"NUL        ");
         memory.write_word(sft_addr + tables::SFT_ENT_PSP_OWNER, self.state.current_psp);
         Ok((handle, sft_index))
@@ -1268,57 +1567,54 @@ impl NeetanDos {
         mem: &mut dyn MemoryAccess,
         disk: &mut dyn DriveIo,
         path: &[u8],
-        args: &[u8],
+        tail: &[u8],
     ) -> Result<(), u16> {
-        // Use the area after COMMAND.COM's code stub (PSP:010Fh) for scratch data.
-        let psp_base = (self.state.current_psp as u32) << 4;
-        let scratch_base = psp_base + 0x010F;
+        let scratch_offset = process::SHELL_SCRATCH_OFFSET;
+        let tail_offset = scratch_offset + process::SHELL_SCRATCH_TAIL_OFFSET;
+        let parameter_block_offset = scratch_offset + process::SHELL_SCRATCH_PARAMETER_BLOCK_OFFSET;
+        let psp_segment = self.state.current_psp;
+        let psp_base = u32::from(psp_segment) << 4;
 
-        // Write ASCIIZ filename at scratch_base (max 127 chars + NUL to stay in bounds)
-        let filename_addr = scratch_base;
-        let path_len = path.len().min(127);
+        let filename_addr = psp_base + u32::from(scratch_offset);
+        let path_len = path
+            .len()
+            .min(usize::from(process::SHELL_SCRATCH_TAIL_OFFSET) - 1);
         mem.write_block(filename_addr, &path[..path_len]);
         mem.write_byte(filename_addr + path_len as u32, 0x00);
 
-        // Write command tail at scratch_base + 128
-        let tail_addr = scratch_base + 128;
-        let tail_len = args.len().min(126) as u8;
+        let tail_addr = psp_base + u32::from(tail_offset);
+        let tail_len = tail.len().min(process::SHELL_COMMAND_TAIL_MAX_LENGTH) as u8;
         mem.write_byte(tail_addr, tail_len);
         if tail_len > 0 {
-            mem.write_block(tail_addr + 1, &args[..tail_len as usize]);
+            mem.write_block(tail_addr + 1, &tail[..tail_len as usize]);
         }
         mem.write_byte(tail_addr + 1 + tail_len as u32, 0x0D);
 
-        // Write EXEC parameter block at scratch_base + 256
-        let pb_addr = scratch_base + 256;
-        // env_seg = 0 (inherit parent environment)
-        mem.write_word(pb_addr, 0x0000);
-        // cmd_tail pointer: seg:off relative to COMMAND.COM PSP
-        let tail_seg = self.state.current_psp;
-        let tail_off = 0x010Fu16 + 128;
-        mem.write_word(pb_addr + 2, tail_off);
-        mem.write_word(pb_addr + 4, tail_seg);
-        // FCB1 and FCB2 point to default FCBs at PSP:005Ch and PSP:006Ch
-        mem.write_word(pb_addr + 6, 0x005C);
-        mem.write_word(pb_addr + 8, self.state.current_psp);
-        mem.write_word(pb_addr + 10, 0x006C);
-        mem.write_word(pb_addr + 12, self.state.current_psp);
+        // Environment 0 inherits the parent environment. FCB1 and FCB2 point
+        // to the default FCBs of the shell PSP.
+        let parameter_block_addr = psp_base + u32::from(parameter_block_offset);
+        mem.write_word(parameter_block_addr, 0x0000);
+        mem.write_word(parameter_block_addr + 2, tail_offset);
+        mem.write_word(parameter_block_addr + 4, psp_segment);
+        mem.write_word(parameter_block_addr + 6, tables::PSP_OFF_FCB1 as u16);
+        mem.write_word(parameter_block_addr + 8, psp_segment);
+        mem.write_word(parameter_block_addr + 10, tables::PSP_OFF_FCB2 as u16);
+        mem.write_word(parameter_block_addr + 12, psp_segment);
 
-        // Set up CPU registers for EXEC: DS:DX = filename, ES:BX = parameter block
-        cpu.set_ds(self.state.current_psp);
-        cpu.set_dx(0x010F);
-        cpu.set_es(self.state.current_psp);
-        cpu.set_bx(0x010F + 256);
+        cpu.set_ds(psp_segment);
+        cpu.set_dx(scratch_offset);
+        cpu.set_es(psp_segment);
+        cpu.set_bx(parameter_block_offset);
         cpu.set_ax(0x4B00);
 
         self.exec_load_and_execute(cpu, mem, disk)
     }
 
-    /// Dispatches a DOS/OS interrupt to the appropriate handler.
+    /// Dispatches a DOS entry to the appropriate handler.
     ///
-    /// `vector`: interrupt number (0x20-0x2F, 0x33, 0xDC).
-    /// Returns `true` if the interrupt was handled, `false` if the vector
-    /// should fall through to the default IRET behavior.
+    /// `entry`: software interrupt (0x20-0x2F, 0x33, 0x67, 0xDC) or private
+    /// trap code. Returns `true` if the entry was handled, `false` if the
+    /// vector should fall through to the default IRET behavior.
     ///
     /// Reconciles the BIOS-owned hardware cursor (GDC) with the HLE DOS IOSYS
     /// cursor bytes at each syscall boundary. Between syscalls the guest can move
@@ -1329,7 +1625,7 @@ impl NeetanDos {
     /// cursor advance is pushed back to the hardware.
     pub fn dispatch(
         &mut self,
-        vector: u8,
+        entry: DosEntry,
         cpu: &mut dyn CpuAccess,
         memory: &mut dyn MemoryAccess,
         device: &mut (impl DiskIo + CdromIo),
@@ -1338,20 +1634,39 @@ impl NeetanDos {
     ) -> bool {
         self.arm_trace_log(trace);
 
-        let hardware = cursor.read();
-        let iosys = read_iosys_cursor(memory);
-        if iosys != self.last_cursor {
-            cursor.write(iosys);
-        } else if hardware != self.last_cursor {
-            write_iosys_cursor(memory, hardware);
+        let text_vram_console =
+            self.state.platform.machine.has_text_vram() && self.console_device.is_text_vram();
+        if text_vram_console {
+            let hardware = cursor.read();
+            let iosys = read_iosys_cursor(memory);
+            if iosys != self.last_cursor {
+                cursor.write(iosys);
+            } else if hardware != self.last_cursor {
+                write_iosys_cursor(memory, hardware);
+            }
+            self.last_cursor = read_iosys_cursor(memory);
         }
-        self.last_cursor = read_iosys_cursor(memory);
 
-        let result = self.dispatch_inner(vector, cpu, memory, device);
+        let result = match entry {
+            DosEntry::Trap(DosTrapCode::GuestCallReturn) => {
+                self.resume_guest_operation(cpu, memory, device);
+                true
+            }
+            DosEntry::Interrupt(_) | DosEntry::Trap(_) => {
+                self.state.load_process_fields(memory);
+                self.begin_entry();
+                self.adopt_guest_parameter_blocks(memory);
+                self.run_entry(entry, cpu, memory, device)
+            }
+        };
+        self.state.write_stale_drive_parameter_blocks(memory);
+        self.state.store_process_fields(memory);
 
-        let iosys = read_iosys_cursor(memory);
-        cursor.write(iosys);
-        self.last_cursor = iosys;
+        if text_vram_console {
+            let iosys = read_iosys_cursor(memory);
+            cursor.write(iosys);
+            self.last_cursor = iosys;
+        }
 
         self.drain_trace_log(trace);
         result
@@ -1384,20 +1699,96 @@ impl NeetanDos {
         }
     }
 
-    fn dispatch_inner(
+    /// Forgets the device states of the previous entry.
+    fn begin_entry(&mut self) {
+        self.console_device.begin_entry();
+        self.state.guest_volumes.begin_entry();
+        self.state.guest_cdroms.begin_entry();
+        self.state.critical_error_failed = false;
+        self.state.media_failed = 0;
+        if let Some(clock) = &mut self.state.guest_clock {
+            clock.reading = None;
+            clock.failed = false;
+        }
+        self.state.device_transfer = None;
+    }
+
+    /// Runs the handler of one entry with the guest volume images in reach
+    /// of the FAT code. Returns false for an interrupt that NeetanDos does
+    /// not serve.
+    pub(crate) fn run_handler(
+        &mut self,
+        entry: DosEntry,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+        device: &mut (impl DiskIo + CdromIo),
+    ) -> bool {
+        let images = std::mem::take(&mut self.state.guest_volumes.images);
+        let mut drives = GuestVolumeDisk::new(device, images);
+        let handled = match entry {
+            DosEntry::Interrupt(vector) => {
+                self.dispatch_interrupt(vector, cpu, memory, &mut drives)
+            }
+            DosEntry::Trap(trap) => {
+                self.dispatch_trap(trap, cpu, memory, &mut drives);
+                true
+            }
+        };
+        let (images, writes) = drives.into_parts();
+        self.state.guest_volumes.images = images;
+        self.state.guest_requests.sector_writes.extend(writes);
+        handled
+    }
+
+    /// Returns the backend of the console output.
+    pub(crate) fn console_output(&mut self) -> &mut dyn ConsoleOutput {
+        self.console_device.output(&mut self.console)
+    }
+
+    /// Returns the backend of the keyboard input.
+    pub(crate) fn keyboard(&mut self) -> &mut dyn KeyboardInput {
+        self.console_device.keyboard()
+    }
+
+    /// Lets a console input function wait for input. The text VRAM console
+    /// repeats the guest `INT` instruction. A guest console polls its driver
+    /// and runs the entry again.
+    pub(crate) fn wait_for_console_input(
+        &mut self,
+        cpu: &dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+    ) {
+        if self.console_device.request_input_wait() {
+            self.state.guest_requests.redispatch = true;
+        } else {
+            adjust_iret_ip(cpu, memory, -2);
+        }
+    }
+
+    /// Dispatches a software interrupt that NeetanDos serves.
+    fn dispatch_interrupt(
         &mut self,
         vector: u8,
         cpu: &mut dyn CpuAccess,
         memory: &mut dyn MemoryAccess,
         device: &mut (impl DiskIo + CdromIo),
     ) -> bool {
+        if !self.state.platform.installs_vector(vector) {
+            return false;
+        }
         match vector {
+            DIVIDE_ERROR_VECTOR => {
+                self.divide_error(cpu, memory);
+                true
+            }
             0x20 => {
                 self.int20h(cpu, memory);
                 true
             }
             0x21 => {
+                self.state.in_dos_call = true;
                 self.int21h(cpu, memory, device);
+                self.state.in_dos_call = false;
                 true
             }
             0x22 => false,
@@ -1433,97 +1824,114 @@ impl NeetanDos {
                 true
             }
             0x33 => false,
-            native_driver::INIT_COMPLETE_VECTOR => {
-                self.complete_native_driver_init(cpu, memory);
-                true
-            }
-            0x67 => {
+            EMS_VECTOR => {
                 self.int67h(cpu, memory);
-                true
-            }
-            tables::EMS_PGMAPRET_VECTOR => {
-                self.int67h_pgmapret(cpu, memory);
                 true
             }
             0xDC => {
                 self.intdch(cpu, memory);
                 true
             }
-            tables::ERROR_RETRIEVER_VECTOR => {
-                self.int2fh_122eh_retrieve_error_message(cpu, memory);
-                true
-            }
-            tables::CDROM_DEVICE_VECTOR => {
-                self.cdrom_device_request(memory, device);
-                true
-            }
-            0xFE => {
-                self.xms_entry(cpu, memory);
-                true
-            }
             _ => false,
         }
     }
 
+    /// Dispatches a private trap code.
+    fn dispatch_trap(
+        &mut self,
+        trap: DosTrapCode,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+        device: &mut (impl DiskIo + CdromIo),
+    ) {
+        match trap {
+            DosTrapCode::EmsPageMapReturn => self.int67h_pgmapret(cpu, memory),
+            DosTrapCode::ShellStep => self.shell_step(cpu, memory, device),
+            DosTrapCode::KernelInit => self.init_as_kernel(cpu, memory, device),
+            DosTrapCode::MscdexInstall => self.install_mscdex(cpu, memory, device),
+            DosTrapCode::CdromDeviceInterrupt => self.cdrom_device_request(memory, device),
+            // `dispatch` resumes the pending guest operation before the handler table.
+            DosTrapCode::GuestCallReturn => {}
+            DosTrapCode::ErrorMessageRetriever => {
+                self.int2fh_122eh_retrieve_error_message(cpu, memory)
+            }
+            DosTrapCode::XmsEntry => self.xms_entry(cpu, memory),
+        }
+    }
+
     /// Writes SYSVARS, device chain, SFT, CDS, DPB, buffers, MCB into emulated RAM.
-    fn write_dos_data_structures(&self, mem: &mut dyn MemoryAccess) {
+    fn write_dos_data_structures(
+        &self,
+        mem: &mut dyn MemoryAccess,
+        system_data: &system_data::SystemDataArea,
+    ) {
         use tables::*;
 
-        // Zero the DOS data area.
-        let zeros = vec![0u8; (FIRST_MCB_ADDR + 16 - DOS_DATA_BASE) as usize];
-        mem.write_block(DOS_DATA_BASE, &zeros);
+        let structures = self.state.structures();
+        let placement = self.state.platform.placement;
+        let dos_data_segment = placement.dos_data_segment;
+        let list_of_lists = self.state.list_of_lists_address();
 
-        // SYSVARS -2: first MCB segment
-        mem.write_word(SYSVARS_BASE - 2, FIRST_MCB_SEGMENT);
+        // Zero the DOS data area and the first MCB header.
+        let zeros = vec![0u8; (placement.dos_data_size() + MCB_HEADER_SIZE) as usize];
+        mem.write_block(placement.dos_data_base(), &zeros);
 
-        // SYSVARS fields
-        let (dpb_seg, dpb_off) = dos_data_far(DPB_OFFSET);
-        write_far_ptr(mem, SYSVARS_BASE + SYSVARS_OFF_DPB_PTR, dpb_seg, dpb_off);
-
-        let (sft_seg, sft_off) = dos_data_far(SFT_OFFSET);
-        write_far_ptr(mem, SYSVARS_BASE + SYSVARS_OFF_SFT_PTR, sft_seg, sft_off);
-
-        let (clock_seg, clock_off) = dos_data_far(DEV_CLOCK_OFFSET);
-        write_far_ptr(
-            mem,
-            SYSVARS_BASE + SYSVARS_OFF_CLOCK_PTR,
-            clock_seg,
-            clock_off,
+        // First MCB segment below the list of lists.
+        mem.write_word(
+            list_of_lists - SYSVARS_FIRST_MCB_DISTANCE,
+            placement.first_mcb_segment,
         );
 
-        let (con_seg, con_off) = dos_data_far(DEV_CON_OFFSET);
-        write_far_ptr(mem, SYSVARS_BASE + SYSVARS_OFF_CON_PTR, con_seg, con_off);
-
-        // MAX_SECTOR is set later by write_drive_structures().
-
-        let (buf_seg, buf_off) = dos_data_far(DISK_BUFFER_OFFSET);
-        write_far_ptr(mem, SYSVARS_BASE + SYSVARS_OFF_BUFFER_PTR, buf_seg, buf_off);
-
-        let (cds_seg, cds_off) = dos_data_far(CDS_OFFSET);
-        write_far_ptr(mem, SYSVARS_BASE + SYSVARS_OFF_CDS_PTR, cds_seg, cds_off);
-
-        let (fcb_seg, fcb_off) = dos_data_far(FCB_SFT_OFFSET);
+        // List of lists fields
         write_far_ptr(
             mem,
-            SYSVARS_BASE + SYSVARS_OFF_FCB_SFT_PTR,
-            fcb_seg,
-            fcb_off,
+            list_of_lists + SYSVARS_OFF_SFT_PTR,
+            dos_data_segment,
+            structures.system_file_table.first_block_offset,
+        );
+        write_far_ptr(
+            mem,
+            list_of_lists + SYSVARS_OFF_CLOCK_PTR,
+            dos_data_segment,
+            DEV_CLOCK_OFFSET,
+        );
+        write_far_ptr(
+            mem,
+            list_of_lists + SYSVARS_OFF_CON_PTR,
+            dos_data_segment,
+            DEV_CON_OFFSET,
         );
 
-        mem.write_word(SYSVARS_BASE + SYSVARS_OFF_PROT_FCBS, 0);
+        system_data.write_buffer_and_pointers(mem, dos_data_segment, list_of_lists);
+        write_far_ptr(
+            mem,
+            list_of_lists + SYSVARS_OFF_CDS_PTR,
+            dos_data_segment,
+            CDS_OFFSET,
+        );
+        write_far_ptr(
+            mem,
+            list_of_lists + SYSVARS_OFF_FCB_SFT_PTR,
+            dos_data_segment,
+            FCB_SFT_OFFSET,
+        );
+
+        mem.write_word(list_of_lists + SYSVARS_OFF_PROT_FCBS, 0);
         // BLOCK_DEVS is set later by write_drive_structures().
-        mem.write_byte(SYSVARS_BASE + SYSVARS_OFF_LASTDRIVE, 26);
+        mem.write_byte(list_of_lists + SYSVARS_OFF_LASTDRIVE, 26);
 
-        // JOIN drives = 0
-        mem.write_word(SYSVARS_BASE + SYSVARS_OFF_JOIN_DRIVES, 0);
-        // SETVER list = NULL
-        write_far_ptr(mem, SYSVARS_BASE + SYSVARS_OFF_SETVER_PTR, 0, 0);
-        // BUFFERS
-        mem.write_word(SYSVARS_BASE + SYSVARS_OFF_BUFFERS, 15);
-        mem.write_word(SYSVARS_BASE + SYSVARS_OFF_LOOKAHEAD, 0);
-        mem.write_byte(SYSVARS_BASE + SYSVARS_OFF_BOOT_DRIVE, self.state.boot_drive);
-        mem.write_byte(SYSVARS_BASE + SYSVARS_OFF_386_FLAG, 0x01);
-        mem.write_word(SYSVARS_BASE + SYSVARS_OFF_EXT_MEM, 0);
+        if let Some(extension) = structures.list_of_lists.extension {
+            // JOIN drives = 0
+            mem.write_word(list_of_lists + extension.join_drive_count, 0);
+            // SETVER list = NULL
+            write_far_ptr(mem, list_of_lists + extension.setver_list, 0, 0);
+            // BUFFERS
+            mem.write_word(list_of_lists + extension.buffer_count, 15);
+            mem.write_word(list_of_lists + extension.lookahead_buffer_count, 0);
+            mem.write_byte(list_of_lists + extension.boot_drive, self.state.boot_drive);
+            mem.write_byte(list_of_lists + extension.dword_move_flag, 0x01);
+            mem.write_word(list_of_lists + extension.extended_memory_kb, 0);
+        }
 
         // Device chain
         self.write_device_chain(mem);
@@ -1533,29 +1941,37 @@ impl NeetanDos {
 
         // CDS and DPB are populated by write_drive_structures().
 
-        // Disk buffer header + one buffer
-        self.write_disk_buffer(mem);
-
         // Windows DOSMGR signature and patch table (consumed by enhanced-mode
         // Windows during init when it scans the kernel for InDOS, save-area,
         // critical-section, UMB-head, and first-MCB pointers).
-        Self::write_windows_dosmgr_signature(mem);
+        self.write_windows_dosmgr_signature(mem);
         self.write_windows_dosmgr_patch_table(mem);
 
         // InDOS flag, critical error flag, and last-critical-error drive
         // (0xFF outside of an INT 24h handler invocation). These live at the
         // base of the SDA so AX=5D06h, INT 28h idlers and the Windows DOSMGR
         // patch table all observe the same memory.
-        mem.write_byte(INDOS_FLAG_ADDR, 0x00);
-        mem.write_byte(CRITICAL_ERROR_FLAG_ADDR, 0x00);
-        mem.write_byte(tables::SDA_ADDR + 2, 0xFF);
+        let sda = self.state.sda_address();
+        mem.write_byte(sda + u32::from(SDA_OFF_INDOS), 0x00);
+        mem.write_byte(sda + u32::from(SDA_OFF_CRITICAL_ERROR), 0x00);
+        mem.write_byte(sda + u32::from(SDA_OFF_ERROR_DRIVE), 0xFF);
 
         // DBCS lead byte table (Shift-JIS ranges)
-        mem.write_block(DBCS_TABLE_ADDR, &country::DBCS_LEAD_BYTES);
+        mem.write_block(
+            self.state
+                .dos_data_address(structures.private_area.dbcs_table),
+            &country::DBCS_LEAD_BYTES,
+        );
 
         // FCB-SFT header (no entries)
-        write_far_ptr(mem, FCB_SFT_BASE, 0xFFFF, 0xFFFF);
-        mem.write_word(FCB_SFT_BASE + 4, 0);
+        let fcb_sft = self.state.dos_data_address(FCB_SFT_OFFSET);
+        write_far_ptr(
+            mem,
+            fcb_sft + SFT_BLOCK_OFF_NEXT,
+            END_OF_CHAIN.0,
+            END_OF_CHAIN.1,
+        );
+        mem.write_word(fcb_sft + SFT_BLOCK_OFF_COUNT, 0);
     }
 
     /// Writes the device header chain: NUL -> CON -> $AID#NEC -> CD-ROM
@@ -1564,16 +1980,16 @@ impl NeetanDos {
     fn write_device_chain(&self, mem: &mut dyn MemoryAccess) {
         use tables::*;
 
-        let base = DOS_DATA_BASE;
+        let dos_data_segment = self.state.dos_data_segment();
         let ext_mem_present = mem.extended_memory_size() > 0;
         let xms_in_chain = self.state.xms_enabled && ext_mem_present;
-        let ems_in_chain = self.state.ems_enabled && ext_mem_present;
+        let ems_in_chain = self.state.active_ems_window().is_some() && ext_mem_present;
 
-        // NUL (embedded at SYSVARS+0x22) -> CON
+        // NUL (embedded in the list of lists) -> CON
         write_device_header(
             mem,
-            base + DEV_NUL_OFFSET as u32,
-            DOS_DATA_SEGMENT,
+            self.state.dos_data_address(self.state.nul_device_offset()),
+            dos_data_segment,
             DEV_CON_OFFSET,
             DEVATTR_CHAR | DEVATTR_NUL,
             b"NUL     ",
@@ -1582,8 +1998,8 @@ impl NeetanDos {
         // CON -> $AID#NEC
         write_device_header(
             mem,
-            base + DEV_CON_OFFSET as u32,
-            DOS_DATA_SEGMENT,
+            self.state.dos_data_address(DEV_CON_OFFSET),
+            dos_data_segment,
             DEV_AID_NEC_OFFSET,
             DEVATTR_CHAR | DEVATTR_STDIN | DEVATTR_STDOUT | DEVATTR_SPECIAL,
             b"CON     ",
@@ -1592,9 +2008,9 @@ impl NeetanDos {
         // CLOCK (not in chain)
         write_device_header(
             mem,
-            base + DEV_CLOCK_OFFSET as u32,
-            0xFFFF,
-            0xFFFF,
+            self.state.dos_data_address(DEV_CLOCK_OFFSET),
+            END_OF_CHAIN.0,
+            END_OF_CHAIN.1,
             DEVATTR_CHAR | DEVATTR_CLOCK,
             b"CLOCK   ",
         );
@@ -1602,8 +2018,8 @@ impl NeetanDos {
         // $AID#NEC -> CD-ROM driver
         write_device_header(
             mem,
-            base + DEV_AID_NEC_OFFSET as u32,
-            DOS_DATA_SEGMENT,
+            self.state.dos_data_address(DEV_AID_NEC_OFFSET),
+            dos_data_segment,
             DEV_CDROM_OFFSET,
             DEVATTR_CHAR,
             b"$AID#NEC",
@@ -1613,58 +2029,60 @@ impl NeetanDos {
         //   CD-ROM -> XMSXXXX0 -> EMMXXXX0 (end)
         // Skipping whichever is not enabled.
         let (cdrom_next_seg, cdrom_next_off) = if xms_in_chain {
-            (DOS_DATA_SEGMENT, DEV_XMS_OFFSET)
+            (dos_data_segment, DEV_XMS_OFFSET)
         } else if ems_in_chain {
-            (DOS_DATA_SEGMENT, DEV_EMS_OFFSET)
+            (dos_data_segment, DEV_EMS_OFFSET)
         } else {
-            (0xFFFF, 0xFFFF)
+            END_OF_CHAIN
         };
 
         let mut cdrom_name = [b' '; 8];
         let name = &self.state.mscdex.device_name;
         let len = name.len().min(8);
         cdrom_name[..len].copy_from_slice(&name[..len]);
+        let cdrom_header = self.state.dos_data_address(DEV_CDROM_OFFSET);
         write_device_header(
             mem,
-            base + DEV_CDROM_OFFSET as u32,
+            cdrom_header,
             cdrom_next_seg,
             cdrom_next_off,
             DEVATTR_CHAR | DEVATTR_IOCTL,
             &cdrom_name,
         );
         mem.write_word(
-            base + DEV_CDROM_OFFSET as u32 + DEVHDR_OFF_STRATEGY,
+            cdrom_header + DEVHDR_OFF_STRATEGY,
             CDROM_STRATEGY_STUB_OFFSET,
         );
         mem.write_word(
-            base + DEV_CDROM_OFFSET as u32 + DEVHDR_OFF_INTERRUPT,
+            cdrom_header + DEVHDR_OFF_INTERRUPT,
             CDROM_INTERRUPT_STUB_OFFSET,
         );
 
+        let mirror_header = self.state.dos_data_address(CDROM_MIRROR_HEADER_OFFSET);
         write_device_header(
             mem,
-            CDROM_MIRROR_HEADER_ADDR,
+            mirror_header,
             cdrom_next_seg,
             cdrom_next_off,
             DEVATTR_CHAR | DEVATTR_IOCTL,
             &cdrom_name,
         );
         mem.write_word(
-            CDROM_MIRROR_HEADER_ADDR + DEVHDR_OFF_STRATEGY,
+            mirror_header + DEVHDR_OFF_STRATEGY,
             CDROM_MIRROR_STRATEGY_OFFSET,
         );
         mem.write_word(
-            CDROM_MIRROR_HEADER_ADDR + DEVHDR_OFF_INTERRUPT,
+            mirror_header + DEVHDR_OFF_INTERRUPT,
             CDROM_MIRROR_INTERRUPT_OFFSET,
         );
 
         // XMSXXXX0 -> EMMXXXX0 (if EMS active) else end of chain
         if xms_in_chain {
-            let xms_header_addr = base + DEV_XMS_OFFSET as u32;
+            let xms_header_addr = self.state.dos_data_address(DEV_XMS_OFFSET);
             let (xms_next_seg, xms_next_off) = if ems_in_chain {
-                (DOS_DATA_SEGMENT, DEV_EMS_OFFSET)
+                (dos_data_segment, DEV_EMS_OFFSET)
             } else {
-                (0xFFFF, 0xFFFF)
+                END_OF_CHAIN
             };
             write_far_ptr(
                 mem,
@@ -1683,8 +2101,13 @@ impl NeetanDos {
 
         // EMMXXXX0 (end of chain, only when EMS is enabled)
         if ems_in_chain {
-            let ems_header_addr = base + DEV_EMS_OFFSET as u32;
-            write_far_ptr(mem, ems_header_addr + DEVHDR_OFF_NEXT_PTR, 0xFFFF, 0xFFFF);
+            let ems_header_addr = self.state.dos_data_address(DEV_EMS_OFFSET);
+            write_far_ptr(
+                mem,
+                ems_header_addr + DEVHDR_OFF_NEXT_PTR,
+                END_OF_CHAIN.0,
+                END_OF_CHAIN.1,
+            );
             mem.write_word(
                 ems_header_addr + DEVHDR_OFF_ATTRIBUTE,
                 DEVATTR_CHAR | DEVATTR_IOCTL,
@@ -1695,24 +2118,29 @@ impl NeetanDos {
         }
     }
 
-    /// Writes the SFT header and 5 standard file entries.
+    /// Writes the first SFT block header and its 5 standard file entries.
     fn write_sft(&self, mem: &mut dyn MemoryAccess) {
         use tables::*;
 
+        let dos_data_segment = self.state.dos_data_segment();
+        let entry_size = self.state.structures().system_file_table.entry_size;
+        let sft_block = self.state.first_sft_block_address();
+
         // SFT header: next = FFFF:FFFF, count = 5
-        write_far_ptr(mem, SFT_BASE, 0xFFFF, 0xFFFF);
-        mem.write_word(SFT_BASE + 4, 5);
+        write_far_ptr(
+            mem,
+            sft_block + SFT_BLOCK_OFF_NEXT,
+            END_OF_CHAIN.0,
+            END_OF_CHAIN.1,
+        );
+        mem.write_word(sft_block + SFT_BLOCK_OFF_COUNT, SFT_INITIAL_COUNT);
 
-        let entries_base = SFT_BASE + SFT_HEADER_SIZE;
-
-        // CON device pointer (far ptr)
-        let con_addr = DOS_DATA_BASE + DEV_CON_OFFSET as u32;
-        let con_seg = DOS_DATA_SEGMENT;
-        let con_off = DEV_CON_OFFSET;
+        let entries_base = sft_block + SFT_HEADER_SIZE;
+        let nul_offset = self.state.nul_device_offset();
 
         // Standard handles: stdin(0), stdout(1), stderr(2) -> CON
         for i in 0..3u32 {
-            let entry = entries_base + i * SFT_ENTRY_SIZE;
+            let entry = entries_base + i * entry_size;
             mem.write_word(entry + SFT_ENT_REF_COUNT, 1);
             mem.write_word(entry + SFT_ENT_OPEN_MODE, 0x0002); // read/write
             mem.write_byte(entry + SFT_ENT_FILE_ATTR, 0x00);
@@ -1723,236 +2151,150 @@ impl NeetanDos {
                     | SFT_DEVINFO_STDIN
                     | SFT_DEVINFO_STDOUT,
             );
-            write_far_ptr(mem, entry + SFT_ENT_DEV_PTR, con_seg, con_off);
+            write_far_ptr(
+                mem,
+                entry + SFT_ENT_DEV_PTR,
+                dos_data_segment,
+                DEV_CON_OFFSET,
+            );
             mem.write_block(entry + SFT_ENT_NAME, b"CON        ");
         }
 
         // Handle 3: AUX (stub)
         {
-            let entry = entries_base + 3 * SFT_ENTRY_SIZE;
+            let entry = entries_base + 3 * entry_size;
             mem.write_word(entry + SFT_ENT_REF_COUNT, 1);
             mem.write_word(entry + SFT_ENT_OPEN_MODE, 0x0002);
             mem.write_byte(entry + SFT_ENT_FILE_ATTR, 0x00);
             mem.write_word(entry + SFT_ENT_DEV_INFO, SFT_DEVINFO_CHAR_DEVICE_COMMON);
             // Point to NUL device as a safe fallback
-            let nul_off = DEV_NUL_OFFSET;
-            write_far_ptr(mem, entry + SFT_ENT_DEV_PTR, DOS_DATA_SEGMENT, nul_off);
+            write_far_ptr(mem, entry + SFT_ENT_DEV_PTR, dos_data_segment, nul_offset);
             mem.write_block(entry + SFT_ENT_NAME, b"AUX        ");
         }
 
         // Handle 4: PRN (stub)
         {
-            let entry = entries_base + 4 * SFT_ENTRY_SIZE;
+            let entry = entries_base + 4 * entry_size;
             mem.write_word(entry + SFT_ENT_REF_COUNT, 1);
             mem.write_word(entry + SFT_ENT_OPEN_MODE, 0x0002);
             mem.write_byte(entry + SFT_ENT_FILE_ATTR, 0x00);
             mem.write_word(entry + SFT_ENT_DEV_INFO, SFT_DEVINFO_CHAR_DEVICE_COMMON);
-            let nul_off = DEV_NUL_OFFSET;
-            write_far_ptr(mem, entry + SFT_ENT_DEV_PTR, DOS_DATA_SEGMENT, nul_off);
+            write_far_ptr(mem, entry + SFT_ENT_DEV_PTR, dos_data_segment, nul_offset);
             mem.write_block(entry + SFT_ENT_NAME, b"PRN        ");
         }
-
-        // Suppress unused variable warning.
-        let _ = con_addr;
     }
 
-    /// Reads the BDA DISK_EQUIP word, probes mounted media for AUTOEXEC.BAT,
-    /// and assigns drive letters using DOS media precedence.
-    fn discover_drives(mem: &dyn MemoryAccess, disk: &mut dyn DiskIo) -> Vec<DriveInfo> {
+    /// Builds the drive map of the PC-98 self boot: the physical drives of
+    /// the BDA, the CD-ROM drive and the virtual Z: drive. Mounts the volumes
+    /// of the drives with media.
+    fn build_pc98_drive_map(&mut self, memory: &dyn MemoryAccess, device: &mut dyn DriveIo) {
+        let mut map = drive_map::pc98::discover_drive_map(memory, device);
+        if device.cdrom_present() {
+            map.set(
+                self.state.mscdex.drive_letter,
+                drive_map::DriveEntry::cdrom(),
+            );
+        }
+        map.set(
+            drive_map::VIRTUAL_DRIVE_INDEX,
+            drive_map::DriveEntry::virtual_drive(),
+        );
+        self.state.drive_map = map;
+        self.state.mount_drive_volumes(device);
+    }
+
+    /// Populates the DPB chain, the CDS entries and the SYSVARS counters of
+    /// the drives with a DPB from the drive map.
+    pub(crate) fn write_drive_structures(
+        &self,
+        mem: &mut dyn MemoryAccess,
+        system_data: &system_data::SystemDataArea,
+    ) {
         use tables::*;
 
-        let disk_equip = mem.read_word(BDA_DISK_EQUIP);
+        let structures = self.state.structures();
+        let dpb_layout = &structures.drive_parameter_block;
+        let dos_data_segment = self.state.dos_data_segment();
+        let drives: Vec<(u8, drive_map::DriveEntry)> = self
+            .state
+            .drive_map
+            .drives_with_parameter_block()
+            .map(|(drive_index, entry)| (drive_index, *entry))
+            .collect();
+        debug_assert_eq!(drives.len(), system_data.parameter_block_count());
+        let cds_present = self.state.current_directory_array_present(mem);
 
-        let fdd_dauas = Self::discover_fdd_dauas(disk_equip);
-        let hdd_dauas = Self::discover_hdd_dauas(disk_equip);
-        let fdd_has_autoexec = fdd_dauas
-            .iter()
-            .any(|&da_ua| Self::drive_has_root_autoexec(da_ua, disk));
-        let hdd_has_autoexec = hdd_dauas
-            .iter()
-            .any(|&da_ua| Self::drive_has_root_autoexec(da_ua, disk));
-
-        let mut drives = Vec::new();
-
-        if fdd_has_autoexec {
-            Self::append_drive_class(&mut drives, &fdd_dauas, 0);
-            if !hdd_dauas.is_empty() {
-                Self::append_drive_class(&mut drives, &hdd_dauas, fdd_dauas.len().max(2));
-            }
-        } else if hdd_has_autoexec || !hdd_dauas.is_empty() {
-            Self::append_drive_class(&mut drives, &hdd_dauas, 0);
-            if !fdd_dauas.is_empty() {
-                Self::append_drive_class(&mut drives, &fdd_dauas, hdd_dauas.len().max(2));
-            }
-        } else {
-            Self::append_drive_class(&mut drives, &fdd_dauas, 0);
-        }
-
-        // Z: virtual drive is always present.
-        drives.push(DriveInfo {
-            drive_index: 25,
-            da_ua: 0x00,
-            is_virtual: true,
-        });
-
-        drives
-    }
-
-    fn discover_fdd_dauas(disk_equip: u16) -> Vec<u8> {
-        let mut fdd_dauas = Vec::new();
-
-        for unit in 0..4u8 {
-            if disk_equip & (1 << unit) != 0 {
-                fdd_dauas.push(0x90 + unit);
-            }
-        }
-
-        for unit in 0..4u8 {
-            if disk_equip & (1 << (12 + unit)) != 0 {
-                fdd_dauas.push(0x70 + unit);
-            }
-        }
-
-        fdd_dauas
-    }
-
-    fn discover_hdd_dauas(disk_equip: u16) -> Vec<u8> {
-        let mut hdd_dauas = Vec::new();
-
-        for unit in 0..4u8 {
-            if disk_equip & (1 << (8 + unit)) != 0 {
-                hdd_dauas.push(0x80 + unit);
-            }
-        }
-
-        hdd_dauas
-    }
-
-    fn append_drive_class(drives: &mut Vec<DriveInfo>, dauas: &[u8], start_index: usize) {
-        for (unit_index, &da_ua) in dauas.iter().enumerate() {
-            drives.push(DriveInfo {
-                drive_index: (start_index + unit_index) as u8,
-                da_ua,
-                is_virtual: false,
-            });
-        }
-    }
-
-    fn drive_class(da_ua: u8) -> Option<DriveClass> {
-        match da_ua & 0xF0 {
-            0x70 | 0x90 => Some(DriveClass::Floppy),
-            0x80 => Some(DriveClass::HardDisk),
-            _ => None,
-        }
-    }
-
-    fn drive_has_root_autoexec(da_ua: u8, disk: &mut dyn DiskIo) -> bool {
-        let drive_class = match Self::drive_class(da_ua) {
-            Some(class) => class,
-            None => return false,
-        };
-
-        let partition_offset = match drive_class {
-            DriveClass::Floppy => 0,
-            DriveClass::HardDisk => {
-                match filesystem::fat_partition::find_partition_offset(da_ua, disk) {
-                    Ok(offset) => offset,
-                    Err(_) => return false,
+        for (chain_index, (drive_index, entry)) in drives.iter().enumerate() {
+            let dpb_offset = system_data.parameter_block_offset(chain_index);
+            let dpb_addr = self.state.dos_data_address(dpb_offset);
+            self.state
+                .write_drive_parameter_block_fields(mem, dpb_addr, *drive_index, entry);
+            let (device_segment, device_offset) = match entry.device {
+                drive_map::DriveDevice::GuestDriver(unit) => {
+                    (unit.header_segment, unit.header_offset)
                 }
-            }
-        };
+                drive_map::DriveDevice::Floppy { .. }
+                | drive_map::DriveDevice::FixedDisk { .. }
+                | drive_map::DriveDevice::MemoryImage { .. }
+                | drive_map::DriveDevice::Cdrom
+                | drive_map::DriveDevice::GuestCdrom(_)
+                | drive_map::DriveDevice::Virtual => {
+                    (dos_data_segment, self.state.nul_device_offset())
+                }
+            };
+            write_far_ptr(
+                mem,
+                dpb_addr + dpb_layout.device,
+                device_segment,
+                device_offset,
+            );
 
-        let volume = match filesystem::fat::FatVolume::mount(da_ua, partition_offset, disk) {
-            Ok(volume) => volume,
-            Err(_) => return false,
-        };
-
-        let autoexec_name = filesystem::fat_dir::name_to_fcb(b"AUTOEXEC.BAT");
-        let entry = match filesystem::fat_dir::find_entry(&volume, 0, &autoexec_name, disk) {
-            Ok(Some(entry)) => entry,
-            _ => return false,
-        };
-
-        entry.attribute & filesystem::fat_dir::ATTR_DIRECTORY == 0
-    }
-
-    /// Populates CDS entries, DPB chain, DA/UA mapping tables, and SYSVARS
-    /// counters based on the discovered drives.
-    fn write_drive_structures(&self, mem: &mut dyn MemoryAccess, drives: &[DriveInfo]) {
-        use tables::*;
-
-        let mut max_sector_size: u16 = 512;
-
-        for (chain_index, drive) in drives.iter().enumerate() {
-            // DA/UA mapping table (16 bytes at 0060:006Ch, drives A:-P:).
-            if drive.drive_index < 16 {
-                mem.write_byte(
-                    IOSYS_BASE + IOSYS_OFF_DAUA_TABLE + drive.drive_index as u32,
-                    drive.da_ua,
-                );
-            }
-
-            // Extended DA/UA table (52 bytes at 0060:2C86h, 2 bytes per drive).
-            let ext_offset = IOSYS_BASE + IOSYS_OFF_EXT_DAUA_TABLE + (drive.drive_index as u32) * 2;
-            mem.write_byte(ext_offset, 0x00); // attribute
-            mem.write_byte(ext_offset + 1, drive.da_ua);
-
-            // DPB entry.
-            let dpb_addr = DPB_BASE + (chain_index as u32) * DPB_ENTRY_SIZE;
-            self.write_dpb_for_drive(mem, dpb_addr, drive);
-
-            // Track max sector size across all DPBs.
-            let bytes_per_sector = mem.read_word(dpb_addr + DPB_OFF_BYTES_PER_SECTOR);
-            if bytes_per_sector > max_sector_size {
-                max_sector_size = bytes_per_sector;
-            }
-
-            // Chain to next DPB or terminate.
-            if chain_index + 1 < drives.len() {
-                let next_addr = DPB_BASE + ((chain_index + 1) as u32) * DPB_ENTRY_SIZE;
-                let next_off = DPB_OFFSET + ((chain_index + 1) as u16) * (DPB_ENTRY_SIZE as u16);
-                write_far_ptr(mem, dpb_addr + DPB_OFF_NEXT_DPB, DOS_DATA_SEGMENT, next_off);
-                let _ = next_addr;
+            let (next_segment, next_offset) = if chain_index + 1 < drives.len() {
+                (
+                    dos_data_segment,
+                    system_data.parameter_block_offset(chain_index + 1),
+                )
             } else {
-                write_far_ptr(mem, dpb_addr + DPB_OFF_NEXT_DPB, 0xFFFF, 0xFFFF);
+                END_OF_CHAIN
+            };
+            write_far_ptr(mem, dpb_addr + dpb_layout.next, next_segment, next_offset);
+
+            if !cds_present {
+                continue;
             }
 
-            // CDS entry.
-            let cds_addr = CDS_BASE + (drive.drive_index as u32) * CDS_ENTRY_SIZE;
-            let drive_letter = b'A' + drive.drive_index;
-
-            // Path: "X:\"
+            let cds_addr = self.state.cds_entry_addr(*drive_index, mem);
+            let drive_letter = b'A' + drive_index;
             mem.write_byte(cds_addr + CDS_OFF_PATH, drive_letter);
             mem.write_byte(cds_addr + CDS_OFF_PATH + 1, b':');
             mem.write_byte(cds_addr + CDS_OFF_PATH + 2, b'\\');
 
-            // Flags.
-            let flags = if drive.is_virtual {
+            let flags = if entry.device == drive_map::DriveDevice::Virtual {
                 CDS_FLAG_NETWORK
             } else {
                 CDS_FLAG_PHYSICAL
             };
             mem.write_word(cds_addr + CDS_OFF_FLAGS, flags);
-
-            // DPB pointer.
-            let dpb_off = DPB_OFFSET + (chain_index as u16) * (DPB_ENTRY_SIZE as u16);
-            write_far_ptr(mem, cds_addr + CDS_OFF_DPB_PTR, DOS_DATA_SEGMENT, dpb_off);
-
-            // Backslash offset (points past "X:").
-            mem.write_word(cds_addr + CDS_OFF_BACKSLASH_OFFSET, 2);
+            write_far_ptr(
+                mem,
+                cds_addr + CDS_OFF_DPB_PTR,
+                dos_data_segment,
+                dpb_offset,
+            );
+            mem.write_word(cds_addr + CDS_OFF_ROOT_LENGTH, 2);
         }
 
-        // Update SYSVARS.
-        mem.write_byte(SYSVARS_BASE + SYSVARS_OFF_BLOCK_DEVS, drives.len() as u8);
-        mem.write_word(SYSVARS_BASE + SYSVARS_OFF_MAX_SECTOR, max_sector_size);
+        let list_of_lists = self.state.list_of_lists_address();
+        mem.write_byte(list_of_lists + SYSVARS_OFF_BLOCK_DEVS, drives.len() as u8);
     }
 
     /// Writes the CDS entry for the CD-ROM drive (Q:).
     fn write_cdrom_drive(&self, mem: &mut dyn MemoryAccess) {
         use tables::*;
 
-        let drive_index = self.state.mscdex.drive_letter as u32;
-        let cds_addr = CDS_BASE + drive_index * CDS_ENTRY_SIZE;
+        let cds_addr = self
+            .state
+            .cds_entry_addr(self.state.mscdex.drive_letter, mem);
         let drive_letter = b'A' + self.state.mscdex.drive_letter;
 
         // Path: "Q:\"
@@ -1963,101 +2305,8 @@ impl NeetanDos {
         // CD-ROM drives use the NETWORK flag (same as MSCDEX convention).
         mem.write_word(cds_addr + CDS_OFF_FLAGS, CDS_FLAG_NETWORK);
 
-        // Backslash offset (points past "Q:").
-        mem.write_word(cds_addr + CDS_OFF_BACKSLASH_OFFSET, 2);
-    }
-
-    /// Writes a single DPB entry with geometry appropriate for the drive type.
-    fn write_dpb_for_drive(&self, mem: &mut dyn MemoryAccess, dpb_addr: u32, drive: &DriveInfo) {
-        use tables::*;
-
-        mem.write_byte(dpb_addr + DPB_OFF_DRIVE_NUM, drive.drive_index);
-
-        // Determine unit number from DA/UA low nibble.
-        let unit_num = drive.da_ua & 0x0F;
-        mem.write_byte(dpb_addr + DPB_OFF_UNIT_NUM, unit_num);
-
-        if drive.is_virtual {
-            // Virtual Z: drive: minimal geometry.
-            mem.write_word(dpb_addr + DPB_OFF_BYTES_PER_SECTOR, 512);
-            mem.write_byte(dpb_addr + DPB_OFF_CLUSTER_MASK, 0); // 1 sector/cluster - 1
-            mem.write_byte(dpb_addr + DPB_OFF_CLUSTER_SHIFT, 0);
-            mem.write_word(dpb_addr + DPB_OFF_RESERVED_SECTORS, 1);
-            mem.write_byte(dpb_addr + DPB_OFF_NUM_FATS, 1);
-            mem.write_word(dpb_addr + DPB_OFF_ROOT_ENTRIES, 16);
-            mem.write_word(dpb_addr + DPB_OFF_FIRST_DATA_SECTOR, 3);
-            mem.write_word(dpb_addr + DPB_OFF_MAX_CLUSTER, 2);
-            mem.write_word(dpb_addr + DPB_OFF_SECTORS_PER_FAT, 1);
-            mem.write_word(dpb_addr + DPB_OFF_FIRST_ROOT_SECTOR, 2);
-            mem.write_byte(dpb_addr + DPB_OFF_MEDIA_DESC, 0xF8);
-            mem.write_byte(dpb_addr + DPB_OFF_ACCESS_FLAG, 0x00);
-        } else if drive.da_ua & 0xF0 == 0x70 {
-            // 640KB FDD (2DD): 512 bytes/sector.
-            mem.write_word(dpb_addr + DPB_OFF_BYTES_PER_SECTOR, 512);
-            mem.write_byte(dpb_addr + DPB_OFF_CLUSTER_MASK, 1); // 2 sectors/cluster - 1
-            mem.write_byte(dpb_addr + DPB_OFF_CLUSTER_SHIFT, 1);
-            mem.write_word(dpb_addr + DPB_OFF_RESERVED_SECTORS, 1);
-            mem.write_byte(dpb_addr + DPB_OFF_NUM_FATS, 2);
-            mem.write_word(dpb_addr + DPB_OFF_ROOT_ENTRIES, 112);
-            mem.write_word(dpb_addr + DPB_OFF_FIRST_DATA_SECTOR, 14);
-            mem.write_word(dpb_addr + DPB_OFF_MAX_CLUSTER, 1231);
-            mem.write_word(dpb_addr + DPB_OFF_SECTORS_PER_FAT, 3);
-            mem.write_word(dpb_addr + DPB_OFF_FIRST_ROOT_SECTOR, 7);
-            mem.write_byte(dpb_addr + DPB_OFF_MEDIA_DESC, 0xFE);
-            mem.write_byte(dpb_addr + DPB_OFF_ACCESS_FLAG, 0xFF);
-        } else if drive.da_ua & 0xF0 == 0x80 {
-            // HDD: 512 bytes/sector, default geometry.
-            mem.write_word(dpb_addr + DPB_OFF_BYTES_PER_SECTOR, 512);
-            mem.write_byte(dpb_addr + DPB_OFF_CLUSTER_MASK, 3); // 4 sectors/cluster - 1
-            mem.write_byte(dpb_addr + DPB_OFF_CLUSTER_SHIFT, 2);
-            mem.write_word(dpb_addr + DPB_OFF_RESERVED_SECTORS, 1);
-            mem.write_byte(dpb_addr + DPB_OFF_NUM_FATS, 2);
-            mem.write_word(dpb_addr + DPB_OFF_ROOT_ENTRIES, 512);
-            mem.write_word(dpb_addr + DPB_OFF_FIRST_DATA_SECTOR, 69);
-            mem.write_word(dpb_addr + DPB_OFF_MAX_CLUSTER, 4080);
-            mem.write_word(dpb_addr + DPB_OFF_SECTORS_PER_FAT, 8);
-            mem.write_word(dpb_addr + DPB_OFF_FIRST_ROOT_SECTOR, 17);
-            mem.write_byte(dpb_addr + DPB_OFF_MEDIA_DESC, 0xF8);
-            mem.write_byte(dpb_addr + DPB_OFF_ACCESS_FLAG, 0xFF);
-        } else if drive.da_ua & 0xF0 == 0x90 {
-            // 1MB FDD (2HD): 1024 bytes/sector, PC-98 standard.
-            mem.write_word(dpb_addr + DPB_OFF_BYTES_PER_SECTOR, 1024);
-            mem.write_byte(dpb_addr + DPB_OFF_CLUSTER_MASK, 0); // 1 sector/cluster - 1
-            mem.write_byte(dpb_addr + DPB_OFF_CLUSTER_SHIFT, 0);
-            mem.write_word(dpb_addr + DPB_OFF_RESERVED_SECTORS, 1);
-            mem.write_byte(dpb_addr + DPB_OFF_NUM_FATS, 2);
-            mem.write_word(dpb_addr + DPB_OFF_ROOT_ENTRIES, 192);
-            mem.write_word(dpb_addr + DPB_OFF_FIRST_DATA_SECTOR, 11);
-            mem.write_word(dpb_addr + DPB_OFF_MAX_CLUSTER, 1223);
-            mem.write_word(dpb_addr + DPB_OFF_SECTORS_PER_FAT, 2);
-            mem.write_word(dpb_addr + DPB_OFF_FIRST_ROOT_SECTOR, 5);
-            mem.write_byte(dpb_addr + DPB_OFF_MEDIA_DESC, 0xFE);
-            mem.write_byte(dpb_addr + DPB_OFF_ACCESS_FLAG, 0xFF);
-        } else {
-            panic!(
-                "Unknown device type DA/UA {:#04X} for drive {}",
-                drive.da_ua,
-                (b'A' + drive.drive_index) as char
-            );
-        }
-
-        // Device header pointer -> NUL device (placeholder).
-        write_far_ptr(
-            mem,
-            dpb_addr + DPB_OFF_DEVICE_PTR,
-            DOS_DATA_SEGMENT,
-            DEV_NUL_OFFSET,
-        );
-    }
-
-    /// Writes a minimal disk buffer header with one empty 512-byte buffer.
-    fn write_disk_buffer(&self, mem: &mut dyn MemoryAccess) {
-        use tables::*;
-
-        // Buffer header: next = FFFF:FFFF, drive = 0xFF (none), rest = 0
-        write_far_ptr(mem, DISK_BUFFER_BASE, 0xFFFF, 0xFFFF);
-        mem.write_byte(DISK_BUFFER_BASE + 4, 0xFF); // drive
-        // Remaining header bytes and buffer data are already zero from memset.
+        // Root length (points past "Q:").
+        mem.write_word(cds_addr + CDS_OFF_ROOT_LENGTH, 2);
     }
 
     /// Plant the MS-DOS 6.20 kernel signature bytes that Windows enhanced-mode
@@ -2066,7 +2315,7 @@ impl NeetanDos {
     /// themselves come from the real DOS 6.20 kernel and are not interpreted
     /// by the HLE; they exist only so DOSMGR believes a supported kernel is
     /// resident.
-    fn write_windows_dosmgr_signature(mem: &mut dyn MemoryAccess) {
+    fn write_windows_dosmgr_signature(&self, mem: &mut dyn MemoryAccess) {
         const SIGNATURE_BLOCKS: &[&[u8]] = &[
             &[
                 0x2E, 0x8C, 0x1E, 0x7E, 0x05, 0x2E, 0x89, 0x1E, 0x7C, 0x05, 0x8C, 0xCB, 0x8E, 0xDB,
@@ -2100,7 +2349,9 @@ impl NeetanDos {
             ],
         ];
 
-        let mut addr = tables::WINDOWS_DOSMGR_SIGNATURE_BANK_ADDR;
+        let mut addr = self
+            .state
+            .dos_data_address(tables::WINDOWS_DOSMGR_SIGNATURE_BANK_OFFSET);
         let end = addr + tables::WINDOWS_DOSMGR_SIGNATURE_BANK_SIZE as u32;
         for block in SIGNATURE_BLOCKS {
             debug_assert!(addr + block.len() as u32 <= end);
@@ -2114,35 +2365,48 @@ impl NeetanDos {
     /// save-BX scratch words, the critical-section table, the UMB MCB chain
     /// head, and the first MCB segment.
     fn write_windows_dosmgr_patch_table(&self, mem: &mut dyn MemoryAccess) {
-        let (major, minor) = self.state.version;
-        let addr = tables::WINDOWS_DOSMGR_PATCH_TABLE_ADDR;
-        mem.write_word(addr, ((minor as u16) << 8) | major as u16);
+        let version = self.state.platform.version;
+        let placement = self.state.platform.placement;
+        let addr = self
+            .state
+            .dos_data_address(tables::WINDOWS_DOSMGR_PATCH_TABLE_OFFSET);
+        mem.write_word(
+            addr,
+            (u16::from(version.minor) << 8) | u16::from(version.major),
+        );
         mem.write_word(addr + 0x02, tables::WINDOWS_DOSMGR_SAVEDS_OFFSET);
         mem.write_word(addr + 0x04, tables::WINDOWS_DOSMGR_SAVEBX_OFFSET);
-        mem.write_word(addr + 0x06, tables::INDOS_FLAG_OFFSET);
+        mem.write_word(
+            addr + 0x06,
+            self.state.structures().swappable_data_area.indos_offset(),
+        );
         mem.write_word(
             addr + 0x08,
             tables::WINDOWS_DOSMGR_CRITICAL_SECTION_TABLE_OFFSET,
         );
         mem.write_word(addr + 0x0A, tables::WINDOWS_DOSMGR_UMB_HEAD_OFFSET);
-        mem.write_word(addr + 0x0C, tables::FIRST_MCB_SEGMENT);
+        mem.write_word(addr + 0x0C, placement.first_mcb_segment);
         mem.write_word(
-            tables::WINDOWS_DOSMGR_UMB_HEAD_ADDR,
-            tables::FREE_MCB_SEGMENT,
+            self.state
+                .dos_data_address(tables::WINDOWS_DOSMGR_UMB_HEAD_OFFSET),
+            memory::initial_mcb_layout(placement.first_mcb_segment, tables::ENV_BLOCK_PARAGRAPHS)
+                .free_mcb_segment,
         );
         mem.write_word(
-            tables::DOS_DATA_BASE + tables::WINDOWS_DOSMGR_SAVEDS_OFFSET as u32,
+            self.state
+                .dos_data_address(tables::WINDOWS_DOSMGR_SAVEDS_OFFSET),
             0x0000,
         );
         mem.write_word(
-            tables::DOS_DATA_BASE + tables::WINDOWS_DOSMGR_SAVEBX_OFFSET as u32,
+            self.state
+                .dos_data_address(tables::WINDOWS_DOSMGR_SAVEBX_OFFSET),
             0x0000,
         );
-        mem.write_word(tables::WINDOWS_DOSMGR_CRITICAL_SECTION_TABLE_ADDR, 0x0D0C);
-        mem.write_word(
-            tables::WINDOWS_DOSMGR_CRITICAL_SECTION_TABLE_ADDR + 2,
-            0x0000,
-        );
+        let critical_section_table = self
+            .state
+            .dos_data_address(tables::WINDOWS_DOSMGR_CRITICAL_SECTION_TABLE_OFFSET);
+        mem.write_word(critical_section_table, 0x0D0C);
+        mem.write_word(critical_section_table + 2, 0x0000);
     }
 
     /// Creates the MCB chain with SFT2 block, environment block, PSP, and COMMAND.COM.
@@ -2151,9 +2415,11 @@ impl NeetanDos {
         mem: &mut dyn MemoryAccess,
         root_shell_boot: &RootShellBootConfig,
     ) {
-        let layout = memory::initial_mcb_layout(root_shell_boot.env_paragraphs);
+        let placement = self.state.platform.placement;
+        let layout =
+            memory::initial_mcb_layout(placement.first_mcb_segment, root_shell_boot.env_paragraphs);
 
-        memory::write_initial_mcb_chain(mem, layout);
+        memory::write_initial_mcb_chain(mem, placement, layout);
         process::write_environment_block(
             mem,
             layout.env_segment,
@@ -2166,7 +2432,7 @@ impl NeetanDos {
             layout.psp_segment,
             layout.psp_segment,
             layout.env_segment,
-            tables::MEMORY_TOP_SEGMENT,
+            placement.memory_top_segment,
         );
         process::write_command_com_stub(mem, layout.psp_segment);
         self.state.current_psp = layout.psp_segment;
@@ -2183,7 +2449,9 @@ impl NeetanDos {
         self.state.dta_segment = self.state.current_psp;
         self.state.dta_offset = 0x0080;
         self.state.dta_address = ((self.state.current_psp as u32) << 4) + 0x0080;
-        self.state.dbcs_table_addr = tables::DBCS_TABLE_ADDR;
+        self.state.dbcs_table_addr = self
+            .state
+            .dos_data_address(self.state.structures().private_area.dbcs_table);
         self.root_command_com_psp = self.state.current_psp;
         self.boot_entry_point = BootEntryPoint::command_com(self.state.current_psp);
 
@@ -2222,9 +2490,11 @@ impl NeetanDos {
     ) {
         use tables::*;
 
+        let placement = self.state.platform.placement;
+        let entry_size = self.state.structures().system_file_table.entry_size;
         let sft2_entry_count = self.state.sft2_count;
-        // SFT2 needs: header(6) + entry_count * 59 bytes, rounded up to paragraphs.
-        let sft2_bytes = SFT_HEADER_SIZE as u16 + sft2_entry_count * SFT_ENTRY_SIZE as u16;
+        // SFT2 needs: header + entry_count entries, rounded up to paragraphs.
+        let sft2_bytes = SFT_HEADER_SIZE as u16 + sft2_entry_count * entry_size as u16;
         let sft2_paragraphs: u16 = sft2_bytes.div_ceil(16);
 
         // Rewrite MCB chain to include SFT2 block.
@@ -2237,7 +2507,7 @@ impl NeetanDos {
         let new_free_mcb_segment = new_psp_segment + COMMAND_BLOCK_PARAGRAPHS;
 
         // Rewrite ENV MCB: type='M', point to SFT2 MCB
-        let env_mcb_addr = (FIRST_MCB_SEGMENT as u32) << 4;
+        let env_mcb_addr = (placement.first_mcb_segment as u32) << 4;
         mem.write_byte(env_mcb_addr, 0x4D); // 'M' (not last)
 
         // Write SFT2 MCB
@@ -2249,15 +2519,24 @@ impl NeetanDos {
 
         // Write SFT2 header + entries
         let sft2_base = (sft2_data_segment as u32) << 4;
-        self.state.sft2_base = sft2_base;
-        write_far_ptr(mem, sft2_base, 0xFFFF, 0xFFFF);
-        mem.write_word(sft2_base + 4, sft2_entry_count);
+        write_far_ptr(
+            mem,
+            sft2_base + SFT_BLOCK_OFF_NEXT,
+            END_OF_CHAIN.0,
+            END_OF_CHAIN.1,
+        );
+        mem.write_word(sft2_base + SFT_BLOCK_OFF_COUNT, sft2_entry_count);
         // Zero all entries
-        let zero_data = vec![0u8; (sft2_entry_count as usize) * (SFT_ENTRY_SIZE as usize)];
+        let zero_data = vec![0u8; (sft2_entry_count as usize) * (entry_size as usize)];
         mem.write_block(sft2_base + SFT_HEADER_SIZE, &zero_data);
 
         // Update first SFT's next-ptr to point to SFT2
-        write_far_ptr(mem, SFT_BASE, sft2_data_segment, 0x0000);
+        write_far_ptr(
+            mem,
+            self.state.first_sft_block_address() + SFT_BLOCK_OFF_NEXT,
+            sft2_data_segment,
+            0x0000,
+        );
 
         // Rewrite COMMAND.COM MCB at new location
         let cmd_mcb_addr = (new_command_mcb_segment as u32) << 4;
@@ -2272,7 +2551,7 @@ impl NeetanDos {
             new_psp_segment,
             new_psp_segment,
             env_segment,
-            MEMORY_TOP_SEGMENT,
+            placement.memory_top_segment,
         );
         process::write_psp_command_tail(mem, new_psp_segment, root_command_tail);
         process::write_command_com_stub(mem, new_psp_segment);
@@ -2280,16 +2559,17 @@ impl NeetanDos {
 
         // Rewrite free MCB at new location
         let free_mcb_addr = (new_free_mcb_segment as u32) << 4;
-        let free_size = MEMORY_TOP_SEGMENT - new_free_mcb_segment - 1;
+        let free_size = placement.memory_top_segment - new_free_mcb_segment - 1;
         mem.write_byte(free_mcb_addr, 0x5A); // 'Z' (last)
         mem.write_word(free_mcb_addr + 1, MCB_OWNER_FREE);
         mem.write_word(free_mcb_addr + 3, free_size);
         mem.write_block(free_mcb_addr + 5, &[0x00; 11]);
         // DOSMGR UMB-head pointer tracks the actual final free MCB after
         // SFT2 has been inserted into the MCB chain.
-        mem.write_word(WINDOWS_DOSMGR_UMB_HEAD_ADDR, new_free_mcb_segment);
-
-        // Update SYSVARS first MCB pointer (it stays the same: FIRST_MCB_SEGMENT)
+        mem.write_word(
+            self.state.dos_data_address(WINDOWS_DOSMGR_UMB_HEAD_OFFSET),
+            new_free_mcb_segment,
+        );
     }
 
     /// Populates the IO.SYS work area at segment 0060h.
@@ -2364,6 +2644,220 @@ impl NeetanDos {
 }
 
 impl DosState {
+    /// Returns true when the platform reports a DOS 3 kernel. The AX values
+    /// that `AH=0Dh` and `AH=3Bh` leave are traced on DOS 3.10 only.
+    pub(crate) fn is_dos3_kernel(&self) -> bool {
+        self.platform.version.major == DOS3_MAJOR_VERSION
+    }
+
+    /// Returns the structure layout of the platform.
+    pub(crate) fn structures(&self) -> &'static StructureLayout {
+        self.platform.layout.structures()
+    }
+
+    /// Returns the EMS window of the platform while EMS is enabled.
+    pub(crate) fn active_ems_window(&self) -> Option<EmsWindow> {
+        self.platform.ems_window.filter(|_| self.ems_enabled)
+    }
+
+    /// Returns the DOS data segment of the platform placement.
+    pub(crate) fn dos_data_segment(&self) -> u16 {
+        self.platform.placement.dos_data_segment
+    }
+
+    /// Returns the linear address of an offset in the DOS data segment.
+    pub(crate) fn dos_data_address(&self, offset: u16) -> u32 {
+        self.platform.placement.dos_data_address(offset)
+    }
+
+    /// Returns the linear address of the list of lists.
+    pub(crate) fn list_of_lists_address(&self) -> u32 {
+        self.dos_data_address(self.structures().list_of_lists.data_offset)
+    }
+
+    /// Returns the first MCB segment stored below the list of lists.
+    pub(crate) fn first_mcb_segment(&self, memory: &dyn MemoryAccess) -> u16 {
+        memory.read_word(self.list_of_lists_address() - tables::SYSVARS_FIRST_MCB_DISTANCE)
+    }
+
+    /// First MCB segment of the UMB chain, or `None` when no UMB region is
+    /// available. The segment depends on the UMB window and the EMS state.
+    pub(crate) fn umb_first_mcb_segment(&self) -> Option<u16> {
+        self.memory_manager
+            .as_ref()
+            .filter(|memory_manager| memory_manager.is_umb_enabled())
+            .map(|memory_manager| memory_manager.umb_first_mcb_segment())
+    }
+
+    /// Returns the MCB chains with the given UMB chain.
+    pub(crate) fn mcb_chains(
+        &self,
+        memory: &dyn MemoryAccess,
+        umb_first_mcb_segment: Option<u16>,
+    ) -> memory::McbChains {
+        memory::McbChains {
+            first_mcb_segment: self.first_mcb_segment(memory),
+            memory_top_segment: self.platform.placement.memory_top_segment,
+            umb_first_mcb_segment,
+        }
+    }
+
+    /// Returns the MCB chains that DOS allocation calls search. The UMB chain
+    /// takes part while DOS links UMBs (INT 21h AX=5803h).
+    pub(crate) fn linked_mcb_chains(&self, memory: &dyn MemoryAccess) -> memory::McbChains {
+        let umb_first = self
+            .umb_link
+            .then(|| self.umb_first_mcb_segment())
+            .flatten();
+        self.mcb_chains(memory, umb_first)
+    }
+
+    /// Returns the offset of the NUL device header in the DOS data segment.
+    pub(crate) fn nul_device_offset(&self) -> u16 {
+        self.structures().list_of_lists.data_offset + tables::SYSVARS_OFF_NUL_HEADER as u16
+    }
+
+    /// Takes the DTA and the current PSP from the swappable data area. Like
+    /// on MS-DOS the SDA holds them between two DOS calls, and programs such
+    /// as DOS extenders write them there directly. A kernel that waits for
+    /// its DOSINIT call has no SDA yet.
+    pub(crate) fn load_process_fields(&mut self, memory: &dyn MemoryAccess) {
+        if !self.platform.placement.is_ordered() {
+            return;
+        }
+        let sda = self.sda_address();
+        let dta_offset = memory.read_word(sda + u32::from(tables::SDA_OFF_DTA));
+        let dta_segment = memory.read_word(sda + u32::from(tables::SDA_OFF_DTA) + 2);
+        self.dta_offset = dta_offset;
+        self.dta_segment = dta_segment;
+        self.dta_address = (u32::from(dta_segment) << 4).wrapping_add(u32::from(dta_offset));
+        self.current_psp = memory.read_word(sda + u32::from(tables::SDA_OFF_CURRENT_PSP));
+    }
+
+    /// Writes the DTA and the current PSP to the swappable data area.
+    pub(crate) fn store_process_fields(&self, memory: &mut dyn MemoryAccess) {
+        if !self.platform.placement.is_ordered() {
+            return;
+        }
+        let sda = self.sda_address();
+        tables::write_far_ptr(
+            memory,
+            sda + u32::from(tables::SDA_OFF_DTA),
+            self.dta_segment,
+            self.dta_offset,
+        );
+        memory.write_word(
+            sda + u32::from(tables::SDA_OFF_CURRENT_PSP),
+            self.current_psp,
+        );
+    }
+
+    /// Returns the linear address of the swappable data area.
+    pub(crate) fn sda_address(&self) -> u32 {
+        self.dos_data_address(self.structures().swappable_data_area.data_offset)
+    }
+
+    /// Adds `delta` to the InDOS flag.
+    pub(crate) fn adjust_indos(&self, memory: &mut dyn MemoryAccess, delta: i8) {
+        let address = self.indos_address();
+        let indos = memory.read_byte(address);
+        memory.write_byte(address, indos.wrapping_add_signed(delta));
+    }
+
+    /// Sets the carry flag of the IRET frame at SS:SP and notes it as the
+    /// result of the running handler.
+    pub(crate) fn set_iret_carry(
+        &self,
+        cpu: &dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+        carry: bool,
+    ) {
+        self.handler_carry.set(Some(carry));
+        write_iret_carry(cpu, memory, carry);
+    }
+
+    /// Returns the linear address of the InDOS flag.
+    pub(crate) fn indos_address(&self) -> u32 {
+        self.dos_data_address(self.structures().swappable_data_area.indos_offset())
+    }
+
+    /// Returns the linear address of the first SFT block that NeetanDos owns.
+    pub(crate) fn first_sft_block_address(&self) -> u32 {
+        self.dos_data_address(self.structures().system_file_table.first_block_offset)
+    }
+
+    /// Returns true when the list of lists points at a CDS array. The
+    /// kernel entry has none until `IO.SYS` allocates it.
+    pub(crate) fn current_directory_array_present(&self, memory: &dyn MemoryAccess) -> bool {
+        let array = layout::read_far_pointer(
+            memory,
+            self.list_of_lists_address() + tables::SYSVARS_OFF_CDS_PTR,
+        );
+        array != (0, 0) && array != END_OF_CHAIN
+    }
+
+    /// Returns the placement of the first disk buffer and the DPBs for the
+    /// drives of the drive map.
+    pub(crate) fn system_data_area(&self) -> system_data::SystemDataArea {
+        let drives: Vec<&drive_map::DriveEntry> = self
+            .drive_map
+            .drives_with_parameter_block()
+            .map(|(_, entry)| entry)
+            .collect();
+        let largest_sector = drives
+            .iter()
+            .filter_map(|entry| entry.geometry)
+            .map(|geometry| geometry.bpb.bytes_per_sector)
+            .max()
+            .unwrap_or(0);
+        system_data::SystemDataArea::new(self.structures(), drives.len(), largest_sector)
+    }
+
+    /// Returns the IOCTL `AX=4409h` attribute word of `drive_index` (0 = A:):
+    /// bit 12 for a redirected drive, else the attribute word of the block
+    /// device behind the DPB of the drive. DOS 3.10 reports only bit 12 and
+    /// returns 0 for a local drive. `None` for an invalid drive.
+    pub(crate) fn drive_device_attributes(
+        &self,
+        drive_index: u8,
+        memory: &dyn MemoryAccess,
+    ) -> Option<u16> {
+        self.drive_map.entry(drive_index)?;
+        let cds_address = self.cds_entry_addr(drive_index, memory);
+        let cds_flags = memory.read_word(cds_address + tables::CDS_OFF_FLAGS);
+        if cds_flags == 0 {
+            return None;
+        }
+        if cds_flags & tables::CDS_FLAG_NETWORK != 0 {
+            return Some(DEVICE_ATTRIBUTE_REMOTE);
+        }
+        if self.platform.version.major < LOCAL_DRIVE_ATTRIBUTES_MAJOR_VERSION {
+            return Some(0);
+        }
+        let dpb_offset = memory.read_word(cds_address + tables::CDS_OFF_DPB_PTR);
+        let dpb_segment = memory.read_word(cds_address + tables::CDS_OFF_DPB_PTR + 2);
+        if dpb_offset == 0 && dpb_segment == 0 {
+            return Some(0);
+        }
+        let dpb = (u32::from(dpb_segment) << 4) + u32::from(dpb_offset);
+        let device = dpb + self.structures().drive_parameter_block.device;
+        let header_offset = memory.read_word(device);
+        let header_segment = memory.read_word(device + 2);
+        let header = (u32::from(header_segment) << 4) + u32::from(header_offset);
+        Some(memory.read_word(header + tables::DEVHDR_OFF_ATTRIBUTE))
+    }
+
+    /// Returns the linear address of the CDS entry of `drive_index` (0 = A:).
+    /// The CDS array comes from the list of lists.
+    pub(crate) fn cds_entry_addr(&self, drive_index: u8, memory: &dyn MemoryAccess) -> u32 {
+        layout::current_directory_entry_address(
+            memory,
+            self.list_of_lists_address(),
+            self.structures(),
+            drive_index,
+        )
+    }
+
     pub(crate) fn handle_table_info_for_psp(
         mem: &dyn MemoryAccess,
         psp_segment: u16,
@@ -2422,17 +2916,14 @@ impl DosState {
     }
 
     /// Returns the SFT entry base address for a given SFT index (0-based).
-    pub(crate) fn sft_entry_addr(&self, sft_index: u8) -> Option<u32> {
-        use tables::*;
-        let total = SFT_INITIAL_COUNT + self.sft2_count;
-        if (sft_index as u16) < SFT_INITIAL_COUNT {
-            Some(SFT_BASE + SFT_HEADER_SIZE + sft_index as u32 * SFT_ENTRY_SIZE)
-        } else if (sft_index as u16) < total {
-            let local = sft_index as u32 - SFT_INITIAL_COUNT as u32;
-            Some(self.sft2_base + SFT_HEADER_SIZE + local * SFT_ENTRY_SIZE)
-        } else {
-            None
-        }
+    /// The walk follows the SFT block chain of the list of lists.
+    pub(crate) fn sft_entry_addr(&self, sft_index: u8, memory: &dyn MemoryAccess) -> Option<u32> {
+        layout::system_file_table_entry_address(
+            memory,
+            self.list_of_lists_address(),
+            self.structures(),
+            sft_index,
+        )
     }
 
     /// Reads the PSP JFT to find the SFT index for a file handle.
@@ -2448,15 +2939,15 @@ impl DosState {
         Ok(jft_entry)
     }
 
-    /// Allocates a free JFT slot and a free SFT entry. Returns (handle, sft_index).
+    /// Allocates a free JFT slot and the first SFT entry with reference count
+    /// 0 in table order. Returns (handle, sft_index).
     pub(crate) fn allocate_handle(&self, mem: &mut dyn MemoryAccess) -> Result<(u16, u8), u16> {
         let handle = self.find_free_jft_handle(mem)?;
 
-        // Find free SFT entry (skip first 5 device entries)
         let mut free_sft = None;
-        let total_count = (tables::SFT_INITIAL_COUNT + self.sft2_count).min(0x00FF);
-        for idx in tables::SFT_INITIAL_COUNT..total_count {
-            if let Some(addr) = self.sft_entry_addr(idx as u8) {
+        let total_count = layout::system_file_table_entry_count(mem, self.list_of_lists_address());
+        for idx in 0..total_count {
+            if let Some(addr) = self.sft_entry_addr(idx as u8, mem) {
                 let ref_count = mem.read_word(addr + tables::SFT_ENT_REF_COUNT);
                 if ref_count == 0 {
                     free_sft = Some(idx as u8);
@@ -2464,7 +2955,7 @@ impl DosState {
                 }
             }
         }
-        let sft_index = free_sft.ok_or(0x0004u16)?;
+        let sft_index = free_sft.ok_or(ERROR_TOO_MANY_OPEN_FILES)?;
 
         // Link handle to SFT entry
         self.write_jft_entry(handle, sft_index, mem)?;
@@ -2481,7 +2972,7 @@ impl DosState {
             return;
         }
         let _ = self.write_jft_entry(handle, 0xFF, mem);
-        if let Some(sft_addr) = self.sft_entry_addr(sft_index) {
+        if let Some(sft_addr) = self.sft_entry_addr(sft_index, mem) {
             let ref_count = mem.read_word(sft_addr + tables::SFT_ENT_REF_COUNT);
             if ref_count > 0 {
                 mem.write_word(sft_addr + tables::SFT_ENT_REF_COUNT, ref_count - 1);
@@ -2489,64 +2980,255 @@ impl DosState {
         }
     }
 
-    /// Ensures a FAT volume is mounted for the given drive. Lazy-mounts on first access.
+    /// Ensures a FAT volume is mounted for the given drive. Lazy-mounts on
+    /// first access and records the BPB of the volume in the drive map.
     pub(crate) fn ensure_volume_mounted(
         &mut self,
         drive_index: u8,
-        mem: &dyn MemoryAccess,
         disk: &mut dyn DiskIo,
     ) -> Result<(), u16> {
-        if drive_index >= 26 || drive_index == 25 {
-            return Err(0x000F); // invalid drive (Z: is virtual)
-        }
-        if self.fat_volumes[drive_index as usize].is_some() {
+        let slot = usize::from(drive_index);
+        let entry = *self
+            .drive_map
+            .entry(drive_index)
+            .ok_or(ERROR_INVALID_DRIVE)?;
+        let device_id = match entry.device {
+            drive_map::DriveDevice::GuestDriver(_) => self.require_guest_volume(drive_index)?,
+            drive_map::DriveDevice::Floppy { .. }
+            | drive_map::DriveDevice::FixedDisk { .. }
+            | drive_map::DriveDevice::MemoryImage { .. }
+            | drive_map::DriveDevice::Cdrom
+            | drive_map::DriveDevice::GuestCdrom(_)
+            | drive_map::DriveDevice::Virtual => {
+                if self.fat_volumes.get(slot).is_some_and(Option::is_some) {
+                    return Ok(());
+                }
+                entry.device.disk_device_id().ok_or(ERROR_INVALID_DRIVE)?
+            }
+        };
+        if self.fat_volumes.get(slot).is_some_and(Option::is_some) {
             return Ok(());
         }
-
-        // Look up DA/UA from IO.SYS table
-        let da_ua =
-            mem.read_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_DAUA_TABLE + drive_index as u32);
-        if da_ua == 0 {
-            return Err(0x000F); // no drive
+        if self.media_failed & (1 << drive_index) != 0 {
+            return Err(ERROR_GENERAL_FAILURE);
         }
+        let partition_scheme = entry.partition_scheme;
+        let mut geometry = entry.geometry.ok_or(ERROR_INVALID_DRIVE)?;
 
-        let partition_offset = if da_ua & 0xF0 == 0x80 {
-            // HDD: need to read partition table
-            filesystem::fat_partition::find_partition_offset(da_ua, disk)?
-        } else {
-            0 // Floppy: no partition offset
-        };
-
-        let vol = filesystem::fat::FatVolume::mount(da_ua, partition_offset, disk)
-            .map_err(|_| 0x001Fu16)?;
-        self.fat_volumes[drive_index as usize] = Some(vol);
+        let partition_offset = partition_scheme.volume_start(device_id, disk)?;
+        let volume =
+            filesystem::fat::FatVolume::mount(device_id, partition_offset, &geometry, disk)
+                .map_err(|code| {
+                    if code == filesystem::fat::ERROR_UNKNOWN_MEDIA && self.in_dos_call {
+                        self.guest_requests.unknown_media |= 1 << drive_index;
+                        self.guest_requests.redispatch = true;
+                    }
+                    ERROR_GENERAL_FAILURE
+                })?;
+        geometry.bpb = volume.bpb;
+        if let Some(entry) = self.drive_map.entry_mut(drive_index) {
+            entry.geometry = Some(geometry);
+        }
+        self.stale_parameter_blocks |= 1 << drive_index;
+        self.fat_volumes[slot] = Some(volume);
         Ok(())
     }
 
-    fn drive_has_cdrom_filesystem(&self, drive_index: u8, mem: &dyn MemoryAccess) -> bool {
-        if drive_index != self.mscdex.drive_letter {
-            return false;
+    /// Converts logical sectors of a drive to physical sectors of its device.
+    ///
+    /// Logical sectors count from the start of the volume in the sector size
+    /// of its BPB. A drive without a mountable volume uses the volume start of
+    /// its partition scheme and the BPB of the drive map.
+    pub(crate) fn logical_sector_span(
+        &mut self,
+        drive_index: u8,
+        first_sector: u32,
+        sector_count: u32,
+        disk: &mut dyn DiskIo,
+    ) -> Result<PhysicalSectorSpan, u16> {
+        let mounted = self.ensure_volume_mounted(drive_index, disk);
+        let entry = *self
+            .drive_map
+            .entry(drive_index)
+            .ok_or(ERROR_INVALID_DRIVE)?;
+        let device_id = match entry.device {
+            drive_map::DriveDevice::GuestDriver(_) => {
+                mounted?;
+                guest_volume::image_device_id(drive_index)
+            }
+            drive_map::DriveDevice::Floppy { .. }
+            | drive_map::DriveDevice::FixedDisk { .. }
+            | drive_map::DriveDevice::MemoryImage { .. }
+            | drive_map::DriveDevice::Cdrom
+            | drive_map::DriveDevice::GuestCdrom(_)
+            | drive_map::DriveDevice::Virtual => {
+                entry.device.disk_device_id().ok_or(ERROR_INVALID_DRIVE)?
+            }
+        };
+
+        if let Some(volume) = self.fat_volumes[usize::from(drive_index)].as_ref() {
+            return Ok(PhysicalSectorSpan {
+                device_id,
+                first_lba: volume.logical_sector_lba(first_sector),
+                sector_count: sector_count * volume.sector_ratio(),
+            });
         }
-        let cds_addr = tables::CDS_BASE + (drive_index as u32) * tables::CDS_ENTRY_SIZE;
-        let cds_flags = mem.read_word(cds_addr + tables::CDS_OFF_FLAGS);
-        cds_flags != 0 && cds_flags & tables::CDS_FLAG_PHYSICAL == 0
+
+        let physical_sector_size = disk.sector_size(device_id).ok_or(ERROR_GENERAL_FAILURE)?;
+        let volume_start = entry.partition_scheme.volume_start(device_id, disk)?;
+        let logical_sector_size = entry.geometry.map_or(physical_sector_size, |geometry| {
+            geometry.bpb.bytes_per_sector
+        });
+        let sector_ratio = u32::from(logical_sector_size / physical_sector_size.max(1)).max(1);
+        Ok(PhysicalSectorSpan {
+            device_id,
+            first_lba: volume_start + first_sector * sector_ratio,
+            sector_count: sector_count * sector_ratio,
+        })
     }
 
+    /// Returns true when the drive is a CD-ROM drive.
+    pub(crate) fn drive_has_cdrom_filesystem(&self, drive_index: u8) -> bool {
+        self.drive_map
+            .entry(drive_index)
+            .is_some_and(|entry| entry.device.has_cdrom_file_system())
+    }
+
+    /// Ensures that the volume of a drive can be read: the virtual drive,
+    /// the ISO 9660 volume of the CD-ROM drive or a FAT volume.
     pub(crate) fn ensure_readable_drive_ready(
         &mut self,
         drive_index: u8,
-        mem: &dyn MemoryAccess,
         device: &mut dyn DriveIo,
     ) -> Result<(), u16> {
-        if drive_index == 25 {
+        if drive_index == drive_map::VIRTUAL_DRIVE_INDEX {
             return Ok(());
         }
 
-        if self.drive_has_cdrom_filesystem(drive_index, mem) {
-            filesystem::iso9660::IsoVolume::mount(device).map(|_| ())
+        if self.drive_has_cdrom_filesystem(drive_index) {
+            self.require_guest_cdrom(drive_index)?;
+            filesystem::iso9660::IsoVolume::mount(&self.drive_cdrom(drive_index, device))
+                .map(|_| ())
         } else {
-            self.ensure_volume_mounted(drive_index, mem, device)
+            self.ensure_volume_mounted(drive_index, device)
         }
+    }
+
+    /// Mounts the volume of every `DiskIo` drive that holds media. The drive
+    /// map keeps the default BPB of the other drives.
+    pub(crate) fn mount_drive_volumes(&mut self, disk: &mut dyn DiskIo) {
+        let drives: Vec<u8> = self
+            .drive_map
+            .drives()
+            .filter(|(_, entry)| entry.device.disk_device_id().is_some())
+            .map(|(drive_index, _)| drive_index)
+            .collect();
+        for drive_index in drives {
+            let _ = self.ensure_volume_mounted(drive_index, disk);
+        }
+    }
+
+    /// Writes the geometry, the drive number, the unit and the access flag of
+    /// a drive into the DPB at `dpb_address`. The access flag marks the DPB
+    /// of a mounted volume as accessed.
+    fn write_drive_parameter_block_fields(
+        &self,
+        memory: &mut dyn MemoryAccess,
+        dpb_address: u32,
+        drive_index: u8,
+        entry: &drive_map::DriveEntry,
+    ) {
+        let structures = self.structures();
+        let dpb_layout = &structures.drive_parameter_block;
+        memory.write_byte(dpb_address + tables::DPB_OFF_DRIVE_NUM, drive_index);
+        memory.write_byte(dpb_address + tables::DPB_OFF_UNIT_NUM, entry.unit);
+        if let Some(geometry) = entry.geometry {
+            geometry
+                .dpb_geometry()
+                .write(memory, dpb_address, structures);
+        }
+        let volume_mounted = self
+            .fat_volumes
+            .get(usize::from(drive_index))
+            .is_some_and(Option::is_some);
+        let access_flag = if entry.device == drive_map::DriveDevice::Virtual || volume_mounted {
+            DPB_ACCESSED
+        } else {
+            DPB_NOT_ACCESSED
+        };
+        memory.write_byte(dpb_address + dpb_layout.access_flag, access_flag);
+    }
+
+    /// Mounts the volume of a drive when media is present and rewrites the
+    /// DPB of the drive from the BPB of the volume.
+    pub(crate) fn refresh_drive_geometry(
+        &mut self,
+        drive_index: u8,
+        memory: &mut dyn MemoryAccess,
+        disk: &mut dyn DiskIo,
+    ) {
+        let _ = self.ensure_volume_mounted(drive_index, disk);
+        self.write_stale_drive_parameter_blocks(memory);
+    }
+
+    /// Rewrites the DPBs of the drives whose volume mounted since the last
+    /// DPB write.
+    pub(crate) fn write_stale_drive_parameter_blocks(&mut self, memory: &mut dyn MemoryAccess) {
+        let mut stale = std::mem::take(&mut self.stale_parameter_blocks);
+        while stale != 0 {
+            let drive_index = stale.trailing_zeros() as u8;
+            stale &= stale - 1;
+            self.refresh_drive_parameter_block(memory, drive_index);
+        }
+    }
+
+    /// Rewrites the DPB of a drive from the drive map. The CDS entry of the
+    /// drive locates the DPB. Without a CDS array the DPB keeps its fields.
+    pub(crate) fn refresh_drive_parameter_block(
+        &self,
+        memory: &mut dyn MemoryAccess,
+        drive_index: u8,
+    ) {
+        let Some(entry) = self.drive_map.entry(drive_index) else {
+            return;
+        };
+        if !entry.device.has_drive_parameter_block()
+            || !self.current_directory_array_present(memory)
+        {
+            return;
+        }
+        let cds_address = self.cds_entry_addr(drive_index, memory);
+        let (segment, offset) =
+            layout::read_far_pointer(memory, cds_address + tables::CDS_OFF_DPB_PTR);
+        if (segment, offset) == END_OF_CHAIN || (segment, offset) == (0, 0) {
+            return;
+        }
+        let dpb_address = (u32::from(segment) << 4) + u32::from(offset);
+        self.write_drive_parameter_block_fields(memory, dpb_address, drive_index, entry);
+    }
+
+    /// Returns the device driver header of the DPB of a drive. The CDS entry
+    /// of the drive locates the DPB.
+    pub(crate) fn drive_device_header(
+        &self,
+        drive_index: u8,
+        memory: &dyn MemoryAccess,
+    ) -> Option<FarPointer> {
+        if !self.current_directory_array_present(memory) {
+            return None;
+        }
+        let cds_address = self.cds_entry_addr(drive_index, memory);
+        let (segment, offset) =
+            layout::read_far_pointer(memory, cds_address + tables::CDS_OFF_DPB_PTR);
+        if (segment, offset) == END_OF_CHAIN || (segment, offset) == (0, 0) {
+            return None;
+        }
+        let dpb_address = (u32::from(segment) << 4) + u32::from(offset);
+        let device = FarPointer::read(
+            memory,
+            dpb_address + self.structures().drive_parameter_block.device,
+        );
+        (device != FarPointer::default()).then_some(device)
     }
 
     /// Reads an ASCIIZ string from emulated memory.
@@ -2563,8 +3245,8 @@ impl DosState {
     }
 }
 
-/// Writes the carry flag into the IRET frame on the stack.
-pub(crate) fn set_iret_carry(cpu: &dyn CpuAccess, mem: &mut dyn MemoryAccess, carry: bool) {
+/// Sets the carry flag of the IRET frame at SS:SP.
+fn write_iret_carry(cpu: &dyn CpuAccess, mem: &mut dyn MemoryAccess, carry: bool) {
     let flags_addr = cpu
         .linear_address(SegmentRegister::SS, cpu.sp())
         .wrapping_add(4);
@@ -2602,24 +3284,252 @@ mod tests {
     use crate::test_support::MockMemory;
 
     #[test]
+    fn cdrom_media_change_drops_the_open_files_and_the_search_of_the_disc() {
+        let mut dos = NeetanDos::new(DosPlatform::pc98());
+        let directory = filesystem::iso9660::IsoDirectory {
+            start_lba: 20,
+            data_length: 2048,
+        };
+        dos.state.open_iso_files[3] = Some(filesystem::iso9660::IsoDirEntry {
+            name: *b"README  TXT",
+            attribute: 0x01,
+            time: 0,
+            date: 0,
+            start_lba: 21,
+            file_size: 9,
+            directory: None,
+        });
+        dos.state.read_find_directory = Some(filesystem::ReadDirectory::Iso(directory));
+        dos.state.drive_map.set(16, drive_map::DriveEntry::cdrom());
+        let mut memory = MockMemory::with_extended_memory(0x10_0000, 0);
+        memory.write_byte(dos.state.dta_address, 0x80 | 16);
+        dos.invalidate_cdrom_caches(&memory);
+        assert!(dos.state.open_iso_files.iter().all(Option::is_none));
+        assert!(dos.state.read_find_directory.is_none());
+    }
+
+    #[test]
     fn install_int5ch_stub_points_empty_vector_to_iret() {
         let mut memory = MockMemory::with_extended_memory(0x10000, 0);
-        NeetanDos::install_int5ch_stub(&mut memory);
+        let dos = NeetanDos::new(DosPlatform::pc98());
+        dos.install_int5ch_stub(&mut memory);
         let ivt_5ch_addr: u32 = 0x5C * 4;
         assert_eq!(memory.read_word(ivt_5ch_addr), tables::INT5C_STUB_OFFSET);
-        assert_eq!(memory.read_word(ivt_5ch_addr + 2), tables::DOS_DATA_SEGMENT);
-        assert_eq!(memory.read_byte(tables::INT5C_STUB_ADDR), 0xCF);
+        assert_eq!(
+            memory.read_word(ivt_5ch_addr + 2),
+            dos.state.dos_data_segment()
+        );
+        assert_eq!(
+            memory.read_byte(dos.state.dos_data_address(tables::INT5C_STUB_OFFSET)),
+            0xCF
+        );
     }
 
     #[test]
     fn install_int5ch_stub_preserves_existing_vector() {
         let mut memory = MockMemory::with_extended_memory(0x10000, 0);
+        let dos = NeetanDos::new(DosPlatform::pc98());
         let ivt_5ch_addr: u32 = 0x5C * 4;
         memory.write_word(ivt_5ch_addr, 0x1234);
         memory.write_word(ivt_5ch_addr + 2, 0x5678);
-        NeetanDos::install_int5ch_stub(&mut memory);
-        assert_eq!(memory.read_byte(tables::INT5C_STUB_ADDR), 0xCF);
+        dos.install_int5ch_stub(&mut memory);
+        assert_eq!(
+            memory.read_byte(dos.state.dos_data_address(tables::INT5C_STUB_OFFSET)),
+            0xCF
+        );
         assert_eq!(memory.read_word(ivt_5ch_addr), 0x1234);
         assert_eq!(memory.read_word(ivt_5ch_addr + 2), 0x5678);
+    }
+
+    /// Placement of an FM Towns kernel in the tests.
+    const TOWNS_PLACEMENT: DosPlacement = DosPlacement {
+        dos_data_segment: 0x1076,
+        first_mcb_segment: 0x1800,
+        memory_top_segment: 0xC000,
+    };
+
+    /// Validates `dos` with the given platform and the default memory options.
+    fn validate(dos: &NeetanDos, platform: &DosPlatform) -> bool {
+        dos.validate_state(platform, true, true, false, 0).is_ok()
+    }
+
+    #[test]
+    fn validate_state_accepts_the_configured_version_and_layout() {
+        let pc98 = NeetanDos::new(DosPlatform::pc98());
+        assert!(validate(&pc98, &DosPlatform::pc98()));
+        assert!(!validate(&pc98, &DosPlatform::fm_towns(TOWNS_PLACEMENT)));
+
+        let towns = NeetanDos::new(DosPlatform::fm_towns(TOWNS_PLACEMENT));
+        assert!(validate(&towns, &DosPlatform::fm_towns(TOWNS_PLACEMENT)));
+        assert!(!validate(&towns, &DosPlatform::pc98()));
+    }
+
+    #[test]
+    fn validate_state_accepts_a_guest_placement() {
+        let towns = NeetanDos::new(DosPlatform::fm_towns(TOWNS_PLACEMENT));
+        let configured = DosPlatform::fm_towns(DosPlacement {
+            dos_data_segment: 0x0FC0,
+            first_mcb_segment: 0x1700,
+            memory_top_segment: 0xC000,
+        });
+        assert!(validate(&towns, &configured));
+    }
+
+    #[test]
+    fn validate_state_rejects_another_version_or_layout() {
+        let mut other_version = NeetanDos::new(DosPlatform::pc98());
+        other_version.state.platform.version.minor = 0;
+        assert!(!validate(&other_version, &DosPlatform::pc98()));
+
+        let mut other_layout = NeetanDos::new(DosPlatform::pc98());
+        other_layout.state.platform.layout = DosLayout::Dos310;
+        assert!(!validate(&other_layout, &DosPlatform::pc98()));
+
+        let mut unordered = NeetanDos::new(DosPlatform::fm_towns(TOWNS_PLACEMENT));
+        unordered.state.platform.placement.first_mcb_segment = 0x1000;
+        assert!(!validate(
+            &unordered,
+            &DosPlatform::fm_towns(TOWNS_PLACEMENT)
+        ));
+    }
+
+    #[test]
+    fn validate_state_rejects_a_moved_pc98_placement() {
+        let mut moved = NeetanDos::new(DosPlatform::pc98());
+        moved.state.platform.placement.dos_data_segment = 0x0100;
+        assert!(!validate(&moved, &DosPlatform::pc98()));
+
+        let mut booted = NeetanDos::new(DosPlatform::pc98());
+        booted.state.platform.placement.first_mcb_segment += 0x10;
+        assert!(validate(&booted, &DosPlatform::pc98()));
+    }
+
+    #[test]
+    fn save_state_round_trips_the_platform() {
+        use save_state::{StateDecode, StateEncode};
+
+        for platform in [DosPlatform::pc98(), DosPlatform::fm_towns(TOWNS_PLACEMENT)] {
+            let dos = NeetanDos::new(platform.clone());
+            let mut encoded = Vec::new();
+            dos.encode_state(&mut encoded);
+            let mut decoder = save_state::StateDecoder::new(&encoded, 1 << 20);
+            let decoded = NeetanDos::decode_state(&mut decoder).expect("state decodes");
+            assert_eq!(decoded.platform(), &platform);
+            assert!(validate(&decoded, &platform));
+        }
+    }
+
+    #[test]
+    fn guest_vectors_stay_untouched() {
+        let mut memory = MockMemory::with_extended_memory(0x10_0000, 0);
+        let ems_vector_address = u32::from(EMS_VECTOR) * IVT_ENTRY_SIZE;
+        memory.write_word(ems_vector_address, 0x1234);
+        memory.write_word(ems_vector_address + 2, 0x5678);
+        let towns = NeetanDos::new(DosPlatform::fm_towns(TOWNS_PLACEMENT));
+        towns.install_vector(&mut memory, EMS_VECTOR, tables::EMS_INT67_STUB_OFFSET);
+        assert_eq!(memory.read_word(ems_vector_address), 0x1234);
+        assert_eq!(memory.read_word(ems_vector_address + 2), 0x5678);
+
+        towns.install_int24h_stub(&mut memory);
+        let int24_address = u32::from(INT24_VECTOR) * IVT_ENTRY_SIZE;
+        assert_eq!(
+            memory.read_word(int24_address),
+            towns.state.structures().private_area.critical_error_stub
+        );
+        assert_eq!(memory.read_word(int24_address + 2), 0x1076);
+    }
+
+    #[test]
+    fn private_stubs_install_no_vectors() {
+        let mut memory = MockMemory::with_extended_memory(0x10_0000, 0x10_0000);
+        let dos = NeetanDos::new(DosPlatform::pc98());
+        dos.install_error_retriever_stub(&mut memory);
+        dos.install_cdrom_device_stubs(&mut memory);
+        dos.install_xms_stubs(&mut memory);
+        dos.install_ems_stub(&mut memory);
+        for trap in DosTrapCode::ALL {
+            let vector_address = u32::from(trap.code()) * IVT_ENTRY_SIZE;
+            assert_eq!(memory.read_word(vector_address), 0, "{trap:?}");
+            assert_eq!(memory.read_word(vector_address + 2), 0, "{trap:?}");
+        }
+    }
+
+    #[test]
+    fn xms_entry_stub_traps_after_the_himem_prologue() {
+        let mut memory = MockMemory::with_extended_memory(0x10_0000, 0x10_0000);
+        let dos = NeetanDos::new(DosPlatform::pc98());
+        dos.install_xms_stubs(&mut memory);
+        let entry = dos.state.dos_data_address(tables::XMS_ENTRY_STUB_OFFSET);
+        let mut stub = [0u8; 14];
+        memory.read_block(entry, &mut stub);
+        assert_eq!(
+            stub,
+            [
+                0xEB, 0x03, 0x90, 0x90, 0x90, 0x50, 0x52, 0xB0, 0xFE, 0xBA, 0xF0, 0x07, 0xEE, 0xCB,
+            ]
+        );
+        assert_eq!(
+            entry + stub.len() as u32,
+            dos.state.dos_data_address(tables::DEV_XMS_OFFSET)
+        );
+    }
+
+    #[test]
+    fn four_parameter_blocks_keep_the_buffer_header_and_a_full_sector_buffer() {
+        let mut memory = MockMemory::with_extended_memory(0x10_0000, 0);
+        let mut dos = NeetanDos::new(DosPlatform::pc98());
+        for (drive_index, device_id) in [(0u8, 0x90u8), (1, 0x91), (2, 0x92), (3, 0x93)] {
+            dos.state.drive_map.set(
+                drive_index,
+                drive_map::pc98::drive_entry(device_id).expect("2HD floppy"),
+            );
+        }
+        dos.state.drive_map.set(
+            drive_map::VIRTUAL_DRIVE_INDEX,
+            drive_map::DriveEntry::virtual_drive(),
+        );
+        let system_data = dos.state.system_data_area();
+        dos.state.platform.placement.first_mcb_segment =
+            system_data.first_mcb_segment(dos.state.dos_data_segment());
+        dos.write_dos_data_structures(&mut memory, &system_data);
+        dos.write_drive_structures(&mut memory, &system_data);
+
+        let list_of_lists = dos.state.list_of_lists_address();
+        assert_eq!(
+            memory.read_word(list_of_lists + tables::SYSVARS_OFF_MAX_SECTOR),
+            0x0400
+        );
+        let buffer =
+            layout::read_far_pointer(&memory, list_of_lists + tables::SYSVARS_OFF_BUFFER_PTR);
+        let buffer_address = layout::far_pointer_address(buffer);
+        assert_eq!(
+            layout::read_far_pointer(&memory, buffer_address + tables::BUFFER_OFF_NEXT),
+            END_OF_CHAIN
+        );
+        assert_eq!(
+            memory.read_byte(buffer_address + tables::BUFFER_OFF_DRIVE),
+            0xFF
+        );
+
+        let structures = dos.state.structures();
+        let mut parameter_block =
+            layout::read_far_pointer(&memory, list_of_lists + tables::SYSVARS_OFF_DPB_PTR);
+        let mut drives = Vec::new();
+        while parameter_block != END_OF_CHAIN {
+            let address = layout::far_pointer_address(parameter_block);
+            let buffer_end = buffer_address + structures.disk_buffer.header_size + 0x0400;
+            assert!(
+                address + structures.drive_parameter_block.size <= buffer_address
+                    || address >= buffer_end
+            );
+            assert!(
+                address + structures.drive_parameter_block.size
+                    <= u32::from(dos.state.platform.placement.first_mcb_segment) << 4
+            );
+            drives.push(memory.read_byte(address + tables::DPB_OFF_DRIVE_NUM));
+            parameter_block =
+                layout::read_far_pointer(&memory, address + structures.drive_parameter_block.next);
+        }
+        assert_eq!(drives, [0, 1, 2, 3, drive_map::VIRTUAL_DRIVE_INDEX]);
     }
 }

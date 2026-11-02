@@ -380,3 +380,108 @@ fn sysvars_max_sector_size() {
         max_sector
     );
 }
+
+/// Returns the linear address of the first DPB of the DPB chain.
+fn first_dpb_address(machine: &mut machine_98::Pc9801Ra) -> u32 {
+    let sysvars = harness::get_sysvars_address(machine);
+    let (segment, offset) = harness::read_far_ptr(&machine.bus, sysvars);
+    harness::far_to_linear(segment, offset)
+}
+
+#[test]
+fn hdd_dpb_comes_from_the_volume_bpb() {
+    let mut machine = harness::boot_hle_with_sasi_hdd_mismatched_sectors();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0x06,                                   // PUSH ES
+        0x0E,                                   // PUSH CS
+        0x07,                                   // POP ES
+        0xB2, 0x01,                             // MOV DL, 01h (A:)
+        0xB4, 0x32,                             // MOV AH, 32h
+        0xCD, 0x21,                             // INT 21h
+        0x26, 0xA2, 0x00, 0x01,                 // MOV ES:[0100h], AL
+        0x26, 0x89, 0x1E, 0x01, 0x01,           // MOV ES:[0101h], BX
+        0x26, 0x8C, 0x1E, 0x03, 0x01,           // MOV ES:[0103h], DS
+        0x07,                                   // POP ES
+        0xFA, 0xF4,                             // CLI; HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+
+    assert_eq!(harness::result_byte(&machine.bus, 0), 0x00);
+    let offset = harness::read_word(&machine.bus, harness::INJECT_RESULT_BASE + 1);
+    let segment = harness::read_word(&machine.bus, harness::INJECT_RESULT_BASE + 3);
+    let dpb = harness::far_to_linear(segment, offset);
+    assert_eq!(dpb, first_dpb_address(&mut machine));
+    assert_eq!(harness::read_byte(&machine.bus, dpb), 0x00);
+    assert_eq!(harness::read_word(&machine.bus, dpb + 0x02), 1024);
+    assert_eq!(harness::read_byte(&machine.bus, dpb + 0x04), 3);
+    assert_eq!(harness::read_byte(&machine.bus, dpb + 0x05), 2);
+    assert_eq!(harness::read_word(&machine.bus, dpb + 0x09), 192);
+    assert_eq!(harness::read_word(&machine.bus, dpb + 0x0F), 2);
+}
+
+#[test]
+fn floppy_without_bpb_dpb_uses_the_2hd_default() {
+    let mut machine =
+        harness::boot_hle_with_floppy_image(harness::create_test_floppy_without_bpb());
+    let dpb = first_dpb_address(&mut machine);
+    assert_eq!(harness::read_byte(&machine.bus, dpb), 0x00);
+    assert_eq!(harness::read_word(&machine.bus, dpb + 0x02), 1024);
+    assert_eq!(harness::read_byte(&machine.bus, dpb + 0x04), 0);
+    assert_eq!(harness::read_word(&machine.bus, dpb + 0x09), 192);
+    assert_eq!(harness::read_word(&machine.bus, dpb + 0x0D), 1222);
+    assert_eq!(harness::read_byte(&machine.bus, dpb + 0x17), 0xFE);
+}
+
+#[test]
+fn int25h_reads_logical_sectors_of_the_hdd_volume() {
+    let mut machine = harness::boot_hle_with_sasi_hdd_mismatched_sectors();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0x0E,                                   // PUSH CS
+        0x1F,                                   // POP DS
+        0xB0, 0x00,                             // MOV AL, 00h (A:)
+        0xB9, 0x01, 0x00,                       // MOV CX, 1
+        0xBA, 0x00, 0x00,                       // MOV DX, 0
+        0xBB, 0x00, 0x02,                       // MOV BX, 0200h
+        0xCD, 0x25,                             // INT 25h
+        0xFA, 0xF4,                             // CLI; HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+
+    let buffer = harness::INJECT_CODE_BASE + 0x0200;
+    assert_eq!(harness::read_word(&machine.bus, buffer + 0x0B), 1024);
+    assert_eq!(harness::read_byte(&machine.bus, buffer + 0x0D), 4);
+    assert_eq!(harness::read_word(&machine.bus, buffer + 0x11), 192);
+}
+
+#[test]
+fn ioctl_4408h_reports_fixed_media_and_rejects_unassigned_drives() {
+    let mut machine = harness::boot_hle_with_sasi_hdd_mismatched_sectors();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0x0E,                                   // PUSH CS
+        0x07,                                   // POP ES
+        0xB8, 0x08, 0x44,                       // MOV AX, 4408h
+        0xB3, 0x00,                             // MOV BL, 00h (default drive A:)
+        0xCD, 0x21,                             // INT 21h
+        0x26, 0xA3, 0x00, 0x01,                 // MOV ES:[0100h], AX
+        0x9C,                                   // PUSHF
+        0x58,                                   // POP AX
+        0x26, 0xA3, 0x02, 0x01,                 // MOV ES:[0102h], AX
+        0xB8, 0x08, 0x44,                       // MOV AX, 4408h
+        0xB3, 0x18,                             // MOV BL, 18h (X:)
+        0xCD, 0x21,                             // INT 21h
+        0x26, 0xA3, 0x04, 0x01,                 // MOV ES:[0104h], AX
+        0x9C,                                   // PUSHF
+        0x58,                                   // POP AX
+        0x26, 0xA3, 0x06, 0x01,                 // MOV ES:[0106h], AX
+        0xFA, 0xF4,                             // CLI; HLT
+    ];
+    harness::inject_and_run(&mut machine, code);
+
+    assert_eq!(harness::result_word(&machine.bus, 0), 0x0001);
+    assert_eq!(harness::result_word(&machine.bus, 2) & 0x0001, 0);
+    assert_eq!(harness::result_word(&machine.bus, 4), 0x000F);
+    assert_ne!(harness::result_word(&machine.bus, 6) & 0x0001, 0);
+}

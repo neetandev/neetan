@@ -1,6 +1,6 @@
 //! Batch file (.BAT) interpreter.
 
-use super::{RedirectSpec, key_available, read_env_var, read_key};
+use super::{RedirectSpec, read_env_var};
 use crate::{
     DosState, DriveIo, IoAccess, MemoryAccess,
     commands::{RunningCommand, StepResult},
@@ -268,8 +268,7 @@ impl BatchState {
     ) -> BatchStepResult {
         // Handle paused state (PAUSE command)
         if self.paused {
-            if key_available(io.memory) {
-                read_key(io.memory); // consume the key
+            if io.read_key().is_some() {
                 self.paused = false;
                 self.current_line += 1;
             }
@@ -277,6 +276,10 @@ impl BatchState {
         }
 
         // Handle running sub-command
+        if self.running_command.is_some() && !super::guest_resources_ready(state, shell.step_drives)
+        {
+            return BatchStepResult::Continue;
+        }
         if let Some(ref mut cmd) = self.running_command {
             // Set up redirect if active
             if self.redirect_buffer.is_some() {
@@ -314,6 +317,11 @@ impl BatchState {
         let raw_line = self.lines[self.current_line].clone();
         let substituted = self.substitute_variables(state, io.memory, &raw_line);
         let trimmed = substituted.trim_ascii().to_vec();
+        let drives = super::line_drives(state, io.memory, &trimmed);
+        if !super::guest_resources_ready(state, drives) {
+            return BatchStepResult::Continue;
+        }
+        shell.step_drives = drives;
 
         if trimmed.is_empty() {
             self.current_line += 1;
@@ -336,8 +344,8 @@ impl BatchState {
         if self.echo_on && !suppress_echo {
             super::render_prompt(state, io);
             io.print(&effective_line);
-            io.console.process_byte(io.memory, b'\r');
-            io.console.process_byte(io.memory, b'\n');
+            io.write_console(b'\r');
+            io.write_console(b'\n');
         }
 
         let upper: Vec<u8> = effective_line
@@ -416,8 +424,8 @@ impl BatchState {
             }
             super::ShellPhase::ExecutingBatch(new_batch) => {
                 if self.echo_on && !suppress_echo {
-                    io.console.process_byte(io.memory, b'\r');
-                    io.console.process_byte(io.memory, b'\n');
+                    io.write_console(b'\r');
+                    io.write_console(b'\n');
                 }
                 // In DOS, invoking a batch from another batch without CALL
                 // replaces the current batch (no return to the caller).

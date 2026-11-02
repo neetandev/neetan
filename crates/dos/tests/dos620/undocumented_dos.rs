@@ -1,5 +1,3 @@
-use dos::tables;
-
 use crate::harness;
 
 #[test]
@@ -1035,10 +1033,14 @@ fn server_call_5d06_returns_swappable_data_area() {
     let returned_bx = harness::result_word(&machine.bus, 10);
     assert_eq!(flags & 1, 0, "AX=5D06h should return CF=0");
     assert_eq!(returned_bx, 0xA55A, "AX=5D06h should pass BX through");
-    assert_eq!(segment, tables::DOS_DATA_SEGMENT);
-    assert_eq!(offset, tables::SDA_OFFSET);
-    assert_eq!(swap_in_dos_size, tables::SDA_SIZE);
-    assert_eq!(always_swap_size, tables::SDA_SWAP_ALWAYS_SIZE);
+    let sda_layout = harness::pc98_structures().swappable_data_area;
+    assert_eq!(segment, harness::dos_data_segment());
+    assert_eq!(offset, 0x0F40);
+    assert_eq!(offset, sda_layout.data_offset);
+    assert_eq!(swap_in_dos_size, 0x078C);
+    assert_eq!(swap_in_dos_size, sda_layout.size);
+    assert_eq!(always_swap_size, 0x001A);
+    assert_eq!(always_swap_size, sda_layout.always_swapped_size);
 
     let sda = harness::far_to_linear(segment, offset);
     assert_eq!(harness::read_byte(&machine.bus, sda), 0x00);

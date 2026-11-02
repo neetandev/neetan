@@ -965,6 +965,40 @@ pub fn inject_and_run_via_int28(machine: &mut machine_98::Pc9801Ra, code: &[u8],
     machine.run_for(budget);
 }
 
+/// Returns the kernel placement of NeetanDos on the PC-98.
+pub fn pc98_placement() -> dos::DosPlacement {
+    dos::DosPlatform::pc98().placement
+}
+
+/// Returns the DOS data segment of NeetanDos on the PC-98.
+pub fn dos_data_segment() -> u16 {
+    pc98_placement().dos_data_segment
+}
+
+/// Returns the linear address of an offset in the PC-98 DOS data segment.
+pub fn dos_data_address(offset: u16) -> u32 {
+    pc98_placement().dos_data_address(offset)
+}
+
+/// Returns the first MCB segment that the booted DOS keeps below the list of
+/// lists. The boot places it behind the disk buffer and the DPBs.
+pub fn first_mcb_segment(bus: &machine_98::Pc9801Bus) -> u16 {
+    read_word(
+        bus,
+        dos_data_address(pc98_structures().list_of_lists.data_offset) - 2,
+    )
+}
+
+/// Returns the size of the DOS data area of the booted DOS in bytes.
+pub fn dos_data_size(bus: &machine_98::Pc9801Bus) -> u32 {
+    u32::from(first_mcb_segment(bus) - dos_data_segment()) * 16
+}
+
+/// Returns the DOS 6.20 structure layout of NeetanDos on the PC-98.
+pub fn pc98_structures() -> &'static dos::layout::StructureLayout {
+    dos::DosPlatform::pc98().layout.structures()
+}
+
 pub fn far_to_linear(segment: u16, offset: u16) -> u32 {
     ((segment as u32) << 4) + offset as u32
 }

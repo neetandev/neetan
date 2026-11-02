@@ -22,8 +22,6 @@ impl Command for Dir {
     }
 }
 
-const KB_BUF_COUNT: u32 = 0x0528;
-
 save_state::runtime_state_enum! {
     /// Requested ordering of directory entries.
     #[derive(Clone, Copy, PartialEq)]
@@ -299,7 +297,7 @@ impl RunningDir {
             }
 
             let dir_path = if dir_state.current_path.is_empty() {
-                get_dir_display_path(io.memory, dir_state.drive_index)
+                get_dir_display_path(state, io.memory, dir_state.drive_index)
             } else {
                 String::from_utf8_lossy(&dir_state.current_path).into_owned()
             };
@@ -360,11 +358,11 @@ impl RunningDir {
     }
 
     fn step_wait_key(&mut self, mut dir_state: DirState, io: &mut IoAccess) -> StepResult {
-        if io.memory.read_byte(KB_BUF_COUNT) == 0 {
+        if !io.key_available() {
             self.phase = DirPhase::WaitKey(dir_state);
             return StepResult::Continue;
         }
-        consume_key(io);
+        io.take_key_character();
         dir_state.lines_shown = 0;
         self.phase = DirPhase::Listing(dir_state);
         StepResult::Continue
@@ -432,7 +430,7 @@ impl RunningDir {
                         {
                             let mut subpath = if dir_state.current_path.is_empty() {
                                 let cds_path =
-                                    get_dir_display_path(io.memory, dir_state.drive_index);
+                                    get_dir_display_path(state, io.memory, dir_state.drive_index);
                                 cds_path.into_bytes()
                             } else {
                                 dir_state.current_path.clone()
@@ -926,7 +924,8 @@ fn get_volume_label(
         return None;
     }
     if matches!(directory, ReadDirectory::Iso(_)) {
-        let volume = filesystem::iso9660::IsoVolume::mount(drive).ok()?;
+        let volume =
+            filesystem::iso9660::IsoVolume::mount(&state.drive_cdrom(drive_index, drive)).ok()?;
         if volume.volume_label.is_empty() {
             return None;
         }
@@ -961,8 +960,8 @@ fn get_volume_label(
     }
 }
 
-fn get_dir_display_path(memory: &dyn MemoryAccess, drive_index: u8) -> String {
-    let cds_addr = tables::CDS_BASE + (drive_index as u32) * tables::CDS_ENTRY_SIZE;
+fn get_dir_display_path(state: &DosState, memory: &dyn MemoryAccess, drive_index: u8) -> String {
+    let cds_addr = state.cds_entry_addr(drive_index, memory);
     let mut path = Vec::new();
     for i in 0..67u32 {
         let byte = memory.read_byte(cds_addr + tables::CDS_OFF_PATH + i);
@@ -988,17 +987,4 @@ fn calculate_free_space(state: &DosState, drive_index: u8) -> u64 {
 
     let cluster_size = vol.sectors_per_cluster() as u64 * vol.bytes_per_sector() as u64;
     free_clusters * cluster_size
-}
-
-fn consume_key(io: &mut IoAccess) {
-    let head = io.memory.read_word(0x0524) as u32;
-    let mut new_head = head + 2;
-    if new_head >= 0x0522 {
-        new_head = 0x0502;
-    }
-    io.memory.write_word(0x0524, new_head as u16);
-    let count = io.memory.read_byte(KB_BUF_COUNT);
-    if count > 0 {
-        io.memory.write_byte(KB_BUF_COUNT, count - 1);
-    }
 }

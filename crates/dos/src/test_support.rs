@@ -246,3 +246,143 @@ impl MemoryAccess for MockMemory {
         }
     }
 }
+
+/// A machine without disks and without a CD-ROM drive.
+pub(crate) struct NoDrives;
+
+impl crate::DiskIo for NoDrives {
+    fn read_sectors(&mut self, _device_id: u8, _lba: u32, _count: u32) -> Result<Vec<u8>, u8> {
+        Err(0xFF)
+    }
+
+    fn write_sectors(&mut self, _device_id: u8, _lba: u32, _data: &[u8]) -> Result<(), u8> {
+        Err(0xFF)
+    }
+
+    fn sector_size(&self, _device_id: u8) -> Option<u16> {
+        None
+    }
+
+    fn total_sectors(&self, _device_id: u8) -> Option<u32> {
+        None
+    }
+
+    fn drive_geometry(&self, _device_id: u8) -> Option<(u16, u8, u8)> {
+        None
+    }
+}
+
+impl crate::CdromIo for NoDrives {
+    fn cdrom_present(&self) -> bool {
+        false
+    }
+
+    fn cdrom_media_loaded(&self) -> bool {
+        false
+    }
+
+    fn read_sector_cooked(&self, _lba: u32, _buf: &mut [u8]) -> Option<usize> {
+        None
+    }
+
+    fn read_sector_raw(&self, _lba: u32, _buf: &mut [u8]) -> Option<usize> {
+        None
+    }
+
+    fn track_count(&self) -> u8 {
+        0
+    }
+
+    fn track_info(&self, _track_number: u8) -> Option<crate::CdromTrackInfo> {
+        None
+    }
+
+    fn leadout_lba(&self) -> u32 {
+        0
+    }
+
+    fn total_sectors(&self) -> u32 {
+        0
+    }
+
+    fn audio_play(&mut self, _start_lba: u32, _sector_count: u32) {}
+
+    fn audio_stop(&mut self) {}
+
+    fn audio_resume(&mut self) {}
+
+    fn audio_state(&self) -> crate::CdAudioStatus {
+        crate::CdAudioStatus {
+            state: crate::CdAudioState::Stopped,
+            current_lba: 0,
+            start_lba: 0,
+            end_lba: 0,
+        }
+    }
+
+    fn audio_channel_info(&self) -> crate::AudioChannelInfo {
+        crate::AudioChannelInfo {
+            input_channel: [0; 4],
+            volume: [0; 4],
+        }
+    }
+
+    fn set_audio_channel_info(&mut self, _info: &crate::AudioChannelInfo) {}
+}
+
+/// A CD-ROM drive that reads cooked 2048-byte sectors from a host image.
+pub(crate) struct ImageCdrom(pub(crate) Vec<u8>);
+
+impl crate::CdromIo for ImageCdrom {
+    fn cdrom_present(&self) -> bool {
+        true
+    }
+
+    fn cdrom_media_loaded(&self) -> bool {
+        true
+    }
+
+    fn read_sector_cooked(&self, lba: u32, buf: &mut [u8]) -> Option<usize> {
+        let start = usize::try_from(lba).ok()? * 2048;
+        let sector = self.0.get(start..start + 2048)?;
+        let count = buf.len().min(2048);
+        buf[..count].copy_from_slice(&sector[..count]);
+        Some(count)
+    }
+
+    fn read_sector_raw(&self, _lba: u32, _buf: &mut [u8]) -> Option<usize> {
+        None
+    }
+
+    fn track_count(&self) -> u8 {
+        1
+    }
+
+    fn track_info(&self, _track_number: u8) -> Option<crate::CdromTrackInfo> {
+        None
+    }
+
+    fn leadout_lba(&self) -> u32 {
+        (self.0.len() / 2048) as u32
+    }
+
+    fn total_sectors(&self) -> u32 {
+        (self.0.len() / 2048) as u32
+    }
+
+    fn audio_play(&mut self, _start_lba: u32, _sector_count: u32) {}
+
+    fn audio_stop(&mut self) {}
+
+    fn audio_resume(&mut self) {}
+
+    fn audio_state(&self) -> crate::CdAudioStatus {
+        NoDrives.audio_state()
+    }
+
+    fn audio_channel_info(&self) -> crate::AudioChannelInfo {
+        NoDrives.audio_channel_info()
+    }
+
+    fn set_audio_channel_info(&mut self, _info: &crate::AudioChannelInfo) {}
+}

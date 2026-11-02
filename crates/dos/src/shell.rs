@@ -10,7 +10,7 @@ use history::History;
 use crate::{
     DiskIo, DosState, DriveIo, IoAccess, MemoryAccess,
     commands::{self, Command, RunningCommand, StepResult},
-    environment, filesystem,
+    drive_map, environment, filesystem,
     filesystem::{fat, fat_dir, fat_file},
     process, tables,
 };
@@ -85,14 +85,18 @@ state_struct_codec!(PendingCommand { parsed });
 /// An external program (.COM or .EXE) to be EXECed from the shell.
 #[derive(Clone)]
 pub(crate) struct PendingExec {
+    /// Path of the program.
     pub path: Vec<u8>,
-    pub args: Vec<u8>,
+    /// Command tail: the command line behind the program name, with its
+    /// leading separator.
+    pub tail: Vec<u8>,
+    /// Redirection of the standard output of the program.
     pub output_redirect: Option<RedirectSpec>,
 }
 
 state_struct_codec!(PendingExec {
     path,
-    args,
+    tail,
     output_redirect,
 });
 
@@ -113,6 +117,10 @@ pub(crate) struct LineEditor {
     prompt_col: u8,
     insert_mode: bool,
     saved_line: Option<Vec<u8>>,
+    /// Line offset of the console cursor on a console without a text
+    /// screen. The editor reaches other offsets with backspaces and by
+    /// writing the line again.
+    terminal_offset: usize,
 }
 
 state_struct_codec!(LineEditor {
@@ -121,6 +129,7 @@ state_struct_codec!(LineEditor {
     prompt_col,
     insert_mode,
     saved_line,
+    terminal_offset,
 });
 
 impl LineEditor {
@@ -131,9 +140,43 @@ impl LineEditor {
             prompt_col,
             insert_mode: true,
             saved_line: None,
+            terminal_offset: 0,
         }
     }
+
+    /// Sets the console cursor to line offset `offset`.
+    fn place_cursor(&mut self, io: &mut IoAccess, offset: usize) {
+        if io.has_text_screen() {
+            let row = io.console.cursor_row(io.memory);
+            io.console
+                .set_cursor(io.memory, row, self.prompt_col + offset as u8);
+        } else {
+            while self.terminal_offset > offset {
+                io.write_console(BACKSPACE);
+                self.terminal_offset -= 1;
+            }
+            while self.terminal_offset < offset {
+                let byte = self
+                    .buffer
+                    .get(self.terminal_offset)
+                    .copied()
+                    .unwrap_or(b' ');
+                io.write_console(byte);
+                self.terminal_offset += 1;
+            }
+        }
+        self.terminal_offset = offset;
+    }
+
+    /// Writes `byte` at the console cursor.
+    fn echo(&mut self, io: &mut IoAccess, byte: u8) {
+        io.write_console(byte);
+        self.terminal_offset += 1;
+    }
 }
+
+/// Backspace: steps the cursor of a stream console one column left.
+const BACKSPACE: u8 = 0x08;
 
 #[derive(Clone)]
 pub(crate) enum ShellPhase {
@@ -209,6 +252,17 @@ pub(crate) struct Shell {
     pub(crate) child_output_redirect: Option<ChildOutputRedirect>,
     /// Child shell termination requested by EXIT or /C completion.
     pub(crate) pending_terminate: Option<u8>,
+    /// The startup tail named the NUL device as the console. The standard
+    /// handles of the shell point to NUL, the shell shows nothing and reads
+    /// no key.
+    pub(crate) console_nul: bool,
+    /// A command ran since the last prompt. The next prompt starts with an
+    /// empty line, like the command cycle of COMMAND.COM.
+    blank_line_pending: bool,
+    /// Command line that waits for the guest work of its drives.
+    queued_line: Option<Vec<u8>>,
+    /// Drives that the running command line touches, one bit per drive.
+    pub(crate) step_drives: u32,
 }
 
 impl Clone for Shell {
@@ -231,6 +285,10 @@ impl Clone for Shell {
             pending_exec: self.pending_exec.clone(),
             child_output_redirect: self.child_output_redirect.clone(),
             pending_terminate: self.pending_terminate,
+            console_nul: self.console_nul,
+            blank_line_pending: self.blank_line_pending,
+            queued_line: self.queued_line.clone(),
+            step_drives: self.step_drives,
         }
     }
 }
@@ -253,6 +311,10 @@ state_struct_codec_with_resources!(Shell {
         pending_exec,
         child_output_redirect,
         pending_terminate,
+        console_nul,
+        blank_line_pending,
+        queued_line,
+        step_drives,
     }
     resources {
         commands: Self::build_commands(),
@@ -260,16 +322,16 @@ state_struct_codec_with_resources!(Shell {
 });
 
 #[derive(Clone)]
-/// Parent output handles retained while a child process runs.
+/// Standard output of the shell while a child process runs with its output
+/// redirected. Like COMMAND.COM, the shell writes the SFT index of the
+/// redirect target into JFN entry 1 and frees the JFN entry of the open
+/// call. The child inherits only its standard handles.
 pub(crate) struct ChildOutputRedirect {
+    /// SFT index of JFN entry 1 before the redirect.
     pub saved_stdout_sft: u8,
-    pub redirect_handle: u16,
 }
 
-state_struct_codec!(ChildOutputRedirect {
-    saved_stdout_sft,
-    redirect_handle,
-});
+state_struct_codec!(ChildOutputRedirect { saved_stdout_sft });
 
 impl Shell {
     fn build_commands() -> Vec<Box<dyn Command>> {
@@ -283,6 +345,7 @@ impl Shell {
             Box::new(commands::cd::Cd),
             Box::new(commands::set::Set),
             Box::new(commands::path::PathCommand),
+            Box::new(commands::prompt::Prompt),
             Box::new(commands::copy::Copy),
             Box::new(commands::date::Date),
             Box::new(commands::del::Del),
@@ -344,6 +407,10 @@ impl Shell {
             pending_exec: None,
             child_output_redirect: None,
             pending_terminate: None,
+            console_nul: false,
+            blank_line_pending: false,
+            queued_line: None,
+            step_drives: 0,
         }
     }
 
@@ -372,6 +439,10 @@ impl Shell {
             pending_exec: None,
             child_output_redirect: None,
             pending_terminate: None,
+            console_nul: false,
+            blank_line_pending: false,
+            queued_line: None,
+            step_drives: 0,
         }
     }
 
@@ -401,7 +472,37 @@ impl Shell {
             pending_exec: None,
             child_output_redirect: None,
             pending_terminate,
+            console_nul: false,
+            blank_line_pending: false,
+            queued_line: None,
+            step_drives: 0,
         }
+    }
+
+    /// Dispatches the queued command line once the guest work of its drives
+    /// is done. Returns `None` while the line waits: the run asked for the
+    /// guest work and a rerun before its first side effect.
+    fn dispatch_queued_line(
+        &mut self,
+        state: &mut DosState,
+        io: &mut IoAccess,
+        disk: &mut dyn DriveIo,
+    ) -> Option<ShellPhase> {
+        let line = self.queued_line.as_ref()?;
+        let drives = line_drives(state, io.memory, line);
+        if !guest_resources_ready(state, drives) {
+            return None;
+        }
+        let line = self.queued_line.take()?;
+        self.step_drives = drives;
+        let next_phase = self.dispatch_command(state, io, disk, &line);
+        if self.terminate_after_command
+            && matches!(next_phase, ShellPhase::ShowPrompt)
+            && self.pending_terminate.is_none()
+        {
+            self.pending_terminate = Some(self.last_exit_code);
+        }
+        Some(next_phase)
     }
 
     pub(crate) fn handle_exec_failure(&mut self, return_code: u8) {
@@ -413,51 +514,59 @@ impl Shell {
     }
 
     pub(crate) fn step(&mut self, state: &mut DosState, io: &mut IoAccess, disk: &mut dyn DriveIo) {
+        if self.queued_line.is_some() {
+            if let Some(phase) = self.dispatch_queued_line(state, io, disk) {
+                self.phase = phase;
+            }
+            return;
+        }
         let phase = std::mem::replace(&mut self.phase, ShellPhase::ShowPrompt);
         self.phase = match phase {
             ShellPhase::ShowPrompt => {
                 if let Some(startup_command) = self.startup_command.take() {
-                    let next_phase = self.dispatch_command(state, io, disk, &startup_command);
-                    if self.terminate_after_command
-                        && matches!(next_phase, ShellPhase::ShowPrompt)
-                        && self.pending_terminate.is_none()
-                    {
-                        self.pending_terminate = Some(self.last_exit_code);
-                    }
-                    next_phase
+                    self.queued_line = Some(startup_command);
+                    self.dispatch_queued_line(state, io, disk)
+                        .unwrap_or(ShellPhase::ShowPrompt)
                 } else {
                     if !self.boot_banner_shown {
-                        let (major, minor) = state.version;
-                        let msg = format!("Neetan DOS {}.{}\r\n\r\n", major, minor);
+                        let version = state.platform.version;
+                        let msg = format!("Neetan DOS {}.{}\r\n\r\n", version.major, version.minor);
                         io.print(msg.as_bytes());
                         self.boot_banner_shown = true;
                     }
+                    if std::mem::take(&mut self.blank_line_pending) {
+                        io.print(b"\r\n");
+                    }
                     render_prompt(state, io);
-                    let prompt_col = io.console.cursor_col(io.memory);
+                    let prompt_col = if io.has_text_screen() {
+                        io.console.cursor_col(io.memory)
+                    } else {
+                        0
+                    };
                     ShellPhase::ReadingInput(LineEditor::new(prompt_col))
                 }
             }
             ShellPhase::ReadingInput(mut editor) => {
-                if !key_available(io.memory) {
-                    ShellPhase::ReadingInput(editor)
-                } else {
-                    let (scan, ch) = read_key(io.memory);
+                if let Some(key) = io.read_key() {
+                    let (scan, ch) = (key.scan_code_or_zero(), key.character);
                     match ch {
                         0x0D => {
-                            io.console.process_byte(io.memory, b'\r');
-                            io.console.process_byte(io.memory, b'\n');
+                            io.write_console(b'\r');
+                            io.write_console(b'\n');
                             let line = editor.buffer.clone();
                             if !line.trim_ascii().is_empty() {
                                 self.history.push(line.clone());
                             }
                             self.history.reset_position();
-                            self.dispatch_command(state, io, disk, &line)
+                            self.queued_line = Some(line);
+                            self.dispatch_queued_line(state, io, disk)
+                                .unwrap_or(ShellPhase::ShowPrompt)
                         }
                         0x08 => {
                             if editor.cursor > 0 {
                                 editor.cursor -= 1;
                                 editor.buffer.remove(editor.cursor);
-                                redraw_from_cursor(&editor, io);
+                                redraw_from_cursor(&mut editor, io);
                             }
                             ShellPhase::ReadingInput(editor)
                         }
@@ -465,33 +574,26 @@ impl Shell {
                             match scan {
                                 SCAN_LEFT if editor.cursor > 0 => {
                                     editor.cursor -= 1;
-                                    let row = io.console.cursor_row(io.memory);
-                                    let col = editor.prompt_col + editor.cursor as u8;
-                                    io.console.set_cursor(io.memory, row, col);
+                                    editor.place_cursor(io, editor.cursor);
                                 }
                                 SCAN_RIGHT if editor.cursor < editor.buffer.len() => {
                                     editor.cursor += 1;
-                                    let row = io.console.cursor_row(io.memory);
-                                    let col = editor.prompt_col + editor.cursor as u8;
-                                    io.console.set_cursor(io.memory, row, col);
+                                    editor.place_cursor(io, editor.cursor);
                                 }
                                 SCAN_HOME => {
                                     editor.cursor = 0;
-                                    let row = io.console.cursor_row(io.memory);
-                                    io.console.set_cursor(io.memory, row, editor.prompt_col);
+                                    editor.place_cursor(io, 0);
                                 }
                                 SCAN_END => {
                                     editor.cursor = editor.buffer.len();
-                                    let row = io.console.cursor_row(io.memory);
-                                    let col = editor.prompt_col + editor.cursor as u8;
-                                    io.console.set_cursor(io.memory, row, col);
+                                    editor.place_cursor(io, editor.cursor);
                                 }
                                 SCAN_INSERT => {
                                     editor.insert_mode = !editor.insert_mode;
                                 }
                                 SCAN_DELETE if editor.cursor < editor.buffer.len() => {
                                     editor.buffer.remove(editor.cursor);
-                                    redraw_from_cursor(&editor, io);
+                                    redraw_from_cursor(&mut editor, io);
                                 }
                                 SCAN_UP => {
                                     if self.history.at_end() && !self.history.is_empty() {
@@ -525,23 +627,30 @@ impl Shell {
                                     editor.buffer.insert(editor.cursor, ch);
                                     editor.cursor += 1;
                                     if editor.cursor == editor.buffer.len() {
-                                        io.console.process_byte(io.memory, ch);
+                                        editor.echo(io, ch);
                                     } else {
-                                        redraw_from(&editor, editor.cursor - 1, io);
+                                        let from = editor.cursor - 1;
+                                        redraw_from(&mut editor, from, io);
                                     }
                                 } else {
                                     editor.buffer[editor.cursor] = ch;
                                     editor.cursor += 1;
-                                    io.console.process_byte(io.memory, ch);
+                                    editor.echo(io, ch);
                                 }
                             }
                             ShellPhase::ReadingInput(editor)
                         }
                         _ => ShellPhase::ReadingInput(editor),
                     }
+                } else {
+                    ShellPhase::ReadingInput(editor)
                 }
             }
             ShellPhase::ExecutingCommand(mut cmd) => {
+                if !guest_resources_ready(state, self.step_drives) {
+                    self.phase = ShellPhase::ExecutingCommand(cmd);
+                    return;
+                }
                 if self.redirect_buffer.is_some() {
                     io.redirect_output = self.redirect_buffer.take();
                 }
@@ -587,6 +696,7 @@ impl Shell {
                 match batch.step_batch(self, state, io, disk) {
                     batch::BatchStepResult::Continue => ShellPhase::ExecutingBatch(batch),
                     batch::BatchStepResult::Finished => {
+                        self.blank_line_pending = true;
                         if self.terminate_after_command {
                             self.pending_terminate = Some(self.last_exit_code);
                         }
@@ -632,8 +742,8 @@ impl Shell {
         let Some(redirect) = self.child_output_redirect.take() else {
             return;
         };
+        state.free_handle(1, io.memory);
         let _ = state.write_jft_entry(1, redirect.saved_stdout_sft, io.memory);
-        state.free_handle(redirect.redirect_handle, io.memory);
     }
 
     fn dispatch_command(
@@ -647,6 +757,7 @@ impl Shell {
         if trimmed.is_empty() {
             return ShellPhase::ShowPrompt;
         }
+        self.blank_line_pending = true;
 
         // Split on sequence separator (ASCII 0x14) first
         let sequences = split_on_sequence(trimmed);
@@ -782,17 +893,15 @@ impl Shell {
         // Handle drive change: single letter followed by colon (e.g. "A:")
         if cmd_upper.len() == 2 && cmd_upper[1] == b':' && cmd_upper[0].is_ascii_uppercase() {
             let drive_index = cmd_upper[0] - b'A';
-            let cds_addr = tables::CDS_BASE + (drive_index as u32) * tables::CDS_ENTRY_SIZE;
+            let cds_addr = state.cds_entry_addr(drive_index, io.memory);
             let cds_flags = io.memory.read_word(cds_addr + tables::CDS_OFF_FLAGS);
             if cds_flags == 0 {
                 io.println(b"Invalid drive");
                 self.last_exit_code = 1;
                 return ShellPhase::ShowPrompt;
             }
-            if state
-                .ensure_readable_drive_ready(drive_index, io.memory, disk)
-                .is_err()
-            {
+            let ready = state.ensure_readable_drive_ready(drive_index, disk);
+            if ready.is_err() && !state.guest_requests.redispatch {
                 let msg = [
                     b"No media in drive ".as_slice(),
                     &[b'A' + drive_index],
@@ -826,7 +935,7 @@ impl Shell {
                 self.redirect_buffer = None;
                 self.pending_exec = Some(PendingExec {
                     path,
-                    args: args.to_vec(),
+                    tail: trimmed[cmd_name.len()..].to_vec(),
                     output_redirect,
                 });
                 return ShellPhase::WaitingForChild;
@@ -905,31 +1014,48 @@ impl Shell {
     }
 }
 
-fn redraw_from_cursor(editor: &LineEditor, io: &mut IoAccess) {
-    redraw_from(editor, editor.cursor, io);
+/// Writes the line from the cursor to its end again.
+fn redraw_from_cursor(editor: &mut LineEditor, io: &mut IoAccess) {
+    let from = editor.cursor;
+    redraw_from(editor, from, io);
 }
 
-fn redraw_from(editor: &LineEditor, from: usize, io: &mut IoAccess) {
-    let row = io.console.cursor_row(io.memory);
-    io.console
-        .set_cursor(io.memory, row, editor.prompt_col + from as u8);
-    for &byte in &editor.buffer[from..] {
-        io.console.process_byte(io.memory, byte);
+/// Writes the line from offset `from` to its end again, blanks the column
+/// behind it and puts the cursor back to the editor cursor.
+fn redraw_from(editor: &mut LineEditor, from: usize, io: &mut IoAccess) {
+    editor.place_cursor(io, from);
+    for index in from..editor.buffer.len() {
+        let byte = editor.buffer[index];
+        editor.echo(io, byte);
     }
-    io.console.process_byte(io.memory, b' ');
-    io.console
-        .set_cursor(io.memory, row, editor.prompt_col + editor.cursor as u8);
+    editor.echo(io, b' ');
+    let cursor = editor.cursor;
+    editor.place_cursor(io, cursor);
 }
 
+/// Replaces the line with `new_buffer` and puts the cursor at its end.
 fn replace_line(editor: &mut LineEditor, new_buffer: Vec<u8>, io: &mut IoAccess) {
-    let row = io.console.cursor_row(io.memory);
-    io.console.set_cursor(io.memory, row, editor.prompt_col);
-    io.console.clear_line_from_cursor(io.memory);
-    for &byte in &new_buffer {
-        io.console.process_byte(io.memory, byte);
+    editor.place_cursor(io, 0);
+    if io.has_text_screen() {
+        io.console.clear_line_from_cursor(io.memory);
+        for &byte in &new_buffer {
+            io.write_console(byte);
+        }
+    } else {
+        let old_length = editor.buffer.len();
+        for &byte in &new_buffer {
+            io.write_console(byte);
+        }
+        for _ in new_buffer.len()..old_length {
+            io.write_console(b' ');
+        }
+        for _ in new_buffer.len()..old_length {
+            io.write_console(BACKSPACE);
+        }
     }
     editor.buffer = new_buffer;
     editor.cursor = editor.buffer.len();
+    editor.terminal_offset = editor.cursor;
 }
 
 fn split_command(line: &[u8]) -> (&[u8], &[u8]) {
@@ -956,6 +1082,83 @@ fn trim_outer_quotes(line: &[u8]) -> Vec<u8> {
     }
 }
 
+/// Returns true when a command tail asks for a permanent shell (`/P`). The
+/// switch may follow the COMSPEC directory and a console device name, as in
+/// `C:\ NUL /P` of the FM Towns SYSINIT. The words behind `/C` or `/K` form
+/// the command and hold no switch of the shell.
+pub(crate) fn is_permanent_tail(command_tail: &[u8]) -> bool {
+    command_tail
+        .split(|byte| byte.is_ascii_whitespace())
+        .take_while(|word| !word.eq_ignore_ascii_case(b"/C") && !word.eq_ignore_ascii_case(b"/K"))
+        .any(|word| word.eq_ignore_ascii_case(b"/P"))
+}
+
+/// Returns the drives that a command line touches, one bit per drive: the
+/// current drive, every drive letter of the line and the drives of `PATH`.
+pub(crate) fn line_drives(state: &DosState, memory: &dyn MemoryAccess, line: &[u8]) -> u32 {
+    let mut drives = 1u32 << state.current_drive;
+    let path = read_env_var(state, memory, b"PATH").unwrap_or_default();
+    for text in [line, path.as_slice()] {
+        for pair in text.windows(2) {
+            if pair[1] == b':' && pair[0].is_ascii_alphabetic() {
+                drives |= 1 << (pair[0].to_ascii_uppercase() - b'A');
+            }
+        }
+    }
+    drives
+}
+
+/// Asks for the guest work that a shell step needs before its first side
+/// effect: the CLOCK$ read of the entry and the images and media checks of
+/// the guest drives in `drives`. Returns true when nothing is missing. A
+/// false return leaves the guest work and a rerun of the entry queued, and
+/// the step does nothing.
+pub(crate) fn guest_resources_ready(state: &mut DosState, drives: u32) -> bool {
+    let _ = state.dos_clock();
+    for drive_index in 0..drive_map::DRIVE_LETTER_COUNT as u8 {
+        if drives & (1 << drive_index) == 0 {
+            continue;
+        }
+        match state.drive_map.entry(drive_index).map(|entry| entry.device) {
+            Some(drive_map::DriveDevice::GuestDriver(_)) => {
+                let _ = state.require_guest_volume(drive_index);
+            }
+            Some(drive_map::DriveDevice::GuestCdrom(_)) => {
+                let _ = state.require_guest_cdrom(drive_index);
+            }
+            Some(
+                drive_map::DriveDevice::Floppy { .. }
+                | drive_map::DriveDevice::FixedDisk { .. }
+                | drive_map::DriveDevice::MemoryImage { .. }
+                | drive_map::DriveDevice::Cdrom
+                | drive_map::DriveDevice::Virtual,
+            )
+            | None => {}
+        }
+    }
+    !state.guest_requests.redispatch
+}
+
+/// Returns true when a command tail names the NUL device as the console of
+/// the shell, as in `C:\ NUL /P` of the 1989 FM Towns SYSINIT. COMMAND.COM
+/// opens every word in front of `/C` or `/K` that is no switch. A character
+/// device becomes the console, any other word is the COMSPEC directory.
+pub(crate) fn names_nul_console(command_tail: &[u8]) -> bool {
+    command_tail
+        .split(|byte| byte.is_ascii_whitespace())
+        .take_while(|word| !word.eq_ignore_ascii_case(b"/C") && !word.eq_ignore_ascii_case(b"/K"))
+        .filter(|word| !word.starts_with(b"/"))
+        .any(|word| {
+            let word = word.strip_suffix(b":").unwrap_or(word);
+            let name = word
+                .rsplit(|&byte| byte == b'\\' || byte == b':')
+                .next()
+                .unwrap_or(word);
+            let base = name.split(|&byte| byte == b'.').next().unwrap_or(name);
+            base.eq_ignore_ascii_case(b"NUL")
+        })
+}
+
 fn parse_startup_command(command_tail: &[u8]) -> (Option<Vec<u8>>, bool) {
     let trimmed = command_tail.trim_ascii();
     if trimmed.is_empty() {
@@ -976,14 +1179,6 @@ fn parse_startup_command(command_tail: &[u8]) -> (Option<Vec<u8>>, bool) {
     (None, false)
 }
 
-fn key_available(memory: &dyn MemoryAccess) -> bool {
-    tables::key_available(memory)
-}
-
-fn read_key(memory: &mut dyn MemoryAccess) -> (u8, u8) {
-    tables::read_key(memory)
-}
-
 fn render_prompt(state: &DosState, io: &mut IoAccess) {
     let prompt_value = read_env_var(state, io.memory, b"PROMPT");
     let prompt = prompt_value.unwrap_or_else(|| b"$P$G".to_vec());
@@ -994,47 +1189,46 @@ fn render_prompt(state: &DosState, io: &mut IoAccess) {
             i += 1;
             match prompt[i].to_ascii_uppercase() {
                 b'P' => {
-                    let cds_addr =
-                        tables::CDS_BASE + (state.current_drive as u32) * tables::CDS_ENTRY_SIZE;
+                    let cds_addr = state.cds_entry_addr(state.current_drive, io.memory);
                     for j in 0..67u32 {
                         let byte = io.memory.read_byte(cds_addr + tables::CDS_OFF_PATH + j);
                         if byte == 0 {
                             break;
                         }
-                        io.console.process_byte(io.memory, byte);
+                        io.write_console(byte);
                     }
                 }
                 b'G' => {
-                    io.console.process_byte(io.memory, b'>');
+                    io.write_console(b'>');
                 }
                 b'L' => {
-                    io.console.process_byte(io.memory, b'<');
+                    io.write_console(b'<');
                 }
                 b'E' => {
-                    io.console.process_byte(io.memory, 0x1B);
+                    io.write_console(0x1B);
                 }
                 b'H' => {
-                    io.console.process_byte(io.memory, 0x08);
+                    io.write_console(0x08);
                 }
                 b'_' => {
-                    io.console.process_byte(io.memory, b'\r');
-                    io.console.process_byte(io.memory, b'\n');
+                    io.write_console(b'\r');
+                    io.write_console(b'\n');
                 }
                 b'$' => {
-                    io.console.process_byte(io.memory, b'$');
+                    io.write_console(b'$');
                 }
                 b'D' => {
                     let (year, month, day, _dow) = state.current_date_parts();
                     let msg = format!("{:04}-{:02}-{:02}", year, month, day);
                     for &byte in msg.as_bytes() {
-                        io.console.process_byte(io.memory, byte);
+                        io.write_console(byte);
                     }
                 }
                 b'T' => {
                     let (hour, minute, second) = state.current_time_parts();
                     let msg = format!("{:02}:{:02}:{:02}", hour, minute, second);
                     for &byte in msg.as_bytes() {
-                        io.console.process_byte(io.memory, byte);
+                        io.write_console(byte);
                     }
                 }
                 b'N' => {
@@ -1042,19 +1236,19 @@ fn render_prompt(state: &DosState, io: &mut IoAccess) {
                         .process_byte(io.memory, b'A' + state.current_drive);
                 }
                 b'V' => {
-                    let (major, minor) = state.version;
-                    let msg = format!("Neetan DOS {}.{}", major, minor);
+                    let version = state.platform.version;
+                    let msg = format!("Neetan DOS {}.{}", version.major, version.minor);
                     for &byte in msg.as_bytes() {
-                        io.console.process_byte(io.memory, byte);
+                        io.write_console(byte);
                     }
                 }
                 _ => {
-                    io.console.process_byte(io.memory, b'$');
-                    io.console.process_byte(io.memory, prompt[i]);
+                    io.write_console(b'$');
+                    io.write_console(prompt[i]);
                 }
             }
         } else {
-            io.console.process_byte(io.memory, prompt[i]);
+            io.write_console(prompt[i]);
         }
         i += 1;
     }
@@ -1464,13 +1658,13 @@ fn write_redirect_to_file(
         match crate::filesystem::resolve_file_path(state, filename, io.memory, disk) {
             Ok(r) => r,
             Err(_) => {
-                io.console.process_byte(io.memory, b'\r');
-                io.console.process_byte(io.memory, b'\n');
+                io.write_console(b'\r');
+                io.write_console(b'\n');
                 for &byte in b"File creation error" {
-                    io.console.process_byte(io.memory, byte);
+                    io.write_console(byte);
                 }
-                io.console.process_byte(io.memory, b'\r');
-                io.console.process_byte(io.memory, b'\n');
+                io.write_console(b'\r');
+                io.write_console(b'\n');
                 return;
             }
         };
@@ -1571,4 +1765,34 @@ fn read_file_data(
 
     filesystem::read_entry_all(state, read_path.drive_index, &entry, disk)
         .map_err(|_| &b"Read error\r\n"[..])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn permanent_tail_finds_p_after_the_comspec_directory_and_a_device() {
+        assert!(is_permanent_tail(b" C:\\ NUL /P"));
+        assert!(is_permanent_tail(b" /p"));
+        assert!(is_permanent_tail(b"\t/P\r"));
+    }
+
+    #[test]
+    fn nul_console_follows_the_comspec_directory() {
+        assert!(names_nul_console(b" C:\\ NUL /P"));
+        assert!(names_nul_console(b" nul: /p"));
+        assert!(!names_nul_console(b" C:\\ /P"));
+        assert!(!names_nul_console(b" /C ECHO NUL"));
+        assert!(names_nul_console(b" C:\\ C:\\NUL.DEV /P"));
+    }
+
+    #[test]
+    fn permanent_tail_needs_a_separate_p_switch() {
+        assert!(!is_permanent_tail(b""));
+        assert!(!is_permanent_tail(b" /C ECHO /PATH"));
+        assert!(!is_permanent_tail(b" /C DIR /P"));
+        assert!(!is_permanent_tail(b" /k dir /p"));
+        assert!(!is_permanent_tail(b" C:\\/P"));
+    }
 }

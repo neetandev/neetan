@@ -6,6 +6,21 @@
 
 use std::cell::Cell;
 
+use common::{Cpu, SegmentRegister};
+
+/// Restores AX and DX that a trap stub pushed before its `OUT` to the trap
+/// port and pops them, so SS:SP points at the stub's return frame again.
+/// `read_word` reads a little-endian word at a linear address.
+pub fn restore_trap_registers(cpu: &mut impl Cpu, mut read_word: impl FnMut(u32) -> u16) {
+    let stack_pointer = cpu.sp();
+    let stack_base = cpu.segment_base(SegmentRegister::SS);
+    let saved_dx = read_word(stack_base.wrapping_add(u32::from(stack_pointer)));
+    let saved_ax = read_word(stack_base.wrapping_add(u32::from(stack_pointer.wrapping_add(2))));
+    cpu.set_dx(saved_dx);
+    cpu.set_ax(saved_ax);
+    cpu.set_sp(stack_pointer.wrapping_add(4));
+}
+
 save_state::runtime_state! {
 /// Complete BIOS HLE trap state.
 #[derive(Debug, Clone, PartialEq, Eq)]

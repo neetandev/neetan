@@ -181,14 +181,26 @@ impl Msm58321Rtc {
         }
     }
 
+    /// Returns the date and time of the clock at `current_cycle`.
+    pub fn date_time_at(&self, current_cycle: u64, cpu_clock_hz: u32) -> HostDateTime {
+        HostDateTime::from_unix_seconds(
+            self.state.seed_seconds
+                + self.elapsed_micros(current_cycle, cpu_clock_hz) / MICROS_PER_SECOND,
+        )
+    }
+
+    /// Returns the microseconds since the seed time at `current_cycle`.
+    fn elapsed_micros(&self, current_cycle: u64, cpu_clock_hz: u32) -> u64 {
+        (u128::from(current_cycle.saturating_sub(self.state.seed_cycle))
+            * u128::from(MICROS_PER_SECOND)
+            / u128::from(cpu_clock_hz.max(1))) as u64
+    }
+
     /// Handles a read from the data port at `current_cycle`. Bit 7 is the ready
     /// flag (low while busy) and the low nibble is the selected register's BCD
     /// digit.
     pub fn read_data(&self, current_cycle: u64, cpu_clock_hz: u32) -> u8 {
-        let elapsed_micros = u128::from(current_cycle.saturating_sub(self.state.seed_cycle))
-            * u128::from(MICROS_PER_SECOND)
-            / u128::from(cpu_clock_hz.max(1));
-        let elapsed_micros = elapsed_micros as u64;
+        let elapsed_micros = self.elapsed_micros(current_cycle, cpu_clock_hz);
         let mut data = if elapsed_micros % MICROS_PER_SECOND < READY_LOW_MICROS {
             0
         } else {
@@ -282,6 +294,15 @@ mod tests {
         rtc.write_command(COMMAND_ENABLE_BIT);
         rtc.write_data(register);
         rtc.write_command(COMMAND_ADDRESS_WRITE);
+    }
+
+    #[test]
+    fn date_time_advances_with_the_emulated_time() {
+        let rtc = seeded_rtc();
+        assert_eq!(rtc.date_time_at(0, CPU_HZ), TEST_TIME);
+        let later = rtc.date_time_at(75 * u64::from(CPU_HZ), CPU_HZ);
+        assert_eq!((later.hour, later.minute, later.second), (14, 32, 0));
+        assert_eq!((later.year, later.month, later.day), (2026, 3, 3));
     }
 
     #[test]
