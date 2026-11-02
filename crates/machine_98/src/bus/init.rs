@@ -297,7 +297,6 @@ impl<T: TraceSink> Pc9801Bus<T> {
         // Emulate a machine with the analog 16-color graphics extension installed.
         bus.set_graphics_extension_enabled(true);
 
-        // Set the mouse interpolation clock from the CPU clock.
         bus.mouse_ppi.set_cpu_clock(clocks.cpu_clock_hz);
 
         // Schedule the first VSYNC event after one display period.
@@ -908,10 +907,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
         }
 
         // Mouse PPI: reset to defaults.
-        self.mouse_ppi.state.mode = 0x93;
-        self.mouse_ppi.state.port_a = 0x00;
-        self.mouse_ppi.state.port_b = 0x00;
-        self.mouse_ppi.state.port_c = match self.machine_model {
+        let mouse_port_c = match self.machine_model {
             MachineModel::PC9801F | MachineModel::PC9801VM => 0xF0,
             MachineModel::PC9801VX
             | MachineModel::PC9801RS
@@ -919,17 +915,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
             | MachineModel::PC9821AS
             | MachineModel::PC9821AP => 0x00,
         };
-        self.mouse_ppi.state.accumulator_x = 0;
-        self.mouse_ppi.state.accumulator_y = 0;
-        self.mouse_ppi.state.remaining_x = 0;
-        self.mouse_ppi.state.remaining_y = 0;
-        self.mouse_ppi.state.sample_x = 0;
-        self.mouse_ppi.state.sample_y = 0;
-        self.mouse_ppi.state.latch_x = 0;
-        self.mouse_ppi.state.latch_y = 0;
-        self.mouse_ppi.state.buttons = 0xE0;
-        self.mouse_ppi.state.last_interpolation_cycle = 0;
-        self.mouse_ppi.state.mouse_connected = true;
+        self.mouse_ppi.reset(mouse_port_c);
         self.mouse_timer_setting = MOUSE_TIMER_DEFAULT_SETTING;
         self.scheduler.cancel(Event98::MouseTimer);
         self.clear_pic_irq(MOUSE_TIMER_IRQ_LINE);

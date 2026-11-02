@@ -1,124 +1,248 @@
 //! MPU-401 MIDI interface core (data register plus status/command register).
 //!
 //! The device is port-agnostic. The PC-98 wires it as the Roland MPU-PC98II on
-//! the C-Bus (data 0xE0D0, status/command 0xE0D2); the PC/AT wires it at the
+//! the C-Bus (data 0xE0D0, status/command 0xE0D2). The PC/AT wires it at the
 //! standard MPU-401 base (data 0x330, status/command 0x331). The host bus owns
 //! the port decode and IRQ routing.
 //!
-//! Intelligent mode implements the full MPU-401 play/timing protocol:
-//! after "Start Play", the device generates periodic timing messages
-//! (track data requests 0xF0-0xF7, conductor request 0xF9, clock ticks
-//! 0xFD) so the host can supply MIDI data in sync.
+//! Intelligent mode follows the Roland MPU-401 Technical Reference Manual
+//! (version 1.5A). The internal clock runs at tempo times timebase pulses per
+//! minute. During play every clock decrements the play counters of the eight
+//! tracks and the conductor counter. A counter at zero sends its buffered event
+//! and requests the next event from the host (0xF0-0xF7 for a track, 0xF9 for
+//! the conductor). The host answers each request with a timing byte and an
+//! event on the data port. Recording, the metronome, the channel reference
+//! tables and the external sync sources are absent because the emulated board
+//! has no MIDI IN.
 //!
 //! UART mode is a transparent MIDI passthrough.
 
-use std::{
-    collections::VecDeque,
-    ops::{Deref, DerefMut},
-};
+use std::collections::VecDeque;
 
-const ACK: u8 = 0xFE;
-const HCLK: u8 = 0xFD;
-const MIDI_STOP: u8 = 0xFC;
-const CONDUCTOR_REQUEST: u8 = 0xF9;
+/// Acknowledge of a command written to the command port.
+const MESSAGE_ACK: u8 = 0xFE;
+/// Clock to host message.
+const MESSAGE_CLOCK_TO_HOST: u8 = 0xFD;
+/// All end message sent when every playing track reached its data end mark.
+const MESSAGE_ALL_END: u8 = 0xFC;
+/// Conductor data request.
+const REQUEST_CONDUCTOR: u8 = 0xF9;
+/// Track data request of track 1. Track N requests with this value plus N - 1.
+const REQUEST_TRACK_FIRST: u8 = 0xF0;
 
-const CMD_RESET: u8 = 0xFF;
-const CMD_ENTER_UART: u8 = 0x3F;
+/// Data end mark.
+const MARK_DATA_END: u8 = 0xFC;
+/// Smallest byte that is no timing value.
+const TIMING_VALUE_LIMIT: u8 = 0xF0;
+/// Counter value loaded by a timing overflow.
+const OVERFLOW_TIMING_VALUE: u8 = 240;
 
-const VERSION_MAJOR: u8 = 0x01;
-const VERSION_MINOR: u8 = 0x00;
+/// System reset command. It is the only command UART mode accepts.
+const COMMAND_RESET: u8 = 0xFF;
+/// Enter UART mode command.
+const COMMAND_ENTER_UART: u8 = 0x3F;
+/// Want to send system message command.
+const COMMAND_SEND_SYSTEM: u8 = 0xDF;
 
+/// Firmware version in BCD returned by command 0xAC.
+const FIRMWARE_VERSION: u8 = 0x15;
+/// Firmware revision returned by command 0xAD (1 for revision A).
+const FIRMWARE_REVISION: u8 = 0x01;
+
+/// Power-up tempo in beats per minute.
 const DEFAULT_TEMPO: u8 = 100;
-const DEFAULT_RELATIVE_TEMPO: u8 = 0x40;
-const DEFAULT_TIMEBASE: u8 = 120 / 24;
+/// Relative tempo value of the ratio 1/1.
+const RELATIVE_TEMPO_UNITY: u8 = 0x40;
+/// Power-up timebase in clocks per beat.
+const DEFAULT_TIMEBASE: u8 = 120;
+/// Power-up clock to host rate in quarter clocks (60 clocks per message).
+const DEFAULT_CLOCK_TO_HOST_RATE: u8 = 240;
+/// Clock to host rate in quarter clocks for a rate byte of zero.
+const CLOCK_TO_HOST_RATE_OF_ZERO: u16 = 256;
+/// Quarter clocks added by one internal clock.
+const QUARTER_CLOCKS_PER_CLOCK: u16 = 4;
+/// Timebase of command 0xC2. Each following command adds one step.
+const TIMEBASE_OF_FIRST_COMMAND: u8 = 48;
+/// Timebase increment between neighboring timebase commands.
+const TIMEBASE_STEP: u8 = 24;
+/// Seconds per minute for the tempo conversion.
+const SECONDS_PER_MINUTE: u64 = 60;
 
-const FLAG1_PLAY: u8 = 0x01;
-const FLAG1_THRU: u8 = 0x10;
-const FLAG1_SEND_ME: u8 = 0x40;
-const FLAG1_CONDUCTOR: u8 = 0x80;
-
-const FLAG2_CLK_TO_HOST: u8 = 0x04;
-const FLAG2_FSK_RESO: u8 = 0x02;
-
-const RESPONSE_QUEUE_CAPACITY: usize = 128;
-const MAX_TRACKS: usize = 8;
-const MIDI_BUFFER_CAPACITY: usize = 32768;
-const SYSEX_BUFFER_CAPACITY: usize = 32768;
-
-/// MIDI short message length indexed by `status >> 4`.
-const MIDI_MESSAGE_LENGTH: [u8; 16] = [
-    0, 0, 0, 0, 0, 0, 0, 0, // 0x00-0x7F: not status bytes
-    3, 3, 3, 3, 2, 2, 3, 1, // 0x80-0xFF: NoteOff/On/AT/CC/PC/CP/PB/System
+/// Timebase, lowest tempo and highest tempo of each selectable timebase.
+const TEMPO_LIMITS: [(u8, u8, u8); 7] = [
+    (48, 32, 240),
+    (72, 16, 240),
+    (96, 16, 240),
+    (120, 8, 240),
+    (144, 8, 208),
+    (168, 8, 179),
+    (192, 8, 179),
 ];
 
-/// Fractional clock step patterns for H.CLK generation.
-const HCLK_FRACTION: [[u8; 4]; 4] = [[0, 0, 0, 0], [1, 0, 0, 0], [1, 0, 1, 0], [1, 1, 1, 0]];
+/// Number of play tracks.
+const TRACK_COUNT: usize = 8;
+/// Capacity of the queue of bytes for the host.
+const RESPONSE_QUEUE_CAPACITY: usize = 128;
+/// Capacity of the MIDI OUT byte buffer.
+const MIDI_BUFFER_CAPACITY: usize = 32768;
+/// Byte capacity of one assembled voice or system common message.
+const MESSAGE_CAPACITY: usize = 3;
+
+/// MIDI control change status of channel 1.
+const STATUS_CONTROL_CHANGE: u8 = 0xB0;
+/// MIDI all notes off controller number.
+const CONTROLLER_ALL_NOTES_OFF: u8 = 0x7B;
+/// MIDI system exclusive start.
+const STATUS_EXCLUSIVE: u8 = 0xF0;
+/// MIDI end of exclusive.
+const STATUS_END_OF_EXCLUSIVE: u8 = 0xF7;
+/// MIDI song position pointer.
+const STATUS_SONG_POSITION: u8 = 0xF2;
+/// MIDI song select.
+const STATUS_SONG_SELECT: u8 = 0xF3;
+/// MIDI tune request.
+const STATUS_TUNE_REQUEST: u8 = 0xF6;
+/// MIDI stop status.
+const STATUS_STOP: u8 = 0xFC;
+/// Smallest MIDI real time status.
+const STATUS_REAL_TIME_FIRST: u8 = 0xF8;
 
 save_state::runtime_state_enum! {
 /// MPU-PC98II operating mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mpu401Mode {
-    /// Power-on default. WSD state machine routes MIDI data.
+    /// Power-up default with the full command set.
     Intelligent = 0,
     /// Transparent MIDI passthrough.
     Uart = 1,
 }}
 
 save_state::runtime_state_enum! {
-/// Intelligent-mode command phase.
+/// Data the data port expects for a command written to the command port.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CommandPhase {
-    Idle = 0,
-    ShortInit = 1,
-    ShortCollect = 2,
-    Long = 3,
-    FollowByte = 4,
-}}
-
-save_state::runtime_state! {
-/// State of a single track receive pipeline.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct TrackState {
-    step: u8,
-    running_status: u8,
-    pending_data: [u8; 4],
-    pending_count: u8,
-    remaining_bytes: u8,
+enum CommandData {
+    /// No command waits for data.
+    None = 0,
+    /// A voice message of a want to send data command (0xD0-0xD7).
+    VoiceMessage = 1,
+    /// A system message of the want to send system message command (0xDF).
+    SystemMessage = 2,
+    /// The value byte of a command in the range 0xE0-0xEF.
+    Value = 3,
 }}
 
 save_state::runtime_state_enum! {
-/// Phase for host track data reception.
+/// Data the data port expects as an answer to a sequencer request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RecvPhase {
-    Idle = 0,
-    WaitStep = 1,
-    WaitEvent = 2,
-    CollectData = 3,
-}}
-
-save_state::runtime_state! {
-/// Conductor receive state.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct ConductorState {
-    step: u8,
-    phase: ConductorPhase,
-    command: u8,
-    running_status: u8,
-    step_requested: bool,
+enum RequestData {
+    /// No request waits for an answer.
+    None = 0,
+    /// The leading timing byte of a track event.
+    TrackTiming = 1,
+    /// The event of a track: a voice message or a mark.
+    TrackEvent = 2,
+    /// The leading timing byte of a conductor command.
+    ConductorTiming = 3,
+    /// The command byte of the conductor.
+    ConductorCommand = 4,
+    /// The value byte of a conductor command in the range 0xE0-0xEF.
+    ConductorValue = 5,
+    /// The message of a want to send data command run by the conductor.
+    ConductorMessage = 6,
 }}
 
 save_state::runtime_state_enum! {
-/// Current phase of the intelligent-mode conductor parser.
+/// Event a track holds until its play counter expires.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-enum ConductorPhase {
+enum TrackEvent {
+    /// Nothing to send. The track requests its next event.
     #[default]
-    Idle = 0,
-    WaitStep = 1,
-    WaitCommand = 2,
-    FollowByte = 3,
-    ShortInit = 4,
-    ShortCollect = 5,
-    Long = 6,
+    Empty = 0,
+    /// A voice message to send.
+    Message = 1,
+    /// A no operation or measure end mark.
+    Mark = 2,
+    /// The data end mark. The track ends when it expires.
+    DataEnd = 3,
+}}
+
+save_state::runtime_state_enum! {
+/// Command the conductor holds until its counter expires.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum ConductorEvent {
+    /// Nothing to run. The conductor requests its next command.
+    #[default]
+    Empty = 0,
+    /// A command without a value byte.
+    Command = 1,
+    /// A command with its value byte.
+    CommandWithValue = 2,
+    /// A want to send data command. Its message arrives at the expiry request.
+    Message = 3,
+    /// A no operation or measure end mark.
+    Mark = 4,
+    /// The data end mark. The conductor ends when it expires.
+    DataEnd = 5,
+}}
+
+save_state::runtime_state_enum! {
+/// Position of the request scan inside one internal clock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScanPosition {
+    /// The scan of the current clock is complete.
+    Done = 0,
+    /// The conductor is checked next.
+    Conductor = 1,
+    /// The track in `scan_track` is checked next.
+    Track = 2,
+}}
+
+save_state::runtime_state! {
+/// Voice or system common message that arrives byte by byte.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct MessageAssembler {
+    /// Message bytes with the status byte first.
+    bytes: [u8; MESSAGE_CAPACITY],
+    /// Number of bytes received, including a status byte taken from running status.
+    received: u8,
+    /// Total message length in bytes.
+    length: u8,
+    /// Whether a system exclusive message streams to MIDI OUT.
+    exclusive: bool,
+}}
+
+save_state::runtime_state! {
+/// Play counter and play buffer of one track.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct PlayTrack {
+    /// Clocks until the buffered event is sent.
+    counter: u8,
+    /// Buffered event.
+    event: TrackEvent,
+    /// Buffered voice message.
+    message: [u8; MESSAGE_CAPACITY],
+    /// Length of the buffered voice message.
+    message_length: u8,
+    /// Running status of the track.
+    running_status: u8,
+    /// Whether the track reached its data end mark.
+    ended: bool,
+}}
+
+save_state::runtime_state! {
+/// Counter and buffered command of the conductor.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Conductor {
+    /// Clocks until the buffered command runs.
+    counter: u8,
+    /// Buffered command.
+    event: ConductorEvent,
+    /// Buffered command byte.
+    command: u8,
+    /// Value byte of the buffered command.
+    value: u8,
+    /// Whether the conductor reached its data end mark.
+    ended: bool,
 }}
 
 save_state::runtime_state! {
@@ -127,52 +251,229 @@ save_state::runtime_state! {
 pub struct Mpu401State {
     /// Current operating mode.
     pub mode: Mpu401Mode,
-    /// Response FIFO: queued bytes waiting to be read from the data port.
-    pub response_queue: VecDeque<u8>,
-    midi_buffer: Vec<u8>,
-    command_phase: CommandPhase,
-    follow_byte_command: u8,
-    running_status: u8,
-    message_buffer: [u8; 3],
-    message_position: u8,
-    message_expected: u8,
-    sysex_buffer: Vec<u8>,
-    flag1: u8,
-    flag2: u8,
+    /// Bytes waiting to be read from the data port.
+    responses: VecDeque<u8>,
+    /// Bytes waiting for MIDI OUT.
+    midi_out: Vec<u8>,
+    /// Whether the IRQ line needs a new edge.
+    irq_pending: bool,
+    /// Data the last command written to the command port waits for.
+    command_data: CommandData,
+    /// Command byte that waits for data.
+    command_byte: u8,
+    /// Message of a want to send command from the host.
+    command_message: MessageAssembler,
+    /// Whether the conductor is switched on (0x8F).
+    conductor_enabled: bool,
+    /// Whether clock to host messages are switched on (0x95).
+    clock_to_host: bool,
+    /// Clock to host rate in quarter clocks (0xE7 value byte).
+    clock_to_host_rate: u8,
+    /// Quarter clocks since the last clock to host message.
+    clock_to_host_phase: u16,
+    /// Clock to host phase saved by a MIDI stop for a MIDI continue.
+    saved_clock_to_host_phase: u16,
+    /// Tempo in beats per minute.
     tempo: u8,
+    /// Relative tempo with 0x40 as the ratio 1/1.
     relative_tempo: u8,
+    /// Timebase in clocks per beat.
     timebase: u8,
-    hclk_step: [u8; 4],
-    hclk_remaining: u8,
-    hclk_counter: u8,
+    /// Active track bits set by command 0xEC.
     active_tracks: u8,
-    tracks: [TrackState; MAX_TRACKS],
-    conductor: ConductorState,
-    remain_step: u8,
-    int_phase: u8,
-    int_request: u8,
-    recv_phase: RecvPhase,
-    timer_active: bool,
-    raise_irq: bool,
+    /// Track bits latched by the last start of play.
+    playing_tracks: u8,
+    /// Whether the play counters run.
+    playing: bool,
+    /// Play state of the eight tracks.
+    tracks: [PlayTrack; TRACK_COUNT],
+    /// Conductor state.
+    conductor: Conductor,
+    /// Clocks that elapsed while the host answered a request.
+    pending_clocks: u8,
+    /// Next position of the request scan.
+    scan_position: ScanPosition,
+    /// Track index of the request scan.
+    scan_track: u8,
+    /// Data the last sequencer request waits for.
+    request_data: RequestData,
+    /// Message of a track event or of a conductor want to send command.
+    request_message: MessageAssembler,
 }}
+
+/// Progress of a message that arrives byte by byte.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Progress {
+    /// More bytes are needed.
+    Pending,
+    /// The message is complete.
+    Complete,
+}
+
+/// Returns the number of data bytes that follow a channel voice status byte.
+fn voice_data_length(status: u8) -> u8 {
+    match status & 0xF0 {
+        0xC0 | 0xD0 => 1,
+        0x80 | 0x90 | 0xA0 | 0xB0 | 0xE0 => 2,
+        _ => 0,
+    }
+}
+
+/// Returns whether `status` is a channel voice status byte.
+fn is_voice_status(status: u8) -> bool {
+    (0x80..TIMING_VALUE_LIMIT).contains(&status)
+}
+
+/// Returns whether the command takes a value byte on the data port.
+fn command_takes_value(command: u8) -> bool {
+    matches!(
+        command,
+        0xE0 | 0xE1 | 0xE2 | 0xE4 | 0xE6 | 0xE7 | 0xEC..=0xEF
+    )
+}
+
+/// Returns whether the command is a want to send data or system message command.
+fn command_sends_message(command: u8) -> bool {
+    matches!(command, 0xD0..=0xD7 | COMMAND_SEND_SYSTEM)
+}
+
+/// Appends `bytes` to the MIDI OUT buffer up to its capacity.
+fn append_midi(midi_out: &mut Vec<u8>, bytes: &[u8]) {
+    let free = MIDI_BUFFER_CAPACITY - midi_out.len();
+    midi_out.extend_from_slice(&bytes[..bytes.len().min(free)]);
+}
+
+impl MessageAssembler {
+    /// Discards a partial message.
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Adds one byte of a channel voice message with running status support.
+    fn push_voice(&mut self, byte: u8, running_status: &mut u8) -> Progress {
+        if self.received == 0 {
+            if byte & 0x80 != 0 {
+                if is_voice_status(byte) {
+                    *running_status = byte;
+                }
+                self.bytes[0] = byte;
+                self.received = 1;
+            } else {
+                self.bytes[0] = *running_status;
+                self.bytes[1] = byte;
+                self.received = 2;
+            }
+            self.length = 1 + voice_data_length(self.bytes[0]);
+        } else {
+            if (self.received as usize) < MESSAGE_CAPACITY {
+                self.bytes[self.received as usize] = byte;
+            }
+            self.received += 1;
+        }
+        if self.received >= self.length {
+            Progress::Complete
+        } else {
+            Progress::Pending
+        }
+    }
+
+    /// Returns the complete voice message or `None` for an invalid status.
+    fn voice_message(&self) -> Option<&[u8]> {
+        is_voice_status(self.bytes[0]).then(|| &self.bytes[..self.length as usize])
+    }
+
+    /// Adds one byte of a system message. Exclusive data streams to `midi_out`.
+    fn push_system(&mut self, byte: u8, midi_out: &mut Vec<u8>) -> Progress {
+        if self.exclusive {
+            if byte < 0x80 {
+                append_midi(midi_out, &[byte]);
+                return Progress::Pending;
+            }
+            if byte >= STATUS_REAL_TIME_FIRST {
+                append_midi(midi_out, &[byte]);
+                return Progress::Pending;
+            }
+            append_midi(midi_out, &[STATUS_END_OF_EXCLUSIVE]);
+            self.clear();
+            return Progress::Complete;
+        }
+        if self.received == 0 {
+            self.length = match byte {
+                STATUS_EXCLUSIVE => {
+                    append_midi(midi_out, &[byte]);
+                    self.exclusive = true;
+                    return Progress::Pending;
+                }
+                STATUS_SONG_POSITION => 3,
+                STATUS_SONG_SELECT => 2,
+                STATUS_TUNE_REQUEST => 1,
+                _ => return Progress::Complete,
+            };
+        }
+        if (self.received as usize) < MESSAGE_CAPACITY {
+            self.bytes[self.received as usize] = byte;
+        }
+        self.received += 1;
+        if self.received >= self.length {
+            append_midi(midi_out, &self.bytes[..self.length as usize]);
+            self.clear();
+            Progress::Complete
+        } else {
+            Progress::Pending
+        }
+    }
+}
+
+impl Mpu401State {
+    /// Creates the power-up state.
+    fn power_up() -> Self {
+        Self {
+            mode: Mpu401Mode::Intelligent,
+            responses: VecDeque::with_capacity(RESPONSE_QUEUE_CAPACITY),
+            midi_out: Vec::with_capacity(MIDI_BUFFER_CAPACITY),
+            irq_pending: false,
+            command_data: CommandData::None,
+            command_byte: 0,
+            command_message: MessageAssembler::default(),
+            conductor_enabled: false,
+            clock_to_host: false,
+            clock_to_host_rate: DEFAULT_CLOCK_TO_HOST_RATE,
+            clock_to_host_phase: 0,
+            saved_clock_to_host_phase: 0,
+            tempo: DEFAULT_TEMPO,
+            relative_tempo: RELATIVE_TEMPO_UNITY,
+            timebase: DEFAULT_TIMEBASE,
+            active_tracks: 0,
+            playing_tracks: 0,
+            playing: false,
+            tracks: [PlayTrack::default(); TRACK_COUNT],
+            conductor: Conductor::default(),
+            pending_clocks: 0,
+            scan_position: ScanPosition::Done,
+            scan_track: 0,
+            request_data: RequestData::None,
+            request_message: MessageAssembler::default(),
+        }
+    }
+
+    /// Returns tempo times relative tempo, limited to the range of the timebase.
+    ///
+    /// The value is the effective tempo in units of 1/64 beat per minute.
+    fn scaled_tempo(&self) -> u32 {
+        let (_, lowest, highest) = TEMPO_LIMITS
+            .iter()
+            .copied()
+            .find(|(timebase, _, _)| *timebase == self.timebase)
+            .unwrap_or(TEMPO_LIMITS[3]);
+        let unity = u32::from(RELATIVE_TEMPO_UNITY);
+        (u32::from(self.tempo) * u32::from(self.relative_tempo))
+            .clamp(u32::from(lowest) * unity, u32::from(highest) * unity)
+    }
+}
 
 /// Roland MPU-PC98II MIDI interface device.
 pub struct Mpu401 {
-    /// Embedded state for save/restore.
-    pub state: Mpu401State,
-}
-
-impl Deref for Mpu401 {
-    type Target = Mpu401State;
-    fn deref(&self) -> &Self::Target {
-        &self.state
-    }
-}
-
-impl DerefMut for Mpu401 {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.state
-    }
+    state: Mpu401State,
 }
 
 impl Default for Mpu401 {
@@ -182,41 +483,16 @@ impl Default for Mpu401 {
 }
 
 impl Mpu401 {
-    /// Creates a new MPU-PC98II in intelligent mode (power-on default).
+    /// Creates a new MPU-PC98II in intelligent mode (power-up default).
     pub fn new() -> Self {
-        let mut mpu = Self {
-            state: Mpu401State {
-                mode: Mpu401Mode::Intelligent,
-                response_queue: VecDeque::with_capacity(RESPONSE_QUEUE_CAPACITY),
-                midi_buffer: Vec::with_capacity(MIDI_BUFFER_CAPACITY),
-                command_phase: CommandPhase::Idle,
-                follow_byte_command: 0,
-                running_status: 0,
-                message_buffer: [0; 3],
-                message_position: 0,
-                message_expected: 0,
-                sysex_buffer: Vec::with_capacity(SYSEX_BUFFER_CAPACITY),
-                flag1: FLAG1_THRU | FLAG1_SEND_ME,
-                flag2: 0x01,
-                tempo: DEFAULT_TEMPO,
-                relative_tempo: DEFAULT_RELATIVE_TEMPO,
-                timebase: DEFAULT_TIMEBASE,
-                hclk_step: [0; 4],
-                hclk_remaining: 0,
-                hclk_counter: 0,
-                active_tracks: 0,
-                tracks: Default::default(),
-                conductor: ConductorState::default(),
-                remain_step: 0,
-                int_phase: 0,
-                int_request: 0,
-                recv_phase: RecvPhase::Idle,
-                timer_active: false,
-                raise_irq: false,
-            },
-        };
-        mpu.set_hclk(240);
-        mpu
+        Self {
+            state: Mpu401State::power_up(),
+        }
+    }
+
+    /// Returns the current operating mode.
+    pub fn mode(&self) -> Mpu401Mode {
+        self.state.mode
     }
 
     /// Captures the complete MPU state.
@@ -231,822 +507,579 @@ impl Mpu401 {
     ) -> Result<(), save_state::StateValidationError> {
         save_state::ValidateState::validate_state(&state, &())?;
         state
-            .response_queue
-            .try_reserve_exact(RESPONSE_QUEUE_CAPACITY - state.response_queue.len())
+            .responses
+            .try_reserve_exact(RESPONSE_QUEUE_CAPACITY - state.responses.len())
             .map_err(|error| save_state::StateValidationError::new(error.to_string()))?;
         state
-            .midi_buffer
-            .try_reserve_exact(MIDI_BUFFER_CAPACITY - state.midi_buffer.len())
-            .map_err(|error| save_state::StateValidationError::new(error.to_string()))?;
-        state
-            .sysex_buffer
-            .try_reserve_exact(SYSEX_BUFFER_CAPACITY - state.sysex_buffer.len())
+            .midi_out
+            .try_reserve_exact(MIDI_BUFFER_CAPACITY - state.midi_out.len())
             .map_err(|error| save_state::StateValidationError::new(error.to_string()))?;
         save_state::restore_root(self, state, &())
     }
 
-    /// Reads the status register (port 0xE0D2).
+    /// Reads the status register.
     ///
-    /// Bit 7 (DRR): 0 if data is available to read, 1 if empty.
-    /// Bit 6 (DSR): always 0 - ready to accept writes.
+    /// Bit 7 (DSR) is 0 while a byte waits on the data port. Bit 6 (DRR) is
+    /// always 0 because the device accepts every write at once.
     pub fn read_status(&self) -> u8 {
-        if !self.state.response_queue.is_empty() || self.state.int_request != 0 {
-            0x00
-        } else {
+        if self.state.responses.is_empty() {
             0x80
-        }
-    }
-
-    /// Reads the data register (port 0xE0D0).
-    pub fn read_data(&mut self) -> u8 {
-        if let Some(byte) = self.state.response_queue.pop_front() {
-            if !self.state.response_queue.is_empty() || self.state.int_request != 0 {
-                self.state.raise_irq = true;
-            }
-            byte
-        } else if self.state.int_request != 0 {
-            let data = self.state.int_request;
-            self.state.int_request = 0;
-            data
         } else {
-            0xFF
+            0x00
         }
     }
 
-    /// Writes the command register (port 0xE0D2).
+    /// Reads the data register.
+    pub fn read_data(&mut self) -> u8 {
+        let Some(byte) = self.state.responses.pop_front() else {
+            return 0xFF;
+        };
+        if !self.state.responses.is_empty() {
+            self.state.irq_pending = true;
+        }
+        byte
+    }
+
+    /// Writes the command register.
     pub fn write_command(&mut self, value: u8) {
         if self.state.mode == Mpu401Mode::Uart {
-            if value == CMD_RESET {
+            if value == COMMAND_RESET {
                 self.state.mode = Mpu401Mode::Intelligent;
-                self.enqueue_response(ACK);
-                self.state.raise_irq = true;
+                self.respond(MESSAGE_ACK);
             }
             return;
         }
-
-        self.enqueue_response(ACK);
-        self.state.raise_irq = true;
 
         match value {
-            CMD_RESET => {
+            COMMAND_RESET => {
                 self.send_all_notes_off();
-                self.state.timer_active = false;
-                self.reset_intelligent_state();
+                let midi_out = std::mem::take(&mut self.state.midi_out);
+                self.state = Mpu401State::power_up();
+                self.state.midi_out = midi_out;
+                self.respond(MESSAGE_ACK);
             }
-            CMD_ENTER_UART => {
+            COMMAND_ENTER_UART => {
                 self.send_all_notes_off();
+                let midi_out = std::mem::take(&mut self.state.midi_out);
+                let responses = std::mem::take(&mut self.state.responses);
+                self.state = Mpu401State::power_up();
+                self.state.midi_out = midi_out;
+                self.state.responses = responses;
                 self.state.mode = Mpu401Mode::Uart;
-                self.state.command_phase = CommandPhase::Idle;
-                self.state.timer_active = false;
+                self.respond(MESSAGE_ACK);
             }
             _ => {
-                self.dispatch_intelligent_command(value);
+                self.state.command_data = CommandData::None;
+                self.state.command_message.clear();
+                self.respond(MESSAGE_ACK);
+                if command_takes_value(value) {
+                    self.state.command_byte = value;
+                    self.state.command_data = CommandData::Value;
+                } else if value == COMMAND_SEND_SYSTEM {
+                    self.state.command_byte = value;
+                    self.state.command_data = CommandData::SystemMessage;
+                } else if command_sends_message(value) {
+                    self.state.command_byte = value;
+                    self.state.command_data = CommandData::VoiceMessage;
+                } else {
+                    self.run_command(value);
+                }
             }
         }
     }
 
-    /// Writes the data register (port 0xE0D0).
+    /// Writes the data register.
     pub fn write_data(&mut self, value: u8) {
         if self.state.mode == Mpu401Mode::Uart {
-            self.push_midi_byte(value);
+            append_midi(&mut self.state.midi_out, &[value]);
             return;
         }
-
-        // First check if there's an active command phase from write_command.
-        match self.state.command_phase {
-            CommandPhase::Idle => {}
-            CommandPhase::ShortInit => {
-                self.write_data_short_init(value);
-                return;
-            }
-            CommandPhase::ShortCollect => {
-                self.write_data_short_collect(value);
-                return;
-            }
-            CommandPhase::Long => {
-                self.write_data_long(value);
-                return;
-            }
-            CommandPhase::FollowByte => {
-                self.state.command_phase = CommandPhase::Idle;
-                self.apply_follow_byte(self.state.follow_byte_command, value);
-                return;
-            }
+        if self.state.command_data != CommandData::None {
+            self.accept_command_data(value);
+        } else if self.state.request_data != RequestData::None {
+            self.accept_request_data(value);
+            self.run_sequencer();
         }
-
-        // Then handle track data responses (host responding to track requests).
-        self.handle_track_data(value);
     }
 
-    /// Called periodically by the scheduler when the MPU timer fires.
-    /// Returns `true` if the timer should be rescheduled.
+    /// Advances the device by one internal clock.
+    ///
+    /// Returns `true` while the clock must keep running.
     pub fn tick(&mut self) -> bool {
-        if self.state.flag2 & FLAG2_CLK_TO_HOST != 0 {
-            self.process_hclk();
+        if self.state.mode == Mpu401Mode::Uart {
+            return false;
         }
-
-        if self.state.flag1 & FLAG1_PLAY != 0 {
-            let prev = self.state.remain_step;
-            self.state.remain_step = self.state.remain_step.wrapping_add(1);
-            if prev == 0 {
-                self.decrement_track_steps();
-                self.state.int_phase = 1;
-                self.search_next_track_request();
-            }
+        if self.state.clock_to_host {
+            self.advance_clock_to_host();
         }
-
-        self.state.timer_active
+        if self.state.playing {
+            self.state.pending_clocks = self.state.pending_clocks.saturating_add(1);
+            self.run_sequencer();
+        }
+        self.timer_active()
     }
 
     /// Returns and clears the pending IRQ flag.
     pub fn take_irq(&mut self) -> bool {
-        let irq = self.state.raise_irq;
-        self.state.raise_irq = false;
-        irq
+        std::mem::take(&mut self.state.irq_pending)
     }
 
-    /// Returns whether the MPU timer should be active (needs scheduling).
+    /// Returns whether the internal clock runs.
     pub fn timer_active(&self) -> bool {
-        self.state.timer_active
+        self.state.mode == Mpu401Mode::Intelligent
+            && (self.state.playing || self.state.clock_to_host)
     }
 
-    /// Computes the timer period in CPU clock cycles.
+    /// Returns the period of one internal clock in CPU clock cycles.
+    ///
+    /// The clock runs at tempo times timebase pulses per minute.
     pub fn step_clock_cycles(&self, cpu_clock_hz: u32) -> u64 {
-        let tempo_product = self.state.tempo as u64 * 2 * self.state.relative_tempo as u64
-            / DEFAULT_RELATIVE_TEMPO as u64;
-        let tempo_product = tempo_product.max(10);
-        let divisor = if self.state.flag2 & FLAG2_FSK_RESO != 0 {
-            tempo_product
-        } else {
-            tempo_product * self.state.timebase as u64
-        };
-        cpu_clock_hz as u64 * 5 / divisor
+        let scaled_tempo = u64::from(self.state.scaled_tempo());
+        let pulses_per_minute_scaled = scaled_tempo * u64::from(self.state.timebase);
+        u64::from(cpu_clock_hz) * SECONDS_PER_MINUTE * u64::from(RELATIVE_TEMPO_UNITY)
+            / pulses_per_minute_scaled
     }
 
     /// Copies buffered MIDI into `target` and returns the number of bytes written.
     pub fn flush_midi_into(&mut self, target: &mut [u8]) -> usize {
-        let copy_length = target.len().min(self.state.midi_buffer.len());
-        target[..copy_length].copy_from_slice(&self.state.midi_buffer[..copy_length]);
-        let remaining = self.state.midi_buffer.len() - copy_length;
-        self.state.midi_buffer.copy_within(copy_length.., 0);
-        self.state.midi_buffer.truncate(remaining);
-        copy_length
+        let count = target.len().min(self.state.midi_out.len());
+        for (slot, byte) in target.iter_mut().zip(self.state.midi_out.drain(..count)) {
+            *slot = byte;
+        }
+        count
     }
 
-    fn enqueue_response(&mut self, data: u8) {
-        if self.state.response_queue.len() < RESPONSE_QUEUE_CAPACITY {
-            self.state.response_queue.push_back(data);
+    /// Queues a byte for the host and requests an interrupt.
+    fn respond(&mut self, value: u8) {
+        if self.state.responses.len() < RESPONSE_QUEUE_CAPACITY {
+            self.state.responses.push_back(value);
+        }
+        self.state.irq_pending = true;
+    }
+
+    /// Sends a control change all notes off on all sixteen channels.
+    fn send_all_notes_off(&mut self) {
+        for channel in 0..16 {
+            append_midi(
+                &mut self.state.midi_out,
+                &[STATUS_CONTROL_CHANGE | channel, CONTROLLER_ALL_NOTES_OFF, 0],
+            );
         }
     }
 
-    fn reset_intelligent_state(&mut self) {
-        self.state.command_phase = CommandPhase::Idle;
-        self.state.running_status = 0;
-        self.state.message_position = 0;
-        self.state.message_expected = 0;
-        self.state.sysex_buffer.clear();
-        self.state.flag1 = FLAG1_THRU | FLAG1_SEND_ME;
-        self.state.flag2 = 0x01;
-        self.state.tempo = DEFAULT_TEMPO;
-        self.state.relative_tempo = DEFAULT_RELATIVE_TEMPO;
-        self.state.timebase = DEFAULT_TIMEBASE;
-        self.set_hclk(240);
-        self.state.active_tracks = 0;
-        self.state.tracks = Default::default();
-        self.state.conductor = ConductorState::default();
-        self.state.remain_step = 0;
-        self.state.int_phase = 0;
-        self.state.int_request = 0;
-        self.state.recv_phase = RecvPhase::Idle;
-    }
-
-    fn dispatch_intelligent_command(&mut self, value: u8) {
-        match value {
-            // 0x00-0x2F: Mode commands (Start/Stop Play, Start/Stop Record, MIDI Start/Stop/Cont)
-            0x00..=0x2F => {
-                self.handle_mode_command(value);
+    /// Runs a command that takes no data byte. Conductor commands share it.
+    fn run_command(&mut self, command: u8) {
+        match command {
+            0x00..=0x2F => self.run_mode_command(command),
+            COMMAND_ENTER_UART => {
+                self.send_all_notes_off();
+                self.state.mode = Mpu401Mode::Uart;
+                self.state.playing = false;
+                self.state.clock_to_host = false;
             }
-            // 0x40-0x7F: Set channel of reference table (ignored)
-            0x40..=0x7F => {}
-            // 0x80-0x82: Clock sync mode
-            0x80..=0x82 => {}
-            // 0x83-0x85: Metronome mode
-            0x83..=0x85 => {}
-            // 0x86-0x8F: Flag1 bits
-            0x86..=0x8F => {
-                let bit = 1 << ((value >> 1) & 7);
-                if value & 1 != 0 {
-                    self.state.flag1 |= bit;
-                } else {
-                    self.state.flag1 &= !bit;
-                }
-            }
-            // 0x90-0x9F: Flag2 bits
-            0x90..=0x9F => {
-                let bit = 1 << ((value >> 1) & 7);
-                if value & 1 != 0 {
-                    self.state.flag2 |= bit;
-                } else {
-                    self.state.flag2 &= !bit;
-                }
-                match value & 0x0F {
-                    // 0x94: CLK to Host OFF
-                    0x04 if self.state.flag1 & FLAG1_PLAY == 0 => {
-                        self.state.timer_active = false;
-                    }
-                    // 0x95: CLK to Host ON
-                    0x05 => {
-                        self.ensure_timer_active();
-                    }
-                    _ => {}
-                }
-            }
-            // 0xA0-0xA7: Request play count for track N
+            0x8E => self.state.conductor_enabled = false,
+            0x8F => self.state.conductor_enabled = true,
+            0x94 => self.state.clock_to_host = false,
+            0x95 => self.state.clock_to_host = true,
             0xA0..=0xA7 => {
-                let track = (value - 0xA0) as usize;
-                self.enqueue_response(self.state.tracks[track].step);
+                let counter = self.state.tracks[usize::from(command & 7)].counter;
+                self.respond(counter);
             }
-            // 0xAB: Read & clear recording counter
-            0xAB => self.enqueue_response(0x00),
-            // 0xAC: Request major version
-            0xAC => self.enqueue_response(VERSION_MAJOR),
-            // 0xAD: Request minor version
-            0xAD => self.enqueue_response(VERSION_MINOR),
-            // 0xAF: Request tempo
+            0xAB => self.respond(0),
+            0xAC => self.respond(FIRMWARE_VERSION),
+            0xAD => self.respond(FIRMWARE_REVISION),
             0xAF => {
-                let curtempo = self.calculate_current_tempo();
-                self.enqueue_response(curtempo);
+                let tempo = self.state.scaled_tempo() / u32::from(RELATIVE_TEMPO_UNITY);
+                self.respond(tempo as u8);
             }
-            // 0xB1: Clear relative tempo
-            0xB1 => {
-                self.state.relative_tempo = DEFAULT_RELATIVE_TEMPO;
-            }
-            // 0xB8: Clear play counters (all track steps to 0)
+            0xB1 => self.state.relative_tempo = RELATIVE_TEMPO_UNITY,
             0xB8 => {
                 for track in &mut self.state.tracks {
-                    track.step = 0;
+                    track.counter = 0;
+                    track.event = TrackEvent::Empty;
+                    track.ended = false;
+                }
+                self.state.conductor.counter = 0;
+                self.state.conductor.event = ConductorEvent::Empty;
+                self.state.conductor.ended = false;
+            }
+            0xB9 => {
+                for track in &mut self.state.tracks {
+                    track.event = TrackEvent::Empty;
                 }
             }
-            // 0xC2-0xC8: Set internal timebase
             0xC2..=0xC8 => {
-                self.state.timebase = value & 0x0F;
-            }
-            // 0xD0-0xD7: Want to Send Data (WSD short message)
-            0xD0..=0xD7 => {
-                self.state.command_phase = CommandPhase::ShortInit;
-            }
-            // 0xDF: WSD System (long message)
-            0xDF => {
-                self.state.command_phase = CommandPhase::Long;
-            }
-            // 0xE0-0xEF subset: Follow-byte commands
-            0xE0 | 0xE1 | 0xE2 | 0xE4 | 0xE6 | 0xE7 | 0xEC..=0xEF => {
-                self.state.follow_byte_command = value;
-                self.state.command_phase = CommandPhase::FollowByte;
+                self.state.timebase = TIMEBASE_OF_FIRST_COMMAND + (command - 0xC2) * TIMEBASE_STEP;
             }
             _ => {}
         }
     }
 
-    fn handle_mode_command(&mut self, cmd: u8) {
-        // Mode commands with bits 0-1 == 0 are ignored by real hardware.
-        if cmd & 3 == 0 {
+    /// Runs a mode command (0x00-0x2F): bits 2-3 control play, bits 0-1 the
+    /// MIDI start, stop and continue state. A command with bits 0-1 clear has
+    /// no function.
+    fn run_mode_command(&mut self, command: u8) {
+        if command & 0x03 == 0 {
             return;
         }
-        // Bits 2-3: play control
-        match (cmd >> 2) & 3 {
-            1 => {
-                // Stop Play
-                self.state.flag1 &= !FLAG1_PLAY;
-                self.state.recv_phase = RecvPhase::Idle;
-                self.state.int_phase = 0;
-                self.state.int_request = 0;
-                self.state.tracks = Default::default();
-                self.state.conductor = ConductorState::default();
-                if self.state.flag2 & FLAG2_CLK_TO_HOST == 0 {
-                    self.state.timer_active = false;
-                }
-            }
-            2 => {
-                // Start Play
-                self.state.flag1 |= FLAG1_PLAY;
-                self.state.remain_step = 0;
-                self.ensure_timer_active();
+        match command & 0x03 {
+            0x01 => self.state.saved_clock_to_host_phase = self.state.clock_to_host_phase,
+            0x02 => self.state.clock_to_host_phase = 0,
+            0x03 => self.state.clock_to_host_phase = self.state.saved_clock_to_host_phase,
+            _ => {}
+        }
+        match (command >> 2) & 0x03 {
+            0x01 => self.stop_play(),
+            0x02 if !self.state.playing => {
+                self.state.playing = true;
+                self.state.playing_tracks = self.state.active_tracks;
+                self.state.pending_clocks = 0;
+                self.state.scan_position = ScanPosition::Done;
             }
             _ => {}
         }
     }
 
-    fn apply_follow_byte(&mut self, command: u8, data: u8) {
+    /// Stops the play counters and drops an unanswered request. The play
+    /// buffers keep their contents for a continue.
+    fn stop_play(&mut self) {
+        match self.state.request_data {
+            RequestData::TrackEvent => {
+                let track = usize::from(self.state.scan_track);
+                self.state.tracks[track].event = TrackEvent::Empty;
+            }
+            RequestData::ConductorCommand | RequestData::ConductorValue => {
+                self.state.conductor.event = ConductorEvent::Empty;
+            }
+            _ => {}
+        }
+        self.state.playing = false;
+        self.state.pending_clocks = 0;
+        self.state.scan_position = ScanPosition::Done;
+        self.state.request_data = RequestData::None;
+        self.state.request_message.clear();
+    }
+
+    /// Applies the value byte of a command in the range 0xE0-0xEF.
+    fn apply_command_value(&mut self, command: u8, value: u8) {
         match command {
-            0xE0 => {
-                // Set Tempo
-                self.state.tempo = data;
-                self.state.relative_tempo = DEFAULT_RELATIVE_TEMPO;
-            }
-            0xE1 => {
-                // Relative Tempo
-                self.state.relative_tempo = data;
-            }
-            0xE4 => {
-                // MIDI/Metro
-            }
-            0xE6 => {
-                // Metro/Meas
-            }
+            0xE0 => self.state.tempo = value,
+            0xE1 => self.state.relative_tempo = value,
             0xE7 => {
-                // INTx4 / H.CLK
-                self.set_hclk(data);
+                self.state.clock_to_host_rate = value;
+                self.state.clock_to_host_phase = 0;
             }
-            0xEC => {
-                // Active Tracks
-                self.state.active_tracks = data;
-            }
-            0xED => {
-                // Send Play Count
-            }
-            0xEE => {
-                // Accent CH 1-8
-            }
-            0xEF => {
-                // Accent CH 9-16
-            }
+            0xEC => self.state.active_tracks = value,
             _ => {}
         }
     }
 
-    fn set_hclk(&mut self, data: u8) {
-        let quarter = if data >> 2 == 0 { 64 } else { data >> 2 };
-        let fraction_index = (data & 3) as usize;
-        for (i, step) in self.state.hclk_step.iter_mut().enumerate() {
-            *step = quarter + HCLK_FRACTION[fraction_index][i];
-        }
-        self.state.hclk_remaining = 0;
-    }
-
-    fn calculate_current_tempo(&self) -> u8 {
-        let l = self.state.tempo as u32 * 2 * self.state.relative_tempo as u32
-            / DEFAULT_RELATIVE_TEMPO as u32;
-        let l = l.max(10);
-        let curtempo = l >> 1;
-        curtempo.min(250) as u8
-    }
-
-    fn ensure_timer_active(&mut self) {
-        self.state.timer_active = true;
-    }
-
-    fn process_hclk(&mut self) {
-        if self.state.hclk_remaining == 0 {
-            self.state.hclk_remaining =
-                self.state.hclk_step[(self.state.hclk_counter & 3) as usize];
-            self.state.hclk_counter = self.state.hclk_counter.wrapping_add(1);
-        }
-        self.state.hclk_remaining -= 1;
-        if self.state.hclk_remaining == 0 {
-            self.enqueue_response(HCLK);
-            self.state.raise_irq = true;
-        }
-    }
-
-    fn decrement_track_steps(&mut self) {
-        if self.state.flag1 & FLAG1_CONDUCTOR != 0 && self.state.conductor.step > 0 {
-            self.state.conductor.step -= 1;
-        }
-        for i in 0..MAX_TRACKS {
-            if self.state.active_tracks & (1 << i) != 0 && self.state.tracks[i].step > 0 {
-                self.state.tracks[i].step -= 1;
+    /// Handles a data port byte that belongs to the last host command.
+    fn accept_command_data(&mut self, value: u8) {
+        let state = &mut self.state;
+        match state.command_data {
+            CommandData::None => {}
+            CommandData::Value => {
+                state.command_data = CommandData::None;
+                let command = state.command_byte;
+                self.apply_command_value(command, value);
             }
-        }
-    }
-
-    /// Ends a conductor command and searches for the next data request.
-    fn finish_conductor_command(&mut self) {
-        self.state.conductor.phase = ConductorPhase::Idle;
-        self.search_next_track_request();
-    }
-
-    /// Ends a conductor message. A conductor request raised during the message
-    /// leaves the conductor waiting for its next step byte.
-    fn finish_conductor_message(&mut self) {
-        self.state.conductor.phase = if self.state.conductor.step_requested {
-            ConductorPhase::WaitStep
-        } else {
-            ConductorPhase::Idle
-        };
-        self.state.conductor.step_requested = false;
-    }
-
-    /// Raises the conductor data request (0xF9) to the host.
-    fn raise_conductor_request(&mut self) {
-        self.state.int_request = CONDUCTOR_REQUEST;
-        self.state.raise_irq = true;
-    }
-
-    fn search_next_track_request(&mut self) {
-        loop {
-            if self.state.int_phase == 1 {
-                if self.state.flag1 & FLAG1_CONDUCTOR != 0 && self.state.conductor.step == 0 {
-                    match self.state.conductor.phase {
-                        ConductorPhase::Idle => {
-                            self.state.conductor.phase = ConductorPhase::WaitStep;
-                            self.raise_conductor_request();
-                            return;
-                        }
-                        // The host sends the message data after this request,
-                        // followed by the next step byte.
-                        ConductorPhase::ShortInit
-                        | ConductorPhase::ShortCollect
-                        | ConductorPhase::Long
-                            if !self.state.conductor.step_requested =>
-                        {
-                            self.state.conductor.step_requested = true;
-                            self.raise_conductor_request();
-                            return;
-                        }
-                        _ => {}
+            CommandData::VoiceMessage => {
+                let track = &mut state.tracks[usize::from(state.command_byte & 7)];
+                let progress = state
+                    .command_message
+                    .push_voice(value, &mut track.running_status);
+                if progress == Progress::Complete {
+                    if let Some(message) = state.command_message.voice_message() {
+                        append_midi(&mut state.midi_out, message);
                     }
+                    state.command_message.clear();
+                    state.command_data = CommandData::None;
                 }
-                self.state.int_phase = 2;
             }
+            CommandData::SystemMessage => {
+                if state
+                    .command_message
+                    .push_system(value, &mut state.midi_out)
+                    == Progress::Complete
+                {
+                    state.command_data = CommandData::None;
+                }
+            }
+        }
+    }
 
-            if self.state.int_phase >= 2 {
-                let start = (self.state.int_phase - 2) as usize;
-                for i in start..MAX_TRACKS {
-                    self.state.int_phase = (i + 2) as u8;
-                    if self.state.active_tracks & (1 << i) != 0 && self.state.tracks[i].step == 0 {
-                        // If the track has pending MIDI data, send it first.
-                        if self.state.tracks[i].pending_count > 0
-                            && self.state.tracks[i].remaining_bytes == 0
-                        {
-                            let count = self.state.tracks[i].pending_count as usize;
-                            let pending_data = self.state.tracks[i].pending_data;
-                            self.extend_midi_bytes(&pending_data[..count]);
-                            self.state.tracks[i].pending_count = 0;
-
-                            if self.state.tracks[i].pending_data[0] == MIDI_STOP {
-                                self.enqueue_response(MIDI_STOP);
-                                self.state.raise_irq = true;
-                                return;
-                            }
+    /// Handles a data port byte that answers a track or conductor request.
+    fn accept_request_data(&mut self, value: u8) {
+        let state = &mut self.state;
+        match state.request_data {
+            RequestData::None => {}
+            RequestData::TrackTiming => {
+                let track = &mut state.tracks[usize::from(state.scan_track)];
+                if value < TIMING_VALUE_LIMIT {
+                    track.counter = value;
+                    state.request_data = RequestData::TrackEvent;
+                } else {
+                    track.counter = OVERFLOW_TIMING_VALUE;
+                    track.event = TrackEvent::Empty;
+                    state.request_data = RequestData::None;
+                }
+            }
+            RequestData::TrackEvent => {
+                let track = &mut state.tracks[usize::from(state.scan_track)];
+                if state.request_message.received == 0 && value >= TIMING_VALUE_LIMIT {
+                    track.event = if value == MARK_DATA_END {
+                        TrackEvent::DataEnd
+                    } else {
+                        TrackEvent::Mark
+                    };
+                    state.request_data = RequestData::None;
+                    return;
+                }
+                if state
+                    .request_message
+                    .push_voice(value, &mut track.running_status)
+                    == Progress::Complete
+                {
+                    match state.request_message.voice_message() {
+                        Some(message) => {
+                            track.message[..message.len()].copy_from_slice(message);
+                            track.message_length = message.len() as u8;
+                            track.event = TrackEvent::Message;
                         }
+                        None => track.event = TrackEvent::Mark,
+                    }
+                    state.request_message.clear();
+                    state.request_data = RequestData::None;
+                }
+            }
+            RequestData::ConductorTiming => {
+                if value < TIMING_VALUE_LIMIT {
+                    state.conductor.counter = value;
+                    state.request_data = RequestData::ConductorCommand;
+                } else {
+                    state.conductor.counter = OVERFLOW_TIMING_VALUE;
+                    state.conductor.event = ConductorEvent::Mark;
+                    state.request_data = RequestData::None;
+                }
+            }
+            RequestData::ConductorCommand => {
+                let conductor = &mut state.conductor;
+                conductor.command = value;
+                state.request_data = RequestData::None;
+                conductor.event = if value == MARK_DATA_END {
+                    ConductorEvent::DataEnd
+                } else if value >= TIMING_VALUE_LIMIT {
+                    ConductorEvent::Mark
+                } else if command_sends_message(value) {
+                    ConductorEvent::Message
+                } else if command_takes_value(value) {
+                    state.request_data = RequestData::ConductorValue;
+                    ConductorEvent::CommandWithValue
+                } else {
+                    ConductorEvent::Command
+                };
+            }
+            RequestData::ConductorValue => {
+                state.conductor.value = value;
+                state.request_data = RequestData::None;
+            }
+            RequestData::ConductorMessage => {
+                let command = state.conductor.command;
+                let progress = if command == COMMAND_SEND_SYSTEM {
+                    state
+                        .request_message
+                        .push_system(value, &mut state.midi_out)
+                } else {
+                    let track = &mut state.tracks[usize::from(command & 7)];
+                    let progress = state
+                        .request_message
+                        .push_voice(value, &mut track.running_status);
+                    if progress == Progress::Complete {
+                        if let Some(message) = state.request_message.voice_message() {
+                            append_midi(&mut state.midi_out, message);
+                        }
+                        state.request_message.clear();
+                    }
+                    progress
+                };
+                if progress == Progress::Complete {
+                    state.request_data = RequestData::ConductorTiming;
+                }
+            }
+        }
+    }
 
-                        // Send track data request (0xF0 + track number).
-                        self.state.int_request = 0xF0 + i as u8;
-                        self.state.recv_phase = RecvPhase::WaitStep;
-                        self.state.raise_irq = true;
+    /// Adds one internal clock to the clock to host phase and sends 0xFD when
+    /// the phase reaches the rate set by command 0xE7.
+    fn advance_clock_to_host(&mut self) {
+        let rate = match self.state.clock_to_host_rate {
+            0 => CLOCK_TO_HOST_RATE_OF_ZERO,
+            rate => u16::from(rate),
+        };
+        self.state.clock_to_host_phase += QUARTER_CLOCKS_PER_CLOCK;
+        if self.state.clock_to_host_phase >= rate {
+            self.state.clock_to_host_phase -= rate;
+            self.respond(MESSAGE_CLOCK_TO_HOST);
+        }
+    }
+
+    /// Counts down the conductor and the playing tracks by one clock.
+    fn count_down(&mut self) {
+        let state = &mut self.state;
+        if state.conductor_enabled && !state.conductor.ended {
+            state.conductor.counter = state.conductor.counter.saturating_sub(1);
+        }
+        for (index, track) in state.tracks.iter_mut().enumerate() {
+            if state.playing_tracks & (1 << index) != 0 && !track.ended {
+                track.counter = track.counter.saturating_sub(1);
+            }
+        }
+    }
+
+    /// Processes elapsed clocks until a request waits for the host or no
+    /// clock is left.
+    fn run_sequencer(&mut self) {
+        while self.state.request_data == RequestData::None && self.state.playing {
+            match self.state.scan_position {
+                ScanPosition::Done => {
+                    if self.state.pending_clocks == 0 {
                         return;
                     }
+                    self.state.pending_clocks -= 1;
+                    self.count_down();
+                    self.state.scan_position = ScanPosition::Conductor;
                 }
-                // All tracks checked
-                self.state.int_phase = 0;
-            }
-
-            self.state.remain_step = self.state.remain_step.wrapping_sub(1);
-            if self.state.remain_step == 0 {
-                return;
-            }
-            self.decrement_track_steps();
-            self.state.int_phase = 1;
-        }
-    }
-
-    fn handle_track_data(&mut self, value: u8) {
-        // Track data takes priority over conductor data.
-        match self.state.recv_phase {
-            RecvPhase::Idle => {
-                // No pending track data; fall through to conductor below.
-            }
-            RecvPhase::WaitStep => {
-                let track_index = (self.state.int_phase - 2) as usize;
-                if track_index < MAX_TRACKS {
-                    if value < 0xF0 {
-                        self.state.tracks[track_index].step = value;
-                        self.state.recv_phase = RecvPhase::WaitEvent;
-                    } else {
-                        // 0xF0-0xFF: timing overflow / end marker
-                        self.state.tracks[track_index].step = 0xF0;
-                        self.state.tracks[track_index].remaining_bytes = 0;
-                        self.state.tracks[track_index].pending_count = 0;
-                        self.state.recv_phase = RecvPhase::Idle;
-                        self.search_next_track_request();
+                ScanPosition::Conductor => {
+                    if !self.service_conductor() {
+                        self.state.scan_position = ScanPosition::Track;
+                        self.state.scan_track = 0;
                     }
                 }
-                return;
-            }
-            RecvPhase::WaitEvent => {
-                let track_index = (self.state.int_phase - 2) as usize;
-                if track_index < MAX_TRACKS {
-                    let track = &mut self.state.tracks[track_index];
-                    track.pending_count = 0;
-                    match value & 0xF0 {
-                        0xC0 | 0xD0 => {
-                            track.remaining_bytes = 2;
-                            track.running_status = value;
-                        }
-                        0x80 | 0x90 | 0xA0 | 0xB0 | 0xE0 => {
-                            track.remaining_bytes = 3;
-                            track.running_status = value;
-                        }
-                        0xF0 => {
-                            track.remaining_bytes = 1;
-                        }
-                        _ => {
-                            // Running status: data byte without status
-                            track.pending_data[0] = track.running_status;
-                            track.pending_count = 1;
-                            track.remaining_bytes = if (track.running_status & 0xE0) == 0xC0 {
-                                1
-                            } else {
-                                2
-                            };
+                ScanPosition::Track => {
+                    if !self.service_track(usize::from(self.state.scan_track)) {
+                        if usize::from(self.state.scan_track) + 1 < TRACK_COUNT {
+                            self.state.scan_track += 1;
+                        } else {
+                            self.state.scan_position = ScanPosition::Done;
                         }
                     }
-                    self.state.recv_phase = RecvPhase::CollectData;
-                    // Fall through to collect this byte
-                    self.collect_track_byte(track_index, value);
-                }
-                return;
-            }
-            RecvPhase::CollectData => {
-                let track_index = (self.state.int_phase - 2) as usize;
-                if track_index < MAX_TRACKS {
-                    self.collect_track_byte(track_index, value);
-                }
-                return;
-            }
-        }
-
-        // Handle conductor data when no track data is pending.
-        if self.state.conductor.phase != ConductorPhase::Idle {
-            self.handle_conductor_data(value);
-        }
-    }
-
-    fn collect_track_byte(&mut self, track_index: usize, value: u8) {
-        let track = &mut self.state.tracks[track_index];
-        if track.remaining_bytes > 0 {
-            if (track.pending_count as usize) < track.pending_data.len() {
-                track.pending_data[track.pending_count as usize] = value;
-                track.pending_count += 1;
-            }
-            track.remaining_bytes -= 1;
-        }
-        if track.remaining_bytes == 0 {
-            self.state.recv_phase = RecvPhase::Idle;
-            self.search_next_track_request();
-        }
-    }
-
-    fn handle_conductor_data(&mut self, value: u8) {
-        match self.state.conductor.phase {
-            ConductorPhase::WaitStep => {
-                if value < 0xF0 {
-                    self.state.conductor.step = value;
-                    self.state.conductor.phase = ConductorPhase::WaitCommand;
-                } else {
-                    self.state.conductor.step = 0xF0;
-                    self.state.conductor.phase = ConductorPhase::Idle;
                 }
             }
-            ConductorPhase::WaitCommand => {
-                self.state.conductor.command = value;
-                if value < 0xF0 {
-                    let phase = self.execute_conductor_command(value);
-                    self.state.conductor.phase = phase;
-                    // Search for pending track requests unless waiting for a follow byte.
-                    // For WSD (ShortInit/Long), tracks are serviced before the conductor
-                    // data collection continues.
-                    if !matches!(phase, ConductorPhase::FollowByte) {
-                        self.search_next_track_request();
-                    }
-                } else {
-                    if value == MIDI_STOP {
-                        self.push_midi_byte(MIDI_STOP);
-                        self.enqueue_response(MIDI_STOP);
-                        self.state.raise_irq = true;
-                    }
-                    self.finish_conductor_command();
+        }
+    }
+
+    /// Runs the expired conductor command. Returns `true` when a request
+    /// waits for the host. The data end of the conductor sends a MIDI stop and
+    /// reports the end to the host.
+    fn service_conductor(&mut self) -> bool {
+        let conductor = self.state.conductor;
+        if !self.state.conductor_enabled || conductor.ended || conductor.counter != 0 {
+            return false;
+        }
+        self.state.conductor.event = ConductorEvent::Empty;
+        match conductor.event {
+            ConductorEvent::DataEnd => {
+                self.state.conductor.ended = true;
+                append_midi(&mut self.state.midi_out, &[STATUS_STOP]);
+                self.respond(MESSAGE_ALL_END);
+                return false;
+            }
+            ConductorEvent::Message => {
+                self.state.request_message.clear();
+                self.state.request_data = RequestData::ConductorMessage;
+                self.respond(REQUEST_CONDUCTOR);
+                return true;
+            }
+            ConductorEvent::Command => self.run_command(conductor.command),
+            ConductorEvent::CommandWithValue => {
+                self.apply_command_value(conductor.command, conductor.value);
+            }
+            ConductorEvent::Empty | ConductorEvent::Mark => {}
+        }
+        if self.state.mode != Mpu401Mode::Intelligent || !self.state.playing {
+            return false;
+        }
+        self.state.request_data = RequestData::ConductorTiming;
+        self.respond(REQUEST_CONDUCTOR);
+        true
+    }
+
+    /// Sends the expired event of a track and requests its next event.
+    /// Returns `true` when a request waits for the host.
+    fn service_track(&mut self, index: usize) -> bool {
+        let track = self.state.tracks[index];
+        if self.state.playing_tracks & (1 << index) == 0 || track.ended || track.counter != 0 {
+            return false;
+        }
+        match track.event {
+            TrackEvent::DataEnd => {
+                self.state.tracks[index].ended = true;
+                let playing_tracks = self.state.playing_tracks;
+                let all_ended = self
+                    .state
+                    .tracks
+                    .iter()
+                    .enumerate()
+                    .all(|(other, track)| playing_tracks & (1 << other) == 0 || track.ended);
+                if all_ended {
+                    self.respond(MESSAGE_ALL_END);
                 }
+                return false;
             }
-            ConductorPhase::FollowByte => {
-                self.apply_follow_byte(self.state.conductor.command, value);
-                self.finish_conductor_command();
+            TrackEvent::Message => {
+                append_midi(
+                    &mut self.state.midi_out,
+                    &track.message[..usize::from(track.message_length)],
+                );
             }
-            ConductorPhase::ShortInit => {
-                self.conductor_short_init(value);
-            }
-            ConductorPhase::ShortCollect => {
-                self.conductor_short_collect(value);
-            }
-            ConductorPhase::Long => {
-                self.conductor_long(value);
-            }
-            ConductorPhase::Idle => {}
+            TrackEvent::Empty | TrackEvent::Mark => {}
         }
-    }
-
-    fn execute_conductor_command(&mut self, cmd: u8) -> ConductorPhase {
-        // Re-use the same command dispatch table as the host commands
-        match cmd {
-            0xD0..=0xD7 => ConductorPhase::ShortInit,
-            0xDF => ConductorPhase::Long,
-            0xE0 | 0xE1 | 0xE2 | 0xE4 | 0xE6 | 0xE7 | 0xEC..=0xEF => ConductorPhase::FollowByte,
-            _ => {
-                // Dispatch as regular command (mode changes, flag changes, etc.)
-                self.dispatch_intelligent_command(cmd);
-                ConductorPhase::Idle
-            }
-        }
-    }
-
-    fn conductor_short_init(&mut self, value: u8) {
-        if value & 0x80 != 0 {
-            if value & 0xF0 != 0xF0 {
-                self.state.conductor.running_status = value;
-            }
-            self.state.message_position = 0;
-            self.state.message_expected = MIDI_MESSAGE_LENGTH[(value >> 4) as usize];
-        } else {
-            self.state.message_buffer[0] = self.state.conductor.running_status;
-            self.state.message_position = 1;
-            self.state.message_expected =
-                MIDI_MESSAGE_LENGTH[(self.state.conductor.running_status >> 4) as usize];
-        }
-        if self.state.message_expected == 0 {
-            self.finish_conductor_message();
-            return;
-        }
-        self.state.message_buffer[self.state.message_position as usize] = value;
-        self.state.message_position += 1;
-        if self.state.message_position >= self.state.message_expected {
-            let length = self.state.message_expected as usize;
-            let message = self.state.message_buffer;
-            self.extend_midi_bytes(&message[..length]);
-            self.finish_conductor_message();
-        } else {
-            self.state.conductor.phase = ConductorPhase::ShortCollect;
-        }
-    }
-
-    fn conductor_short_collect(&mut self, value: u8) {
-        if (self.state.message_position as usize) < self.state.message_buffer.len() {
-            self.state.message_buffer[self.state.message_position as usize] = value;
-        }
-        self.state.message_position += 1;
-        if self.state.message_position >= self.state.message_expected {
-            let length = self.state.message_expected as usize;
-            let message = self.state.message_buffer;
-            self.extend_midi_bytes(&message[..length]);
-            self.finish_conductor_message();
-        }
-    }
-
-    fn conductor_long(&mut self, value: u8) {
-        if self.state.sysex_buffer.len() == SYSEX_BUFFER_CAPACITY {
-            self.state.sysex_buffer.clear();
-            self.finish_conductor_message();
-            return;
-        }
-        self.state.sysex_buffer.push(value);
-        let first_byte = self.state.sysex_buffer[0];
-        let length = self.state.sysex_buffer.len();
-        let complete = match first_byte {
-            0xF0 => value == 0xF7,
-            0xF2 | 0xF3 => length >= 3,
-            _ => true,
-        };
-        if complete {
-            if first_byte == 0xF0 {
-                let copy_length = (MIDI_BUFFER_CAPACITY - self.state.midi_buffer.len())
-                    .min(self.state.sysex_buffer.len());
-                self.state
-                    .midi_buffer
-                    .extend_from_slice(&self.state.sysex_buffer[..copy_length]);
-            }
-            self.state.sysex_buffer.clear();
-            self.finish_conductor_message();
-        }
-    }
-
-    fn write_data_short_init(&mut self, value: u8) {
-        if value & 0x80 != 0 {
-            if value & 0xF0 != 0xF0 {
-                self.state.running_status = value;
-            }
-            self.state.message_position = 0;
-            self.state.message_expected = MIDI_MESSAGE_LENGTH[(value >> 4) as usize];
-        } else {
-            self.state.message_buffer[0] = self.state.running_status;
-            self.state.message_position = 1;
-            self.state.message_expected =
-                MIDI_MESSAGE_LENGTH[(self.state.running_status >> 4) as usize];
-        }
-        if self.state.message_expected == 0 {
-            self.state.command_phase = CommandPhase::Idle;
-            return;
-        }
-        self.state.message_buffer[self.state.message_position as usize] = value;
-        self.state.message_position += 1;
-        if self.state.message_position >= self.state.message_expected {
-            self.flush_short_message();
-        } else {
-            self.state.command_phase = CommandPhase::ShortCollect;
-        }
-    }
-
-    fn write_data_short_collect(&mut self, value: u8) {
-        if (self.state.message_position as usize) < self.state.message_buffer.len() {
-            self.state.message_buffer[self.state.message_position as usize] = value;
-        }
-        self.state.message_position += 1;
-        if self.state.message_position >= self.state.message_expected {
-            self.flush_short_message();
-        }
-    }
-
-    fn flush_short_message(&mut self) {
-        let length = self.state.message_expected as usize;
-        let message = self.state.message_buffer;
-        self.extend_midi_bytes(&message[..length]);
-        self.state.command_phase = CommandPhase::Idle;
-    }
-
-    fn write_data_long(&mut self, value: u8) {
-        if self.state.sysex_buffer.len() == SYSEX_BUFFER_CAPACITY {
-            self.state.sysex_buffer.clear();
-            self.state.command_phase = CommandPhase::Idle;
-            return;
-        }
-        self.state.sysex_buffer.push(value);
-        let first_byte = self.state.sysex_buffer[0];
-        let length = self.state.sysex_buffer.len();
-        let complete = match first_byte {
-            0xF0 => value == 0xF7,
-            0xF2 | 0xF3 => length >= 3,
-            _ => true,
-        };
-        if complete {
-            if first_byte == 0xF0 {
-                let remaining = MIDI_BUFFER_CAPACITY - self.state.midi_buffer.len();
-                let copy_length = remaining.min(self.state.sysex_buffer.len());
-                self.state
-                    .midi_buffer
-                    .extend_from_slice(&self.state.sysex_buffer[..copy_length]);
-            }
-            self.state.sysex_buffer.clear();
-            self.state.command_phase = CommandPhase::Idle;
-        }
-    }
-
-    fn send_all_notes_off(&mut self) {
-        for channel in 0..16u8 {
-            self.push_midi_byte(0xB0 | channel);
-            self.push_midi_byte(0x7B);
-            self.push_midi_byte(0x00);
-        }
-    }
-
-    fn push_midi_byte(&mut self, value: u8) {
-        if self.state.midi_buffer.len() < MIDI_BUFFER_CAPACITY {
-            self.state.midi_buffer.push(value);
-        }
-    }
-
-    fn extend_midi_bytes(&mut self, data: &[u8]) {
-        let copy_length = (MIDI_BUFFER_CAPACITY - self.state.midi_buffer.len()).min(data.len());
-        self.state
-            .midi_buffer
-            .extend_from_slice(&data[..copy_length]);
+        self.state.tracks[index].event = TrackEvent::Empty;
+        self.state.request_message.clear();
+        self.state.request_data = RequestData::TrackTiming;
+        self.respond(REQUEST_TRACK_FIRST + index as u8);
+        true
     }
 }
 
 impl save_state::ValidateState for Mpu401State {
     fn validate_state(&self, _context: &()) -> Result<(), save_state::StateValidationError> {
-        if self.response_queue.len() > RESPONSE_QUEUE_CAPACITY {
+        if self.responses.len() > RESPONSE_QUEUE_CAPACITY {
             return Err(save_state::StateValidationError::new(
                 "MPU response queue exceeds its hardware capacity",
             ));
         }
-        if self.midi_buffer.len() > MIDI_BUFFER_CAPACITY
-            || self.sysex_buffer.len() > SYSEX_BUFFER_CAPACITY
-        {
+        if self.midi_out.len() > MIDI_BUFFER_CAPACITY {
             return Err(save_state::StateValidationError::new(
                 "MPU MIDI buffer exceeds its fixed capacity",
             ));
         }
-        if self.message_position as usize > self.message_buffer.len()
-            || self.message_expected as usize > self.message_buffer.len()
+        let assembler_valid = |assembler: &MessageAssembler| {
+            usize::from(assembler.length) <= MESSAGE_CAPACITY
+                && usize::from(assembler.received) <= MESSAGE_CAPACITY
+        };
+        let tracks_valid = self
+            .tracks
+            .iter()
+            .all(|track| usize::from(track.message_length) <= MESSAGE_CAPACITY);
+        if !assembler_valid(&self.command_message)
+            || !assembler_valid(&self.request_message)
+            || !tracks_valid
         {
             return Err(save_state::StateValidationError::new(
                 "MPU message parser position is invalid",
             ));
         }
-        if self.int_phase > (MAX_TRACKS + 2) as u8
-            || (self.recv_phase != RecvPhase::Idle && self.int_phase < 2)
+        if usize::from(self.scan_track) >= TRACK_COUNT
+            || !TEMPO_LIMITS
+                .iter()
+                .any(|(timebase, _, _)| *timebase == self.timebase)
+            || self.clock_to_host_phase > CLOCK_TO_HOST_RATE_OF_ZERO
+            || self.saved_clock_to_host_phase > CLOCK_TO_HOST_RATE_OF_ZERO
         {
             return Err(save_state::StateValidationError::new(
-                "MPU intelligent receive phase is invalid",
+                "MPU sequencer state is invalid",
             ));
         }
         Ok(())
@@ -1072,7 +1105,7 @@ mod tests {
 
     fn drain_ack(mpu: &mut Mpu401) {
         assert_eq!(mpu.read_status(), 0x00, "expected data available");
-        assert_eq!(mpu.read_data(), ACK);
+        assert_eq!(mpu.read_data(), MESSAGE_ACK);
     }
 
     fn flush_midi(mpu: &mut Mpu401) -> Vec<u8> {
@@ -1084,7 +1117,7 @@ mod tests {
     #[test]
     fn power_on_defaults() {
         let mpu = Mpu401::new();
-        assert_eq!(mpu.mode, Mpu401Mode::Intelligent);
+        assert_eq!(mpu.mode(), Mpu401Mode::Intelligent);
         assert_eq!(mpu.read_status(), 0x80);
         assert!(!mpu.timer_active());
     }
@@ -1092,15 +1125,15 @@ mod tests {
     #[test]
     fn enter_uart_mode() {
         let mut mpu = Mpu401::new();
-        mpu.write_command(CMD_ENTER_UART);
+        mpu.write_command(COMMAND_ENTER_UART);
         drain_ack(&mut mpu);
-        assert_eq!(mpu.mode, Mpu401Mode::Uart);
+        assert_eq!(mpu.mode(), Mpu401Mode::Uart);
     }
 
     #[test]
     fn uart_data_passes_through() {
         let mut mpu = Mpu401::new();
-        mpu.write_command(CMD_ENTER_UART);
+        mpu.write_command(COMMAND_ENTER_UART);
         drain_ack(&mut mpu);
         flush_midi(&mut mpu); // Discard All Notes Off from entering UART.
 
@@ -1115,30 +1148,34 @@ mod tests {
     #[test]
     fn uart_reset_returns_to_intelligent() {
         let mut mpu = Mpu401::new();
-        mpu.write_command(CMD_ENTER_UART);
+        mpu.write_command(COMMAND_ENTER_UART);
         drain_ack(&mut mpu);
-        assert_eq!(mpu.mode, Mpu401Mode::Uart);
+        assert_eq!(mpu.mode(), Mpu401Mode::Uart);
 
-        mpu.write_command(CMD_RESET);
+        mpu.write_command(COMMAND_RESET);
         drain_ack(&mut mpu);
-        assert_eq!(mpu.mode, Mpu401Mode::Intelligent);
+        assert_eq!(mpu.mode(), Mpu401Mode::Intelligent);
     }
 
     #[test]
     fn uart_ignores_non_reset_commands() {
         let mut mpu = Mpu401::new();
-        mpu.write_command(CMD_ENTER_UART);
+        mpu.write_command(COMMAND_ENTER_UART);
         drain_ack(&mut mpu);
 
         // Commands other than 0xFF are silently ignored in UART mode.
         mpu.write_command(0x95);
-        assert_eq!(mpu.read_status(), 0x80, "no ACK expected for non-reset");
+        assert_eq!(
+            mpu.read_status(),
+            0x80,
+            "no acknowledge expected for a non-reset command"
+        );
     }
 
     #[test]
     fn reset_sends_ack_and_all_notes_off() {
         let mut mpu = Mpu401::new();
-        mpu.write_command(CMD_RESET);
+        mpu.write_command(COMMAND_RESET);
         drain_ack(&mut mpu);
 
         let midi = flush_midi(&mut mpu);
@@ -1156,7 +1193,7 @@ mod tests {
         drain_ack(&mut mpu);
         assert!(mpu.timer_active());
 
-        mpu.write_command(CMD_RESET);
+        mpu.write_command(COMMAND_RESET);
         drain_ack(&mut mpu);
         assert!(!mpu.timer_active());
     }
@@ -1261,11 +1298,11 @@ mod tests {
         let mut mpu = Mpu401::new();
         mpu.write_command(0xAC); // Request Major Version
         drain_ack(&mut mpu);
-        assert_eq!(mpu.read_data(), VERSION_MAJOR);
+        assert_eq!(mpu.read_data(), FIRMWARE_VERSION);
 
         mpu.write_command(0xAD); // Request Minor Version
         drain_ack(&mut mpu);
-        assert_eq!(mpu.read_data(), VERSION_MINOR);
+        assert_eq!(mpu.read_data(), FIRMWARE_REVISION);
     }
 
     #[test]
@@ -1337,8 +1374,8 @@ mod tests {
         mpu.write_command(0x95); // CLK to Host ON
         drain_ack(&mut mpu);
 
-        // Default H.CLK is 240, which means hclk_step = [60, 60, 60, 60].
-        // After 60 ticks, one HCLK message should appear.
+        // The default clock to host rate 240 sends 0xFD every 60 clocks.
+        // After 60 ticks, one clock to host message should appear.
         for _ in 0..59 {
             mpu.tick();
             mpu.take_irq();
@@ -1348,7 +1385,7 @@ mod tests {
         mpu.tick();
         assert!(mpu.take_irq());
         assert_eq!(mpu.read_status(), 0x00);
-        assert_eq!(mpu.read_data(), HCLK);
+        assert_eq!(mpu.read_data(), MESSAGE_CLOCK_TO_HOST);
     }
 
     #[test]
@@ -1388,7 +1425,7 @@ mod tests {
         // First tick: conductor has step=0, so conductor request fires first.
         mpu.tick();
         assert!(mpu.take_irq());
-        assert_eq!(mpu.read_data(), CONDUCTOR_REQUEST);
+        assert_eq!(mpu.read_data(), REQUEST_CONDUCTOR);
     }
 
     #[test]
@@ -1410,7 +1447,7 @@ mod tests {
         // Host responds: step count = 10, then Note On message.
         // Format: step, event/status byte, data byte(s).
         mpu.write_data(0x0A); // Step = 10
-        mpu.write_data(0x90); // Event: Note On ch0 (sets remaining=3)
+        mpu.write_data(0x90); // Event: Note On ch0 (3 bytes)
         mpu.write_data(0x3C); // Note
         mpu.write_data(0x7F); // Velocity
 
@@ -1492,9 +1529,9 @@ mod tests {
         let mut mpu = Mpu401::new();
         assert_eq!(mpu.read_status(), 0x80); // Empty
 
-        mpu.write_command(0xAC); // Version query -> ACK + version byte
+        mpu.write_command(0xAC); // Version query -> MESSAGE_ACK + version byte
         assert_eq!(mpu.read_status(), 0x00); // Data available
-        mpu.read_data(); // ACK
+        mpu.read_data(); // MESSAGE_ACK
         assert_eq!(mpu.read_status(), 0x00); // Still has version byte
         mpu.read_data(); // Version
         assert_eq!(mpu.read_status(), 0x80); // Empty again
@@ -1590,7 +1627,7 @@ mod tests {
         assert_eq!(&midi[0..3], &[0xE0, 0x00, 0x40]);
         assert_eq!(&midi[3..6], &[0xB0, 0x40, 0x00]);
 
-        // 15. Start Play (0x95), Clear PC (0xB8), then 0x0A
+        // 15. Clock to host on (0x95), clear play counters (0xB8), start play (0x0A).
         mpu.write_command(0x95);
         drain_ack(&mut mpu);
         assert!(
@@ -1605,10 +1642,10 @@ mod tests {
         drain_ack(&mut mpu);
 
         // At this point the game enters its main loop polling for timing data.
-        // With the fix, ticking should produce HCLK messages.
+        // Ticking produces clock to host messages.
         mpu.tick();
-        // HCLK won't fire on the first tick (hclk_step based on 0x04 data),
-        // but the timer should stay active.
+        // The clock to host message does not fire on the first tick of the
+        // rate set by the 0x04 data, but the timer stays active.
         assert!(mpu.timer_active());
     }
 
@@ -1665,7 +1702,7 @@ mod tests {
         // Tick: conductor has step=0, so conductor request (0xF9) fires first.
         mpu.tick();
         mpu.take_irq();
-        assert_eq!(mpu.read_data(), CONDUCTOR_REQUEST);
+        assert_eq!(mpu.read_data(), REQUEST_CONDUCTOR);
 
         // Host responds with conductor step=5 and a WSD command (0xD0).
         mpu.write_data(0x05); // Conductor step = 5
@@ -1711,7 +1748,7 @@ mod tests {
 
         mpu.tick();
         mpu.take_irq();
-        assert_eq!(mpu.read_data(), CONDUCTOR_REQUEST);
+        assert_eq!(mpu.read_data(), REQUEST_CONDUCTOR);
 
         // Conductor responds: step=5, command=0xD0 (WSD short message).
         mpu.write_data(0x05); // Step = 5
@@ -1737,7 +1774,7 @@ mod tests {
 
         mpu.tick();
         mpu.take_irq();
-        assert_eq!(mpu.read_data(), CONDUCTOR_REQUEST);
+        assert_eq!(mpu.read_data(), REQUEST_CONDUCTOR);
 
         // Conductor: step=0, command=0xD0 (WSD). The step has already expired.
         mpu.write_data(0x00);
@@ -1746,7 +1783,7 @@ mod tests {
         assert!(mpu.take_irq());
         assert_eq!(
             mpu.read_data(),
-            CONDUCTOR_REQUEST,
+            REQUEST_CONDUCTOR,
             "expired conductor step requests the message data"
         );
 
@@ -1780,7 +1817,7 @@ mod tests {
 
         mpu.tick();
         mpu.take_irq();
-        assert_eq!(mpu.read_data(), CONDUCTOR_REQUEST);
+        assert_eq!(mpu.read_data(), REQUEST_CONDUCTOR);
         mpu.write_data(0x02);
         mpu.write_data(0xDF);
 
@@ -1793,7 +1830,7 @@ mod tests {
         assert!(!mpu.take_irq(), "conductor step 2 -> 1");
         mpu.tick();
         assert!(mpu.take_irq(), "conductor step 1 -> 0");
-        assert_eq!(mpu.read_data(), CONDUCTOR_REQUEST);
+        assert_eq!(mpu.read_data(), REQUEST_CONDUCTOR);
 
         let message = [0xF0, 0x41, 0x10, 0x16, 0x12, 0x7F, 0x00, 0x00, 0x01, 0xF7];
         for byte in message {
@@ -1803,10 +1840,10 @@ mod tests {
 
         // End of the conductor data.
         mpu.write_data(0x00);
-        mpu.write_data(MIDI_STOP);
+        mpu.write_data(MESSAGE_ALL_END);
         assert!(mpu.take_irq());
-        assert_eq!(mpu.read_data(), MIDI_STOP);
-        assert_eq!(flush_midi(&mut mpu), vec![MIDI_STOP]);
+        assert_eq!(mpu.read_data(), MESSAGE_ALL_END);
+        assert_eq!(flush_midi(&mut mpu), vec![MESSAGE_ALL_END]);
 
         // Track 0 step must be exactly 48 after the two ticks.
         mpu.write_command(0xA0); // Request Play Count Track 0

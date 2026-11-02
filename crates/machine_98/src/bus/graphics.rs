@@ -264,7 +264,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
                 0
             },
         ];
-        self.egc.read_word(address, vram)
+        self.egc.read_word(vram)
     }
 
     pub(super) fn egc_write_word(&mut self, address: u32, value: u16) {
@@ -295,7 +295,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
                 0
             },
         ];
-        let (data, mask) = self.egc.write_word(address, value, vram);
+        let (data, mask) = self.egc.write_word(value, vram);
         if mask != 0 {
             for (p, &plane_data) in data.iter().enumerate() {
                 if p == 3 && !self.graphics_extension_enabled {

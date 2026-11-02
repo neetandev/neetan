@@ -546,18 +546,12 @@ impl<T: TraceSink> Pc9801Bus<T> {
             0x7FDB => self.mouse_ppi.write_port_b(value),
             0x7FDD => {
                 let was_enabled = self.mouse_timer_irq_enabled();
-                let hc_rising = self.mouse_ppi.write_port_c(value);
-                if hc_rising {
-                    self.mouse_ppi.latch(self.current_cycle);
-                }
+                self.mouse_ppi.write_port_c(value, self.current_cycle);
                 self.handle_mouse_timer_control_change(was_enabled);
             }
             0x7FDF => {
                 let was_enabled = self.mouse_timer_irq_enabled();
-                let hc_rising = self.mouse_ppi.write_ctrl(value);
-                if hc_rising {
-                    self.mouse_ppi.latch(self.current_cycle);
-                }
+                self.mouse_ppi.write_control(value, self.current_cycle);
                 self.handle_mouse_timer_control_change(was_enabled);
             }
             // Hi-reso 8255A mouse port range. Not decoded on the normal-mode
@@ -2074,8 +2068,8 @@ mod tests {
 
         // Snapshot the live state and verify both were stored.
         let state = bus.soundboard_86.as_ref().unwrap().capture_board_state();
-        assert_eq!(state.pcm86.vol[5], 5);
-        assert_eq!(state.pcm86.vol[0], 10);
+        assert_eq!(state.pcm86.volume_levels[5], 5);
+        assert_eq!(state.pcm86.volume_levels[0], 10);
     }
 
     #[test]
@@ -2083,17 +2077,17 @@ mod tests {
         let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801RA, CpuMode::Low, 48000);
         bus.install_soundboard_86(None, true);
 
-        // Advance past data_write_irq_wait so IRQ reporting is not delayed.
+        // Advance past the data write delay so IRQ reporting is not delayed.
         bus.current_cycle = 200_000;
 
         // Enable IRQ (bit 5) and FIFO (bit 7), set sample rate.
-        // This also sets last_clock_for_wait = current_cycle (IRQ clear + empty buffer).
+        // The IRQ clear with an empty FIFO also restarts the data write delay.
         bus.io_write_byte(0xA468, 0xA0); // bit 7=1 (play), bit 5=1 (IRQ en)
 
         // Set IRQ threshold to 128 bytes (value 0 -> (0+1)*128 = 128).
         bus.io_write_byte(0xA46A, 0x00);
 
-        // Advance cycle past data_write_irq_wait before reading status.
+        // Advance cycle past the data write delay before reading status.
         bus.current_cycle = 400_000;
 
         // FIFO is empty and below threshold -> IRQ should be flagged.
@@ -2104,7 +2098,7 @@ mod tests {
             "IRQ flag should be set when FIFO below threshold"
         );
 
-        // Clear IRQ by writing bit 4 = 0 (resets last_clock_for_wait since buffer empty).
+        // Clear IRQ by writing bit 4 = 0. The empty FIFO restarts the data write delay.
         bus.io_write_byte(0xA468, 0xA0);
 
         // Advance past the new wait period.
@@ -2131,11 +2125,11 @@ mod tests {
         // Writing one more should not crash (overflow protection kicks in).
         bus.io_write_byte(0xA46C, 0xFF);
 
-        // The real_buf should be capped below the buffer size.
+        // The ring level should be capped below the buffer size.
         let state = bus.soundboard_86.as_ref().unwrap().capture_board_state();
         assert!(
-            state.pcm86.real_buf < 65536,
-            "real_buf should be capped after overflow"
+            state.pcm86.level < 65536,
+            "ring level should be capped after overflow"
         );
     }
 
@@ -2158,7 +2152,7 @@ mod tests {
 
         // Verify threshold was set correctly.
         let state = bus.soundboard_86.as_ref().unwrap().capture_board_state();
-        assert_eq!(state.pcm86.fifo_size, 512);
+        assert_eq!(state.pcm86.irq_threshold_bytes, 512);
     }
 
     #[test]

@@ -1,33 +1,95 @@
-//! µPD4990A serial real-time clock controller.
+//! uPD4990A serial calendar clock.
 //!
-//! The µPD4990A is accessed through port 0x20 (write) with serial data
-//! output on port 0x33 bit 0 (CDAT). The host provides the time via a
-//! 6-byte BCD buffer; the device itself has no time source dependency.
+//! The chip sees one byte with its input lines: C0-C2 in bits 0-2, STB in
+//! bit 3, CLK in bit 4 and DATA IN in bit 5 (PC-98 port 0x20). A write with
+//! STB and CLK low latches C0-C2 and writes DATA IN into the shift register
+//! cell at the current bit position. A rising STB edge executes the latched
+//! command. A rising CLK edge steps the bit position and presents the next
+//! cell on DATA OUT.
+//!
+//! The shift register holds 64 cells in eight bytes. Bytes 2 to 7 hold the
+//! calendar in BCD: year, month and day of week, day, hour, minute and second.
+//! Byte 1 holds the status and byte 0 is padding. The register shift command
+//! starts at the least significant bit of the seconds byte. Every CLK edge then
+//! steps one bit toward the most significant bit of the same byte and from
+//! there to the next lower byte.
+//!
+//! With C0-C2 all high the chip takes its command from a serial command
+//! register. A write with STB and CLK low places DATA IN in bit 4 of that
+//! register and every CLK edge shifts it one bit toward bit 0.
+//!
+//! The host provides the time on every port write. The chip keeps no time
+//! counter of its own.
 
-/// Register length in bytes (64-bit shift register).
-const REG_LEN: usize = 8;
+/// Mask of the C0-C2 command lines.
+const LINE_COMMAND: u8 = 0x07;
+
+/// STB line.
+const LINE_STROBE: u8 = 0x08;
+
+/// CLK line.
+const LINE_CLOCK: u8 = 0x10;
+
+/// DATA IN line.
+const LINE_DATA_IN: u8 = 0x20;
+
+/// Command code on C0-C2 that selects the serial command register.
+const SERIAL_MODE_SELECT: u8 = 0x07;
+
+/// Command: register hold.
+const COMMAND_REGISTER_HOLD: u8 = 0x0;
+
+/// Command: register shift.
+const COMMAND_REGISTER_SHIFT: u8 = 0x1;
+
+/// Command: time set and counter hold.
+const COMMAND_TIME_SET: u8 = 0x2;
+
+/// Command: time read.
+const COMMAND_TIME_READ: u8 = 0x3;
+
+/// Mask of the command bits of the serial command register.
+const SERIAL_COMMAND_MASK: u8 = 0x0F;
+
+/// Bit of the serial command register that receives DATA IN.
+const SERIAL_COMMAND_INPUT: u8 = 0x10;
+
+/// Shift register length in bytes.
+const REGISTER_BYTES: usize = 8;
+
+/// Bit position of the first cell that the register shift command presents.
+const FIRST_SHIFT_POSITION: usize = REGISTER_BYTES * 8 - 1;
+
+/// Shift register byte that receives the status of a time read.
+const STATUS_BYTE: usize = 1;
+
+/// Status of a completed time read.
+const STATUS_TIME_VALID: u8 = 0x01;
+
+/// First shift register byte of the calendar.
+const CALENDAR_FIRST_BYTE: usize = 2;
 
 save_state::runtime_state! {
-/// Authoritative uPD4990A state.
+/// uPD4990A state.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Upd4990aState {
-    /// Previous port 0x20 value (for edge detection).
-    pub last: u8,
-    /// Serial command accumulator (for extended mode, cmd=7).
-    pub serial: u8,
-    /// Latched parallel command bits (C2:C0 from DATA phase).
-    pub parallel: u8,
-    /// 8-byte shift register (48-bit calendar + status/padding bytes).
-    pub reg: [u8; REG_LEN],
-    /// Current bit position in shift register (0..63).
-    pub pos: usize,
-    /// Current serial data output bit (0 or 1).
-    pub cdat: u8,
-    /// Whether register shift mode is active.
-    pub regsft: bool,
+    /// Shift register cells.
+    pub register: [u8; REGISTER_BYTES],
+    /// Bit position of the current shift register cell (0 to 63).
+    pub bit_position: usize,
+    /// Whether the register shift command is active.
+    pub shifting: bool,
+    /// DATA OUT line (0 or 1).
+    pub data_out: u8,
+    /// C0-C2 lines latched by the last write with STB and CLK low.
+    pub command_lines: u8,
+    /// Serial command register. Bits 3-0 hold the command, bit 4 takes DATA IN.
+    pub serial_command: u8,
+    /// Input lines of the last port write.
+    pub input_lines: u8,
 }}
 
-/// µPD4990A serial real-time clock controller.
+/// uPD4990A serial calendar clock.
 #[derive(Default)]
 pub struct Upd4990aRtc {
     /// Embedded state for save/restore.
@@ -36,90 +98,183 @@ pub struct Upd4990aRtc {
 
 impl_simple_state_accessors!(Upd4990aRtc, Upd4990aState);
 
+/// Phase of the serial interface selected by the STB and CLK lines of a write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InputPhase {
+    /// STB is high. A rising STB edge executes the latched command.
+    Strobe,
+    /// STB is low and CLK is high. A rising CLK edge steps the registers.
+    Clock,
+    /// STB and CLK are low. The chip takes C0-C2 and DATA IN.
+    Data,
+}
+
+impl InputPhase {
+    /// Returns the phase of the input lines `lines`.
+    fn of(lines: u8) -> Self {
+        if lines & LINE_STROBE != 0 {
+            Self::Strobe
+        } else if lines & LINE_CLOCK != 0 {
+            Self::Clock
+        } else {
+            Self::Data
+        }
+    }
+}
+
+/// Command that a rising STB edge executes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Command {
+    /// Stops the register shift.
+    RegisterHold,
+    /// Starts the register shift at the first cell.
+    RegisterShift,
+    /// Stops the register shift. The host time stays authoritative.
+    TimeSet,
+    /// Loads the host time into the shift register.
+    TimeRead,
+    /// A command without an effect in this model.
+    Other,
+}
+
+impl Command {
+    /// Decodes a command code of C0-C2 or of the serial command register.
+    fn decode(code: u8) -> Self {
+        match code {
+            COMMAND_REGISTER_HOLD => Self::RegisterHold,
+            COMMAND_REGISTER_SHIFT => Self::RegisterShift,
+            COMMAND_TIME_SET => Self::TimeSet,
+            COMMAND_TIME_READ => Self::TimeRead,
+            _ => Self::Other,
+        }
+    }
+}
+
+impl Upd4990aState {
+    /// Returns whether C0-C2 select the serial command register.
+    fn serial_mode(&self) -> bool {
+        self.command_lines == SERIAL_MODE_SELECT
+    }
+
+    /// Returns the shift register bit at `position`. Position 0 is bit 7 of
+    /// byte 0 and every following position is the next lower bit.
+    fn bit_at(&self, position: usize) -> u8 {
+        let byte = self.register[position / 8];
+        (byte >> (7 - position % 8)) & 1
+    }
+
+    /// Sets or clears the shift register bit at `position`.
+    fn set_bit_at(&mut self, position: usize, set: bool) {
+        let mask = 0x80 >> (position % 8);
+        let byte = &mut self.register[position / 8];
+        *byte = if set { *byte | mask } else { *byte & !mask };
+    }
+
+    /// Presents the cell at `position` on DATA OUT.
+    fn present(&mut self, position: usize) {
+        self.data_out = self.bit_at(position);
+    }
+}
+
 impl Upd4990aRtc {
-    /// Creates a new µPD4990A in its reset state.
+    /// Creates a new uPD4990A in its reset state.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Returns current CDAT output bit (0 or 1) for port 0x33 bit 0.
+    /// Returns the DATA OUT line (0 or 1).
     pub fn cdat(&self) -> u8 {
-        self.state.cdat
+        self.state.data_out
     }
 
-    /// Called on port 0x20 write.
+    /// Writes a BCD time in the layout `[year, month << 4 | day_of_week, day,
+    /// hour, minute, second]` into the calendar bytes of the shift register.
+    pub fn load_shift_register(&mut self, time_bcd: &[u8; 6]) {
+        self.state.register[CALENDAR_FIRST_BYTE..].copy_from_slice(time_bcd);
+    }
+
+    /// Applies a write of the chip input lines.
     ///
-    /// `value` is the byte written. `host_time_bcd` is a 6-byte BCD buffer
-    /// representing the current host local time, used only when the TIME_READ
-    /// command is latched on STB rising edge:
-    ///   `[year, month<<4|day_of_week, day, hour, minute, second]`
+    /// `host_time_bcd` is the current time in the layout
+    /// `[year, month << 4 | day_of_week, day, hour, minute, second]`. The time
+    /// read command copies it into the shift register.
     pub fn write_port(&mut self, value: u8, host_time_bcd: &[u8; 6]) {
-        let changed = value ^ self.state.last;
-        self.state.last = value;
-
-        if value & 0x08 != 0 {
-            // STB asserted - execute command on rising edge.
-            if changed & 0x08 != 0 {
-                let cmd = if self.state.parallel == 7 {
-                    self.state.serial & 0x0F
-                } else {
-                    self.state.parallel
-                };
-
-                match cmd {
-                    // Register Hold
-                    0x00 => {
-                        self.state.regsft = false;
-                    }
-                    // Register Shift
-                    0x01 => {
-                        self.state.regsft = true;
-                        self.state.pos = (REG_LEN * 8) - 1;
-                        self.state.cdat = self.state.reg[REG_LEN - 1] & 1;
-                    }
-                    // Time Set / Counter Hold
-                    0x02 => {
-                        self.state.regsft = false;
-                    }
-                    // Time Read
-                    0x03 => {
-                        self.state.regsft = false;
-                        self.state.reg = [0; REG_LEN];
-                        // Copy 6-byte BCD time into reg[2..8].
-                        self.state.reg[2..8].copy_from_slice(host_time_bcd);
-                        self.state.cdat = self.state.reg[REG_LEN - 1] & 1;
-                        // Status byte: 0x01 = valid data.
-                        self.state.reg[1] = 0x01;
-                    }
-                    _ => {}
-                }
+        let previous = std::mem::replace(&mut self.state.input_lines, value);
+        let raised = |line: u8| value & line != 0 && previous & line == 0;
+        match InputPhase::of(value) {
+            InputPhase::Strobe if raised(LINE_STROBE) => {
+                self.execute(self.latched_command(), host_time_bcd);
             }
-        } else if value & 0x10 != 0 {
-            // CLK asserted (STB not set) - shift on rising edge.
-            if changed & 0x10 != 0 {
-                if self.state.parallel == 7 {
-                    self.state.serial >>= 1;
-                }
-                if self.state.regsft && self.state.pos > 0 {
-                    self.state.pos -= 1;
-                }
-                self.state.cdat =
-                    (self.state.reg[self.state.pos / 8] >> ((!self.state.pos) & 7)) & 1;
-            }
-        } else {
-            // DATA phase (neither STB nor CLK set).
-            self.state.parallel = value & 7;
-            if self.state.parallel == 7 {
-                self.state.serial &= 0x0F;
-                self.state.serial |= (value >> 1) & 0x10;
-            }
-            // Write data bit (bit 5) into shift register at current position.
-            if value & 0x20 != 0 {
-                self.state.reg[self.state.pos / 8] |= 0x80 >> (self.state.pos & 7);
-            } else {
-                self.state.reg[self.state.pos / 8] &= !(0x80 >> (self.state.pos & 7));
-            }
+            InputPhase::Clock if raised(LINE_CLOCK) => self.clock_edge(),
+            InputPhase::Data => self.data_phase(value),
+            InputPhase::Strobe | InputPhase::Clock => {}
         }
+    }
+
+    /// Returns the command that a rising STB edge executes. With C0-C2 all
+    /// high the serial command register supplies it.
+    fn latched_command(&self) -> Command {
+        let code = if self.state.serial_mode() {
+            self.state.serial_command & SERIAL_COMMAND_MASK
+        } else {
+            self.state.command_lines
+        };
+        Command::decode(code)
+    }
+
+    /// Executes `command`.
+    ///
+    /// The register shift and the time read present the first shift cell on
+    /// DATA OUT. The time read keeps the bit position.
+    fn execute(&mut self, command: Command, host_time_bcd: &[u8; 6]) {
+        match command {
+            Command::RegisterShift => self.state.bit_position = FIRST_SHIFT_POSITION,
+            Command::TimeRead => {
+                let mut register = [0; REGISTER_BYTES];
+                register[STATUS_BYTE] = STATUS_TIME_VALID;
+                register[CALENDAR_FIRST_BYTE..].copy_from_slice(host_time_bcd);
+                self.state.register = register;
+            }
+            Command::RegisterHold | Command::TimeSet | Command::Other => {}
+        }
+        if command != Command::Other {
+            self.state.shifting = command == Command::RegisterShift;
+        }
+        if matches!(command, Command::RegisterShift | Command::TimeRead) {
+            self.state.present(FIRST_SHIFT_POSITION);
+        }
+    }
+
+    /// Handles a rising CLK edge.
+    ///
+    /// In serial mode the serial command register shifts one bit toward bit 0.
+    /// An active register shift steps to the next cell until it reaches the
+    /// last one. DATA OUT then shows the current cell.
+    fn clock_edge(&mut self) {
+        let state = &mut self.state;
+        if state.serial_mode() {
+            state.serial_command >>= 1;
+        }
+        if state.shifting {
+            state.bit_position = state.bit_position.saturating_sub(1);
+        }
+        state.present(state.bit_position);
+    }
+
+    /// Handles a write with STB and CLK low.
+    ///
+    /// The chip latches C0-C2. DATA IN enters bit 4 of the serial command
+    /// register in serial mode and the current shift register cell in every
+    /// mode.
+    fn data_phase(&mut self, value: u8) {
+        let data_in = value & LINE_DATA_IN != 0;
+        let state = &mut self.state;
+        state.command_lines = value & LINE_COMMAND;
+        if state.serial_mode() {
+            let input = if data_in { SERIAL_COMMAND_INPUT } else { 0 };
+            state.serial_command = (state.serial_command & SERIAL_COMMAND_MASK) | input;
+        }
+        state.set_bit_at(state.bit_position, data_in);
     }
 }
 
@@ -155,14 +310,14 @@ mod tests {
         let mut rtc = Upd4990aRtc::new();
         stb_command(&mut rtc, 0x03);
 
-        assert_eq!(rtc.state.reg[0], 0x00); // padding
-        assert_eq!(rtc.state.reg[1], 0x01); // status
-        assert_eq!(rtc.state.reg[2], 0x26); // year
-        assert_eq!(rtc.state.reg[3], 0x31); // month|dow
-        assert_eq!(rtc.state.reg[4], 0x03); // day
-        assert_eq!(rtc.state.reg[5], 0x14); // hour
-        assert_eq!(rtc.state.reg[6], 0x30); // minute
-        assert_eq!(rtc.state.reg[7], 0x45); // second
+        assert_eq!(rtc.state.register[0], 0x00); // padding
+        assert_eq!(rtc.state.register[1], 0x01); // status
+        assert_eq!(rtc.state.register[2], 0x26); // year
+        assert_eq!(rtc.state.register[3], 0x31); // month|dow
+        assert_eq!(rtc.state.register[4], 0x03); // day
+        assert_eq!(rtc.state.register[5], 0x14); // hour
+        assert_eq!(rtc.state.register[6], 0x30); // minute
+        assert_eq!(rtc.state.register[7], 0x45); // second
     }
 
     #[test]
@@ -173,16 +328,15 @@ mod tests {
         // Enter shift mode.
         stb_command(&mut rtc, 0x01);
 
-        // Position starts at 63 (MSB of reg[7]).
-        // reg[7] = 0x45 = 0100_0101.
-        // Position 63 -> bit ((!63) & 7) = bit 0 -> (0x45 >> 0) & 1 = 1.
+        // The shift starts at position 63, bit 0 of the seconds byte.
+        // The seconds byte is 0x45 = 0100_0101, bit 0 is 1.
         assert_eq!(rtc.cdat(), 1);
 
-        // Clock to position 62 -> bit 1 -> (0x45 >> 1) & 1 = 0.
+        // Position 62 presents bit 1 of the seconds byte, which is 0.
         clock_pulse(&mut rtc);
         assert_eq!(rtc.cdat(), 0);
 
-        // Clock to position 61 -> bit 2 -> (0x45 >> 2) & 1 = 1.
+        // Position 61 presents bit 2 of the seconds byte, which is 1.
         clock_pulse(&mut rtc);
         assert_eq!(rtc.cdat(), 1);
     }
@@ -201,21 +355,13 @@ mod tests {
             bits.push(rtc.cdat());
         }
 
-        // Reconstruct bytes from the bit stream (MSB first per byte, MSB byte first).
-        let mut bytes = [0u8; 6];
-        for (i, bit) in bits.iter().enumerate() {
-            let byte_idx = i / 8;
-            let bit_idx = i % 8;
-            bytes[byte_idx] |= bit << (7 - bit_idx);
-        }
-
-        // The shift register outputs reg[7] first (seconds), then reg[6], etc.
-        // Bits come out MSB-first within each byte due to the bit indexing.
+        // The shift register outputs the seconds byte first, then the minute
+        // byte and so on. Each byte comes out least significant bit first.
         let mut reconstructed = [0u8; 6];
         for (i, bit) in bits.iter().enumerate() {
-            let byte_idx = 5 - (i / 8); // reg[7] down to reg[2]
-            let bit_idx = i % 8;
-            reconstructed[byte_idx] |= bit << bit_idx;
+            let byte_index = 5 - (i / 8); // seconds byte down to year byte
+            let bit_index = i % 8;
+            reconstructed[byte_index] |= bit << bit_index;
         }
         assert_eq!(reconstructed, TEST_TIME);
     }
@@ -224,10 +370,10 @@ mod tests {
     fn register_hold_clears_shift_flag() {
         let mut rtc = Upd4990aRtc::new();
         stb_command(&mut rtc, 0x01);
-        assert!(rtc.state.regsft);
+        assert!(rtc.state.shifting);
 
         stb_command(&mut rtc, 0x00);
-        assert!(!rtc.state.regsft);
+        assert!(!rtc.state.shifting);
     }
 
     #[test]
@@ -235,40 +381,40 @@ mod tests {
         let mut rtc = Upd4990aRtc::new();
         // Position starts at 0. Write a 1 bit (bit 5 of value set).
         rtc.write_port(0x20, &TEST_TIME);
-        // pos=0, bit mask = 0x80 >> (0 & 7) = 0x80.
-        assert_eq!(rtc.state.reg[0] & 0x80, 0x80);
+        // Position 0 is bit 7 of byte 0.
+        assert_eq!(rtc.state.register[0] & 0x80, 0x80);
 
         // Write a 0 bit.
         rtc.write_port(0x00, &TEST_TIME);
-        assert_eq!(rtc.state.reg[0] & 0x80, 0x00);
+        assert_eq!(rtc.state.register[0] & 0x80, 0x00);
     }
 
     #[test]
     fn extended_mode_serial_command() {
         let mut rtc = Upd4990aRtc::new();
 
-        // Set parallel to 7 (extended mode).
+        // Set C0-C2 to 7 (serial mode).
         rtc.write_port(0x07, &TEST_TIME);
-        assert_eq!(rtc.state.parallel, 7);
+        assert_eq!(rtc.state.command_lines, 7);
 
         // Accumulate serial bits via CLK pulses.
         // Each CLK right-shifts the serial register.
         // Bit 5 of the data byte feeds into bit 4 of serial register.
         // Write bit 5 = 1 -> serial bit 4 = 1.
-        rtc.write_port(0x27, &TEST_TIME); // DATA phase: parallel=7, serial |= (0x27 >> 1) & 0x10 = 0x10.
-        assert_eq!(rtc.state.serial & 0x10, 0x10);
+        rtc.write_port(0x27, &TEST_TIME); // DATA phase: C0-C2 = 7, DATA IN = 1 enters bit 4.
+        assert_eq!(rtc.state.serial_command & 0x10, 0x10);
 
         // CLK pulse shifts serial right by 1.
         clock_pulse(&mut rtc);
-        assert_eq!(rtc.state.serial & 0x10, 0x00); // bit 4 shifted to bit 3
+        assert_eq!(rtc.state.serial_command & 0x10, 0x00); // bit 4 shifted to bit 3
 
         // After more shifts we can build up a 4-bit command.
-        // For the purpose of this test, verify that STB with parallel=7
+        // For the purpose of this test, verify that STB with C0-C2 = 7
         // uses the serial register's low nibble as the command.
-        rtc.state.serial = 0x03; // Time Read via serial.
-        rtc.write_port(0x07, &TEST_TIME); // DATA phase: parallel=7.
-        rtc.write_port(0x0F, &TEST_TIME); // STB rising edge with parallel=7.
+        rtc.state.serial_command = 0x03; // Time Read via serial.
+        rtc.write_port(0x07, &TEST_TIME); // DATA phase: C0-C2 = 7.
+        rtc.write_port(0x0F, &TEST_TIME); // STB rising edge with C0-C2 = 7.
 
-        assert_eq!(rtc.state.reg[1], 0x01); // Status byte was set by TIME_READ.
+        assert_eq!(rtc.state.register[1], 0x01); // Status byte was set by TIME_READ.
     }
 }

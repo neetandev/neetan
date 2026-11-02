@@ -152,6 +152,11 @@ fn cgrom_kanji_offset(jis_row: u8, jis_col: u8) -> u32 {
     col * 0x1000 + row * 16
 }
 
+/// Converts a real mode segment and offset into a linear address.
+fn real_mode_address(segment: u16, offset: u16) -> u32 {
+    (u32::from(segment) << 4).wrapping_add(u32::from(offset))
+}
+
 fn reverse_bits(b: u8) -> u8 {
     let mut v = b;
     v = (v & 0xF0) >> 4 | (v & 0x0F) << 4;

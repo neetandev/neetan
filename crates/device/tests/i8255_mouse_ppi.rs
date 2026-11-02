@@ -42,25 +42,25 @@ fn hc_latch_captures_and_resets() {
     ppi.set_cpu_clock(8_000_000);
 
     // Directly set accumulators for deterministic testing.
-    ppi.state.accumulator_x = 10;
-    ppi.state.accumulator_y = -5;
-    ppi.state.remaining_x = 0;
-    ppi.state.remaining_y = 0;
+    ppi.state.counter_x = 10;
+    ppi.state.counter_y = -5;
+    ppi.state.pending_x = 0;
+    ppi.state.pending_y = 0;
 
     ppi.latch(100_000);
 
     assert_eq!(ppi.state.latch_x, 10);
     assert_eq!(ppi.state.latch_y, -5);
-    assert_eq!(ppi.state.accumulator_x, 0);
-    assert_eq!(ppi.state.accumulator_y, 0);
+    assert_eq!(ppi.state.counter_x, 0);
+    assert_eq!(ppi.state.counter_y, 0);
 }
 
 #[test]
 fn latch_clamps_to_signed_byte_range() {
     let mut ppi = I8255MousePpi::new();
     ppi.set_cpu_clock(8_000_000);
-    ppi.state.accumulator_x = 200;
-    ppi.state.accumulator_y = -200;
+    ppi.state.counter_x = 200;
+    ppi.state.counter_y = -200;
 
     ppi.latch(0);
     assert_eq!(ppi.state.latch_x, 127);
@@ -99,7 +99,7 @@ fn bsr_set_hc_triggers_rising_edge() {
     ppi.state.port_c = 0x00; // HC = 0
 
     // BSR command to set bit 7: value = (7 << 1) | 1 = 0x0F
-    let rising = ppi.write_ctrl(0x0F);
+    let rising = ppi.write_control(0x0F, 0);
     assert!(rising, "HC should have risen");
     assert_ne!(ppi.state.port_c & 0x80, 0);
 }
@@ -110,7 +110,7 @@ fn bsr_reset_hc_no_rising_edge() {
     ppi.state.port_c = 0x80; // HC = 1
 
     // BSR command to reset bit 7: value = (7 << 1) | 0 = 0x0E
-    let rising = ppi.write_ctrl(0x0E);
+    let rising = ppi.write_control(0x0E, 0);
     assert!(!rising, "HC should not have risen (it fell)");
     assert_eq!(ppi.state.port_c & 0x80, 0);
 }
@@ -120,7 +120,7 @@ fn mode_set_resets_port_c() {
     let mut ppi = I8255MousePpi::new();
     ppi.state.port_c = 0x80; // HC = 1
 
-    let rising = ppi.write_ctrl(0x93); // Mode set
+    let rising = ppi.write_control(0x93, 0); // Mode set
     assert!(!rising, "Mode set should not produce rising edge");
     assert_eq!(ppi.state.port_c, 0x00);
 }
@@ -130,10 +130,10 @@ fn port_c_write_detects_hc_rising_edge() {
     let mut ppi = I8255MousePpi::new();
     ppi.state.port_c = 0x00; // HC = 0
 
-    let rising = ppi.write_port_c(0x80); // HC -> 1
+    let rising = ppi.write_port_c(0x80, 0); // HC -> 1
     assert!(rising);
 
     // Writing again with HC still 1 should not trigger.
-    let rising = ppi.write_port_c(0x80);
+    let rising = ppi.write_port_c(0x80, 0);
     assert!(!rising);
 }

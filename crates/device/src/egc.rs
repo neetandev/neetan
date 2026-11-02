@@ -1,154 +1,528 @@
-//! EGC (Enhanced Graphic Charger) - raster-operation engine for VRAM.
+//! EGC (Enhanced Graphic Charger), the raster operation engine between the CPU
+//! and the four graphics planes.
 //!
-//! 8 I/O registers at ports 0x04A0–0x04AE (word-accessible).
-//! Provides 256 ROP codes with 3-input truth table (Source/Dest/Pattern),
-//! bit-level shifting with 6 modes, pattern registers, and compare-read.
+//! Eight word registers sit at ports 0x04A0-0x04AE. A CPU access to graphics
+//! VRAM in EGC mode reaches all planes at once. A write combines the shifter
+//! output (S), the destination VRAM (D) and the pattern (P) with an 8-bit
+//! raster operation, or writes the CPU data or the pattern directly.
+//!
+//! The shifter is a bit stream per plane. Every input (a VRAM read, or a CPU
+//! write when the CPU is the source) appends its pixels in the direction of
+//! the shift register and then takes one output unit from the stream into the
+//! source latch S. The first input of an operation skips the source bit
+//! address. The first output unit and the first write skip the destination
+//! bit address. An output unit waits in the stream until it holds enough
+//! pixels. A source bit address above the destination bit address leaves the
+//! first input without a complete unit. The first write of such an operation
+//! writes nothing unless a later input completed a unit. An operation covers
+//! the bit length plus one pixel, counted by the writes.
 
-/// Lookup table: expands a 4-bit color index to per-plane u16 masks.
-/// maskword[color][plane] - if bit `plane` of `color` is set, the mask is 0xFFFF, else 0x0000.
-const MASKWORD: [[u16; 4]; 16] = [
-    [0x0000, 0x0000, 0x0000, 0x0000],
-    [0xFFFF, 0x0000, 0x0000, 0x0000],
-    [0x0000, 0xFFFF, 0x0000, 0x0000],
-    [0xFFFF, 0xFFFF, 0x0000, 0x0000],
-    [0x0000, 0x0000, 0xFFFF, 0x0000],
-    [0xFFFF, 0x0000, 0xFFFF, 0x0000],
-    [0x0000, 0xFFFF, 0xFFFF, 0x0000],
-    [0xFFFF, 0xFFFF, 0xFFFF, 0x0000],
-    [0x0000, 0x0000, 0x0000, 0xFFFF],
-    [0xFFFF, 0x0000, 0x0000, 0xFFFF],
-    [0x0000, 0xFFFF, 0x0000, 0xFFFF],
-    [0xFFFF, 0xFFFF, 0x0000, 0xFFFF],
-    [0x0000, 0x0000, 0xFFFF, 0xFFFF],
-    [0xFFFF, 0x0000, 0xFFFF, 0xFFFF],
-    [0x0000, 0xFFFF, 0xFFFF, 0xFFFF],
-    [0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF],
-];
+/// Register 1 bits 3-0: P3EN#-P0EN#, 1 = the plane is not written.
+const ACCESS_PLANE_DISABLE: u16 = 0x0001;
 
-/// Byte mask tables for shift source masking.
-/// dir:right by startbit + (len-1)*8
-#[rustfmt::skip]
-const BYTEMASK_U0: [u8; 64] = [
-    0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01,
-    0xC0, 0x60, 0x30, 0x18, 0x0C, 0x06, 0x03, 0x01,
-    0xE0, 0x70, 0x38, 0x1C, 0x0E, 0x07, 0x03, 0x01,
-    0xF0, 0x78, 0x3C, 0x1E, 0x0F, 0x07, 0x03, 0x01,
-    0xF8, 0x7C, 0x3E, 0x1F, 0x0F, 0x07, 0x03, 0x01,
-    0xFC, 0x7E, 0x3F, 0x1F, 0x0F, 0x07, 0x03, 0x01,
-    0xFE, 0x7F, 0x3F, 0x1F, 0x0F, 0x07, 0x03, 0x01,
-    0xFF, 0x7F, 0x3F, 0x1F, 0x0F, 0x07, 0x03, 0x01,
-];
+/// Register 2 bits 14-13: source of the pattern input P.
+const FGBG_PATTERN_SOURCE_MASK: u16 = 0x6000;
 
-/// dir:right by length
-const BYTEMASK_U1: [u8; 8] = [0x80, 0xC0, 0xE0, 0xF0, 0xF8, 0xFC, 0xFE, 0xFF];
+/// Register 2 bits 14-13 = 01b: P is the background color.
+const FGBG_BACKGROUND: u16 = 0x2000;
 
-/// dir:left by startbit + (len-1)*8
-#[rustfmt::skip]
-const BYTEMASK_D0: [u8; 64] = [
-    0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80,
-    0x03, 0x06, 0x0C, 0x18, 0x30, 0x60, 0xC0, 0x80,
-    0x07, 0x0E, 0x1C, 0x38, 0x70, 0xE0, 0xC0, 0x80,
-    0x0F, 0x1E, 0x3C, 0x78, 0xF0, 0xE0, 0xC0, 0x80,
-    0x1F, 0x3E, 0x7C, 0xF8, 0xF0, 0xE0, 0xC0, 0x80,
-    0x3F, 0x7E, 0xFC, 0xF8, 0xF0, 0xE0, 0xC0, 0x80,
-    0x7F, 0xFE, 0xFC, 0xF8, 0xF0, 0xE0, 0xC0, 0x80,
-    0xFF, 0xFE, 0xFC, 0xF8, 0xF0, 0xE0, 0xC0, 0x80,
-];
+/// Register 2 bits 14-13 = 10b: P is the foreground color.
+const FGBG_FOREGROUND: u16 = 0x4000;
 
-/// dir:left by length
-const BYTEMASK_D1: [u8; 8] = [0x01, 0x03, 0x07, 0x0F, 0x1F, 0x3F, 0x7F, 0xFF];
+/// Register 2 bits 14-13 = 11b: P is the foreground color in planes 0 and 1
+/// and the background color in planes 2 and 3.
+const FGBG_MIXED: u16 = 0x6000;
 
-/// Buffer size: 4096/8 + 4*4 = 528 bytes.
-const BUF_SIZE: usize = 4096 / 8 + 4 * 4;
+/// First plane that takes the background color in the mixed pattern source.
+const MIXED_FIRST_BACKGROUND_PLANE: usize = 2;
 
-/// Ascending direction buffer start offset (func 0, 2, 4).
-const BUF_START_INC: usize = 0;
+/// Register 2 bits 9-8 of the read plane field (bits 11-8): plane returned by
+/// a read.
+const FGBG_READ_PLANE_MASK: u16 = 0x0300;
 
-/// Descending direction buffer start offset (func 1, 3, 5).
-const BUF_START_DEC: usize = 4096 / 8 + 3;
+/// Shift of the read plane field in register 2.
+const FGBG_READ_PLANE_SHIFT: u32 = 8;
+
+/// Register 3 bit 13: compare read.
+const OPE_COMPARE_READ: u16 = 0x2000;
+
+/// Register 3 bits 12-11: write source.
+const OPE_WRITE_SOURCE_MASK: u16 = 0x1800;
+
+/// Register 3 bits 12-11 = 00b: the CPU data is written.
+const OPE_WRITE_CPU: u16 = 0x0000;
+
+/// Register 3 bits 12-11 = 01b: the raster operation result is written.
+const OPE_WRITE_ROP: u16 = 0x0800;
+
+/// Register 3 bits 12-11 = 10b: the pattern is written.
+const OPE_WRITE_PATTERN: u16 = 0x1000;
+
+/// Register 3 bit 10: the shifter takes the CPU write data. Clear means VRAM
+/// read data.
+const OPE_SOURCE_CPU: u16 = 0x0400;
+
+/// Register 3 bits 9-8: pattern register load.
+const OPE_PATTERN_LOAD_MASK: u16 = 0x0300;
+
+/// Register 3 bits 9-8 = 01b: a VRAM read loads the pattern register.
+const OPE_PATTERN_LOAD_ON_READ: u16 = 0x0100;
+
+/// Register 3 bits 9-8 = 10b: a VRAM write loads the pattern register with the
+/// VRAM data before the write.
+const OPE_PATTERN_LOAD_ON_WRITE: u16 = 0x0200;
+
+/// Register 3 bits 7-0: raster operation code.
+const OPE_ROP_MASK: u16 = 0x00FF;
+
+/// Mask of a 4-bit color in the foreground and background registers.
+const COLOR_MASK: u16 = 0x000F;
+
+/// Register 7 bit 12: 1 = descending bit order (right to left).
+const SFT_DESCENDING: u16 = 0x1000;
+
+/// Register 7 bits 7-4: destination bit address.
+const SFT_DESTINATION_MASK: u16 = 0x00F0;
+
+/// Shift of the destination bit address in register 7.
+const SFT_DESTINATION_SHIFT: u32 = 4;
+
+/// Register 7 bits 3-0: source bit address.
+const SFT_SOURCE_MASK: u16 = 0x000F;
+
+/// Register 8 bits 11-0: bit length minus one.
+const LENG_MASK: u16 = 0x0FFF;
+
+/// Number of planes.
+const PLANE_COUNT: usize = 4;
+
+/// Low bits of a bit address that address a pixel within a byte.
+const BYTE_BIT_ADDRESS_MASK: u16 = 0x0007;
+
+/// Shifter class of equal bit addresses within a byte.
+const SHIFT_CLASS_ALIGNED: u8 = 0;
+
+/// Shifter class of a destination bit address above the source bit address.
+const SHIFT_CLASS_RIGHT: u8 = 2;
+
+/// Shifter class of a source bit address above the destination bit address.
+const SHIFT_CLASS_LEFT: u8 = 4;
+
+/// Pixel width of a byte access.
+const BYTE_WIDTH: u32 = 8;
+
+/// Pixel width of a word access.
+const WORD_WIDTH: u32 = 16;
+
+/// Stream capacity per plane in pixels.
+const STREAM_CAPACITY_BITS: u32 = 8 * WORD_WIDTH;
+
+/// Stream read position from which the unread pixels shift back to the start.
+const STREAM_COMPACT_BITS: u32 = 4 * WORD_WIDTH;
+
+/// Stream bytes per plane, with room for a 3-byte access window at the end.
+const STREAM_PLANE_BYTES: usize = (STREAM_CAPACITY_BITS / 8) as usize + 3;
+
+/// Register 1 after reset: all planes written.
+const ACCESS_RESET: u16 = 0xFFF0;
+
+/// Register 2 after reset.
+const FGBG_RESET: u16 = 0x00FF;
+
+/// Register 5 after reset: all bits written.
+const MASK_RESET: u16 = 0xFFFF;
+
+/// Register 8 after reset: 16 pixels.
+const LENG_RESET: u16 = 0x000F;
 
 save_state::runtime_state! {
-/// Authoritative EGC state.
+/// EGC state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EgcState {
-    /// Reg 0 (0x04A0): plane write enable (active-low, bits 0-3).
+    /// Register 1 (0x04A0): plane write disable bits.
     pub access: u16,
-    /// Reg 1 (0x04A2): read plane select + FGC/BGC source.
+    /// Register 2 (0x04A2): pattern source and read plane.
     pub fgbg: u16,
-    /// Reg 2 (0x04A4): ROP code (bits 7-0), write/read source, compare.
+    /// Register 3 (0x04A4): compare read, write source, shifter source, pattern
+    /// load and raster operation.
     pub ope: u16,
-    /// Reg 3 (0x04A6): foreground color (4-bit).
+    /// Register 4 (0x04A6): foreground color.
     pub fg: u16,
-    /// Reg 4 (0x04A8): mask register.
+    /// Register 5 (0x04A8): bit write mask, 1 = written.
     pub mask: u16,
-    /// Reg 5 (0x04AA): background color (4-bit).
+    /// Register 6 (0x04AA): background color.
     pub bg: u16,
-    /// Reg 6 (0x04AC): shift control (direction, dst/src bit addresses).
+    /// Register 7 (0x04AC): direction, destination and source bit address.
     pub sft: u16,
-    /// Reg 7 (0x04AE): bit length.
+    /// Register 8 (0x04AE): bit length minus one.
     pub leng: u16,
-    /// Last VRAM data read (4 planes).
-    pub lastvram: [u16; 4],
-    /// Pattern register (4 planes), loadable from VRAM.
-    pub patreg: [u16; 4],
-    /// Expanded foreground color (4 planes).
-    pub fgc: [u16; 4],
-    /// Expanded background color (4 planes).
-    pub bgc: [u16; 4],
-    /// Shift function index (0-5).
-    pub func: u8,
-    /// Remaining bits in current operation.
-    pub remain: u32,
-    /// Buffered bit count.
-    pub stack: u32,
-    /// Source bit address.
-    pub srcbit: u8,
-    /// Destination bit address.
-    pub dstbit: u8,
-    /// Sub-byte left shift amount.
-    pub sft8bitl: u8,
-    /// Sub-byte right shift amount.
-    pub sft8bitr: u8,
-    /// Final effective mask (user mask & srcmask).
-    pub mask2: u16,
-    /// Source validity mask from shift output.
-    pub srcmask: u16,
-    /// Buffer input pointer offset.
-    pub inptr: usize,
-    /// Buffer output pointer offset.
-    pub outptr: usize,
-    /// Shift buffer (4 planes interleaved at stride 4).
-    pub buf: Box<[u8]>,
+    /// Pattern register per plane in memory byte order.
+    pub pattern: [u16; 4],
+    /// Pixels left in the current operation.
+    pub remaining_bits: u16,
+    /// Source pixels still to skip at the start of the operation.
+    pub source_skip: u8,
+    /// Destination pixels still to skip by the writes of the operation.
+    pub destination_skip: u8,
+    /// Destination pixels still to skip by the output units of the operation.
+    pub output_skip: u8,
+    /// Whether an input of the operation completed an output unit.
+    pub source_ready: bool,
+    /// Shifter output per plane in memory byte order.
+    pub source_latch: [u16; 4],
+    /// Stream position of the next pixel taken by an output unit.
+    pub stream_read: u32,
+    /// Stream position of the next pixel appended by an input.
+    pub stream_write: u32,
+    /// Shifter stream per plane, most significant bit first.
+    pub stream: Box<[u8]>,
 }}
 
 impl Default for EgcState {
     fn default() -> Self {
-        Self {
-            access: 0xFFF0,
-            fgbg: 0x00FF,
+        let mut state = Self {
+            access: ACCESS_RESET,
+            fgbg: FGBG_RESET,
             ope: 0,
             fg: 0,
-            mask: 0xFFFF,
+            mask: MASK_RESET,
             bg: 0,
             sft: 0,
-            leng: 0x000F,
-            lastvram: [0; 4],
-            patreg: [0; 4],
-            fgc: [0; 4],
-            bgc: [0; 4],
-            func: 0,
-            remain: 16,
-            stack: 0,
-            srcbit: 0,
-            dstbit: 0,
-            sft8bitl: 0,
-            sft8bitr: 0,
-            mask2: 0,
-            srcmask: 0xFFFF,
-            inptr: BUF_START_INC,
-            outptr: BUF_START_INC,
-            buf: vec![0; BUF_SIZE].into_boxed_slice(),
+            leng: LENG_RESET,
+            pattern: [0; PLANE_COUNT],
+            remaining_bits: 0,
+            source_skip: 0,
+            destination_skip: 0,
+            output_skip: 0,
+            source_ready: false,
+            source_latch: [0; PLANE_COUNT],
+            stream_read: 0,
+            stream_write: 0,
+            stream: vec![0; PLANE_COUNT * STREAM_PLANE_BYTES].into_boxed_slice(),
+        };
+        state.restart_operation();
+        state
+    }
+}
+
+/// Shift of the source pixels within a byte.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ByteShift {
+    /// Source and destination share the bit address.
+    Aligned,
+    /// The pixels shift right by the given distance.
+    Right(u8),
+    /// The pixels shift left by the given distance.
+    Left(u8),
+}
+
+impl EgcState {
+    /// Starts a new operation from the shift and length registers.
+    fn restart_operation(&mut self) {
+        self.remaining_bits = (self.leng & LENG_MASK) + 1;
+        self.source_skip = (self.sft & SFT_SOURCE_MASK) as u8;
+        self.destination_skip = ((self.sft & SFT_DESTINATION_MASK) >> SFT_DESTINATION_SHIFT) as u8;
+        self.output_skip = self.destination_skip;
+        self.source_ready = false;
+        self.stream_read = 0;
+        self.stream_write = 0;
+    }
+
+    /// Returns whether the shifter runs right to left.
+    fn descending(&self) -> bool {
+        self.sft & SFT_DESCENDING != 0
+    }
+
+    /// Returns whether the source bit address lies above the destination bit
+    /// address.
+    fn shifts_left(&self) -> bool {
+        (self.sft & SFT_SOURCE_MASK) > ((self.sft & SFT_DESTINATION_MASK) >> SFT_DESTINATION_SHIFT)
+    }
+
+    /// Returns the number of stream pixels not yet taken.
+    fn stream_length(&self) -> u32 {
+        self.stream_write - self.stream_read
+    }
+
+    /// Returns the foreground color expanded to a word per plane.
+    pub fn foreground_planes(&self) -> [u16; 4] {
+        std::array::from_fn(|plane| expand_color(self.fg, plane))
+    }
+
+    /// Returns the background color expanded to a word per plane.
+    pub fn background_planes(&self) -> [u16; 4] {
+        std::array::from_fn(|plane| expand_color(self.bg, plane))
+    }
+
+    /// Returns the shifter class of register 7 from the low three bits of the
+    /// source and destination bit addresses. Bit 0 is the descending
+    /// direction. 2 marks a right shift and 4 a left shift.
+    pub fn shift_function(&self) -> u8 {
+        let class = match self.byte_shift() {
+            ByteShift::Aligned => SHIFT_CLASS_ALIGNED,
+            ByteShift::Right(_) => SHIFT_CLASS_RIGHT,
+            ByteShift::Left(_) => SHIFT_CLASS_LEFT,
+        };
+        class | u8::from(self.descending())
+    }
+
+    /// Returns the left and right shift distances within a byte. They add up
+    /// to 8 for a shift and are 0 without a shift.
+    pub fn byte_shift_bits(&self) -> (u8, u8) {
+        let byte_width = BYTE_WIDTH as u8;
+        match self.byte_shift() {
+            ByteShift::Aligned => (0, 0),
+            ByteShift::Right(distance) => (byte_width - distance, distance),
+            ByteShift::Left(distance) => (distance, byte_width - distance),
         }
+    }
+
+    /// Returns the shift within a byte from the source to the destination bit
+    /// address.
+    fn byte_shift(&self) -> ByteShift {
+        let source = self.sft & SFT_SOURCE_MASK;
+        let destination = (self.sft & SFT_DESTINATION_MASK) >> SFT_DESTINATION_SHIFT;
+        let offset = |address: u16| (address & BYTE_BIT_ADDRESS_MASK) as u8;
+        let (source, destination) = (offset(source), offset(destination));
+        if destination > source {
+            ByteShift::Right(destination - source)
+        } else if source > destination {
+            ByteShift::Left(source - destination)
+        } else {
+            ByteShift::Aligned
+        }
+    }
+
+    /// Returns the destination pixels of the next word write in memory form.
+    pub fn source_mask(&self) -> u16 {
+        stream_to_memory(
+            self.next_write_bits(WORD_WIDTH),
+            WORD_WIDTH,
+            self.descending(),
+        )
+    }
+
+    /// Returns the destination pixels of the next write of `width` pixels in
+    /// stream form.
+    fn next_write_bits(&self, width: u32) -> u16 {
+        let offset = u32::from(self.destination_skip).min(width);
+        let count = (width - offset).min(u32::from(self.remaining_bits));
+        leading_bits(count) >> offset
+    }
+
+    /// Returns the pattern input P of a plane as a memory word.
+    fn pattern_input(&self, plane: usize) -> u16 {
+        match self.fgbg & FGBG_PATTERN_SOURCE_MASK {
+            FGBG_BACKGROUND => expand_color(self.bg, plane),
+            FGBG_FOREGROUND => expand_color(self.fg, plane),
+            FGBG_MIXED if plane < MIXED_FIRST_BACKGROUND_PLANE => expand_color(self.fg, plane),
+            FGBG_MIXED => expand_color(self.bg, plane),
+            _ => self.pattern[plane],
+        }
+    }
+
+    /// Returns the stream slice of a plane.
+    fn plane_stream(&self, plane: usize) -> &[u8] {
+        &self.stream[plane * STREAM_PLANE_BYTES..(plane + 1) * STREAM_PLANE_BYTES]
+    }
+
+    /// Appends one input of `width` pixels to the stream of every plane and
+    /// takes one output unit into the source latch. `inputs` holds the memory
+    /// form of each plane. `byte_odd` selects the latch byte of a byte access.
+    fn shift_input(&mut self, inputs: [u16; 4], width: u32, byte_odd: Option<bool>) {
+        let skip = u32::from(self.source_skip).min(width);
+        self.source_skip -= skip as u8;
+        let count = width - skip;
+        let descending = self.descending();
+        if count > 0 && self.stream_write + count <= STREAM_CAPACITY_BITS {
+            let position = self.stream_write as usize;
+            for (plane, &input) in inputs.iter().enumerate() {
+                let bits = memory_to_stream(input, width, descending) << skip;
+                let plane_stream =
+                    &mut self.stream[plane * STREAM_PLANE_BYTES..(plane + 1) * STREAM_PLANE_BYTES];
+                store_stream_bits(plane_stream, position, bits, count);
+            }
+            self.stream_write += count;
+        }
+
+        let offset = u32::from(self.output_skip).min(width);
+        let unit = width - offset;
+        let complete = self.stream_length() >= unit;
+        let taken = unit.min(self.stream_length());
+        let position = self.stream_read as usize;
+        for plane in 0..PLANE_COUNT {
+            let bits = load_stream_bits(self.plane_stream(plane), position, taken) >> offset;
+            let output = stream_to_memory(bits, width, descending);
+            let latch = &mut self.source_latch[plane];
+            *latch = match byte_odd {
+                Some(odd) => replace_register_byte(*latch, odd, output as u8),
+                None => output,
+            };
+        }
+        if complete {
+            self.output_skip -= offset as u8;
+            self.source_ready = true;
+            self.stream_read += unit;
+            self.compact_stream();
+        }
+    }
+
+    /// Shifts the unread stream pixels back to the start of the stream.
+    fn compact_stream(&mut self) {
+        if self.stream_read == self.stream_write {
+            self.stream_read = 0;
+            self.stream_write = 0;
+            return;
+        }
+        if self.stream_read < STREAM_COMPACT_BITS {
+            return;
+        }
+        let length = self.stream_length();
+        for plane in 0..PLANE_COUNT {
+            let plane_stream =
+                &mut self.stream[plane * STREAM_PLANE_BYTES..(plane + 1) * STREAM_PLANE_BYTES];
+            let mut moved = 0;
+            while moved < length {
+                let count = (length - moved).min(WORD_WIDTH);
+                let bits =
+                    load_stream_bits(plane_stream, (self.stream_read + moved) as usize, count);
+                store_stream_bits(plane_stream, moved as usize, bits, count);
+                moved += count;
+            }
+        }
+        self.stream_read = 0;
+        self.stream_write = length;
+    }
+
+    /// Advances the operation by one write of `width` pixels and returns the
+    /// destination pixel mask in stream form. Returns `None` for the delayed
+    /// first write of a left shift.
+    fn advance_write(&mut self, width: u32) -> Option<u16> {
+        if self.shifts_left() && !self.source_ready {
+            self.source_ready = true;
+            return None;
+        }
+        let bits = self.next_write_bits(width);
+        let offset = u32::from(self.destination_skip).min(width);
+        self.destination_skip -= offset as u8;
+        self.remaining_bits -= bits.count_ones() as u16;
+        if self.remaining_bits == 0 {
+            self.restart_operation();
+        }
+        Some(bits)
+    }
+}
+
+/// Returns the plane word of a 4-bit color: all ones when the plane bit is set.
+fn expand_color(color: u16, plane: usize) -> u16 {
+    if (color & COLOR_MASK) & (1 << plane) != 0 {
+        0xFFFF
+    } else {
+        0x0000
+    }
+}
+
+/// Returns a 16-bit value with the top `count` bits set.
+fn leading_bits(count: u32) -> u16 {
+    ((0xFFFF_u32 << (WORD_WIDTH - count)) & 0xFFFF) as u16
+}
+
+/// Converts a memory value of `width` pixels into stream order, first pixel in
+/// bit 15. In memory the even byte holds the left pixels and bit 7 of a byte
+/// is its left pixel.
+fn memory_to_stream(value: u16, width: u32, descending: bool) -> u16 {
+    let screen = if width == WORD_WIDTH {
+        value.swap_bytes()
+    } else {
+        value << 8
+    };
+    if descending {
+        if width == WORD_WIDTH {
+            screen.reverse_bits()
+        } else {
+            u16::from((screen >> 8) as u8).reverse_bits()
+        }
+    } else {
+        screen
+    }
+}
+
+/// Converts a stream value of `width` pixels back into memory order.
+fn stream_to_memory(bits: u16, width: u32, descending: bool) -> u16 {
+    if width == WORD_WIDTH {
+        let screen = if descending {
+            bits.reverse_bits()
+        } else {
+            bits
+        };
+        screen.swap_bytes()
+    } else {
+        let byte = (bits >> 8) as u8;
+        u16::from(if descending {
+            byte.reverse_bits()
+        } else {
+            byte
+        })
+    }
+}
+
+/// Writes the top `count` bits of `bits` into a stream at bit `position`.
+fn store_stream_bits(stream: &mut [u8], position: usize, bits: u16, count: u32) {
+    let first_byte = position / 8;
+    let bit_offset = position % 8;
+    let window = (u32::from(bits) << 8) >> bit_offset;
+    let window_mask = (u32::from(leading_bits(count)) << 8) >> bit_offset;
+    for index in 0..3 {
+        let shift = 16 - 8 * index;
+        let byte_mask = (window_mask >> shift) as u8;
+        let byte_bits = (window >> shift) as u8;
+        let target = &mut stream[first_byte + index];
+        *target = (*target & !byte_mask) | (byte_bits & byte_mask);
+    }
+}
+
+/// Reads `count` bits from a stream at bit `position`, aligned to bit 15.
+fn load_stream_bits(stream: &[u8], position: usize, count: u32) -> u16 {
+    let first_byte = position / 8;
+    let bit_offset = position % 8;
+    let window = (u32::from(stream[first_byte]) << 16)
+        | (u32::from(stream[first_byte + 1]) << 8)
+        | u32::from(stream[first_byte + 2]);
+    let aligned = ((window << bit_offset) >> 8) as u16;
+    aligned & leading_bits(count)
+}
+
+/// Applies an 8-bit raster operation code to source, destination and pattern.
+///
+/// Bit `4 * S + 2 * D + P` of the code is the result for the input
+/// combination (S, D, P).
+fn raster_operation(code: u8, source: u16, destination: u16, pattern: u16) -> u16 {
+    (0..8).fold(0u16, |result, index| {
+        if code & (1 << index) == 0 {
+            return result;
+        }
+        let source_term = if index & 4 != 0 { source } else { !source };
+        let destination_term = if index & 2 != 0 {
+            destination
+        } else {
+            !destination
+        };
+        let pattern_term = if index & 1 != 0 { pattern } else { !pattern };
+        result | (source_term & destination_term & pattern_term)
+    })
+}
+
+/// Returns the byte of a 16-bit register that belongs to a byte access.
+fn register_byte(value: u16, odd: bool) -> u16 {
+    if odd { value >> 8 } else { value & 0x00FF }
+}
+
+/// Replaces the byte of a 16-bit register that belongs to a byte access.
+fn replace_register_byte(register: u16, odd: bool, byte: u8) -> u16 {
+    if odd {
+        (register & 0x00FF) | (u16::from(byte) << 8)
+    } else {
+        (register & 0xFF00) | u16::from(byte)
     }
 }
 
@@ -156,8 +530,6 @@ impl Default for EgcState {
 pub struct Egc {
     /// Embedded state for save/restore.
     pub state: EgcState,
-    // Transient shift output (not saved, but instead recomputed from buf on each operation).
-    src: [u16; 4],
 }
 
 impl_simple_state_accessors!(Egc, EgcState);
@@ -171,1130 +543,221 @@ impl Default for Egc {
 impl Egc {
     /// Creates a new EGC in its reset state.
     pub fn new() -> Self {
-        let mut egc = Self {
+        Self {
             state: EgcState::default(),
-            src: [0; 4],
-        };
-        egc.recalculate_shift();
-        egc
-    }
-
-    /// Resets the EGC to power-on defaults.
-    pub fn reset(&mut self) {
-        self.state = EgcState::default();
-        self.src = [0; 4];
-        self.recalculate_shift();
-        self.state.srcmask = 0xFFFF;
-    }
-
-    /// Writes an EGC register (byte access). `port` is the low nibble (0x00..=0x0F).
-    pub fn write_register_byte(&mut self, port: u8, value: u8) {
-        match port {
-            0x00 => {
-                self.state.access = (self.state.access & 0xFF00) | u16::from(value);
-            }
-            0x01 => {
-                self.state.access = (self.state.access & 0x00FF) | (u16::from(value) << 8);
-            }
-            0x02 => {
-                self.state.fgbg = (self.state.fgbg & 0xFF00) | u16::from(value);
-            }
-            0x03 => {
-                self.state.fgbg = (self.state.fgbg & 0x00FF) | (u16::from(value) << 8);
-            }
-            0x04 => {
-                self.state.ope = (self.state.ope & 0xFF00) | u16::from(value);
-            }
-            0x05 => {
-                self.state.ope = (self.state.ope & 0x00FF) | (u16::from(value) << 8);
-            }
-            0x06 => {
-                self.state.fg = (self.state.fg & 0xFF00) | u16::from(value);
-                let color = (value & 0x0F) as usize;
-                self.state.fgc = MASKWORD[color];
-            }
-            0x07 => {
-                self.state.fg = (self.state.fg & 0x00FF) | (u16::from(value) << 8);
-            }
-            0x08 if self.state.fgbg & 0x6000 == 0 => {
-                self.state.mask = (self.state.mask & 0xFF00) | u16::from(value);
-            }
-            0x09 if self.state.fgbg & 0x6000 == 0 => {
-                self.state.mask = (self.state.mask & 0x00FF) | (u16::from(value) << 8);
-            }
-            0x0A => {
-                self.state.bg = (self.state.bg & 0xFF00) | u16::from(value);
-                let color = (value & 0x0F) as usize;
-                self.state.bgc = MASKWORD[color];
-            }
-            0x0B => {
-                self.state.bg = (self.state.bg & 0x00FF) | (u16::from(value) << 8);
-            }
-            0x0C => {
-                self.state.sft = (self.state.sft & 0xFF00) | u16::from(value);
-                self.recalculate_shift();
-                self.state.srcmask = 0xFFFF;
-            }
-            0x0D => {
-                self.state.sft = (self.state.sft & 0x00FF) | (u16::from(value) << 8);
-                self.recalculate_shift();
-                self.state.srcmask = 0xFFFF;
-            }
-            0x0E => {
-                self.state.leng = (self.state.leng & 0xFF00) | u16::from(value);
-                self.recalculate_shift();
-                self.state.srcmask = 0xFFFF;
-            }
-            0x0F => {
-                self.state.leng = (self.state.leng & 0x00FF) | (u16::from(value) << 8);
-                self.recalculate_shift();
-                self.state.srcmask = 0xFFFF;
-            }
-            _ => {}
         }
     }
 
-    /// Writes an EGC register (word access). `port` is the low nibble (even: 0x00..=0x0E).
+    /// Resets the EGC to its power-on state.
+    pub fn reset(&mut self) {
+        self.state = EgcState::default();
+    }
+
+    /// Writes one byte of an EGC register. `port` is the low nibble of the port
+    /// address.
+    pub fn write_register_byte(&mut self, port: u8, value: u8) {
+        let register_port = port & !1;
+        let odd = port & 1 != 0;
+        let current = match register_port {
+            0x00 => self.state.access,
+            0x02 => self.state.fgbg,
+            0x04 => self.state.ope,
+            0x06 => self.state.fg,
+            0x08 => self.state.mask,
+            0x0A => self.state.bg,
+            0x0C => self.state.sft,
+            0x0E => self.state.leng,
+            _ => return,
+        };
+        self.write_register_word(register_port, replace_register_byte(current, odd, value));
+    }
+
+    /// Writes an EGC register. `port` is the even low nibble of the port address.
+    ///
+    /// The mask register ignores writes while register 2 selects a color as
+    /// the pattern source. A write to the shift or length register
+    /// starts a new operation.
     pub fn write_register_word(&mut self, port: u8, value: u16) {
         match port {
             0x00 => self.state.access = value,
             0x02 => self.state.fgbg = value,
             0x04 => self.state.ope = value,
-            0x06 => {
-                self.state.fg = value;
-                let color = (value & 0x0F) as usize;
-                self.state.fgc = MASKWORD[color];
+            0x06 => self.state.fg = value,
+            0x08 => {
+                if self.state.fgbg & FGBG_PATTERN_SOURCE_MASK == 0 {
+                    self.state.mask = value;
+                }
             }
-            0x08 if self.state.fgbg & 0x6000 == 0 => {
-                self.state.mask = value;
-            }
-            0x0A => {
-                self.state.bg = value;
-                let color = (value & 0x0F) as usize;
-                self.state.bgc = MASKWORD[color];
-            }
+            0x0A => self.state.bg = value,
             0x0C => {
                 self.state.sft = value;
-                self.recalculate_shift();
-                self.state.srcmask = 0xFFFF;
+                self.state.restart_operation();
             }
             0x0E => {
                 self.state.leng = value;
-                self.recalculate_shift();
-                self.state.srcmask = 0xFFFF;
+                self.state.restart_operation();
             }
             _ => {}
         }
     }
 
-    /// Recalculates shift parameters from sft/leng registers.
-    fn recalculate_shift(&mut self) {
-        self.state.remain = (self.state.leng & 0x0FFF) as u32 + 1;
-        self.state.func = ((self.state.sft >> 12) & 1) as u8;
-
-        if self.state.func == 0 {
-            self.state.inptr = BUF_START_INC;
-            self.state.outptr = BUF_START_INC;
-        } else {
-            self.state.inptr = BUF_START_DEC;
-            self.state.outptr = BUF_START_DEC;
-        }
-
-        self.state.srcbit = (self.state.sft & 0x0F) as u8;
-        self.state.dstbit = ((self.state.sft >> 4) & 0x0F) as u8;
-
-        let src8 = self.state.srcbit & 0x07;
-        let dst8 = self.state.dstbit & 0x07;
-
-        if src8 < dst8 {
-            self.state.func += 2;
-            self.state.sft8bitr = dst8 - src8;
-            self.state.sft8bitl = 8 - self.state.sft8bitr;
-        } else if src8 > dst8 {
-            self.state.func += 4;
-            self.state.sft8bitl = src8 - dst8;
-            self.state.sft8bitr = 8 - self.state.sft8bitl;
-        }
-
-        self.state.stack = 0;
-    }
-
-    fn sftb_upn_sub(&mut self, ext: usize) {
-        if self.state.dstbit >= 8 {
-            self.state.dstbit -= 8;
-            set_srcmask_byte(&mut self.state.srcmask, ext, 0);
-            return;
-        }
-        if self.state.dstbit > 0 {
-            if (u32::from(self.state.dstbit) + self.state.remain) >= 8 {
-                set_srcmask_byte(
-                    &mut self.state.srcmask,
-                    ext,
-                    BYTEMASK_U0[self.state.dstbit as usize + 7 * 8],
-                );
-                self.state.remain -= 8 - u32::from(self.state.dstbit);
-                self.state.dstbit = 0;
-            } else {
-                set_srcmask_byte(
-                    &mut self.state.srcmask,
-                    ext,
-                    BYTEMASK_U0[self.state.dstbit as usize + (self.state.remain as usize - 1) * 8],
-                );
-                self.state.remain = 0;
-                self.state.dstbit = 0;
-            }
-        } else if self.state.remain >= 8 {
-            self.state.remain -= 8;
-        } else {
-            set_srcmask_byte(
-                &mut self.state.srcmask,
-                ext,
-                BYTEMASK_U1[self.state.remain as usize - 1],
-            );
-            self.state.remain = 0;
-        }
-        let o = self.state.outptr;
-        self.src_set_byte(0, ext, self.state.buf[o]);
-        self.src_set_byte(1, ext, self.state.buf[o + 4]);
-        self.src_set_byte(2, ext, self.state.buf[o + 8]);
-        self.src_set_byte(3, ext, self.state.buf[o + 12]);
-        self.state.outptr += 1;
-    }
-
-    fn sftb_dnn_sub(&mut self, ext: usize) {
-        if self.state.dstbit >= 8 {
-            self.state.dstbit -= 8;
-            set_srcmask_byte(&mut self.state.srcmask, ext, 0);
-            return;
-        }
-        if self.state.dstbit > 0 {
-            if (u32::from(self.state.dstbit) + self.state.remain) >= 8 {
-                set_srcmask_byte(
-                    &mut self.state.srcmask,
-                    ext,
-                    BYTEMASK_D0[self.state.dstbit as usize + 7 * 8],
-                );
-                self.state.remain -= 8 - u32::from(self.state.dstbit);
-                self.state.dstbit = 0;
-            } else {
-                set_srcmask_byte(
-                    &mut self.state.srcmask,
-                    ext,
-                    BYTEMASK_D0[self.state.dstbit as usize + (self.state.remain as usize - 1) * 8],
-                );
-                self.state.remain = 0;
-                self.state.dstbit = 0;
-            }
-        } else if self.state.remain >= 8 {
-            self.state.remain -= 8;
-        } else {
-            set_srcmask_byte(
-                &mut self.state.srcmask,
-                ext,
-                BYTEMASK_D1[self.state.remain as usize - 1],
-            );
-            self.state.remain = 0;
-        }
-        let o = self.state.outptr;
-        self.src_set_byte(0, ext, self.state.buf[o]);
-        self.src_set_byte(1, ext, self.state.buf[o + 4]);
-        self.src_set_byte(2, ext, self.state.buf[o + 8]);
-        self.src_set_byte(3, ext, self.state.buf[o + 12]);
-        self.state.outptr = self.state.outptr.wrapping_sub(1);
-    }
-
-    fn sftb_upr_sub(&mut self, ext: usize) {
-        if self.state.dstbit >= 8 {
-            self.state.dstbit -= 8;
-            set_srcmask_byte(&mut self.state.srcmask, ext, 0);
-            return;
-        }
-        let r = self.state.sft8bitr;
-        let l = self.state.sft8bitl;
-        if self.state.dstbit > 0 {
-            if (u32::from(self.state.dstbit) + self.state.remain) >= 8 {
-                set_srcmask_byte(
-                    &mut self.state.srcmask,
-                    ext,
-                    BYTEMASK_U0[self.state.dstbit as usize + 7 * 8],
-                );
-                self.state.remain -= 8 - u32::from(self.state.dstbit);
-            } else {
-                set_srcmask_byte(
-                    &mut self.state.srcmask,
-                    ext,
-                    BYTEMASK_U0[self.state.dstbit as usize + (self.state.remain as usize - 1) * 8],
-                );
-                self.state.remain = 0;
-            }
-            self.state.dstbit = 0;
-            let o = self.state.outptr;
-            self.src_set_byte(0, ext, self.state.buf[o] >> r);
-            self.src_set_byte(1, ext, self.state.buf[o + 4] >> r);
-            self.src_set_byte(2, ext, self.state.buf[o + 8] >> r);
-            self.src_set_byte(3, ext, self.state.buf[o + 12] >> r);
-        } else {
-            if self.state.remain >= 8 {
-                self.state.remain -= 8;
-            } else {
-                set_srcmask_byte(
-                    &mut self.state.srcmask,
-                    ext,
-                    BYTEMASK_U1[self.state.remain as usize - 1],
-                );
-                self.state.remain = 0;
-            }
-            let o = self.state.outptr;
-            self.src_set_byte(
-                0,
-                ext,
-                (self.state.buf[o] << l) | (self.state.buf[o + 1] >> r),
-            );
-            self.src_set_byte(
-                1,
-                ext,
-                (self.state.buf[o + 4] << l) | (self.state.buf[o + 5] >> r),
-            );
-            self.src_set_byte(
-                2,
-                ext,
-                (self.state.buf[o + 8] << l) | (self.state.buf[o + 9] >> r),
-            );
-            self.src_set_byte(
-                3,
-                ext,
-                (self.state.buf[o + 12] << l) | (self.state.buf[o + 13] >> r),
-            );
-            self.state.outptr += 1;
-        }
-    }
-
-    fn sftb_dnr_sub(&mut self, ext: usize) {
-        if self.state.dstbit >= 8 {
-            self.state.dstbit -= 8;
-            set_srcmask_byte(&mut self.state.srcmask, ext, 0);
-            return;
-        }
-        let r = self.state.sft8bitr;
-        let l = self.state.sft8bitl;
-        if self.state.dstbit > 0 {
-            if (u32::from(self.state.dstbit) + self.state.remain) >= 8 {
-                set_srcmask_byte(
-                    &mut self.state.srcmask,
-                    ext,
-                    BYTEMASK_D0[self.state.dstbit as usize + 7 * 8],
-                );
-                self.state.remain -= 8 - u32::from(self.state.dstbit);
-            } else {
-                set_srcmask_byte(
-                    &mut self.state.srcmask,
-                    ext,
-                    BYTEMASK_D0[self.state.dstbit as usize + (self.state.remain as usize - 1) * 8],
-                );
-                self.state.remain = 0;
-            }
-            self.state.dstbit = 0;
-            let o = self.state.outptr;
-            self.src_set_byte(0, ext, self.state.buf[o] << r);
-            self.src_set_byte(1, ext, self.state.buf[o + 4] << r);
-            self.src_set_byte(2, ext, self.state.buf[o + 8] << r);
-            self.src_set_byte(3, ext, self.state.buf[o + 12] << r);
-        } else {
-            if self.state.remain >= 8 {
-                self.state.remain -= 8;
-            } else {
-                set_srcmask_byte(
-                    &mut self.state.srcmask,
-                    ext,
-                    BYTEMASK_D1[self.state.remain as usize - 1],
-                );
-                self.state.remain = 0;
-            }
-            self.state.outptr = self.state.outptr.wrapping_sub(1);
-            let o = self.state.outptr;
-            self.src_set_byte(
-                0,
-                ext,
-                (self.state.buf[o + 1] >> l) | (self.state.buf[o] << r),
-            );
-            self.src_set_byte(
-                1,
-                ext,
-                (self.state.buf[o + 5] >> l) | (self.state.buf[o + 4] << r),
-            );
-            self.src_set_byte(
-                2,
-                ext,
-                (self.state.buf[o + 9] >> l) | (self.state.buf[o + 8] << r),
-            );
-            self.src_set_byte(
-                3,
-                ext,
-                (self.state.buf[o + 13] >> l) | (self.state.buf[o + 12] << r),
-            );
-        }
-    }
-
-    fn sftb_upl_sub(&mut self, ext: usize) {
-        if self.state.dstbit >= 8 {
-            self.state.dstbit -= 8;
-            set_srcmask_byte(&mut self.state.srcmask, ext, 0);
-            return;
-        }
-        let l = self.state.sft8bitl;
-        let r = self.state.sft8bitr;
-        if self.state.dstbit > 0 {
-            if (u32::from(self.state.dstbit) + self.state.remain) >= 8 {
-                set_srcmask_byte(
-                    &mut self.state.srcmask,
-                    ext,
-                    BYTEMASK_U0[self.state.dstbit as usize + 7 * 8],
-                );
-                self.state.remain -= 8 - u32::from(self.state.dstbit);
-                self.state.dstbit = 0;
-            } else {
-                set_srcmask_byte(
-                    &mut self.state.srcmask,
-                    ext,
-                    BYTEMASK_U0[self.state.dstbit as usize + (self.state.remain as usize - 1) * 8],
-                );
-                self.state.remain = 0;
-                self.state.dstbit = 0;
-            }
-        } else if self.state.remain >= 8 {
-            self.state.remain -= 8;
-        } else {
-            set_srcmask_byte(
-                &mut self.state.srcmask,
-                ext,
-                BYTEMASK_U1[self.state.remain as usize - 1],
-            );
-            self.state.remain = 0;
-        }
-        let o = self.state.outptr;
-        self.src_set_byte(
-            0,
-            ext,
-            (self.state.buf[o] << l) | (self.state.buf[o + 1] >> r),
-        );
-        self.src_set_byte(
-            1,
-            ext,
-            (self.state.buf[o + 4] << l) | (self.state.buf[o + 5] >> r),
-        );
-        self.src_set_byte(
-            2,
-            ext,
-            (self.state.buf[o + 8] << l) | (self.state.buf[o + 9] >> r),
-        );
-        self.src_set_byte(
-            3,
-            ext,
-            (self.state.buf[o + 12] << l) | (self.state.buf[o + 13] >> r),
-        );
-        self.state.outptr += 1;
-    }
-
-    fn sftb_dnl_sub(&mut self, ext: usize) {
-        if self.state.dstbit >= 8 {
-            self.state.dstbit -= 8;
-            set_srcmask_byte(&mut self.state.srcmask, ext, 0);
-            return;
-        }
-        let l = self.state.sft8bitl;
-        let r = self.state.sft8bitr;
-        if self.state.dstbit > 0 {
-            if (u32::from(self.state.dstbit) + self.state.remain) >= 8 {
-                set_srcmask_byte(
-                    &mut self.state.srcmask,
-                    ext,
-                    BYTEMASK_D0[self.state.dstbit as usize + 7 * 8],
-                );
-                self.state.remain -= 8 - u32::from(self.state.dstbit);
-                self.state.dstbit = 0;
-            } else {
-                set_srcmask_byte(
-                    &mut self.state.srcmask,
-                    ext,
-                    BYTEMASK_D0[self.state.dstbit as usize + (self.state.remain as usize - 1) * 8],
-                );
-                self.state.remain = 0;
-                self.state.dstbit = 0;
-            }
-        } else if self.state.remain >= 8 {
-            self.state.remain -= 8;
-        } else {
-            set_srcmask_byte(
-                &mut self.state.srcmask,
-                ext,
-                BYTEMASK_D1[self.state.remain as usize - 1],
-            );
-            self.state.remain = 0;
-        }
-        self.state.outptr = self.state.outptr.wrapping_sub(1);
-        let o = self.state.outptr;
-        self.src_set_byte(
-            0,
-            ext,
-            (self.state.buf[o + 1] >> l) | (self.state.buf[o] << r),
-        );
-        self.src_set_byte(
-            1,
-            ext,
-            (self.state.buf[o + 5] >> l) | (self.state.buf[o + 4] << r),
-        );
-        self.src_set_byte(
-            2,
-            ext,
-            (self.state.buf[o + 9] >> l) | (self.state.buf[o + 8] << r),
-        );
-        self.src_set_byte(
-            3,
-            ext,
-            (self.state.buf[o + 13] >> l) | (self.state.buf[o + 12] << r),
-        );
-    }
-
-    fn sftb_dispatch(&mut self, ext: usize) {
-        let needed = 8u32.wrapping_sub(u32::from(self.state.dstbit));
-        if self.state.stack < needed {
-            set_srcmask_byte(&mut self.state.srcmask, ext, 0);
-            return;
-        }
-        self.state.stack -= needed;
-        match self.state.func {
-            0 => self.sftb_upn_sub(ext),
-            1 => self.sftb_dnn_sub(ext),
-            2 => self.sftb_upr_sub(ext),
-            3 => self.sftb_dnr_sub(ext),
-            4 => self.sftb_upl_sub(ext),
-            5 => self.sftb_dnl_sub(ext),
-            _ => {}
-        }
-        if self.state.remain == 0 {
-            self.recalculate_shift();
-        }
-    }
-
-    fn sftw_dispatch(&mut self) {
-        let needed = 16 - u32::from(self.state.dstbit);
-        if self.state.stack < needed {
-            self.state.srcmask = 0;
-            return;
-        }
-        self.state.stack -= needed;
-
-        let is_ascending = self.state.func & 1 == 0;
-        let (first, second) = if is_ascending { (0, 1) } else { (1, 0) };
-
-        match self.state.func {
-            0 => {
-                self.sftb_upn_sub(first);
-                if self.state.remain > 0 {
-                    self.sftb_upn_sub(second);
-                    if self.state.remain > 0 {
-                        return;
-                    }
-                } else {
-                    set_srcmask_byte(&mut self.state.srcmask, second, 0);
-                }
-            }
-            1 => {
-                self.sftb_dnn_sub(first);
-                if self.state.remain > 0 {
-                    self.sftb_dnn_sub(second);
-                    if self.state.remain > 0 {
-                        return;
-                    }
-                } else {
-                    set_srcmask_byte(&mut self.state.srcmask, second, 0);
-                }
-            }
-            2 => {
-                self.sftb_upr_sub(first);
-                if self.state.remain > 0 {
-                    self.sftb_upr_sub(second);
-                    if self.state.remain > 0 {
-                        return;
-                    }
-                } else {
-                    set_srcmask_byte(&mut self.state.srcmask, second, 0);
-                }
-            }
-            3 => {
-                self.sftb_dnr_sub(first);
-                if self.state.remain > 0 {
-                    self.sftb_dnr_sub(second);
-                    if self.state.remain > 0 {
-                        return;
-                    }
-                } else {
-                    set_srcmask_byte(&mut self.state.srcmask, second, 0);
-                }
-            }
-            4 => {
-                self.sftb_upl_sub(first);
-                if self.state.remain > 0 {
-                    self.sftb_upl_sub(second);
-                    if self.state.remain > 0 {
-                        return;
-                    }
-                } else {
-                    set_srcmask_byte(&mut self.state.srcmask, second, 0);
-                }
-            }
-            5 => {
-                self.sftb_dnl_sub(first);
-                if self.state.remain > 0 {
-                    self.sftb_dnl_sub(second);
-                    if self.state.remain > 0 {
-                        return;
-                    }
-                } else {
-                    set_srcmask_byte(&mut self.state.srcmask, second, 0);
-                }
-            }
-            _ => {}
-        }
-        self.recalculate_shift();
-    }
-
-    fn shiftinput_byte(&mut self, ext: usize) {
-        if self.state.stack <= 16 {
-            if self.state.srcbit >= 8 {
-                self.state.srcbit -= 8;
-            } else {
-                self.state.stack += 8 - u32::from(self.state.srcbit);
-                self.state.srcbit = 0;
-            }
-            if self.state.sft & 0x1000 == 0 {
-                self.state.inptr += 1;
-            } else {
-                self.state.inptr = self.state.inptr.wrapping_sub(1);
-            }
-        }
-        self.state.srcmask = set_srcmask_byte_ret(self.state.srcmask, ext, 0xFF);
-        self.sftb_dispatch(ext);
-    }
-
-    fn shiftinput_incw(&mut self) {
-        if self.state.stack <= 16 {
-            self.state.inptr += 2;
-            if self.state.srcbit >= 8 {
-                self.state.outptr += 1;
-            }
-            self.state.stack += 16 - u32::from(self.state.srcbit);
-            self.state.srcbit = 0;
-        }
-        self.state.srcmask = 0xFFFF;
-        self.sftw_dispatch();
-    }
-
-    fn shiftinput_decw(&mut self) {
-        if self.state.stack <= 16 {
-            self.state.inptr = self.state.inptr.wrapping_sub(2);
-            if self.state.srcbit >= 8 {
-                self.state.outptr = self.state.outptr.wrapping_sub(1);
-            }
-            self.state.stack += 16 - u32::from(self.state.srcbit);
-            self.state.srcbit = 0;
-        }
-        self.state.srcmask = 0xFFFF;
-        self.sftw_dispatch();
-    }
-
-    fn get_pattern(&self) -> [u16; 4] {
-        match self.state.fgbg & 0x6000 {
-            0x2000 => self.state.bgc,
-            0x4000 => self.state.fgc,
-            0x6000 => [
-                self.state.fgc[0],
-                self.state.fgc[1],
-                self.state.bgc[2],
-                self.state.bgc[3],
-            ],
-            _ => {
-                if (self.state.ope & 0x0300) == 0x0100 {
-                    self.src
-                } else {
-                    self.state.patreg
-                }
-            }
-        }
-    }
-
-    fn compute_rop(&self, ope: u8, dst: [u16; 4]) -> [u16; 4] {
-        match ope {
-            0x00 => [0; 4],
-            0x0F => [!self.src[0], !self.src[1], !self.src[2], !self.src[3]],
-            0xC0 => [
-                self.src[0] & dst[0],
-                self.src[1] & dst[1],
-                self.src[2] & dst[2],
-                self.src[3] & dst[3],
-            ],
-            0xF0 => self.src,
-            0xFC => [
-                self.src[0] | (!self.src[0] & dst[0]),
-                self.src[1] | (!self.src[1] & dst[1]),
-                self.src[2] | (!self.src[2] & dst[2]),
-                self.src[3] | (!self.src[3] & dst[3]),
-            ],
-            0xFF => [0xFFFF; 4],
-            _ => {
-                // Check if pattern-independent (no-dest or no-pattern).
-                let uses_dest = (ope & 0x80 != ope & 0x20)
-                    || (ope & 0x40 != ope & 0x10)
-                    || (ope & 0x08 != ope & 0x02)
-                    || (ope & 0x04 != ope & 0x01);
-                let uses_pat = (ope & 0x80 != ope & 0x40)
-                    || (ope & 0x20 != ope & 0x10)
-                    || (ope & 0x08 != ope & 0x04)
-                    || (ope & 0x02 != ope & 0x01);
-
-                if !uses_dest && uses_pat {
-                    // ope_nd: no destination dependency
-                    let pat = self.get_pattern();
-                    let mut result = [0u16; 4];
-                    for p in 0..4 {
-                        if ope & 0x80 != 0 {
-                            result[p] |= pat[p] & self.src[p];
-                        }
-                        if ope & 0x40 != 0 {
-                            result[p] |= !pat[p] & self.src[p];
-                        }
-                        if ope & 0x08 != 0 {
-                            result[p] |= pat[p] & !self.src[p];
-                        }
-                        if ope & 0x04 != 0 {
-                            result[p] |= !pat[p] & !self.src[p];
-                        }
-                    }
-                    result
-                } else if uses_dest && !uses_pat {
-                    // ope_np: no pattern dependency
-                    let mut result = [0u16; 4];
-                    for p in 0..4 {
-                        if ope & 0x80 != 0 {
-                            result[p] |= self.src[p] & dst[p];
-                        }
-                        if ope & 0x20 != 0 {
-                            result[p] |= self.src[p] & !dst[p];
-                        }
-                        if ope & 0x08 != 0 {
-                            result[p] |= !self.src[p] & dst[p];
-                        }
-                        if ope & 0x02 != 0 {
-                            result[p] |= !self.src[p] & !dst[p];
-                        }
-                    }
-                    result
-                } else {
-                    // ope_xx: full 3-input truth table
-                    let pat = self.get_pattern();
-                    let mut result = [0u16; 4];
-                    for p in 0..4 {
-                        if ope & 0x80 != 0 {
-                            result[p] |= pat[p] & self.src[p] & dst[p];
-                        }
-                        if ope & 0x40 != 0 {
-                            result[p] |= !pat[p] & self.src[p] & dst[p];
-                        }
-                        if ope & 0x20 != 0 {
-                            result[p] |= pat[p] & self.src[p] & !dst[p];
-                        }
-                        if ope & 0x10 != 0 {
-                            result[p] |= !pat[p] & self.src[p] & !dst[p];
-                        }
-                        if ope & 0x08 != 0 {
-                            result[p] |= pat[p] & !self.src[p] & dst[p];
-                        }
-                        if ope & 0x04 != 0 {
-                            result[p] |= !pat[p] & !self.src[p] & dst[p];
-                        }
-                        if ope & 0x02 != 0 {
-                            result[p] |= pat[p] & !self.src[p] & !dst[p];
-                        }
-                        if ope & 0x01 != 0 {
-                            result[p] |= !pat[p] & !self.src[p] & !dst[p];
-                        }
-                    }
-                    result
-                }
-            }
-        }
-    }
-
-    fn ope_byte(&mut self, addr: u32, value: u8, dst: [u16; 4]) -> [u16; 4] {
-        self.state.mask2 = self.state.mask;
-        match self.state.ope & 0x1800 {
-            0x0800 => {
-                // Shift + ROP
-                if self.state.ope & 0x400 != 0 {
-                    let ext = (addr & 1) as usize;
-                    let inp = self.state.inptr;
-                    self.state.buf[inp] = value;
-                    self.state.buf[inp + 4] = value;
-                    self.state.buf[inp + 8] = value;
-                    self.state.buf[inp + 12] = value;
-                    self.shiftinput_byte(ext);
-                }
-                self.state.mask2 &= self.state.srcmask;
-                let rop = (self.state.ope & 0xFF) as u8;
-                self.compute_rop(rop, dst)
-            }
-            0x1000 => {
-                // Pattern/color source.
-                match self.state.fgbg & 0x6000 {
-                    0x2000 => self.state.bgc,
-                    0x4000 => self.state.fgc,
-                    _ => {
-                        if self.state.ope & 0x400 != 0 {
-                            let ext = (addr & 1) as usize;
-                            let inp = self.state.inptr;
-                            self.state.buf[inp] = value;
-                            self.state.buf[inp + 4] = value;
-                            self.state.buf[inp + 8] = value;
-                            self.state.buf[inp + 12] = value;
-                            self.shiftinput_byte(ext);
-                        }
-                        self.state.mask2 &= self.state.srcmask;
-                        self.src
-                    }
-                }
-            }
-            _ => {
-                // CPU data broadcast.
-                let w = u16::from(value) | (u16::from(value) << 8);
-                [w, w, w, w]
-            }
-        }
-    }
-
-    fn ope_word(&mut self, _addr: u32, value: u16, dst: [u16; 4]) -> [u16; 4] {
-        self.state.mask2 = self.state.mask;
-        match self.state.ope & 0x1800 {
-            0x0800 => {
-                // Shift + ROP
-                if self.state.ope & 0x400 != 0 {
-                    self.write_shift_input_word(value);
-                }
-                self.state.mask2 &= self.state.srcmask;
-                let rop = (self.state.ope & 0xFF) as u8;
-                self.compute_rop(rop, dst)
-            }
-            0x1000 => {
-                // Pattern/color with shift.
-                self.write_shift_input_word_always(value);
-                self.state.mask2 &= self.state.srcmask;
-                match self.state.fgbg & 0x6000 {
-                    0x2000 => self.state.bgc,
-                    0x4000 => self.state.fgc,
-                    _ => self.state.patreg,
-                }
-            }
-            _ => {
-                // CPU data broadcast with shift.
-                let data = [value, value, value, value];
-                self.write_shift_input_word_always(value);
-                self.state.mask2 &= self.state.srcmask;
-                data
-            }
-        }
-    }
-
-    fn write_shift_input_word(&mut self, value: u16) {
-        let lo = value as u8;
-        let hi = (value >> 8) as u8;
-        if self.state.sft & 0x1000 == 0 {
-            let inp = self.state.inptr;
-            self.state.buf[inp] = lo;
-            self.state.buf[inp + 1] = hi;
-            self.state.buf[inp + 4] = lo;
-            self.state.buf[inp + 5] = hi;
-            self.state.buf[inp + 8] = lo;
-            self.state.buf[inp + 9] = hi;
-            self.state.buf[inp + 12] = lo;
-            self.state.buf[inp + 13] = hi;
-            self.shiftinput_incw();
-        } else {
-            let inp = self.state.inptr;
-            self.state.buf[inp.wrapping_sub(1)] = lo;
-            self.state.buf[inp] = hi;
-            self.state.buf[inp + 3] = lo;
-            self.state.buf[inp + 4] = hi;
-            self.state.buf[inp + 7] = lo;
-            self.state.buf[inp + 8] = hi;
-            self.state.buf[inp + 11] = lo;
-            self.state.buf[inp + 12] = hi;
-            self.shiftinput_decw();
-        }
-    }
-
-    fn write_shift_input_word_always(&mut self, value: u16) {
-        let lo = value as u8;
-        let hi = (value >> 8) as u8;
-        if self.state.sft & 0x1000 == 0 {
-            let inp = self.state.inptr;
-            self.state.buf[inp] = lo;
-            self.state.buf[inp + 1] = hi;
-            self.state.buf[inp + 4] = lo;
-            self.state.buf[inp + 5] = hi;
-            self.state.buf[inp + 8] = lo;
-            self.state.buf[inp + 9] = hi;
-            self.state.buf[inp + 12] = lo;
-            self.state.buf[inp + 13] = hi;
-            self.shiftinput_incw();
-        } else {
-            let inp = self.state.inptr;
-            self.state.buf[inp.wrapping_sub(1)] = lo;
-            self.state.buf[inp] = hi;
-            self.state.buf[inp + 3] = lo;
-            self.state.buf[inp + 4] = hi;
-            self.state.buf[inp + 7] = lo;
-            self.state.buf[inp + 8] = hi;
-            self.state.buf[inp + 11] = lo;
-            self.state.buf[inp + 12] = hi;
-            self.shiftinput_decw();
-        }
-    }
-
-    fn compare_color_pat(&self) -> [u16; 4] {
-        match (self.state.fgbg >> 13) & 3 {
-            1 => self.state.bgc,
-            2 => self.state.fgc,
-            _ => self.state.patreg,
-        }
-    }
-
-    /// EGC byte read. Returns the byte to give to the CPU.
-    /// `vram` = [B, R, G, E] plane bytes at the accessed offset.
-    pub fn read_byte(&mut self, addr: u32, vram: [u8; 4]) -> u8 {
-        let ext = (addr & 1) as usize;
-
-        // Store last VRAM read
-        set_lastvram_byte(&mut self.state.lastvram, 0, ext, vram[0]);
-        set_lastvram_byte(&mut self.state.lastvram, 1, ext, vram[1]);
-        set_lastvram_byte(&mut self.state.lastvram, 2, ext, vram[2]);
-        set_lastvram_byte(&mut self.state.lastvram, 3, ext, vram[3]);
-
-        // Shift input from VRAM (when read-source = VRAM, bit 10 clear).
-        if self.state.ope & 0x400 == 0 {
-            let inp = self.state.inptr;
-            self.state.buf[inp] = vram[0];
-            self.state.buf[inp + 4] = vram[1];
-            self.state.buf[inp + 8] = vram[2];
-            self.state.buf[inp + 12] = vram[3];
-            self.shiftinput_byte(ext);
-        }
-
-        // Load pattern register from VRAM (reg load mode = 01).
-        if (self.state.ope & 0x0300) == 0x0100 {
-            set_patreg_byte(&mut self.state.patreg, 0, ext, vram[0]);
-            set_patreg_byte(&mut self.state.patreg, 1, ext, vram[1]);
-            set_patreg_byte(&mut self.state.patreg, 2, ext, vram[2]);
-            set_patreg_byte(&mut self.state.patreg, 3, ext, vram[3]);
-        }
-
-        // Return value depends on compare-read mode.
-        if self.state.ope & 0x2000 == 0 {
-            let pl = ((self.state.fgbg >> 8) & 3) as usize;
-            if self.state.ope & 0x400 == 0 {
-                get_src_byte(&self.src, pl, ext)
-            } else {
-                vram[pl]
-            }
-        } else {
-            // Compare-read: XOR each plane with the comparison color, AND together,
-            // return complement. Gives per-pixel match results.
-            let color = self.compare_color_pat();
-            let mut result = 0xFFu8;
-            for (v, c) in vram.iter().zip(&color) {
-                result &= !(v ^ (*c as u8));
-            }
-            result
-        }
-    }
-
-    /// EGC word read. Returns the word to give to the CPU.
-    /// `vram` = [B, R, G, E] plane words at the accessed word-aligned offset.
-    pub fn read_word(&mut self, _addr: u32, vram: [u16; 4]) -> u16 {
-        self.state.lastvram = vram;
-
-        // Shift input from VRAM
-        if self.state.ope & 0x400 == 0 {
-            if self.state.sft & 0x1000 == 0 {
-                let inp = self.state.inptr;
-                let [b, r, g, e] = vram;
-                self.state.buf[inp] = b as u8;
-                self.state.buf[inp + 1] = (b >> 8) as u8;
-                self.state.buf[inp + 4] = r as u8;
-                self.state.buf[inp + 5] = (r >> 8) as u8;
-                self.state.buf[inp + 8] = g as u8;
-                self.state.buf[inp + 9] = (g >> 8) as u8;
-                self.state.buf[inp + 12] = e as u8;
-                self.state.buf[inp + 13] = (e >> 8) as u8;
-                self.shiftinput_incw();
-            } else {
-                let inp = self.state.inptr;
-                let [b, r, g, e] = vram;
-                self.state.buf[inp.wrapping_sub(1)] = b as u8;
-                self.state.buf[inp] = (b >> 8) as u8;
-                self.state.buf[inp + 3] = r as u8;
-                self.state.buf[inp + 4] = (r >> 8) as u8;
-                self.state.buf[inp + 7] = g as u8;
-                self.state.buf[inp + 8] = (g >> 8) as u8;
-                self.state.buf[inp + 11] = e as u8;
-                self.state.buf[inp + 12] = (e >> 8) as u8;
-                self.shiftinput_decw();
-            }
-        }
-
-        // Load pattern register from VRAM (reg load mode = 01).
-        if (self.state.ope & 0x0300) == 0x0100 {
-            self.state.patreg = vram;
-        }
-
-        // Return value
-        if self.state.ope & 0x2000 == 0 {
-            let pl = ((self.state.fgbg >> 8) & 3) as usize;
-            if self.state.ope & 0x400 == 0 {
-                self.src[pl]
-            } else {
-                vram[pl]
-            }
-        } else {
-            // Compare-read: XOR each plane with the comparison color, AND together,
-            // return complement. Gives per-pixel match results.
-            let color = self.compare_color_pat();
-            let mut result = 0xFFFFu16;
-            for (v, c) in vram.iter().zip(&color) {
-                result &= !(v ^ c);
-            }
-            result
-        }
-    }
-
-    /// EGC byte write. Returns `(data_per_plane, mask)` for the bus to apply.
-    /// `vram` = [B, R, G, E] plane bytes at the accessed offset (current VRAM content).
-    pub fn write_byte(&mut self, addr: u32, value: u8, vram: [u8; 4]) -> ([u8; 4], u8) {
-        let ext = (addr & 1) as usize;
-
-        // Load pattern register from VRAM (reg load mode = 10) BEFORE computing.
-        if (self.state.ope & 0x0300) == 0x0200 {
-            set_patreg_byte(&mut self.state.patreg, 0, ext, vram[0]);
-            set_patreg_byte(&mut self.state.patreg, 1, ext, vram[1]);
-            set_patreg_byte(&mut self.state.patreg, 2, ext, vram[2]);
-            set_patreg_byte(&mut self.state.patreg, 3, ext, vram[3]);
-        }
-
-        // Build word-sized dst from current VRAM (ope functions work on words).
-        let dst = [
-            u16::from(vram[0]) | (u16::from(vram[0]) << 8),
-            u16::from(vram[1]) | (u16::from(vram[1]) << 8),
-            u16::from(vram[2]) | (u16::from(vram[2]) << 8),
-            u16::from(vram[3]) | (u16::from(vram[3]) << 8),
-        ];
-
-        let data = self.ope_byte(addr, value, dst);
-        let mask_byte = get_mask2_byte(self.state.mask2, ext);
-
-        (
-            [
-                get_word_byte(&data, 0, ext),
-                get_word_byte(&data, 1, ext),
-                get_word_byte(&data, 2, ext),
-                get_word_byte(&data, 3, ext),
-            ],
-            mask_byte,
-        )
-    }
-
-    /// EGC word write. Returns `(data_per_plane, mask)` for the bus to apply.
-    /// `vram` = [B, R, G, E] plane words at the accessed word-aligned offset.
-    pub fn write_word(&mut self, addr: u32, value: u16, vram: [u16; 4]) -> ([u16; 4], u16) {
-        // Load pattern register from VRAM (reg load mode = 10) BEFORE computing.
-        if (self.state.ope & 0x0300) == 0x0200 {
-            self.state.patreg = vram;
-        }
-
-        let _ = addr;
-        let data = self.ope_word(addr, value, vram);
-        (data, self.state.mask2)
-    }
-
-    /// Returns true if the shift direction is descending (bit 12 of sft register).
+    /// Returns whether the shifter runs right to left (register 7 bit 12).
     pub fn is_descending(&self) -> bool {
-        self.state.sft & 0x1000 != 0
+        self.state.descending()
     }
 
-    /// Returns the plane write enable mask (active-low, bits 0-3 of access register).
+    /// Returns whether register 1 enables writes to `plane`.
     pub fn plane_write_enabled(&self, plane: usize) -> bool {
-        self.state.access & (1 << plane) == 0
+        self.state.access & (ACCESS_PLANE_DISABLE << plane) == 0
     }
 
-    fn src_set_byte(&mut self, plane: usize, ext: usize, val: u8) {
-        if ext == 0 {
-            self.src[plane] = (self.src[plane] & 0xFF00) | u16::from(val);
+    /// Reads one byte through the EGC. `vram` holds the byte of each plane at
+    /// the accessed address.
+    pub fn read_byte(&mut self, address: u32, vram: [u8; 4]) -> u8 {
+        let odd = address & 1 != 0;
+        let planes = vram.map(u16::from);
+        if self.state.ope & OPE_PATTERN_LOAD_MASK == OPE_PATTERN_LOAD_ON_READ {
+            for (pattern, &byte) in self.state.pattern.iter_mut().zip(&vram) {
+                *pattern = replace_register_byte(*pattern, odd, byte);
+            }
+        }
+        let patterns = self.patterns_for_access(Some(odd));
+        self.read_unit(planes, patterns, BYTE_WIDTH, Some(odd)) as u8
+    }
+
+    /// Reads one aligned word through the EGC. `vram` holds the word of each
+    /// plane at the accessed address.
+    pub fn read_word(&mut self, vram: [u16; 4]) -> u16 {
+        if self.state.ope & OPE_PATTERN_LOAD_MASK == OPE_PATTERN_LOAD_ON_READ {
+            self.state.pattern = vram;
+        }
+        let patterns = self.patterns_for_access(None);
+        self.read_unit(vram, patterns, WORD_WIDTH, None)
+    }
+
+    /// Writes one byte through the EGC. `vram` holds the byte of each plane at
+    /// the accessed address. Returns the new data of each plane and the bits
+    /// to replace.
+    pub fn write_byte(&mut self, address: u32, value: u8, vram: [u8; 4]) -> ([u8; 4], u8) {
+        let odd = address & 1 != 0;
+        if self.state.ope & OPE_PATTERN_LOAD_MASK == OPE_PATTERN_LOAD_ON_WRITE {
+            for (pattern, &byte) in self.state.pattern.iter_mut().zip(&vram) {
+                *pattern = replace_register_byte(*pattern, odd, byte);
+            }
+        }
+        let patterns = self.patterns_for_access(Some(odd));
+        let mask = register_byte(self.state.mask, odd);
+        let (data, write_mask) = self.write_unit(
+            u16::from(value),
+            vram.map(u16::from),
+            patterns,
+            mask,
+            BYTE_WIDTH,
+            Some(odd),
+        );
+        (data.map(|plane| plane as u8), write_mask as u8)
+    }
+
+    /// Writes one aligned word through the EGC. `vram` holds the word of each
+    /// plane at the accessed address. Returns the new data of each plane and
+    /// the bits to replace.
+    pub fn write_word(&mut self, value: u16, vram: [u16; 4]) -> ([u16; 4], u16) {
+        if self.state.ope & OPE_PATTERN_LOAD_MASK == OPE_PATTERN_LOAD_ON_WRITE {
+            self.state.pattern = vram;
+        }
+        let patterns = self.patterns_for_access(None);
+        self.write_unit(value, vram, patterns, self.state.mask, WORD_WIDTH, None)
+    }
+
+    /// Returns the pattern input of every plane for a word access (`None`) or
+    /// for the byte of a byte access.
+    fn patterns_for_access(&self, byte_odd: Option<bool>) -> [u16; 4] {
+        std::array::from_fn(|plane| {
+            let pattern = self.state.pattern_input(plane);
+            match byte_odd {
+                Some(odd) => register_byte(pattern, odd),
+                None => pattern,
+            }
+        })
+    }
+
+    /// Performs a read of `width` pixels and returns the CPU data.
+    ///
+    /// A compare read returns 1 for each pixel whose four planes equal the
+    /// pattern input. Otherwise the read plane comes from the source latch when
+    /// VRAM feeds the shifter and from VRAM when the CPU feeds it.
+    fn read_unit(
+        &mut self,
+        vram: [u16; 4],
+        patterns: [u16; 4],
+        width: u32,
+        byte_odd: Option<bool>,
+    ) -> u16 {
+        let source_is_vram = self.state.ope & OPE_SOURCE_CPU == 0;
+        if source_is_vram {
+            self.state.shift_input(vram, width, byte_odd);
+        }
+
+        if self.state.ope & OPE_COMPARE_READ != 0 {
+            return vram
+                .iter()
+                .zip(&patterns)
+                .fold(0xFFFF, |result, (&plane, &pattern)| {
+                    result & !(plane ^ pattern)
+                });
+        }
+
+        let plane = usize::from((self.state.fgbg & FGBG_READ_PLANE_MASK) >> FGBG_READ_PLANE_SHIFT);
+        if source_is_vram {
+            latch_unit(self.state.source_latch[plane], byte_odd)
         } else {
-            self.src[plane] = (self.src[plane] & 0x00FF) | (u16::from(val) << 8);
+            vram[plane]
         }
     }
-}
 
-fn set_srcmask_byte(srcmask: &mut u16, ext: usize, val: u8) {
-    if ext == 0 {
-        *srcmask = (*srcmask & 0xFF00) | u16::from(val);
-    } else {
-        *srcmask = (*srcmask & 0x00FF) | (u16::from(val) << 8);
+    /// Performs a write of `width` pixels. Returns the data of each plane and
+    /// the bits to replace, both in memory form.
+    fn write_unit(
+        &mut self,
+        value: u16,
+        vram: [u16; 4],
+        patterns: [u16; 4],
+        mask: u16,
+        width: u32,
+        byte_odd: Option<bool>,
+    ) -> ([u16; 4], u16) {
+        if self.state.ope & OPE_SOURCE_CPU != 0 {
+            self.state
+                .shift_input([value; PLANE_COUNT], width, byte_odd);
+        }
+
+        let Some(stream_mask) = self.state.advance_write(width) else {
+            return (vram, 0);
+        };
+
+        let pixel_mask = stream_to_memory(stream_mask, width, self.state.descending()) & mask;
+        let data = match self.state.ope & OPE_WRITE_SOURCE_MASK {
+            OPE_WRITE_CPU => [value; PLANE_COUNT],
+            OPE_WRITE_ROP => {
+                let code = (self.state.ope & OPE_ROP_MASK) as u8;
+                std::array::from_fn(|plane| {
+                    let source = latch_unit(self.state.source_latch[plane], byte_odd);
+                    raster_operation(code, source, vram[plane], patterns[plane])
+                })
+            }
+            OPE_WRITE_PATTERN => patterns,
+            _ => return (vram, 0),
+        };
+        (data, pixel_mask)
     }
 }
 
-fn set_srcmask_byte_ret(srcmask: u16, ext: usize, val: u8) -> u16 {
-    if ext == 0 {
-        (srcmask & 0xFF00) | u16::from(val)
-    } else {
-        (srcmask & 0x00FF) | (u16::from(val) << 8)
-    }
-}
-
-fn set_lastvram_byte(lastvram: &mut [u16; 4], plane: usize, ext: usize, val: u8) {
-    if ext == 0 {
-        lastvram[plane] = (lastvram[plane] & 0xFF00) | u16::from(val);
-    } else {
-        lastvram[plane] = (lastvram[plane] & 0x00FF) | (u16::from(val) << 8);
-    }
-}
-
-fn set_patreg_byte(patreg: &mut [u16; 4], plane: usize, ext: usize, val: u8) {
-    if ext == 0 {
-        patreg[plane] = (patreg[plane] & 0xFF00) | u16::from(val);
-    } else {
-        patreg[plane] = (patreg[plane] & 0x00FF) | (u16::from(val) << 8);
-    }
-}
-
-fn get_src_byte(src: &[u16; 4], plane: usize, ext: usize) -> u8 {
-    if ext == 0 {
-        src[plane] as u8
-    } else {
-        (src[plane] >> 8) as u8
-    }
-}
-
-fn get_mask2_byte(mask2: u16, ext: usize) -> u8 {
-    if ext == 0 {
-        mask2 as u8
-    } else {
-        (mask2 >> 8) as u8
-    }
-}
-
-fn get_word_byte(data: &[u16; 4], plane: usize, ext: usize) -> u8 {
-    if ext == 0 {
-        data[plane] as u8
-    } else {
-        (data[plane] >> 8) as u8
+/// Returns the part of a source latch that belongs to a word access (`None`)
+/// or to the byte of a byte access.
+fn latch_unit(latch: u16, byte_odd: Option<bool>) -> u16 {
+    match byte_odd {
+        Some(odd) => register_byte(latch, odd),
+        None => latch,
     }
 }
 
@@ -1313,11 +776,11 @@ mod tests {
         assert_eq!(egc.state.bg, 0);
         assert_eq!(egc.state.sft, 0);
         assert_eq!(egc.state.leng, 0x000F);
-        assert_eq!(egc.state.remain, 16);
-        assert_eq!(egc.state.srcmask, 0xFFFF);
-        assert_eq!(egc.state.fgc, [0; 4]);
-        assert_eq!(egc.state.bgc, [0; 4]);
-        assert_eq!(egc.state.func, 0);
+        assert_eq!(egc.state.remaining_bits, 16);
+        assert_eq!(egc.state.source_mask(), 0xFFFF);
+        assert_eq!(egc.state.foreground_planes(), [0; 4]);
+        assert_eq!(egc.state.background_planes(), [0; 4]);
+        assert_eq!(egc.state.shift_function(), 0);
     }
 
     #[test]
@@ -1334,8 +797,8 @@ mod tests {
         assert_eq!(egc.state.ope, 0);
         assert_eq!(egc.state.fg, 0);
         assert_eq!(egc.state.mask, 0xFFFF);
-        assert_eq!(egc.state.fgc, [0; 4]);
-        assert_eq!(egc.state.srcmask, 0xFFFF);
+        assert_eq!(egc.state.foreground_planes(), [0; 4]);
+        assert_eq!(egc.state.source_mask(), 0xFFFF);
     }
 
     #[test]
@@ -1359,21 +822,30 @@ mod tests {
     fn fg_color_expansion() {
         let mut egc = Egc::new();
         egc.write_register_word(0x06, 5);
-        assert_eq!(egc.state.fgc, [0xFFFF, 0x0000, 0xFFFF, 0x0000]);
+        assert_eq!(
+            egc.state.foreground_planes(),
+            [0xFFFF, 0x0000, 0xFFFF, 0x0000]
+        );
     }
 
     #[test]
     fn bg_color_expansion() {
         let mut egc = Egc::new();
         egc.write_register_word(0x0A, 0x0A);
-        assert_eq!(egc.state.bgc, [0x0000, 0xFFFF, 0x0000, 0xFFFF]);
+        assert_eq!(
+            egc.state.background_planes(),
+            [0x0000, 0xFFFF, 0x0000, 0xFFFF]
+        );
     }
 
     #[test]
     fn fg_color_expansion_byte_write() {
         let mut egc = Egc::new();
         egc.write_register_byte(0x06, 5);
-        assert_eq!(egc.state.fgc, [0xFFFF, 0x0000, 0xFFFF, 0x0000]);
+        assert_eq!(
+            egc.state.foreground_planes(),
+            [0xFFFF, 0x0000, 0xFFFF, 0x0000]
+        );
     }
 
     #[test]
@@ -1436,16 +908,16 @@ mod tests {
     #[test]
     fn sft_write_resets_srcmask() {
         let mut egc = Egc::new();
-        egc.state.srcmask = 0x0000;
+        egc.state.destination_skip = 15;
         egc.write_register_word(0x0C, 0x0000);
-        assert_eq!(egc.state.srcmask, 0xFFFF);
+        assert_eq!(egc.state.source_mask(), 0xFFFF);
     }
 
     #[test]
     fn leng_write_sets_remain() {
         let mut egc = Egc::new();
         egc.write_register_word(0x0E, 0x001F);
-        assert_eq!(egc.state.remain, 32);
+        assert_eq!(egc.state.remaining_bits, 32);
     }
 
     #[test]
@@ -1454,31 +926,31 @@ mod tests {
 
         // Ascending, no shift (src8 == dst8): func=0
         egc.write_register_word(0x0C, 0x0033);
-        assert_eq!(egc.state.func, 0);
+        assert_eq!(egc.state.shift_function(), 0);
 
         // Descending, no shift: func=1
         egc.write_register_word(0x0C, 0x1033);
-        assert_eq!(egc.state.func, 1);
+        assert_eq!(egc.state.shift_function(), 1);
 
         // Ascending, src8(2) < dst8(5): func=2 (right shift)
         egc.write_register_word(0x0C, 0x0052);
-        assert_eq!(egc.state.func, 2);
-        assert_eq!(egc.state.sft8bitr, 3);
-        assert_eq!(egc.state.sft8bitl, 5);
+        assert_eq!(egc.state.shift_function(), 2);
+        assert_eq!(egc.state.byte_shift_bits().1, 3);
+        assert_eq!(egc.state.byte_shift_bits().0, 5);
 
         // Ascending, src8(5) > dst8(2): func=4 (left shift)
         egc.write_register_word(0x0C, 0x0025);
-        assert_eq!(egc.state.func, 4);
-        assert_eq!(egc.state.sft8bitl, 3);
-        assert_eq!(egc.state.sft8bitr, 5);
+        assert_eq!(egc.state.shift_function(), 4);
+        assert_eq!(egc.state.byte_shift_bits().0, 3);
+        assert_eq!(egc.state.byte_shift_bits().1, 5);
 
         // Descending, src8(2) < dst8(5): func=3
         egc.write_register_word(0x0C, 0x1052);
-        assert_eq!(egc.state.func, 3);
+        assert_eq!(egc.state.shift_function(), 3);
 
         // Descending, src8(5) > dst8(2): func=5
         egc.write_register_word(0x0C, 0x1025);
-        assert_eq!(egc.state.func, 5);
+        assert_eq!(egc.state.shift_function(), 5);
     }
 
     #[test]
@@ -1486,7 +958,7 @@ mod tests {
         let mut egc = Egc::new();
         egc.write_register_word(0x04, 0x0000); // ope=0 -> CPU broadcast
         let vram = [0u16; 4];
-        let (data, mask) = egc.write_word(0xA8000, 0xBEEF, vram);
+        let (data, mask) = egc.write_word(0xBEEF, vram);
         assert_eq!(data, [0xBEEF, 0xBEEF, 0xBEEF, 0xBEEF]);
         assert_eq!(mask, 0xFFFF);
     }
@@ -1498,7 +970,7 @@ mod tests {
         egc.write_register_word(0x02, 0x4000); // fgbg: FGC source
         egc.write_register_word(0x04, 0x1000); // ope: pattern source
         let vram = [0u16; 4];
-        let (data, _mask) = egc.write_word(0xA8000, 0x0000, vram);
+        let (data, _mask) = egc.write_word(0x0000, vram);
         assert_eq!(data, [0xFFFF, 0x0000, 0xFFFF, 0x0000]);
     }
 
@@ -1509,7 +981,7 @@ mod tests {
         egc.write_register_word(0x02, 0x2000); // fgbg: BGC source
         egc.write_register_word(0x04, 0x1000); // ope: pattern source
         let vram = [0u16; 4];
-        let (data, _mask) = egc.write_word(0xA8000, 0x0000, vram);
+        let (data, _mask) = egc.write_word(0x0000, vram);
         assert_eq!(data, [0x0000, 0xFFFF, 0x0000, 0xFFFF]);
     }
 
@@ -1519,7 +991,7 @@ mod tests {
         // ope: shift+ROP, CPU source (bit10=1), ROP=0x00
         egc.write_register_word(0x04, 0x0C00);
         let vram = [0x5555u16; 4];
-        let (data, _mask) = egc.write_word(0xA8000, 0xAAAA, vram);
+        let (data, _mask) = egc.write_word(0xAAAA, vram);
         assert_eq!(data, [0; 4]);
     }
 
@@ -1529,7 +1001,7 @@ mod tests {
         // ope: shift+ROP, CPU source, ROP=0xFF
         egc.write_register_word(0x04, 0x0CFF);
         let vram = [0u16; 4];
-        let (data, _mask) = egc.write_word(0xA8000, 0x0000, vram);
+        let (data, _mask) = egc.write_word(0x0000, vram);
         assert_eq!(data, [0xFFFF; 4]);
     }
 
@@ -1539,7 +1011,7 @@ mod tests {
         // ope: shift+ROP, CPU source (bit10=1), ROP=0xF0 (Source)
         egc.write_register_word(0x04, 0x0CF0);
         let vram = [0x5555u16; 4];
-        let (data, _mask) = egc.write_word(0xA8000, 0xAAAA, vram);
+        let (data, _mask) = egc.write_word(0xAAAA, vram);
         assert_eq!(data, [0xAAAA, 0xAAAA, 0xAAAA, 0xAAAA]);
     }
 
@@ -1549,7 +1021,7 @@ mod tests {
         // ope: shift+ROP, CPU source, ROP=0x0F (~Source)
         egc.write_register_word(0x04, 0x0C0F);
         let vram = [0u16; 4];
-        let (data, _mask) = egc.write_word(0xA8000, 0xAAAA, vram);
+        let (data, _mask) = egc.write_word(0xAAAA, vram);
         assert_eq!(data, [0x5555, 0x5555, 0x5555, 0x5555]);
     }
 
@@ -1559,7 +1031,7 @@ mod tests {
         // ope: shift+ROP, CPU source, ROP=0xC0 (S & D)
         egc.write_register_word(0x04, 0x0CC0);
         let vram = [0xFF00, 0x00FF, 0xF0F0, 0x0F0F];
-        let (data, _mask) = egc.write_word(0xA8000, 0xAAAA, vram);
+        let (data, _mask) = egc.write_word(0xAAAA, vram);
         assert_eq!(data, [0xAA00, 0x00AA, 0xA0A0, 0x0A0A]);
     }
 
@@ -1577,10 +1049,11 @@ mod tests {
     fn sftb_dispatch_no_panic_when_dstbit_exceeds_8() {
         let mut egc = Egc::new();
         // Set up a valid state with dstbit > 8 (range is 0-15).
-        egc.state.dstbit = 12;
-        egc.state.stack = 0;
-        // sftb_dispatch should return early without panicking.
-        egc.sftb_dispatch(0);
+        egc.state.destination_skip = 12;
+        egc.state.output_skip = 12;
+        egc.state.stream_write = 0;
+        // A byte input must return without panicking.
+        egc.state.shift_input([0; 4], BYTE_WIDTH, Some(false));
     }
 
     #[test]
@@ -1626,12 +1099,12 @@ mod tests {
 
         // VRAM matching color 3: B=0xFFFF, R=0xFFFF, G=0x0000, E=0x0000
         let vram_match: [u16; 4] = [0xFFFF, 0xFFFF, 0x0000, 0x0000];
-        let result = egc.read_word(0xA8000, vram_match);
+        let result = egc.read_word(vram_match);
         assert_eq!(result, 0xFFFF, "all pixels match fg color 3");
 
         // No match.
         let vram_no_match: [u16; 4] = [0x0000, 0x0000, 0xFFFF, 0xFFFF];
-        let result = egc.read_word(0xA8000, vram_no_match);
+        let result = egc.read_word(vram_no_match);
         assert_eq!(result, 0x0000, "no pixels match fg color 3");
     }
 }
