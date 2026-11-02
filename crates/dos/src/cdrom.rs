@@ -39,12 +39,16 @@ pub(crate) struct MscdexState {
     pub drive_letter: u8,
     /// Device open reference count.
     pub open_count: u16,
+    /// Drives of an MSCDEX that a command tail installed. Empty without such
+    /// an installation.
+    pub installed_drives: Vec<crate::mscdex::MscdexDrive>,
 }
 
 state_struct_codec!(MscdexState {
     device_name,
     drive_letter,
     open_count,
+    installed_drives,
 });
 
 impl MscdexState {
@@ -53,6 +57,7 @@ impl MscdexState {
             device_name: DEFAULT_DEVICE_NAME.to_vec(),
             drive_letter: CDROM_DRIVE_INDEX,
             open_count: 0,
+            installed_drives: Vec::new(),
         }
     }
 }
@@ -111,8 +116,11 @@ impl crate::NeetanDos {
         memory: &mut dyn MemoryAccess,
         cdrom: &mut dyn CdromIo,
     ) {
-        let request_offset = memory.read_word(crate::tables::CDROM_REQUEST_PTR_ADDR) as u32;
-        let request_segment = memory.read_word(crate::tables::CDROM_REQUEST_PTR_ADDR + 2) as u32;
+        let request_pointer = self
+            .state
+            .dos_data_address(crate::tables::CDROM_REQUEST_PTR_OFFSET);
+        let request_offset = memory.read_word(request_pointer) as u32;
+        let request_segment = memory.read_word(request_pointer + 2) as u32;
         let request_addr = (request_segment << 4) + request_offset;
         self.handle_device_request(memory, cdrom, request_addr);
     }
@@ -199,7 +207,7 @@ impl crate::NeetanDos {
                 memory.write_word(transfer_addr + 1, 0);
                 memory.write_word(
                     transfer_addr + 3,
-                    crate::tables::CDROM_MIRROR_HEADER_SEGMENT,
+                    self.state.dos_data_segment() + crate::tables::CDROM_MIRROR_HEADER_PARAGRAPHS,
                 );
                 STATUS_DONE
             }

@@ -1,11 +1,11 @@
 //! Adapter structs bridging shared OS traits to emulator internals.
 //!
-//! These adapters wrap the concrete emulator types (`common::Cpu`,
-//! `Pc9801Memory`) to implement the shared HLE DOS bridge traits.
+//! These adapters wrap the concrete emulator types (`Pc9801Memory`, the GDC
+//! and the disk controllers) to implement the shared HLE DOS bridge traits.
 
 use common::{
-    AudioChannelInfo, CdAudioState, CdAudioStatus, CdromIo, CdromTrackInfo, CdromTrackType, Cpu,
-    CpuAccess, CursorAccess, DiskIo, HardwareCursorState, MemoryAccess, SegmentRegister,
+    AudioChannelInfo, CdAudioState, CdAudioStatus, CdromIo, CdromTrackInfo, CdromTrackType,
+    CursorAccess, DiskIo, HardwareCursorState, MemoryAccess,
 };
 use device::{
     cd_audio::CdAudioState as DeviceCdAudioState, cdrom::TrackType, ide::IdeController,
@@ -13,119 +13,6 @@ use device::{
 };
 
 use crate::memory::Pc9801Memory;
-
-pub(super) struct DosCpuAccess<'a, C: Cpu>(pub &'a mut C);
-
-impl<C: Cpu> CpuAccess for DosCpuAccess<'_, C> {
-    fn ax(&self) -> u16 {
-        self.0.ax()
-    }
-    fn set_ax(&mut self, value: u16) {
-        self.0.set_ax(value);
-    }
-    fn bx(&self) -> u16 {
-        self.0.bx()
-    }
-    fn set_bx(&mut self, value: u16) {
-        self.0.set_bx(value);
-    }
-    fn cx(&self) -> u16 {
-        self.0.cx()
-    }
-    fn set_cx(&mut self, value: u16) {
-        self.0.set_cx(value);
-    }
-    fn dx(&self) -> u16 {
-        self.0.dx()
-    }
-    fn set_dx(&mut self, value: u16) {
-        self.0.set_dx(value);
-    }
-    fn si(&self) -> u16 {
-        self.0.si()
-    }
-    fn set_si(&mut self, value: u16) {
-        self.0.set_si(value);
-    }
-    fn di(&self) -> u16 {
-        self.0.di()
-    }
-    fn set_di(&mut self, value: u16) {
-        self.0.set_di(value);
-    }
-    fn bp(&self) -> u16 {
-        self.0.bp()
-    }
-    fn set_bp(&mut self, value: u16) {
-        self.0.set_bp(value);
-    }
-    fn ds(&self) -> u16 {
-        self.0.ds()
-    }
-    fn set_ds(&mut self, value: u16) {
-        self.0
-            .load_segment_real_mode(common::SegmentRegister::DS, value);
-    }
-    fn es(&self) -> u16 {
-        self.0.es()
-    }
-    fn set_es(&mut self, value: u16) {
-        self.0
-            .load_segment_real_mode(common::SegmentRegister::ES, value);
-    }
-    fn ss(&self) -> u16 {
-        self.0.ss()
-    }
-    fn set_ss(&mut self, value: u16) {
-        self.0
-            .load_segment_real_mode(common::SegmentRegister::SS, value);
-    }
-    fn sp(&self) -> u16 {
-        self.0.sp()
-    }
-    fn set_sp(&mut self, value: u16) {
-        self.0.set_sp(value);
-    }
-    fn cs(&self) -> u16 {
-        self.0.cs()
-    }
-    fn set_carry(&mut self, carry: bool) {
-        let mut flags = self.0.flags();
-        if carry {
-            flags |= 0x0001;
-        } else {
-            flags &= !0x0001;
-        }
-        self.0.set_flags(flags);
-    }
-    fn segment_base(&self, segment: SegmentRegister) -> u32 {
-        self.0.segment_base(segment)
-    }
-    fn eax(&self) -> u32 {
-        self.0.eax()
-    }
-    fn set_eax(&mut self, value: u32) {
-        self.0.set_eax(value);
-    }
-    fn ebx(&self) -> u32 {
-        self.0.ebx()
-    }
-    fn set_ebx(&mut self, value: u32) {
-        self.0.set_ebx(value);
-    }
-    fn ecx(&self) -> u32 {
-        self.0.ecx()
-    }
-    fn set_ecx(&mut self, value: u32) {
-        self.0.set_ecx(value);
-    }
-    fn edx(&self) -> u32 {
-        self.0.edx()
-    }
-    fn set_edx(&mut self, value: u32) {
-        self.0.set_edx(value);
-    }
-}
 
 pub(super) struct DosMemoryAccess<'a> {
     memory: &'a mut Pc9801Memory,

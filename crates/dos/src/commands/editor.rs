@@ -215,7 +215,9 @@ impl RunningCommand for RunningEditor {
 
                 if app.dirty {
                     {
-                        let mut console = io.console_io();
+                        let Some(mut console) = io.console_io() else {
+                            return StepResult::Done(1);
+                        };
                         render::render(
                             &app.mode,
                             app.overlay.as_ref(),
@@ -227,18 +229,16 @@ impl RunningCommand for RunningEditor {
                     app.dirty = false;
                 }
 
-                let has_key = {
-                    let console = io.console_io();
-                    console.char_available()
-                };
+                let has_key = io
+                    .console_io()
+                    .is_some_and(|mut console| console.char_available());
                 if !has_key {
                     self.phase = EditorPhase::Active(app);
                     return StepResult::Continue;
                 }
 
-                let (scan, ch) = {
-                    let mut console = io.console_io();
-                    console.read_key()
+                let Some((scan, ch)) = io.console_io().map(|mut console| console.read_key()) else {
+                    return StepResult::Done(1);
                 };
                 handle_key(&mut app, scan, ch, state, io, drive);
                 self.phase = EditorPhase::Active(app);
@@ -249,7 +249,9 @@ impl RunningCommand for RunningEditor {
 }
 
 fn clear_editor_console(io: &mut IoAccess) {
-    let mut console = io.console_io();
+    let Some(mut console) = io.console_io() else {
+        return;
+    };
     console.clear_screen();
     console.set_cursor_position(0, 0);
     console.set_cursor_visible(true);
@@ -265,6 +267,10 @@ impl RunningEditor {
         if is_help_request(&self.args) {
             print_help(io);
             return StepResult::Done(0);
+        }
+        if !io.has_text_screen() {
+            io.println(b"EDIT needs the text screen");
+            return StepResult::Done(1);
         }
 
         match initialize_app(state, io, drive, &self.args) {
@@ -294,7 +300,8 @@ fn initialize_app(
 ) -> Result<AppState, String> {
     let path = args.trim_ascii();
     if path.is_empty() {
-        let current_directory = file_picker::current_directory_path(io.memory, state.current_drive);
+        let current_directory =
+            file_picker::current_directory_path(state, io.memory, state.current_drive);
         let mut picker = FilePickerState::new(current_directory, PickerFocus::List);
         file_picker::load_entries(&mut picker, state, io.memory, drive)
             .map_err(|_| String::from("Cannot open current directory"))?;
@@ -542,7 +549,7 @@ fn handle_picker_key(
             }
         }
         (SCAN_F1, 0x00) => {
-            let drives = file_picker::drive_choices(io.memory);
+            let drives = file_picker::drive_choices(state, io.memory);
             app.overlay = Some(Overlay::DriveSelect {
                 drives,
                 dialog: ListDialog::new(),
@@ -949,7 +956,7 @@ fn execute_pending_action(
             let directory = if let Some(path) = current_editor_directory(app, state, io, drive) {
                 path
             } else {
-                file_picker::current_directory_path(io.memory, state.current_drive)
+                file_picker::current_directory_path(state, io.memory, state.current_drive)
             };
             let mut picker = FilePickerState::new(directory, PickerFocus::List);
             if file_picker::load_entries(&mut picker, state, io.memory, drive).is_ok() {
@@ -1007,7 +1014,7 @@ fn save_editor_to_path(
     }
 
     state
-        .ensure_volume_mounted(drive_index, io.memory, drive)
+        .ensure_volume_mounted(drive_index, drive)
         .map_err(|_| String::from("Drive not ready"))?;
 
     let (time, date) = state.dos_timestamp_now();
@@ -1112,7 +1119,7 @@ fn validate_new_file_target(
     }
 
     state
-        .ensure_volume_mounted(drive_index, io.memory, drive)
+        .ensure_volume_mounted(drive_index, drive)
         .map_err(|_| String::from("Drive not ready"))?;
 
     let volume = state.fat_volumes[drive_index as usize]
@@ -1157,7 +1164,7 @@ fn absolute_path(state: &DosState, memory: &dyn crate::MemoryAccess, path: &[u8]
     let mut full_path = if is_absolute {
         vec![b'A' + drive_index, b':', b'\\']
     } else {
-        file_picker::current_directory_path(memory, drive_index)
+        file_picker::current_directory_path(state, memory, drive_index)
     };
 
     if components.is_empty() {

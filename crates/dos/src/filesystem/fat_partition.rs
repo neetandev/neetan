@@ -52,14 +52,14 @@ fn chs_to_lba(cylinder: u16, head: u8, sector: u8, heads: u8, sectors_per_track:
 }
 
 /// Finds the partition offset (LBA) for the first active DOS partition on an HDD.
-pub(crate) fn find_partition_offset(drive_da: u8, disk: &mut dyn DiskIo) -> Result<u32, u16> {
+pub(crate) fn find_partition_offset(device_id: u8, disk: &mut dyn DiskIo) -> Result<u32, u16> {
     // Read sector 1 (partition table)
-    let sector_data = disk.read_sectors(drive_da, 1, 1).map_err(|_| 0x001Fu16)?;
+    let sector_data = disk.read_sectors(device_id, 1, 1).map_err(|_| 0x001Fu16)?;
 
     let entries = parse_partition_table(&sector_data);
 
     // Get drive geometry for CHS conversion
-    let (_, heads, spt) = disk.drive_geometry(drive_da).ok_or(0x001Fu16)?;
+    let (_, heads, spt) = disk.drive_geometry(device_id).ok_or(0x001Fu16)?;
 
     for entry in &entries {
         if is_dos_partition(entry) {

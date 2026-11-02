@@ -13,10 +13,14 @@ pub enum TownsModel {
     FmTownsIIMx,
 }
 
-/// Boot-device selection driving the SYSROM IPL via the CMOS boot-device byte.
+/// Boot-device selection driving the system ROM boot device search via the CMOS
+/// boot-device bytes.
 ///
-/// The IPL is LLE: there is no HLE DOS entry as on the PC-98, so `--boot-device
-/// dos` is translated to [`TownsBootDevice::Auto`] by the app.
+/// Both the real system ROM and the HLE system ROM read the one-shot boot request
+/// at CMOS 3C28h and the default boot device at 3182h. Either ROM loads the IPL of
+/// the selected device and runs it as guest code. The IPL loads `IO.SYS` of the
+/// medium. There is no HLE DOS entry as on the PC-98, so `--boot-device dos` is
+/// translated to [`TownsBootDevice::Auto`] by the app.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TownsBootDevice {
     /// CD-ROM when a disc is inserted, floppy otherwise.
@@ -71,6 +75,17 @@ impl TownsModel {
             TownsModel::FmTownsIICx => (0x01, 0x05),
             // i486DX class (0x02), model MX (0x0C).
             TownsModel::FmTownsIIMx => (0x02, 0x0C),
+        }
+    }
+
+    /// 386SX flag the system ROM writes to CMOS 3C22h. It is set only on the
+    /// 386SX machines with a 24-bit bus (UX class). None of the emulated models
+    /// belongs to that class.
+    pub const fn firmware_386sx_flag(self) -> u8 {
+        match self {
+            TownsModel::FmTowns => 0x00,
+            TownsModel::FmTownsIICx => 0x00,
+            TownsModel::FmTownsIIMx => 0x00,
         }
     }
 

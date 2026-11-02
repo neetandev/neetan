@@ -6,7 +6,7 @@ use common::{is_shift_jis_lead_byte, is_shift_jis_trail_byte, shift_jis_pair_to_
 
 use crate::{
     MemoryAccess,
-    console::Console,
+    console::TextVramConsole,
     tables,
     trace::{
         DosConsoleByteEvent, DosConsoleEscapeEvent, DosTraceEvent, character_mode,
@@ -146,7 +146,7 @@ impl EscParser {
     }
 }
 
-impl Console {
+impl TextVramConsole {
     fn shift_jis_mode_enabled(&self, memory: &dyn MemoryAccess) -> bool {
         memory.read_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_KANJI_MODE) != 0
     }

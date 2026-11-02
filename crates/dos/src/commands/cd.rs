@@ -73,7 +73,7 @@ fn print_help(io: &mut IoAccess) {
 }
 
 fn print_current_directory(state: &DosState, io: &mut IoAccess) {
-    let cds_addr = tables::CDS_BASE + (state.current_drive as u32) * tables::CDS_ENTRY_SIZE;
+    let cds_addr = state.cds_entry_addr(state.current_drive, io.memory);
 
     let mut path = Vec::new();
     for i in 0..67u32 {

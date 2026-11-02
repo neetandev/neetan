@@ -5,7 +5,8 @@ use device::disk::format as disk_format;
 use crate::{
     DiskIo, DosState, DriveIo, IoAccess,
     commands::{Command, RunningCommand, StepResult, is_help_request},
-    filesystem, tables,
+    drive_map::{DriveDevice, PartitionScheme},
+    filesystem::{self, fat_bpb::Bpb},
 };
 
 pub(crate) struct Format;
@@ -27,7 +28,8 @@ impl Command for Format {
 /// Authoritative FORMAT confirmation and disk progress.
 struct FormatState {
     drive_index: u8,
-    da_ua: u8,
+    device_id: u8,
+    floppy_bpb: Bpb,
     heads: u8,
     sectors_per_track: u8,
     sector_size: u16,
@@ -42,7 +44,8 @@ struct FormatState {
 
 state_struct_codec!(FormatState {
     drive_index,
-    da_ua,
+    device_id,
+    floppy_bpb,
     heads,
     sectors_per_track,
     sector_size,
@@ -55,33 +58,19 @@ state_struct_codec!(FormatState {
     verify,
 });
 
-fn floppy_bpb_params(da_type: u8) -> disk_format::BpbParams {
-    match da_type {
-        0x90 => disk_format::BpbParams {
-            bytes_per_sector: 1024,
-            sectors_per_cluster: 1,
-            reserved_sectors: 1,
-            num_fats: 2,
-            root_entry_count: 192,
-            media_descriptor: 0xFE,
-            sectors_per_fat: 2,
-            is_fat16: false,
-        },
-        0x70 => disk_format::BpbParams {
-            bytes_per_sector: 512,
-            sectors_per_cluster: 2,
-            reserved_sectors: 1,
-            num_fats: 2,
-            root_entry_count: 112,
-            media_descriptor: 0xFE,
-            sectors_per_fat: 3,
-            is_fat16: false,
-        },
-        _ => panic!("unsupported floppy DA type {:#04X}", da_type),
+/// Converts the default BPB of a floppy drive to the format parameters.
+fn floppy_bpb_params(bpb: &Bpb) -> disk_format::BpbParams {
+    disk_format::BpbParams {
+        bytes_per_sector: bpb.bytes_per_sector,
+        sectors_per_cluster: bpb.sectors_per_cluster,
+        reserved_sectors: bpb.reserved_sectors,
+        num_fats: bpb.num_fats,
+        root_entry_count: bpb.root_entry_count,
+        media_descriptor: bpb.media_descriptor,
+        sectors_per_fat: bpb.sectors_per_fat,
+        is_fat16: false,
     }
 }
-
-const KB_BUF_COUNT: u32 = 0x0528;
 
 #[derive(Clone)]
 enum FormatPhase {
@@ -172,7 +161,7 @@ impl RunningFormat {
             print_help(io);
             return StepResult::Done(0);
         }
-        match init_format(state, io, drive, &self.args) {
+        match init_format(state, drive, &self.args) {
             Ok(format_state) => {
                 let drive_letter = (b'A' + format_state.drive_index) as char;
                 let msg = format!(
@@ -191,11 +180,11 @@ impl RunningFormat {
     }
 
     fn step_confirm(&mut self, format_state: FormatState, io: &mut IoAccess) -> StepResult {
-        if io.memory.read_byte(KB_BUF_COUNT) == 0 {
+        if !io.key_available() {
             self.phase = FormatPhase::Confirm(format_state);
             return StepResult::Continue;
         }
-        let key = consume_key(io);
+        let key = io.take_key_character();
         io.println(b"");
 
         match key.to_ascii_uppercase() {
@@ -233,7 +222,7 @@ impl RunningFormat {
         let lba = format_state.current_track * format_state.sectors_per_track as u32;
 
         if drive
-            .write_sectors(format_state.da_ua, lba, &fill_data)
+            .write_sectors(format_state.device_id, lba, &fill_data)
             .is_err()
         {
             io.println(b"Write error during format");
@@ -255,7 +244,10 @@ impl RunningFormat {
 
         // Sector 0: IPL (clear to zeros)
         let ipl = vec![0u8; ss];
-        if drive.write_sectors(format_state.da_ua, 0, &ipl).is_err() {
+        if drive
+            .write_sectors(format_state.device_id, 0, &ipl)
+            .is_err()
+        {
             io.println(b"Write error");
             return StepResult::Done(1);
         }
@@ -269,7 +261,7 @@ impl RunningFormat {
         );
 
         if drive
-            .write_sectors(format_state.da_ua, 1, &part_sector)
+            .write_sectors(format_state.device_id, 1, &part_sector)
             .is_err()
         {
             io.println(b"Write error");
@@ -299,15 +291,14 @@ impl RunningFormat {
             );
 
             if disk
-                .write_sectors(format_state.da_ua, format_state.partition_offset, &boot)
+                .write_sectors(format_state.device_id, format_state.partition_offset, &boot)
                 .is_err()
             {
                 io.println(b"Write error");
                 return StepResult::Done(1);
             }
         } else {
-            let da_type = format_state.da_ua & 0xF0;
-            let bpb = floppy_bpb_params(da_type);
+            let bpb = floppy_bpb_params(&format_state.floppy_bpb);
 
             let mut boot = vec![0u8; format_state.sector_size as usize];
             boot[0] = 0xEB;
@@ -326,7 +317,10 @@ impl RunningFormat {
             boot[24..26].copy_from_slice(&(format_state.sectors_per_track as u16).to_le_bytes());
             boot[26..28].copy_from_slice(&(format_state.heads as u16).to_le_bytes());
 
-            if disk.write_sectors(format_state.da_ua, 0, &boot).is_err() {
+            if disk
+                .write_sectors(format_state.device_id, 0, &boot)
+                .is_err()
+            {
                 io.println(b"Write error");
                 return StepResult::Done(1);
             }
@@ -348,8 +342,7 @@ impl RunningFormat {
             let fat_base = format_state.partition_offset + bpb.reserved_sectors as u32;
             (bpb, fat_base)
         } else {
-            let da_type = format_state.da_ua & 0xF0;
-            let bpb = floppy_bpb_params(da_type);
+            let bpb = floppy_bpb_params(&format_state.floppy_bpb);
             let fat_base = bpb.reserved_sectors as u32;
             (bpb, fat_base)
         };
@@ -359,7 +352,7 @@ impl RunningFormat {
         for fat_idx in 0..bpb.num_fats as u32 {
             let fat_lba = fat_base + fat_idx * bpb.sectors_per_fat as u32;
             if disk
-                .write_sectors(format_state.da_ua, fat_lba, &fat_data)
+                .write_sectors(format_state.device_id, fat_lba, &fat_data)
                 .is_err()
             {
                 io.println(b"Write error");
@@ -385,8 +378,7 @@ impl RunningFormat {
                 + bpb.num_fats as u32 * bpb.sectors_per_fat as u32;
             (bpb, root_base)
         } else {
-            let da_type = format_state.da_ua & 0xF0;
-            let bpb = floppy_bpb_params(da_type);
+            let bpb = floppy_bpb_params(&format_state.floppy_bpb);
             let root_base =
                 bpb.reserved_sectors as u32 + bpb.num_fats as u32 * bpb.sectors_per_fat as u32;
             (bpb, root_base)
@@ -398,7 +390,7 @@ impl RunningFormat {
         let root_data = vec![0u8; root_size];
 
         if disk
-            .write_sectors(format_state.da_ua, root_base, &root_data)
+            .write_sectors(format_state.device_id, root_base, &root_data)
             .is_err()
         {
             io.println(b"Write error");
@@ -428,7 +420,7 @@ impl RunningFormat {
         let lba = format_state.current_track * format_state.sectors_per_track as u32;
         if disk
             .read_sectors(
-                format_state.da_ua,
+                format_state.device_id,
                 lba,
                 format_state.sectors_per_track as u32,
             )
@@ -453,8 +445,7 @@ impl RunningFormat {
             let partition_sectors = format_state.total_sectors - format_state.partition_offset;
             disk_format::hdd_bpb_params(format_state.sector_size, partition_sectors)
         } else {
-            let da_type = format_state.da_ua & 0xF0;
-            floppy_bpb_params(da_type)
+            floppy_bpb_params(&format_state.floppy_bpb)
         };
 
         let volume_sectors = if format_state.is_hdd {
@@ -519,8 +510,7 @@ fn print_help(io: &mut IoAccess) {
 }
 
 fn init_format(
-    _state: &mut DosState,
-    io: &mut IoAccess,
+    state: &mut DosState,
     disk: &mut dyn DiskIo,
     args: &[u8],
 ) -> Result<FormatState, &'static [u8]> {
@@ -554,26 +544,24 @@ fn init_format(
     let (drive_opt, _, _) = filesystem::split_path(drive_token);
     let drive_index = drive_opt.ok_or(&b"Invalid drive specification\r\n"[..])?;
 
-    // Look up DA/UA
-    let da_ua = io
-        .memory
-        .read_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_DAUA_TABLE + drive_index as u32);
-    if da_ua == 0 {
-        return Err(b"Invalid drive specification\r\n");
-    }
-
-    let da_type = da_ua & 0xF0;
-    if da_type != 0x90 && da_type != 0x70 && da_type != 0x80 {
-        return Err(b"Invalid drive specification\r\n");
-    }
-
-    let is_hdd = da_type == 0x80;
+    let entry = state
+        .drive_map
+        .entry(drive_index)
+        .ok_or(&b"Invalid drive specification\r\n"[..])?;
+    let geometry = entry
+        .geometry
+        .ok_or(&b"Invalid drive specification\r\n"[..])?;
+    let (device_id, is_hdd) = match (entry.device, entry.partition_scheme) {
+        (DriveDevice::Floppy { device_id }, _) => (device_id, false),
+        (DriveDevice::FixedDisk { device_id }, PartitionScheme::Pc98) => (device_id, true),
+        _ => return Err(b"Invalid drive specification\r\n"),
+    };
 
     let (cylinders, heads, sectors_per_track) = disk
-        .drive_geometry(da_ua)
+        .drive_geometry(device_id)
         .ok_or(&b"Invalid drive specification\r\n"[..])?;
     let sector_size = disk
-        .sector_size(da_ua)
+        .sector_size(device_id)
         .ok_or(&b"Invalid drive specification\r\n"[..])?;
 
     let total_sectors = cylinders as u32 * heads as u32 * sectors_per_track as u32;
@@ -588,7 +576,8 @@ fn init_format(
 
     Ok(FormatState {
         drive_index,
-        da_ua,
+        device_id,
+        floppy_bpb: geometry.default_bpb,
         heads,
         sectors_per_track,
         sector_size,
@@ -600,19 +589,4 @@ fn init_format(
         quick,
         verify,
     })
-}
-
-fn consume_key(io: &mut IoAccess) -> u8 {
-    let head = io.memory.read_word(0x0524) as u32;
-    let ch = io.memory.read_byte(head);
-    let mut new_head = head + 2;
-    if new_head >= 0x0522 {
-        new_head = 0x0502;
-    }
-    io.memory.write_word(0x0524, new_head as u16);
-    let count = io.memory.read_byte(KB_BUF_COUNT);
-    if count > 0 {
-        io.memory.write_byte(KB_BUF_COUNT, count - 1);
-    }
-    ch
 }

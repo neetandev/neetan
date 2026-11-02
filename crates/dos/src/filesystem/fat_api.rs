@@ -1,13 +1,14 @@
-//! Public façade for FAT12/FAT16 read/write access.
+//! Public facade for FAT12/FAT16 read/write access.
 //!
-//! Mount the volume with `mount_hdd` (which finds the first active DOS
-//! partition automatically) or `mount_fdd` (which mounts at offset 0).
+//! Mount the volume of a drive entry with `mount`. The partition scheme of the
+//! entry finds the volume start and its geometry names the BPB source.
 //! Call `flush` explicitly after any write.
 
 use std::fmt;
 
 use crate::{
     DiskIo,
+    drive_map::DriveEntry,
     filesystem::{
         fat::FatVolume,
         fat_dir::{
@@ -15,8 +16,6 @@ use crate::{
             fcb_to_display_name, name_to_fcb,
         },
         fat_file::{self, FileCreateOptions},
-        fat_partition::find_partition_offset,
-        mbr_partition::find_mbr_partition_offset,
     },
 };
 
@@ -101,26 +100,16 @@ pub struct FatFs<'d> {
 }
 
 impl<'d> FatFs<'d> {
-    /// Mounts an HDD volume. Reads the PC-98 partition table to find the
-    /// first active DOS partition; falls back to offset 0 if none is found.
-    pub fn mount_hdd(disk: &'d mut dyn DiskIo, drive_da: u8) -> Result<Self, FatError> {
-        let offset = find_partition_offset(drive_da, disk).map_err(map_err)?;
-        let volume = FatVolume::mount(drive_da, offset, disk).map_err(map_err)?;
-        Ok(Self { volume, disk })
-    }
-
-    /// Mounts an HDD volume partitioned with a PC/AT master boot record.
-    /// Reads the MBR to find the first FAT partition (preferring an
-    /// active one). A disk without the boot signature mounts at offset 0.
-    pub fn mount_hdd_mbr(disk: &'d mut dyn DiskIo, drive_da: u8) -> Result<Self, FatError> {
-        let offset = find_mbr_partition_offset(drive_da, disk).map_err(map_err)?;
-        let volume = FatVolume::mount(drive_da, offset, disk).map_err(map_err)?;
-        Ok(Self { volume, disk })
-    }
-
-    /// Mounts an FDD volume (no partition table; partition offset is 0).
-    pub fn mount_fdd(disk: &'d mut dyn DiskIo, drive_da: u8) -> Result<Self, FatError> {
-        let volume = FatVolume::mount(drive_da, 0, disk).map_err(map_err)?;
+    /// Mounts the volume of a drive entry: finds the volume start with the
+    /// partition scheme and takes the BPB from the geometry of the entry.
+    pub fn mount(disk: &'d mut dyn DiskIo, entry: &DriveEntry) -> Result<Self, FatError> {
+        let device_id = entry.device.disk_device_id().ok_or(FatError::Io)?;
+        let geometry = entry.geometry.ok_or(FatError::Io)?;
+        let offset = entry
+            .partition_scheme
+            .volume_start(device_id, disk)
+            .map_err(map_err)?;
+        let volume = FatVolume::mount(device_id, offset, &geometry, disk).map_err(map_err)?;
         Ok(Self { volume, disk })
     }
 

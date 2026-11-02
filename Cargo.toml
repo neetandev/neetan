@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "utils/create_font"]
+members = ["crates/*", "utils/create_font", "utils/dos_towns"]
 
 [workspace.package]
 authors = ["Nils Hasenbanck <nils@hasenbanck.de>"]

@@ -3,12 +3,13 @@
 mod best_fit;
 pub(crate) mod memory_manager;
 
-use crate::{DosState, MemoryAccess, tables::*};
+use crate::{DosPlacement, DosState, MemoryAccess, tables::*};
 
-const MCB_TYPE_M: u8 = 0x4D;
-const MCB_TYPE_Z: u8 = 0x5A;
+/// MCB type byte of a block with a successor.
+pub(crate) const MCB_TYPE_M: u8 = 0x4D;
+/// MCB type byte of the last block of a chain.
+pub(crate) const MCB_TYPE_Z: u8 = 0x5A;
 const MAX_CHAIN_WALK: usize = 4096;
-const CONVENTIONAL_MEMORY_TOTAL_BYTES: u32 = 640 * 1024;
 const HMA_TOTAL_BYTES: u32 = 0xFFF0;
 
 // DOS error codes
@@ -138,18 +139,51 @@ pub(crate) fn largest_free_block_paragraphs_pub(mem: &dyn MemoryAccess, first_se
     largest_free_block_paragraphs(mem, first_segment).min(u16::MAX as u32) as u16
 }
 
-fn conventional_stop_before_segment(umb_first_mcb_segment: Option<u16>) -> Option<u16> {
-    umb_first_mcb_segment.map(|_| MEMORY_TOP_SEGMENT)
+/// MCB chains that DOS-level memory calls search.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct McbChains {
+    /// First MCB of the conventional chain.
+    pub(crate) first_mcb_segment: u16,
+    /// Top of conventional memory. The UMB link MCB sits at this segment.
+    pub(crate) memory_top_segment: u16,
+    /// First MCB of the UMB chain, if DOS searches upper memory.
+    pub(crate) umb_first_mcb_segment: Option<u16>,
 }
 
-fn dos_strategy_view(
-    umb_first_mcb_segment: Option<u16>,
-    strategy: u16,
-) -> (u16, Option<u16>, bool, bool) {
+impl McbChains {
+    /// Returns the chains of a conventional chain without upper memory.
+    #[cfg(test)]
+    pub(crate) fn conventional(first_mcb_segment: u16, memory_top_segment: u16) -> Self {
+        Self {
+            first_mcb_segment,
+            memory_top_segment,
+            umb_first_mcb_segment: None,
+        }
+    }
+
+    /// Returns a copy that also searches the UMB chain at `umb_first_mcb_segment`.
+    #[cfg(test)]
+    pub(crate) fn with_umb(self, umb_first_mcb_segment: u16) -> Self {
+        Self {
+            umb_first_mcb_segment: Some(umb_first_mcb_segment),
+            ..self
+        }
+    }
+}
+
+fn conventional_stop_before_segment(chains: McbChains) -> Option<u16> {
+    chains
+        .umb_first_mcb_segment
+        .map(|_| chains.memory_top_segment)
+}
+
+fn dos_strategy_view(chains: McbChains, strategy: u16) -> (u16, Option<u16>, bool, bool) {
     let fit_only = strategy & 0x000F;
     let high_first = strategy & 0x0040 != 0;
     let high_only = strategy & 0x0080 != 0;
-    let umb = umb_first_mcb_segment.filter(|_| high_first || high_only);
+    let umb = chains
+        .umb_first_mcb_segment
+        .filter(|_| high_first || high_only);
 
     if umb.is_some() {
         (fit_only, umb, high_first, high_only)
@@ -191,16 +225,16 @@ fn walk_chain_for_data_segment(
 
 fn find_chain_containing_block(
     mem: &dyn MemoryAccess,
-    first_mcb_segment: u16,
-    umb_first_mcb_segment: Option<u16>,
+    chains: McbChains,
     data_segment: u16,
 ) -> Result<Option<(u16, u16)>, u8> {
+    let first_mcb_segment = chains.first_mcb_segment;
     if let Some(prev_or_target) = walk_chain_for_data_segment(mem, first_mcb_segment, data_segment)?
     {
         return Ok(Some((first_mcb_segment, prev_or_target)));
     }
 
-    if let Some(umb_segment) = umb_first_mcb_segment
+    if let Some(umb_segment) = chains.umb_first_mcb_segment
         && let Some(prev_or_target) = walk_chain_for_data_segment(mem, umb_segment, data_segment)?
     {
         return Ok(Some((umb_segment, prev_or_target)));
@@ -241,8 +275,8 @@ pub(crate) struct InitialMcbLayout {
     pub free_mcb_segment: u16,
 }
 
-pub(crate) fn initial_mcb_layout(env_paragraphs: u16) -> InitialMcbLayout {
-    let env_segment = FIRST_MCB_SEGMENT + 1;
+pub(crate) fn initial_mcb_layout(first_mcb_segment: u16, env_paragraphs: u16) -> InitialMcbLayout {
+    let env_segment = first_mcb_segment + 1;
     let command_mcb_segment = env_segment + env_paragraphs;
     let psp_segment = command_mcb_segment + 1;
     let free_mcb_segment = psp_segment + COMMAND_BLOCK_PARAGRAPHS;
@@ -257,13 +291,18 @@ pub(crate) fn initial_mcb_layout(env_paragraphs: u16) -> InitialMcbLayout {
 }
 
 pub(crate) fn collect_memory_overview(state: &DosState, mem: &dyn MemoryAccess) -> MemoryOverview {
-    let (conventional_used_paragraphs, _) =
-        walk_mcb_chain_usage_until(mem, FIRST_MCB_SEGMENT, Some(MEMORY_TOP_SEGMENT));
+    let placement = state.platform.placement;
+    let (conventional_used_paragraphs, _) = walk_mcb_chain_usage_until(
+        mem,
+        placement.first_mcb_segment,
+        Some(placement.memory_top_segment),
+    );
     let conventional_used_bytes = conventional_used_paragraphs * 16;
+    let conventional_total_bytes = u32::from(placement.memory_top_segment) * 16;
     let conventional = MemoryAmount {
-        total_bytes: CONVENTIONAL_MEMORY_TOTAL_BYTES,
+        total_bytes: conventional_total_bytes,
         used_bytes: conventional_used_bytes,
-        free_bytes: CONVENTIONAL_MEMORY_TOTAL_BYTES.saturating_sub(conventional_used_bytes),
+        free_bytes: conventional_total_bytes.saturating_sub(conventional_used_bytes),
     };
 
     let memory_manager = state.memory_manager.as_ref();
@@ -346,8 +385,8 @@ pub(crate) fn collect_memory_overview(state: &DosState, mem: &dyn MemoryAccess) 
         extended_pool,
         largest_conventional_free_bytes: largest_free_block_paragraphs_until(
             mem,
-            FIRST_MCB_SEGMENT,
-            Some(MEMORY_TOP_SEGMENT),
+            placement.first_mcb_segment,
+            Some(placement.memory_top_segment),
         ) * 16,
         largest_umb_free_bytes: if umb.total_bytes > 0 {
             memory_manager
@@ -462,12 +501,16 @@ pub(crate) fn write_mcb(
 /// Creates the initial 3-MCB chain after DOS data structures:
 ///   MCB[0]: environment block (owner=DOS, name="SD")
 ///   MCB[1]: COMMAND.COM PSP + code stub (owner=PSP_SEGMENT, name="COMMAND\0")
-///   MCB[2]: free memory to 640 KB (owner=free)
-pub(crate) fn write_initial_mcb_chain(mem: &mut dyn MemoryAccess, layout: InitialMcbLayout) {
+///   MCB[2]: free memory up to the memory top (owner=free)
+pub(crate) fn write_initial_mcb_chain(
+    mem: &mut dyn MemoryAccess,
+    placement: DosPlacement,
+    layout: InitialMcbLayout,
+) {
     // MCB[0]: environment block
     write_mcb(
         mem,
-        FIRST_MCB_SEGMENT,
+        placement.first_mcb_segment,
         0x4D, // 'M'
         MCB_OWNER_DOS,
         layout.env_paragraphs,
@@ -485,7 +528,7 @@ pub(crate) fn write_initial_mcb_chain(mem: &mut dyn MemoryAccess, layout: Initia
     );
 
     // MCB[2]: free memory (Z block)
-    let free_paragraphs = MEMORY_TOP_SEGMENT - layout.free_mcb_segment - 1;
+    let free_paragraphs = placement.memory_top_segment - layout.free_mcb_segment - 1;
     write_mcb(
         mem,
         layout.free_mcb_segment,
@@ -497,7 +540,7 @@ pub(crate) fn write_initial_mcb_chain(mem: &mut dyn MemoryAccess, layout: Initia
 }
 
 /// DOS INT 21h 48h entry point: allocates from conventional memory and,
-/// when `umb_first_mcb_segment` is `Some` (UMB is linked per DOS 5803h),
+/// when `chains` has a UMB chain (UMB is linked per DOS 5803h),
 /// honours the high-memory preference flags `+0x40` (high-first) and
 /// `+0x80` (high-only) in `strategy`.
 ///
@@ -506,14 +549,14 @@ pub(crate) fn write_initial_mcb_chain(mem: &mut dyn MemoryAccess, layout: Initia
 /// searched chains.
 pub(crate) fn allocate_dos(
     mem: &mut dyn MemoryAccess,
-    first_mcb_segment: u16,
-    umb_first_mcb_segment: Option<u16>,
+    chains: McbChains,
     paragraphs: u16,
     owner: u16,
     strategy: u16,
 ) -> Result<u16, (u8, u16)> {
-    let (fit_only, umb, high_first, high_only) = dos_strategy_view(umb_first_mcb_segment, strategy);
-    let conventional_stop_before = conventional_stop_before_segment(umb_first_mcb_segment);
+    let first_mcb_segment = chains.first_mcb_segment;
+    let (fit_only, umb, high_first, high_only) = dos_strategy_view(chains, strategy);
+    let conventional_stop_before = conventional_stop_before_segment(chains);
 
     let first_result = match (umb, high_only) {
         (Some(umb_seg), true) => allocate(mem, umb_seg, paragraphs, owner, fit_only),
@@ -557,16 +600,14 @@ pub(crate) fn allocate_dos(
 
 pub(crate) fn largest_available_dos(
     mem: &dyn MemoryAccess,
-    first_mcb_segment: u16,
-    umb_first_mcb_segment: Option<u16>,
+    chains: McbChains,
     strategy: u16,
 ) -> u16 {
-    let (_fit_only, umb, high_first, high_only) =
-        dos_strategy_view(umb_first_mcb_segment, strategy);
+    let (_fit_only, umb, high_first, high_only) = dos_strategy_view(chains, strategy);
     let conventional_largest = largest_free_block_paragraphs_until(
         mem,
-        first_mcb_segment,
-        conventional_stop_before_segment(umb_first_mcb_segment),
+        chains.first_mcb_segment,
+        conventional_stop_before_segment(chains),
     ) as u16;
     let umb_largest = umb
         .map(|segment| largest_free_block_paragraphs(mem, segment) as u16)
@@ -797,12 +838,10 @@ pub(crate) fn free(
 
 pub(crate) fn free_dos(
     mem: &mut dyn MemoryAccess,
-    first_mcb_segment: u16,
-    umb_first_mcb_segment: Option<u16>,
+    chains: McbChains,
     data_segment: u16,
 ) -> Result<(), u8> {
-    match find_chain_containing_block(mem, first_mcb_segment, umb_first_mcb_segment, data_segment)?
-    {
+    match find_chain_containing_block(mem, chains, data_segment)? {
         Some((chain_start, _)) => free(mem, chain_start, data_segment),
         None => Err(ERR_INVALID_BLOCK),
     }
@@ -977,11 +1016,8 @@ pub(crate) fn resize(
     }
 }
 
-fn conventional_link_anchor_segment(
-    mem: &dyn MemoryAccess,
-    first_mcb_segment: u16,
-) -> Result<u16, u8> {
-    let mut current = first_mcb_segment;
+fn conventional_link_anchor_segment(mem: &dyn MemoryAccess, chains: McbChains) -> Result<u16, u8> {
+    let mut current = chains.first_mcb_segment;
 
     for _ in 0..MAX_CHAIN_WALK {
         let block_type = read_mcb_type(mem, current);
@@ -990,7 +1026,7 @@ fn conventional_link_anchor_segment(
         }
 
         let next_segment = current + read_mcb_size(mem, current) + 1;
-        if next_segment == MEMORY_TOP_SEGMENT {
+        if next_segment == chains.memory_top_segment {
             return Ok(current);
         }
 
@@ -1006,11 +1042,10 @@ fn conventional_link_anchor_segment(
 
 pub(crate) fn set_dos_umb_link_state(
     mem: &mut dyn MemoryAccess,
-    first_mcb_segment: u16,
-    umb_first_mcb_segment: Option<u16>,
+    chains: McbChains,
     linked: bool,
 ) -> Result<(), u8> {
-    let Some(umb_segment) = umb_first_mcb_segment else {
+    let Some(umb_segment) = chains.umb_first_mcb_segment else {
         return Ok(());
     };
 
@@ -1018,15 +1053,15 @@ pub(crate) fn set_dos_umb_link_state(
         return Err(ERR_MCB_DESTROYED);
     }
 
-    let anchor_segment = conventional_link_anchor_segment(mem, first_mcb_segment)?;
+    let anchor_segment = conventional_link_anchor_segment(mem, chains)?;
     if linked {
         write_mcb_type(mem, anchor_segment, MCB_TYPE_M);
         write_mcb(
             mem,
-            MEMORY_TOP_SEGMENT,
+            chains.memory_top_segment,
             MCB_TYPE_M,
             MCB_OWNER_DOS,
-            umb_segment - MEMORY_TOP_SEGMENT - 1,
+            umb_segment - chains.memory_top_segment - 1,
             UMB_LINK_MCB_NAME,
         );
     } else {
@@ -1038,19 +1073,18 @@ pub(crate) fn set_dos_umb_link_state(
 
 pub(crate) fn resize_dos(
     mem: &mut dyn MemoryAccess,
-    first_mcb_segment: u16,
-    umb_first_mcb_segment: Option<u16>,
+    chains: McbChains,
     data_segment: u16,
     new_paragraphs: u16,
 ) -> Result<(), (u8, u16)> {
-    match find_chain_containing_block(mem, first_mcb_segment, umb_first_mcb_segment, data_segment) {
+    match find_chain_containing_block(mem, chains, data_segment) {
         Ok(Some((chain_start, _))) => resize(mem, chain_start, data_segment, new_paragraphs),
         Ok(None) => {
-            let largest = largest_available_dos(mem, first_mcb_segment, umb_first_mcb_segment, 0);
+            let largest = largest_available_dos(mem, chains, 0);
             Err((ERR_INVALID_BLOCK, largest))
         }
         Err(error_code) => {
-            let largest = largest_available_dos(mem, first_mcb_segment, umb_first_mcb_segment, 0);
+            let largest = largest_available_dos(mem, chains, 0);
             Err((error_code, largest))
         }
     }
@@ -1220,6 +1254,11 @@ fn coalesce_forward(mem: &mut dyn MemoryAccess, segment: u16) {
 mod tests {
     use super::*;
 
+    /// Top of conventional memory in the chain tests.
+    const TEST_MEMORY_TOP_SEGMENT: u16 = 0xA000;
+    /// First MCB of the UMB chain in the chain tests.
+    const UMB_FIRST_MCB_SEGMENT: u16 = 0xD000;
+
     struct MockMemory {
         data: Vec<u8>,
     }
@@ -1355,8 +1394,8 @@ mod tests {
 
         free_dos(
             &mut mem,
-            0x1000,
-            Some(UMB_FIRST_MCB_SEGMENT),
+            McbChains::conventional(0x1000, TEST_MEMORY_TOP_SEGMENT)
+                .with_umb(UMB_FIRST_MCB_SEGMENT),
             UMB_FIRST_MCB_SEGMENT + 1,
         )
         .expect("UMB block should be found by DOS-aware free");
@@ -1431,8 +1470,8 @@ mod tests {
 
         resize_dos(
             &mut mem,
-            0x1000,
-            Some(UMB_FIRST_MCB_SEGMENT),
+            McbChains::conventional(0x1000, TEST_MEMORY_TOP_SEGMENT)
+                .with_umb(UMB_FIRST_MCB_SEGMENT),
             UMB_FIRST_MCB_SEGMENT + 1,
             0x10,
         )
@@ -1537,6 +1576,13 @@ mod tests {
             b"UMBFREE ",
         );
 
-        assert_eq!(largest_available_dos(&mem, 0x1000, None, 0x0080), 0x20);
+        assert_eq!(
+            largest_available_dos(
+                &mem,
+                McbChains::conventional(0x1000, TEST_MEMORY_TOP_SEGMENT),
+                0x0080
+            ),
+            0x20
+        );
     }
 }

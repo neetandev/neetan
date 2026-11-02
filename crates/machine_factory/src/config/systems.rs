@@ -121,7 +121,7 @@ pub const TOWNS_SYSTEM: System = System {
     name: "towns",
     label: "FM Towns",
     rom_key: "towns-roms",
-    roms_required: true,
+    roms_required: false,
     default_model: "FMTownsIIMX",
 };
 
@@ -362,7 +362,7 @@ mod tests {
         assert_eq!(config.mt32_roms, None);
         assert_eq!(config.sc55_roms, None);
         assert_eq!(config.pc88_roms, Some(roms.join("pc88")));
-        assert_eq!(config.towns_roms, Some(roms.join("towns")));
+        assert_eq!(config.towns_roms, None);
         assert_eq!(config.pc6000_roms, Some(roms.join("pc6000")));
     }
 }

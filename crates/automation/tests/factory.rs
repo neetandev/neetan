@@ -1,7 +1,8 @@
 //! Script-free construction through the machine factory.
 //!
-//! These tests exercise `initialize_automated_machine` directly. The PC-98 HLE
-//! machine builds with no ROM directory, so it is used as the ROM-free family.
+//! These tests exercise `initialize_automated_machine` directly. The PC-98 and
+//! FM Towns HLE machines build with no ROM directory, so they are used as the
+//! ROM-free families.
 //! MSX requires a ROM directory through the factory, so it is used to assert a
 //! clean construction error when no ROMs are configured.
 
@@ -32,6 +33,21 @@ fn builds_pc98_hle_without_roms() {
     let descriptor = machine.automation_descriptor();
     assert_eq!(descriptor.target, "pc98");
     assert!(descriptor.input.keyboard);
+}
+
+#[test]
+fn builds_towns_hle_without_roms() {
+    let model = "FMTownsIIMX"
+        .parse::<MachineSelection>()
+        .expect("FM Towns II MX is a model");
+    let machine = initialize_automated_machine(
+        EmulatorConfig::for_model(model),
+        fixed_rtc(),
+        48_000,
+        trace_sink(),
+    )
+    .expect("FM Towns HLE constructs without a ROM directory");
+    assert_eq!(machine.automation_descriptor().target, "towns");
 }
 
 #[test]

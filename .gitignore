@@ -1,3 +1,7 @@
 target/
 .idea/
 utils/bios_at/fonts/*.bin
+utils/bios_towns/icons.bin
+utils/bios_towns/font12.bin
+utils/dos_towns/msdos.sys
+utils/dos_towns/mscdex.exe

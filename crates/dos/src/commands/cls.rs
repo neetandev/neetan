@@ -27,6 +27,9 @@ pub(crate) struct RunningCls {
 
 state_struct_codec!(RunningCls { args });
 
+/// Escape sequence that clears a console without a text screen.
+const CLEAR_SCREEN_SEQUENCE: &[u8] = b"\x1B[2J";
+
 impl RunningCommand for RunningCls {
     fn step(
         &mut self,
@@ -38,7 +41,13 @@ impl RunningCommand for RunningCls {
             print_help(io);
             return StepResult::Done(0);
         }
-        io.console.clear_screen(io.memory);
+        if io.has_text_screen() {
+            io.console.clear_screen(io.memory);
+        } else {
+            for &byte in CLEAR_SCREEN_SEQUENCE {
+                io.write_console(byte);
+            }
+        }
         StepResult::Done(0)
     }
 }

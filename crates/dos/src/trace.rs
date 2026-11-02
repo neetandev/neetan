@@ -1,7 +1,7 @@
 //! DOS-facing trace facade and transient event log.
 //!
 //! The HLE DOS console records semantic events into an interior-mutable log on
-//! [`crate::console::Console`] while a dispatch runs. The machine bus arms the
+//! [`crate::console::TextVramConsole`] while a dispatch runs. The machine bus arms the
 //! log through [`DosTraceSink::wants`] and drains it at the dispatch boundary,
 //! forwarding each event to its own generic trace sink. This keeps the `dos`
 //! crate free of any host trace type, and a no-op sink costs a single bool

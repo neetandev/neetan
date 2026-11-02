@@ -45,6 +45,10 @@ impl RunningCommand for RunningMd {
             return StepResult::Done(0);
         }
 
+        if !filesystem::path_drive_exists(state, args) {
+            io.print(b"Invalid drive\r\n");
+            return StepResult::Done(1);
+        }
         match filesystem::create_directory(state, io.memory, drive, args) {
             Ok(()) => StepResult::Done(0),
             Err(error) => {

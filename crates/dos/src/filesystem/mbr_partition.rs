@@ -64,8 +64,8 @@ fn parse_partition_table(sector_data: &[u8]) -> Vec<MbrPartitionEntry> {
 /// preferring an active one. A disk without the 0x55AA boot signature
 /// mounts at offset 0 (an unpartitioned volume); a partitioned disk
 /// without any FAT12/FAT16 partition is an error.
-pub(crate) fn find_mbr_partition_offset(drive_da: u8, disk: &mut dyn DiskIo) -> Result<u32, u16> {
-    let sector_data = disk.read_sectors(drive_da, 0, 1).map_err(|_| 0x001Fu16)?;
+pub(crate) fn find_mbr_partition_offset(device_id: u8, disk: &mut dyn DiskIo) -> Result<u32, u16> {
+    let sector_data = disk.read_sectors(device_id, 0, 1).map_err(|_| 0x001Fu16)?;
 
     if sector_data.len() < SIGNATURE_OFFSET + 2
         || sector_data[SIGNATURE_OFFSET] != 0x55
@@ -104,7 +104,7 @@ mod tests {
     }
 
     impl DiskIo for MbrDisk {
-        fn read_sectors(&mut self, _drive_da: u8, lba: u32, count: u32) -> Result<Vec<u8>, u8> {
+        fn read_sectors(&mut self, _device_id: u8, lba: u32, count: u32) -> Result<Vec<u8>, u8> {
             if lba == 0 && count == 1 {
                 Ok(self.sector.clone())
             } else {
@@ -112,19 +112,19 @@ mod tests {
             }
         }
 
-        fn write_sectors(&mut self, _drive_da: u8, _lba: u32, _data: &[u8]) -> Result<(), u8> {
+        fn write_sectors(&mut self, _device_id: u8, _lba: u32, _data: &[u8]) -> Result<(), u8> {
             Err(0xFF)
         }
 
-        fn sector_size(&self, _drive_da: u8) -> Option<u16> {
+        fn sector_size(&self, _device_id: u8) -> Option<u16> {
             Some(512)
         }
 
-        fn total_sectors(&self, _drive_da: u8) -> Option<u32> {
+        fn total_sectors(&self, _device_id: u8) -> Option<u32> {
             Some(1)
         }
 
-        fn drive_geometry(&self, _drive_da: u8) -> Option<(u16, u8, u8)> {
+        fn drive_geometry(&self, _device_id: u8) -> Option<(u16, u8, u8)> {
             Some((1, 16, 63))
         }
     }

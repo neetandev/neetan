@@ -1442,10 +1442,8 @@ mod tests {
         let config = test.build(&with_machine(LaunchRequest::default()));
         assert_eq!(config.pc98_roms, Some(root.join("mine")));
         assert_eq!(config.mt32_roms, None);
-        assert_eq!(
-            config.towns_roms,
-            Some(root.join("elsewhere").join("towns"))
-        );
+        assert_eq!(config.towns_roms, None);
+        assert_eq!(config.x68k_roms, Some(root.join("elsewhere").join("x68k")));
     }
 
     #[cfg(feature = "at")]

@@ -190,6 +190,17 @@ pub struct CdTaskOutcome {
     pub dma_sector: Option<Vec<u8>>,
 }
 
+/// Drive state reported to a firmware drive check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CdDriveCheck {
+    /// A disc is loaded and readable.
+    Ready,
+    /// No disc is loaded or the lid is open.
+    NotReady,
+    /// The disc changed since the last check.
+    DiscChanged,
+}
+
 /// CD drive timing model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CdTimingMode {
@@ -523,6 +534,40 @@ impl TownsCdController {
         self.image
             .as_ref()
             .is_some_and(|image| image.track_count() > 0)
+    }
+
+    /// Reports the drive state as the firmware drive check sees it. A pending
+    /// media change is reported once and then cleared, like the status command
+    /// of the drive does.
+    pub fn firmware_drive_check(&mut self) -> CdDriveCheck {
+        if !self.disc_loaded_and_lid_closed() {
+            CdDriveCheck::NotReady
+        } else if self.disc_changed {
+            self.disc_changed = false;
+            CdDriveCheck::DiscChanged
+        } else {
+            CdDriveCheck::Ready
+        }
+    }
+
+    /// Reads the 2048-byte user data of the data-area sector `lba` into
+    /// `buffer`. Returns false when no disc is loaded or the sector does not
+    /// exist.
+    pub fn read_user_data_direct(&self, lba: u32, buffer: &mut [u8]) -> bool {
+        self.image
+            .as_ref()
+            .and_then(|image| image.read_sector(lba, buffer))
+            .is_some()
+    }
+
+    /// Returns the loaded disc image.
+    pub fn image(&self) -> Option<&CdImage> {
+        self.image.as_ref()
+    }
+
+    /// Number of sectors on the loaded disc, or zero without a disc.
+    pub fn total_sectors(&self) -> u32 {
+        self.image.as_ref().map_or(0, CdImage::total_sectors)
     }
 
     /// Updates the audio output sample rate.

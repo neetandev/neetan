@@ -22,8 +22,7 @@ use device::upd765a_fdc::{UPD765_PLATFORM_STANDARD, Upd765aFdc};
 
 use super::{
     Pc9801Bus,
-    dos_adapter::{DosCpuAccess, DosCursorAccess, DosDiskIo, DosMemoryAccess},
-    dos_trace::DosTraceBridge,
+    dos_adapter::{DosCursorAccess, DosDiskIo, DosMemoryAccess},
 };
 use crate::{TraceSink, memory::Pc9801Memory};
 
@@ -191,13 +190,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
         // The assembly stub pushes AX and DX before clobbering them with the
         // trap port address and vector number. Restore the caller's original
         // values and adjust SP so the IRET frame sits at SS:SP+0.
-        let sp = cpu.sp();
-        let ss_base = cpu.segment_base(SegmentRegister::SS);
-        let saved_dx = self.read_mem_word(ss_base.wrapping_add(u32::from(sp)));
-        let saved_ax = self.read_mem_word(ss_base.wrapping_add(u32::from(sp.wrapping_add(2))));
-        cpu.set_dx(saved_dx);
-        cpu.set_ax(saved_ax);
-        cpu.set_sp(sp.wrapping_add(4));
+        device::bios::restore_trap_registers(cpu, |address| self.read_mem_word(address));
 
         let function = cpu.ah();
         let subfunction = cpu.al();
@@ -231,7 +224,10 @@ impl<T: TraceSink> Pc9801Bus<T> {
             0x1B => self.hle_int1bh(cpu),
             0x1C => self.hle_int1ch(cpu),
             0x1F => self.hle_int1fh(cpu),
-            0x20..=0x2A | 0x2F | 0x33 | 0x67 | 0xDC | 0xE7 | 0xEE | 0xEF | 0xFD | 0xFE => {
+            vector
+                if dos::trap::SERVED_INTERRUPT_VECTORS.contains(&vector)
+                    || dos::DosTrapCode::from_code(vector).is_some() =>
+            {
                 if let Some(mut neetan_dos) = self.dos.take() {
                     // Capture the guest registers at dispatch entry so the
                     // boundary call events and every event emitted during the
@@ -246,16 +242,25 @@ impl<T: TraceSink> Pc9801Bus<T> {
                         let snapshot = capture_x86_snapshot(processor, &*cpu);
                         self.tracer.set_pending_snapshot(snapshot);
                     }
+                    let dos_entry = dos::DosEntry::from_trap_port_byte(vector);
+                    let dos_interface = match dos_entry {
+                        dos::DosEntry::Interrupt(vector) => {
+                            common::TraceCallInterface::Interrupt(u32::from(vector))
+                        }
+                        dos::DosEntry::Trap(trap) => {
+                            common::TraceCallInterface::EntryPoint(u64::from(trap.code()))
+                        }
+                    };
                     self.trace_call(
                         common::trace_id::provider::NEETAN_DOS,
-                        common::TraceCallInterface::Interrupt(u32::from(vector)),
+                        dos_interface,
                         Some(u64::from(function)),
                         Some(u64::from(subfunction)),
                         common::TraceCallPhase::Enter,
                         None,
                     );
                     let result = {
-                        let mut cpu_access = DosCpuAccess(cpu);
+                        let mut cpu_access = common::CpuRegisterAccess(cpu);
                         let access_page = self.access_page_index();
                         let mut mem_access = DosMemoryAccess::with_paging(
                             &mut self.memory,
@@ -271,13 +276,13 @@ impl<T: TraceSink> Pc9801Bus<T> {
                             ide: &mut self.ide,
                         };
                         let mut cursor_access = DosCursorAccess(&mut self.gdc_master.state);
-                        let mut dos_trace = DosTraceBridge {
+                        let mut dos_trace = dos::trace_bridge::TraceSinkBridge {
                             sink: &mut self.tracer,
                             cycle: trace_cycle,
                             clock_hz: trace_clock_hz,
                         };
                         neetan_dos.dispatch(
-                            vector,
+                            dos_entry,
                             &mut cpu_access,
                             &mut mem_access,
                             &mut disk_io,
@@ -290,7 +295,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
                     // the syscall arguments stay visible on either boundary.
                     self.trace_call(
                         common::trace_id::provider::NEETAN_DOS,
-                        common::TraceCallInterface::Interrupt(u32::from(vector)),
+                        dos_interface,
                         Some(u64::from(function)),
                         Some(u64::from(subfunction)),
                         common::TraceCallPhase::Exit,

@@ -28,6 +28,6 @@ impl NeetanDos {
                 },
             );
         }
-        self.console.process_byte(memory, al);
+        self.console_output().write_byte(memory, al);
     }
 }

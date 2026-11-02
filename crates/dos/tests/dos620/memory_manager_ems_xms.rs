@@ -534,7 +534,7 @@ fn test_xms_version() {
     #[rustfmt::skip]
     let code: &[u8] = &[
         0xB4, 0x00,                         // MOV AH, 00h (get version)
-        0xCD, 0xFE,                         // INT FEh
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
         0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (version)
         0x89, 0x1E, 0x02, 0x01,             // MOV [0x0102], BX (revision)
         0x89, 0x16, 0x04, 0x01,             // MOV [0x0104], DX (hma_exists)
@@ -591,7 +591,7 @@ fn test_xms_query_free() {
     #[rustfmt::skip]
     let code: &[u8] = &[
         0xB4, 0x08,                         // MOV AH, 08h (query free)
-        0xCD, 0xFE,                         // INT FEh
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
         0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (largest)
         0x89, 0x16, 0x02, 0x01,             // MOV [0x0102], DX (total)
         0xFA,                               // CLI
@@ -622,13 +622,13 @@ fn test_xms_allocate_and_free() {
         // Allocate 64 KB
         0xBA, 0x40, 0x00,                   // MOV DX, 64
         0xB4, 0x09,                         // MOV AH, 09h
-        0xCD, 0xFE,                         // INT FEh
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
         0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (1=success)
         0x89, 0x16, 0x02, 0x01,             // MOV [0x0102], DX (handle)
         // Free
         0x8B, 0x16, 0x02, 0x01,             // MOV DX, [handle]
         0xB4, 0x0A,                         // MOV AH, 0Ah
-        0xCD, 0xFE,                         // INT FEh
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
         0xA3, 0x04, 0x01,                   // MOV [0x0104], AX (1=success)
         0xFA,                               // CLI
         0xF4,                               // HLT
@@ -647,21 +647,21 @@ fn test_xms_allocate_decreases_free() {
     let code: &[u8] = &[
         // Query free before
         0xB4, 0x08,                         // MOV AH, 08h
-        0xCD, 0xFE,                         // INT FEh
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
         0x89, 0x16, 0x00, 0x01,             // MOV [0x0100], DX (total before)
         // Allocate 100 KB
         0xBA, 0x64, 0x00,                   // MOV DX, 100
         0xB4, 0x09,                         // MOV AH, 09h
-        0xCD, 0xFE,                         // INT FEh
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
         0x89, 0x16, 0x04, 0x01,             // MOV [0x0104], DX (handle)
         // Query free after
         0xB4, 0x08,                         // MOV AH, 08h
-        0xCD, 0xFE,                         // INT FEh
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
         0x89, 0x16, 0x02, 0x01,             // MOV [0x0102], DX (total after)
         // Free
         0x8B, 0x16, 0x04, 0x01,             // MOV DX, [handle]
         0xB4, 0x0A,                         // MOV AH, 0Ah
-        0xCD, 0xFE,                         // INT FEh
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
         0xFA,                               // CLI
         0xF4,                               // HLT
     ];
@@ -690,24 +690,24 @@ fn test_xms_lock_and_unlock() {
         // Allocate 64 KB
         0xBA, 0x40, 0x00,                   // MOV DX, 64
         0xB4, 0x09,                         // MOV AH, 09h
-        0xCD, 0xFE,                         // INT FEh
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
         0x89, 0x16, 0x08, 0x01,             // MOV [0x0108], DX (handle)
         // Lock: AH=0Ch, DX=handle
         0x8B, 0x16, 0x08, 0x01,             // MOV DX, [handle]
         0xB4, 0x0C,                         // MOV AH, 0Ch
-        0xCD, 0xFE,                         // INT FEh
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
         0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (1=success)
         0x89, 0x16, 0x02, 0x01,             // MOV [0x0102], DX (addr high)
         0x89, 0x1E, 0x04, 0x01,             // MOV [0x0104], BX (addr low)
         // Unlock: AH=0Dh, DX=handle
         0x8B, 0x16, 0x08, 0x01,             // MOV DX, [handle]
         0xB4, 0x0D,                         // MOV AH, 0Dh
-        0xCD, 0xFE,                         // INT FEh
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
         0xA3, 0x06, 0x01,                   // MOV [0x0106], AX (1=success)
         // Free
         0x8B, 0x16, 0x08, 0x01,             // MOV DX, [handle]
         0xB4, 0x0A,                         // MOV AH, 0Ah
-        0xCD, 0xFE,                         // INT FEh
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
         0xFA,                               // CLI
         0xF4,                               // HLT
     ];
@@ -734,19 +734,19 @@ fn test_xms_handle_info() {
         // Allocate 64 KB
         0xBA, 0x40, 0x00,                   // MOV DX, 64
         0xB4, 0x09,                         // MOV AH, 09h
-        0xCD, 0xFE,                         // INT FEh
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
         0x89, 0x16, 0x06, 0x01,             // MOV [0x0106], DX (handle)
         // Handle info: AH=0Eh, DX=handle
         0x8B, 0x16, 0x06, 0x01,             // MOV DX, [handle]
         0xB4, 0x0E,                         // MOV AH, 0Eh
-        0xCD, 0xFE,                         // INT FEh
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
         0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (1=success)
         0x89, 0x1E, 0x02, 0x01,             // MOV [0x0102], BX (BH=lock, BL=free)
         0x89, 0x16, 0x04, 0x01,             // MOV [0x0104], DX (size_kb)
         // Free
         0x8B, 0x16, 0x06, 0x01,             // MOV DX, [handle]
         0xB4, 0x0A,                         // MOV AH, 0Ah
-        0xCD, 0xFE,                         // INT FEh
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
         0xFA,                               // CLI
         0xF4,                               // HLT
     ];
@@ -768,23 +768,23 @@ fn test_xms_reallocate() {
         // Allocate 64 KB
         0xBA, 0x40, 0x00,                   // MOV DX, 64
         0xB4, 0x09,                         // MOV AH, 09h
-        0xCD, 0xFE,                         // INT FEh
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
         0x89, 0x16, 0x08, 0x01,             // MOV [0x0108], DX (handle)
         // Reallocate to 128 KB: AH=0Fh, BX=new_size, DX=handle
         0xBB, 0x80, 0x00,                   // MOV BX, 128
         0x8B, 0x16, 0x08, 0x01,             // MOV DX, [handle]
         0xB4, 0x0F,                         // MOV AH, 0Fh
-        0xCD, 0xFE,                         // INT FEh
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
         0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (1=success)
         // Verify with handle info
         0x8B, 0x16, 0x08, 0x01,             // MOV DX, [handle]
         0xB4, 0x0E,                         // MOV AH, 0Eh
-        0xCD, 0xFE,                         // INT FEh
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
         0x89, 0x16, 0x02, 0x01,             // MOV [0x0102], DX (size_kb)
         // Free
         0x8B, 0x16, 0x08, 0x01,             // MOV DX, [handle]
         0xB4, 0x0A,                         // MOV AH, 0Ah
-        0xCD, 0xFE,                         // INT FEh
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
         0xFA,                               // CLI
         0xF4,                               // HLT
     ];
@@ -806,11 +806,11 @@ fn test_xms_request_hma() {
     let code: &[u8] = &[
         0xBA, 0xFF, 0xFF,                   // MOV DX, FFFFh
         0xB4, 0x01,                         // MOV AH, 01h (request HMA)
-        0xCD, 0xFE,                         // INT FEh
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
         0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
         // Release HMA so other tests are not affected
         0xB4, 0x02,                         // MOV AH, 02h
-        0xCD, 0xFE,                         // INT FEh
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
         0xFA,                               // CLI
         0xF4,                               // HLT
     ];
@@ -826,11 +826,11 @@ fn test_xms_request_hma_zero_size_allowed_when_hmamin_is_zero() {
     let code: &[u8] = &[
         0xBA, 0x00, 0x00,                   // MOV DX, 0000h
         0xB4, 0x01,                         // MOV AH, 01h
-        0xCD, 0xFE,                         // INT FEh
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
         0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
         0x89, 0x1E, 0x02, 0x01,             // MOV [0x0102], BX
         0xB4, 0x02,                         // MOV AH, 02h
-        0xCD, 0xFE,                         // INT FEh
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
         0xFA,                               // CLI
         0xF4,                               // HLT
     ];
@@ -849,17 +849,17 @@ fn test_xms_request_hma_twice_fails() {
         // First request
         0xBA, 0xFF, 0xFF,                   // MOV DX, FFFFh
         0xB4, 0x01,                         // MOV AH, 01h
-        0xCD, 0xFE,                         // INT FEh
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
         0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
         // Second request (should fail)
         0xBA, 0xFF, 0xFF,                   // MOV DX, FFFFh
         0xB4, 0x01,                         // MOV AH, 01h
-        0xCD, 0xFE,                         // INT FEh
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
         0xA3, 0x02, 0x01,                   // MOV [0x0102], AX
         0x89, 0x1E, 0x04, 0x01,             // MOV [0x0104], BX (BL=error)
         // Release so we clean up
         0xB4, 0x02,                         // MOV AH, 02h
-        0xCD, 0xFE,                         // INT FEh
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
         0xFA,                               // CLI
         0xF4,                               // HLT
     ];
@@ -880,10 +880,10 @@ fn test_xms_release_hma() {
         // Request HMA
         0xBA, 0xFF, 0xFF,                   // MOV DX, FFFFh
         0xB4, 0x01,                         // MOV AH, 01h
-        0xCD, 0xFE,                         // INT FEh
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
         // Release HMA
         0xB4, 0x02,                         // MOV AH, 02h
-        0xCD, 0xFE,                         // INT FEh
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
         0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
         0xFA,                               // CLI
         0xF4,                               // HLT
@@ -905,14 +905,14 @@ fn test_hma_query_reflects_allocation() {
         // Request HMA
         0xBA, 0xFF, 0xFF,                   // MOV DX, FFFFh
         0xB4, 0x01,                         // MOV AH, 01h
-        0xCD, 0xFE,                         // INT FEh
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
         // Query HMA after allocation
         0xB8, 0x01, 0x4A,                   // MOV AX, 4A01h
         0xCD, 0x2F,                         // INT 2Fh
         0x89, 0x1E, 0x02, 0x01,             // MOV [0x0102], BX (free after)
         // Release HMA
         0xB4, 0x02,                         // MOV AH, 02h
-        0xCD, 0xFE,                         // INT FEh
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
         0xFA,                               // CLI
         0xF4,                               // HLT
     ];
@@ -942,7 +942,7 @@ fn test_umb_allocate_reports_no_free_umbs() {
     let code: &[u8] = &[
         0xBA, 0x10, 0x00,                   // MOV DX, 16
         0xB4, 0x10,                         // MOV AH, 10h
-        0xCD, 0xFE,                         // INT FEh
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
         0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (0=fail)
         0x89, 0x1E, 0x02, 0x01,             // MOV [0x0102], BX (BL=error)
         0x89, 0x16, 0x04, 0x01,             // MOV [0x0104], DX
@@ -967,7 +967,7 @@ fn test_umb_free_reports_invalid_segment() {
     let code: &[u8] = &[
         0xBA, 0x00, 0xD0,                   // MOV DX, D000h
         0xB4, 0x11,                         // MOV AH, 11h
-        0xCD, 0xFE,                         // INT FEh
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
         0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (0=fail)
         0x89, 0x1E, 0x02, 0x01,             // MOV [0x0102], BX (BL=error)
         0xFA,                               // CLI
@@ -990,7 +990,7 @@ fn test_umb_reallocate_not_implemented() {
         0xBB, 0x10, 0x00,                   // MOV BX, 16
         0xBA, 0x00, 0xD0,                   // MOV DX, D000h
         0xB4, 0x12,                         // MOV AH, 12h
-        0xCD, 0xFE,                         // INT FEh
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
         0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (0=fail)
         0x89, 0x1E, 0x02, 0x01,             // MOV [0x0102], BX (BL=error)
         0xFA,                               // CLI
@@ -1017,13 +1017,13 @@ fn test_ems_and_xms_coexist() {
         // Allocate XMS: 64 KB
         0xBA, 0x40, 0x00,                   // MOV DX, 64
         0xB4, 0x09,                         // MOV AH, 09h
-        0xCD, 0xFE,                         // INT FEh
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
         0xA3, 0x02, 0x01,                   // MOV [0x0102], AX (XMS status)
         0x89, 0x16, 0x08, 0x01,             // MOV [0x0108], DX (XMS handle)
         // Free XMS
         0x8B, 0x16, 0x08, 0x01,             // MOV DX, [XMS handle]
         0xB4, 0x0A,                         // MOV AH, 0Ah
-        0xCD, 0xFE,                         // INT FEh
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
         // Free EMS
         0x8B, 0x16, 0x06, 0x01,             // MOV DX, [EMS handle]
         0xB4, 0x45,                         // MOV AH, 45h
@@ -1063,7 +1063,7 @@ fn test_ems_and_xms_share_pool() {
         // Try to allocate 4000 KB via XMS (more than the remaining ~1088 KB)
         0xBA, 0xA0, 0x0F,                   // MOV DX, 4000
         0xB4, 0x09,                         // MOV AH, 09h
-        0xCD, 0xFE,                         // INT FEh
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
         0xA3, 0x02, 0x01,                   // MOV [0x0102], AX (XMS result: 0=fail)
         // Free EMS
         0x8B, 0x16, 0x06, 0x01,             // MOV DX, [EMS handle]
@@ -1442,7 +1442,7 @@ fn test_xms_88_query_any_free_extended_memory() {
     #[rustfmt::skip]
     let code: &[u8] = &[
         0xB4, 0x88,                         // MOV AH, 88h
-        0xCD, 0xFE,                         // INT FEh
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
         // Store EAX (largest free KB) as dword at [0x0100]
         0x66, 0xA3, 0x00, 0x01,             // MOV [0x0100], EAX
         // Store EDX (total free KB) as dword at [0x0104]
@@ -1481,13 +1481,13 @@ fn test_xms_89_allocate_any_extended_memory() {
         // Set EDX = 64 (allocate 64 KB)
         0x66, 0xBA, 0x40, 0x00, 0x00, 0x00, // MOV EDX, 64
         0xB4, 0x89,                         // MOV AH, 89h
-        0xCD, 0xFE,                         // INT FEh
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
         0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (1=success)
         0x89, 0x16, 0x02, 0x01,             // MOV [0x0102], DX (handle)
         // Free the handle
         0x8B, 0x16, 0x02, 0x01,             // MOV DX, [handle]
         0xB4, 0x0A,                         // MOV AH, 0Ah
-        0xCD, 0xFE,                         // INT FEh
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
         0xA3, 0x04, 0x01,                   // MOV [0x0104], AX (1=success)
         0xFA,                               // CLI
         0xF4,                               // HLT
@@ -1509,12 +1509,12 @@ fn test_xms_8e_get_extended_handle_info() {
         // Allocate 64 KB via 32-bit function
         0x66, 0xBA, 0x40, 0x00, 0x00, 0x00, // MOV EDX, 64
         0xB4, 0x89,                         // MOV AH, 89h
-        0xCD, 0xFE,                         // INT FEh
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
         0x89, 0x16, 0x06, 0x01,             // MOV [0x0106], DX (handle)
         // Query handle info via 0x8E
         0x8B, 0x16, 0x06, 0x01,             // MOV DX, [handle]
         0xB4, 0x8E,                         // MOV AH, 8Eh
-        0xCD, 0xFE,                         // INT FEh
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
         0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (1=success)
         0x89, 0x1E, 0x02, 0x01,             // MOV [0x0102], BX (BH=lock count)
         0x89, 0x0E, 0x04, 0x01,             // MOV [0x0104], CX (free handles)
@@ -1522,7 +1522,7 @@ fn test_xms_8e_get_extended_handle_info() {
         // Clean up
         0x8B, 0x16, 0x06, 0x01,             // MOV DX, [handle]
         0xB4, 0x0A,                         // MOV AH, 0Ah
-        0xCD, 0xFE,                         // INT FEh
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
         0xFA,                               // CLI
         0xF4,                               // HLT
     ];
@@ -1549,23 +1549,23 @@ fn test_xms_8f_reallocate_any_extended_memory() {
         // Allocate 64 KB via 32-bit function
         0x66, 0xBA, 0x40, 0x00, 0x00, 0x00, // MOV EDX, 64
         0xB4, 0x89,                         // MOV AH, 89h
-        0xCD, 0xFE,                         // INT FEh
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
         0x89, 0x16, 0x06, 0x01,             // MOV [0x0106], DX (handle)
         // Reallocate to 128 KB via 0x8F (EBX = new size)
         0x66, 0xBB, 0x80, 0x00, 0x00, 0x00, // MOV EBX, 128
         0x8B, 0x16, 0x06, 0x01,             // MOV DX, [handle]
         0xB4, 0x8F,                         // MOV AH, 8Fh
-        0xCD, 0xFE,                         // INT FEh
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
         0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (1=success)
         // Verify new size via 0x8E
         0x8B, 0x16, 0x06, 0x01,             // MOV DX, [handle]
         0xB4, 0x8E,                         // MOV AH, 8Eh
-        0xCD, 0xFE,                         // INT FEh
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
         0x66, 0x89, 0x16, 0x02, 0x01,       // MOV [0x0102], EDX (size KB)
         // Clean up
         0x8B, 0x16, 0x06, 0x01,             // MOV DX, [handle]
         0xB4, 0x0A,                         // MOV AH, 0Ah
-        0xCD, 0xFE,                         // INT FEh
+        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
         0xFA,                               // CLI
         0xF4,                               // HLT
     ];
@@ -1629,9 +1629,7 @@ fn test_xmsxxxx0_device_in_chain_when_enabled() {
     // Attribute must be DEVATTR_CHAR | DEVATTR_IOCTL (0xC000).
     let attr = harness::read_word(
         &machine.bus,
-        dos::tables::DOS_DATA_BASE
-            + dos::tables::DEV_XMS_OFFSET as u32
-            + dos::tables::DEVHDR_OFF_ATTRIBUTE,
+        harness::dos_data_address(dos::tables::DEV_XMS_OFFSET) + dos::tables::DEVHDR_OFF_ATTRIBUTE,
     );
     assert_eq!(
         attr, 0xC000,
@@ -1653,11 +1651,11 @@ fn test_xmsxxxx0_absent_when_xms_disabled() {
     // should link directly to EMMXXXX0 (skipping the absent XMS entry).
     let (seg, off) = harness::read_far_ptr(
         &machine.bus,
-        dos::tables::DOS_DATA_BASE + dos::tables::DEV_CDROM_OFFSET as u32,
+        harness::dos_data_address(dos::tables::DEV_CDROM_OFFSET),
     );
     assert_eq!(
         (seg, off),
-        (dos::tables::DOS_DATA_SEGMENT, dos::tables::DEV_EMS_OFFSET),
+        (harness::dos_data_segment(), dos::tables::DEV_EMS_OFFSET),
         "CD-ROM next_ptr should point to EMMXXXX0 when XMS disabled but EMS enabled, got {seg:#06X}:{off:#06X}"
     );
 }
@@ -1692,9 +1690,7 @@ fn test_emmxxxx0_device_in_chain_when_enabled() {
 
     let attr = harness::read_word(
         &machine.bus,
-        dos::tables::DOS_DATA_BASE
-            + dos::tables::DEV_EMS_OFFSET as u32
-            + dos::tables::DEVHDR_OFF_ATTRIBUTE,
+        harness::dos_data_address(dos::tables::DEV_EMS_OFFSET) + dos::tables::DEVHDR_OFF_ATTRIBUTE,
     );
     assert_eq!(
         attr, 0xC000,

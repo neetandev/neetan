@@ -1,6 +1,6 @@
 //! Bridge from the DOS trace facade to the generic machine trace sink.
 //!
-//! The bridge implements `dos::trace::DosTraceSink` on top of any `TraceSink`,
+//! The bridge implements `DosTraceSink` on top of any `TraceSink`,
 //! translating each semantic DOS event into a `neetan.dos.*` device event. It
 //! is generic over the sink type, so an untraced build monomorphizes `wants` to
 //! a constant `false` and emits nothing.
@@ -9,23 +9,28 @@ use common::{
     TraceContext, TraceDeviceEvent, TraceEvent, TraceEventKey, TraceField, TraceSink, TraceValue,
     trace_id,
 };
-use dos::trace::{
+use stack_vec::StackVec;
+
+use crate::trace::{
     DosCellWriteEvent, DosClearEvent, DosConsoleByteEvent, DosConsoleEscapeEvent, DosScrollEvent,
     DosStdoutEvent, DosTraceEvent, DosTraceKind, DosTraceSink, DosVectorEvent,
 };
-use stack_vec::StackVec;
 
 /// The maximum number of fields any single DOS device event carries.
 const MAX_FIELDS: usize = 16;
 
 /// Forwards DOS trace events to a generic trace sink as device events.
-pub(super) struct DosTraceBridge<'a, T: TraceSink> {
-    pub(super) sink: &'a mut T,
-    pub(super) cycle: u64,
-    pub(super) clock_hz: u32,
+pub struct TraceSinkBridge<'a, T: TraceSink> {
+    /// Machine trace sink that receives the device events.
+    pub sink: &'a mut T,
+    /// CPU cycle of the DOS entry.
+    pub cycle: u64,
+    /// CPU clock in Hz.
+    pub clock_hz: u32,
 }
 
-impl<T: TraceSink> DosTraceBridge<'_, T> {
+impl<T: TraceSink> TraceSinkBridge<'_, T> {
+    /// Sends one device event with `fields` to the sink.
     fn emit(&mut self, device: &'static str, action: &'static str, fields: &[TraceField<'_>]) {
         self.sink.trace(
             TraceContext::main_cpu(self.cycle, Some(u64::from(self.clock_hz))),
@@ -54,15 +59,17 @@ fn optional_symbol(value: Option<&'static str>) -> TraceValue<'static> {
     }
 }
 
+/// Returns a named field.
 fn field<'a>(name: &'static str, value: TraceValue<'a>) -> TraceField<'a> {
     TraceField { name, value }
 }
 
+/// Returns a named unsigned field.
 fn unsigned(name: &'static str, value: u64) -> TraceField<'static> {
     field(name, TraceValue::Unsigned(value))
 }
 
-impl<T: TraceSink> DosTraceSink for DosTraceBridge<'_, T> {
+impl<T: TraceSink> DosTraceSink for TraceSinkBridge<'_, T> {
     const ENABLED: bool = T::ENABLED;
 
     fn wants(&self, kind: DosTraceKind) -> bool {
@@ -109,7 +116,8 @@ impl<T: TraceSink> DosTraceSink for DosTraceBridge<'_, T> {
     }
 }
 
-impl<T: TraceSink> DosTraceBridge<'_, T> {
+impl<T: TraceSink> TraceSinkBridge<'_, T> {
+    /// Emits an interrupt vector change.
     fn emit_vector(&mut self, event: &DosVectorEvent) {
         let fields = [
             unsigned(trace_id::field::VECTOR, u64::from(event.vector)),
@@ -127,6 +135,7 @@ impl<T: TraceSink> DosTraceBridge<'_, T> {
         );
     }
 
+    /// Emits a write to the standard output.
     fn emit_stdout(&mut self, event: &DosStdoutEvent) {
         let fields = [
             field(trace_id::field::SOURCE, TraceValue::Symbol(event.source)),
@@ -161,6 +170,7 @@ impl<T: TraceSink> DosTraceBridge<'_, T> {
         );
     }
 
+    /// Emits one byte of the console output parser.
     fn emit_console_byte(&mut self, event: &DosConsoleByteEvent) {
         let mut fields = StackVec::<TraceField<'_>, MAX_FIELDS>::new();
         fields.push(unsigned(trace_id::field::BYTE, u64::from(event.byte)));
@@ -219,6 +229,7 @@ impl<T: TraceSink> DosTraceBridge<'_, T> {
         );
     }
 
+    /// Emits a console escape sequence.
     fn emit_console_escape(&mut self, event: &DosConsoleEscapeEvent) {
         let fields = [
             field(trace_id::field::BYTES, TraceValue::Bytes(&event.bytes)),
@@ -259,6 +270,7 @@ impl<T: TraceSink> DosTraceBridge<'_, T> {
         );
     }
 
+    /// Emits a write of one text cell.
     fn emit_cell_write(&mut self, event: &DosCellWriteEvent) {
         let fields = [
             unsigned(trace_id::field::ROW, u64::from(event.row)),
@@ -277,6 +289,7 @@ impl<T: TraceSink> DosTraceBridge<'_, T> {
         );
     }
 
+    /// Emits a clear of a console region.
     fn emit_clear(&mut self, event: &DosClearEvent) {
         let fields = [
             unsigned(trace_id::field::REGION_TOP, u64::from(event.region_top)),
@@ -293,6 +306,7 @@ impl<T: TraceSink> DosTraceBridge<'_, T> {
         );
     }
 
+    /// Emits a scroll of a console region.
     fn emit_scroll(&mut self, event: &DosScrollEvent) {
         let fields = [
             unsigned(trace_id::field::REGION_TOP, u64::from(event.region_top)),

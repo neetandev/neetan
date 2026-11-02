@@ -22,7 +22,6 @@ impl Command for More {
 }
 
 const LINES_PER_PAGE: u16 = 24;
-const KB_BUF_COUNT: u32 = 0x0528;
 
 #[derive(Clone)]
 /// Authoritative MORE input data and output offset.
@@ -138,11 +137,11 @@ impl RunningMore {
     }
 
     fn step_wait_key(&mut self, read: ReadState, io: &mut IoAccess) -> StepResult {
-        if io.memory.read_byte(KB_BUF_COUNT) == 0 {
+        if !io.key_available() {
             self.phase = MorePhase::WaitKey(read);
             return StepResult::Continue;
         }
-        consume_key(io);
+        io.take_key_character();
         io.output_byte(b'\r');
         for _ in 0..40 {
             io.output_byte(b' ');
@@ -215,17 +214,4 @@ fn init_more(
         read: ReadState { data, offset: 0 },
         lines_shown: 0,
     })
-}
-
-fn consume_key(io: &mut IoAccess) {
-    let head = io.memory.read_word(0x0524) as u32;
-    let mut new_head = head + 2;
-    if new_head >= 0x0522 {
-        new_head = 0x0502;
-    }
-    io.memory.write_word(0x0524, new_head as u16);
-    let count = io.memory.read_byte(KB_BUF_COUNT);
-    if count > 0 {
-        io.memory.write_byte(KB_BUF_COUNT, count - 1);
-    }
 }

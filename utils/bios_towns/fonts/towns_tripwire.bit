@@ -1,0 +1,38 @@
+# Neetan glyph, 16x16 cell, for the font ROM. Neetan's own art.
+#
+# Licensed under MIT-0, see utils/bios_towns/LICENSE.
+#
+# ENCODING: the font ROM cell index as a decimal number.
+STARTFONT 2.1
+FONT -Neetan-TownsTripwire-Medium-R-Normal--16-160-75-75-C-160-FontSpecific-0
+SIZE 16 75 75
+FONTBOUNDINGBOX 16 16 0 0
+STARTPROPERTIES 2
+FONT_ASCENT 16
+FONT_DESCENT 0
+ENDPROPERTIES
+CHARS 1
+STARTCHAR rom_1FFF
+ENCODING 8191
+SWIDTH 1000 0
+DWIDTH 16 0
+BBX 16 16 0 0
+BITMAP
+@@@@@@@@@@@@@@@@
+@..............@
+@..............@
+@..@@@.....@@..@
+@..@@@@....@@..@
+@..@@.@@...@@..@
+@..@@.@@...@@..@
+@..@@..@@..@@..@
+@..@@...@@.@@..@
+@..@@....@@@@..@
+@..@@....@@@@..@
+@..@@.....@@@..@
+@..@@......@@..@
+@..............@
+@..............@
+@@@@@@@@@@@@@@@@
+ENDCHAR
+ENDFONT

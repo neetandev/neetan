@@ -1,11 +1,18 @@
 //! FAT12/FAT16 read/write implementation.
 
-use crate::{DiskIo, filesystem::fat_bpb::Bpb};
+use crate::{
+    DiskIo,
+    drive_map::{BpbSource, DriveGeometry, fm_towns},
+    filesystem::fat_bpb::Bpb,
+};
+
+/// Bytes of the boot record that hold the BPB.
+const BOOT_RECORD_MINIMUM_LENGTH: u32 = 512;
 
 /// A mounted FAT12 or FAT16 volume.
 #[derive(Clone)]
 pub(crate) struct FatVolume {
-    pub drive_da: u8,
+    pub device_id: u8,
     pub partition_offset: u32,
     pub bpb: Bpb,
     pub first_root_sector: u32,
@@ -20,7 +27,7 @@ pub(crate) struct FatVolume {
 }
 
 state_struct_codec!(FatVolume {
-    drive_da,
+    device_id,
     partition_offset,
     bpb,
     first_root_sector,
@@ -31,6 +38,9 @@ state_struct_codec!(FatVolume {
     fat_dirty,
     sector_ratio,
 });
+
+/// Mount error of a medium whose format the driver rule does not know.
+pub(crate) const ERROR_UNKNOWN_MEDIA: u16 = 0x001A;
 
 impl FatVolume {
     pub(crate) fn validate_state(&self) -> Result<(), save_state::StateValidationError> {
@@ -53,24 +63,62 @@ impl FatVolume {
         Ok(())
     }
 
-    /// Mounts a FAT volume by reading the boot sector and loading the FAT.
+    /// Mounts a FAT volume: takes the BPB from the source of the drive
+    /// geometry and loads the FAT.
     ///
-    /// `partition_offset` is in physical sectors.  The BPB may declare a
+    /// `partition_offset` is in physical sectors. The BPB may declare a
     /// larger logical sector size (e.g. 1024 bytes on a 256-byte SASI HDD).
     /// All internal LBA calculations account for this ratio.
-    pub fn mount(drive_da: u8, partition_offset: u32, disk: &mut dyn DiskIo) -> Result<Self, u16> {
-        let physical_sector_size = disk.sector_size(drive_da).ok_or(0x001Fu16)?;
-
-        // Read enough physical sectors to cover at least 512 bytes (minimum BPB).
-        let boot_phys_count = (512u32).div_ceil(physical_sector_size as u32);
-        let boot_sector = disk
-            .read_sectors(drive_da, partition_offset, boot_phys_count)
-            .map_err(|_| 0x001Fu16)?;
-        let bpb = match Bpb::parse(&boot_sector)
-            .filter(|bpb| bpb.is_supported_with_physical_sector_size(physical_sector_size))
-        {
-            Some(bpb) => bpb,
-            None => Self::fallback_bpb(drive_da, partition_offset, physical_sector_size, disk)?,
+    pub fn mount(
+        device_id: u8,
+        partition_offset: u32,
+        geometry: &DriveGeometry,
+        disk: &mut dyn DiskIo,
+    ) -> Result<Self, u16> {
+        let physical_sector_size = disk.sector_size(device_id).ok_or(0x001Fu16)?;
+        let bpb = match geometry.bpb_source {
+            BpbSource::BootRecord => {
+                Self::boot_record_bpb(device_id, partition_offset, physical_sector_size, disk)?
+                    .ok_or(0x001Fu16)?
+            }
+            BpbSource::BootRecordOrDefault => {
+                match Self::boot_record_bpb(
+                    device_id,
+                    partition_offset,
+                    physical_sector_size,
+                    disk,
+                )? {
+                    Some(bpb) => bpb,
+                    None => Self::validated_default_bpb(
+                        device_id,
+                        partition_offset,
+                        physical_sector_size,
+                        &geometry.default_bpb,
+                        disk,
+                    )?,
+                }
+            }
+            BpbSource::Default => {
+                if !geometry
+                    .default_bpb
+                    .is_supported_with_physical_sector_size(physical_sector_size)
+                {
+                    return Err(0x001F);
+                }
+                geometry.default_bpb
+            }
+            BpbSource::FmTownsFloppy => {
+                Self::fm_towns_floppy_bpb(device_id, partition_offset, physical_sector_size, disk)?
+            }
+            BpbSource::Driver => {
+                if !geometry
+                    .bpb
+                    .is_supported_with_physical_sector_size(physical_sector_size)
+                {
+                    return Err(0x001F);
+                }
+                geometry.bpb
+            }
         };
 
         let sector_ratio = bpb.bytes_per_sector as u32 / physical_sector_size as u32;
@@ -83,11 +131,11 @@ impl FatVolume {
         let fat_start = partition_offset + bpb.reserved_sectors as u32 * sector_ratio;
         let fat_sectors = bpb.sectors_per_fat as u32 * sector_ratio;
         let fat_data = disk
-            .read_sectors(drive_da, fat_start, fat_sectors)
+            .read_sectors(device_id, fat_start, fat_sectors)
             .map_err(|_| 0x001Fu16)?;
 
         Ok(Self {
-            drive_da,
+            device_id,
             partition_offset,
             bpb,
             first_root_sector,
@@ -100,31 +148,81 @@ impl FatVolume {
         })
     }
 
-    fn fallback_bpb(
-        drive_da: u8,
+    /// Reads the boot record and returns its BPB when it describes a usable
+    /// volume.
+    fn boot_record_bpb(
+        device_id: u8,
+        partition_offset: u32,
+        physical_sector_size: u16,
+        disk: &mut dyn DiskIo,
+    ) -> Result<Option<Bpb>, u16> {
+        let boot_physical_count = BOOT_RECORD_MINIMUM_LENGTH.div_ceil(physical_sector_size as u32);
+        let boot_sector = disk
+            .read_sectors(device_id, partition_offset, boot_physical_count)
+            .map_err(|_| 0x001Fu16)?;
+        Ok(Bpb::parse(&boot_sector)
+            .filter(|bpb| bpb.is_supported_with_physical_sector_size(physical_sector_size)))
+    }
+
+    /// Returns the BPB of an FM Towns floppy from the FAT ID in its sector 1
+    /// and its physical format. A FAT ID that the format does not know fails
+    /// with `ERROR_UNKNOWN_MEDIA`.
+    fn fm_towns_floppy_bpb(
+        device_id: u8,
         partition_offset: u32,
         physical_sector_size: u16,
         disk: &mut dyn DiskIo,
     ) -> Result<Bpb, u16> {
-        if partition_offset != 0 || drive_da & 0xF0 != 0x90 || physical_sector_size != 1024 {
+        let (_, _, sectors_per_track) = disk.drive_geometry(device_id).ok_or(0x001Fu16)?;
+        let fat_sector = disk
+            .read_sectors(device_id, partition_offset + 1, 1)
+            .map_err(|_| 0x001Fu16)?;
+        let fat_id = *fat_sector.first().ok_or(0x001Fu16)?;
+        let bpb = fm_towns::floppy_media_bpb(fat_id, physical_sector_size, sectors_per_track)
+            .ok_or(ERROR_UNKNOWN_MEDIA)?;
+        bpb.is_supported_with_physical_sector_size(physical_sector_size)
+            .then_some(bpb)
+            .ok_or(0x001F)
+    }
+
+    /// Accepts the default BPB for a medium without a BPB in its boot record.
+    /// The physical sectors, the device size and the first FAT entries must
+    /// match the default BPB.
+    fn validated_default_bpb(
+        device_id: u8,
+        partition_offset: u32,
+        physical_sector_size: u16,
+        default_bpb: &Bpb,
+        disk: &mut dyn DiskIo,
+    ) -> Result<Bpb, u16> {
+        if physical_sector_size != default_bpb.bytes_per_sector {
             return Err(0x001F);
         }
 
         let (cylinders, heads, sectors_per_track) =
-            disk.drive_geometry(drive_da).ok_or(0x001Fu16)?;
-        if cylinders != 77 || heads != 2 || sectors_per_track != 8 {
+            disk.drive_geometry(device_id).ok_or(0x001Fu16)?;
+        let device_sectors = cylinders as u32 * heads as u32 * sectors_per_track as u32;
+        if device_sectors != default_bpb.total_sectors() {
             return Err(0x001F);
         }
 
-        let bpb = Bpb::pc98_2hd_floppy();
         let fat_data = disk
-            .read_sectors(drive_da, bpb.reserved_sectors as u32, 1)
+            .read_sectors(
+                device_id,
+                partition_offset + default_bpb.reserved_sectors as u32,
+                1,
+            )
             .map_err(|_| 0x001Fu16)?;
-        if !bpb.has_valid_initial_fat_entries(&fat_data) {
+        if !default_bpb.has_valid_initial_fat_entries(&fat_data) {
             return Err(0x001F);
         }
 
-        Ok(bpb)
+        Ok(*default_bpb)
+    }
+
+    /// Converts a logical sector of the volume to a physical LBA of the device.
+    pub fn logical_sector_lba(&self, logical_sector: u32) -> u32 {
+        self.partition_offset + logical_sector * self.sector_ratio
     }
 
     /// Reads a FAT entry for the given cluster number.
@@ -269,7 +367,7 @@ impl FatVolume {
     pub fn read_cluster(&self, cluster: u16, disk: &mut dyn DiskIo) -> Result<Vec<u8>, u16> {
         let lba = self.cluster_to_lba(cluster);
         let count = self.bpb.sectors_per_cluster as u32 * self.sector_ratio;
-        disk.read_sectors(self.drive_da, lba, count)
+        disk.read_sectors(self.device_id, lba, count)
             .map_err(|_| 0x001F)
     }
 
@@ -281,13 +379,13 @@ impl FatVolume {
         disk: &mut dyn DiskIo,
     ) -> Result<(), u16> {
         let lba = self.cluster_to_lba(cluster);
-        disk.write_sectors(self.drive_da, lba, data)
+        disk.write_sectors(self.device_id, lba, data)
             .map_err(|_| 0x001F)
     }
 
     /// Reads one BPB logical sector at a physical LBA.
     pub fn read_sector_abs(&self, abs_lba: u32, disk: &mut dyn DiskIo) -> Result<Vec<u8>, u16> {
-        disk.read_sectors(self.drive_da, abs_lba, self.sector_ratio)
+        disk.read_sectors(self.device_id, abs_lba, self.sector_ratio)
             .map_err(|_| 0x001F)
     }
 
@@ -298,7 +396,7 @@ impl FatVolume {
         data: &[u8],
         disk: &mut dyn DiskIo,
     ) -> Result<(), u16> {
-        disk.write_sectors(self.drive_da, abs_lba, data)
+        disk.write_sectors(self.device_id, abs_lba, data)
             .map_err(|_| 0x001F)
     }
 
@@ -311,10 +409,209 @@ impl FatVolume {
             let fat_start = self.partition_offset
                 + self.bpb.reserved_sectors as u32 * self.sector_ratio
                 + fat_idx * self.bpb.sectors_per_fat as u32 * self.sector_ratio;
-            disk.write_sectors(self.drive_da, fat_start, &self.fat_cache)
+            disk.write_sectors(self.device_id, fat_start, &self.fat_cache)
                 .map_err(|_| 0x001Fu16)?;
         }
         self.fat_dirty = false;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::drive_map::{fm_towns, pc98};
+
+    /// Disk image in host memory with a fixed geometry.
+    struct ImageDisk {
+        /// Bytes per physical sector.
+        sector_size: u16,
+        /// Cylinders, heads and sectors per track.
+        geometry: (u16, u8, u8),
+        /// Image bytes.
+        data: Vec<u8>,
+    }
+
+    impl DiskIo for ImageDisk {
+        fn read_sectors(&mut self, _device_id: u8, lba: u32, count: u32) -> Result<Vec<u8>, u8> {
+            let size = usize::from(self.sector_size);
+            let start = lba as usize * size;
+            let end = start + count as usize * size;
+            self.data.get(start..end).map(<[u8]>::to_vec).ok_or(0x10)
+        }
+
+        fn write_sectors(&mut self, _device_id: u8, _lba: u32, _data: &[u8]) -> Result<(), u8> {
+            Err(0x10)
+        }
+
+        fn sector_size(&self, _device_id: u8) -> Option<u16> {
+            Some(self.sector_size)
+        }
+
+        fn total_sectors(&self, _device_id: u8) -> Option<u32> {
+            Some((self.data.len() / usize::from(self.sector_size)) as u32)
+        }
+
+        fn drive_geometry(&self, _device_id: u8) -> Option<(u16, u8, u8)> {
+            Some(self.geometry)
+        }
+    }
+
+    /// OS ROM image: `IPL4` boot record without a BPB and the FAT at `200h`.
+    fn os_rom_image() -> ImageDisk {
+        let mut data = vec![0u8; 1280 * 512];
+        data[..5].copy_from_slice(b"IPL4\xCB");
+        data[0x200..0x203].copy_from_slice(&[0xFB, 0xFF, 0xFF]);
+        ImageDisk {
+            sector_size: 512,
+            geometry: (80, 2, 8),
+            data,
+        }
+    }
+
+    /// PC-98 2HD floppy without a BPB in the boot sector.
+    fn floppy_2hd_without_bpb(media_descriptor: u8) -> ImageDisk {
+        let mut data = vec![0u8; 1232 * 1024];
+        data[0x400..0x403].copy_from_slice(&[media_descriptor, 0xFF, 0xFF]);
+        ImageDisk {
+            sector_size: 1024,
+            geometry: (77, 2, 8),
+            data,
+        }
+    }
+
+    #[test]
+    fn os_rom_volume_mounts_with_the_platform_bpb() {
+        let mut disk = os_rom_image();
+        let geometry = fm_towns::os_rom_entry(2).geometry.unwrap();
+        let volume = FatVolume::mount(fm_towns::OS_ROM_DEVICE_ID, 0, &geometry, &mut disk).unwrap();
+        assert_eq!(volume.bpb, fm_towns::OS_ROM_BPB);
+        assert_eq!(volume.root_dir_lba(), 5);
+        assert_eq!(volume.cluster_to_lba(0x4E), 0x14800 / 512);
+        assert_eq!(volume.read_fat_entry(0), 0xFFB);
+    }
+
+    #[test]
+    fn boot_record_source_rejects_a_volume_without_bpb() {
+        let mut disk = os_rom_image();
+        let geometry = DriveGeometry::new(BpbSource::BootRecord, fm_towns::OS_ROM_BPB);
+        assert_eq!(
+            FatVolume::mount(fm_towns::OS_ROM_DEVICE_ID, 0, &geometry, &mut disk).err(),
+            Some(0x001F)
+        );
+    }
+
+    #[test]
+    fn default_bpb_needs_a_matching_fat_id() {
+        let geometry = pc98::floppy_2hd_geometry();
+        let mut disk = floppy_2hd_without_bpb(0xFE);
+        let volume = FatVolume::mount(0x90, 0, &geometry, &mut disk).unwrap();
+        assert_eq!(volume.bpb, pc98::FLOPPY_2HD_BPB);
+
+        let mut disk = floppy_2hd_without_bpb(0xF9);
+        assert!(FatVolume::mount(0x90, 0, &geometry, &mut disk).is_err());
+    }
+
+    #[test]
+    fn fm_towns_floppy_without_bpb_mounts_by_its_fat_id() {
+        let geometry = fm_towns::floppy_entry(0, 0).geometry.unwrap();
+        let mut disk = floppy_2hd_without_bpb(0xFE);
+        let volume = FatVolume::mount(0x20, 0, &geometry, &mut disk).unwrap();
+        assert_eq!(volume.bpb, fm_towns::FLOPPY_BPB);
+        assert_eq!(volume.root_dir_lba(), 5);
+
+        let mut disk = floppy_2hd_without_bpb(0xF0);
+        assert_eq!(
+            FatVolume::mount(0x20, 0, &geometry, &mut disk).err(),
+            Some(ERROR_UNKNOWN_MEDIA)
+        );
+    }
+
+    #[test]
+    fn fm_towns_floppy_mounts_the_rare_formats_of_io_sys() {
+        let geometry = fm_towns::floppy_entry(0, 0).geometry.unwrap();
+        let mut data = vec![0u8; 77 * 26 * 128];
+        data[0x80..0x83].copy_from_slice(&[0xFE, 0xFF, 0xFF]);
+        let mut disk = ImageDisk {
+            sector_size: 128,
+            geometry: (77, 1, 26),
+            data,
+        };
+        let volume = FatVolume::mount(0x20, 0, &geometry, &mut disk).unwrap();
+        assert_eq!(volume.bpb, fm_towns::FLOPPY_128_BPB);
+        assert_eq!(volume.root_dir_lba(), 13);
+
+        let mut data = vec![0u8; 80 * 2 * 18 * 512];
+        data[0x200..0x203].copy_from_slice(&[0xFE, 0xFF, 0xFF]);
+        let mut disk = ImageDisk {
+            sector_size: 512,
+            geometry: (80, 2, 18),
+            data,
+        };
+        let volume = FatVolume::mount(0x20, 0, &geometry, &mut disk).unwrap();
+        assert_eq!(volume.bpb, fm_towns::FLOPPY_1440K_MODE_1024_BPB);
+    }
+
+    #[test]
+    fn fm_towns_floppy_ignores_the_bpb_of_the_boot_record() {
+        let geometry = fm_towns::floppy_entry(0, 0).geometry.unwrap();
+        let mut disk = floppy_2hd_without_bpb(0xFE);
+        disk.data[0x0B..0x18].copy_from_slice(&[
+            0x00, 0x04, 0x01, 0x01, 0x00, 0x02, 0xC0, 0x00, 0xD0, 0x04, 0xFE, 0x02, 0x00,
+        ]);
+        let volume = FatVolume::mount(0x20, 0, &geometry, &mut disk).unwrap();
+        assert_eq!(volume.bpb.media_descriptor, 0x01);
+    }
+
+    #[test]
+    fn default_bpb_needs_a_matching_device_size() {
+        let geometry = pc98::floppy_2hd_geometry();
+        let mut disk = floppy_2hd_without_bpb(0xFE);
+        disk.geometry = (80, 2, 8);
+        assert!(FatVolume::mount(0x90, 0, &geometry, &mut disk).is_err());
+    }
+
+    #[test]
+    fn driver_source_mounts_with_the_reported_bpb() {
+        let mut disk = os_rom_image();
+        let geometry = DriveGeometry::new(BpbSource::Driver, fm_towns::OS_ROM_BPB);
+        let volume = FatVolume::mount(0x42, 0, &geometry, &mut disk).unwrap();
+        assert_eq!(volume.bpb, fm_towns::OS_ROM_BPB);
+    }
+
+    #[test]
+    fn logical_sectors_map_to_physical_sectors() {
+        let mut data = vec![0u8; 0x8000 * 512];
+        let boot = 3 * 512;
+        data[boot + 0x0B..boot + 0x18].copy_from_slice(&[
+            0x00, 0x08, 0x04, 0x01, 0x00, 0x02, 0x00, 0x02, 0x00, 0x1E, 0xF9, 0x03, 0x00,
+        ]);
+        let fat = boot + 2048;
+        data[fat..fat + 3].copy_from_slice(&[0xF9, 0xFF, 0xFF]);
+        let mut disk = ImageDisk {
+            sector_size: 512,
+            geometry: (0, 0, 0),
+            data,
+        };
+        let partition_bpb = Bpb {
+            bytes_per_sector: 0x0800,
+            sectors_per_cluster: 4,
+            reserved_sectors: 1,
+            num_fats: 2,
+            root_entry_count: 0x0200,
+            total_sectors_16: 0x1E00,
+            media_descriptor: 0xF9,
+            sectors_per_fat: 3,
+            total_sectors_32: 0,
+        };
+        let geometry = fm_towns::scsi_partition_entry(0, 0, 3, partition_bpb)
+            .geometry
+            .unwrap();
+        let volume = FatVolume::mount(0xB0, 3, &geometry, &mut disk).unwrap();
+        assert_eq!(volume.sector_ratio(), 4);
+        assert_eq!(volume.logical_sector_lba(0), 3);
+        assert_eq!(volume.logical_sector_lba(1), 7);
+        assert_eq!(volume.root_dir_lba(), 0x1F);
+        assert_eq!(volume.cluster_to_lba(2), 0x3F);
     }
 }

@@ -3,10 +3,41 @@
 use common::warn;
 
 use crate::{
-    BufferedInputState, CpuAccess, DriveIo, MemoryAccess, NeetanDos, SegmentRegister,
-    adjust_iret_ip, country, filesystem, memory, set_iret_carry, set_iret_zf, tables,
+    BufferedInputState, CpuAccess, DriveIo, MemoryAccess, NeetanDos, SegmentRegister, country,
+    extended_error,
+    filesystem::{self, fat_bpb::Bpb},
+    layout, memory, process, set_iret_zf, tables,
     trace::{DosStdoutEvent, DosVectorEvent, route, source, suppression},
 };
+
+/// First function of the OEM range of INT 21h.
+const OEM_FUNCTION_FIRST: u8 = 0xF8;
+
+/// Last function of the OEM range of INT 21h.
+const OEM_FUNCTION_LAST: u8 = 0xFF;
+
+/// Function that returns the extended error. It keeps the last error.
+const EXTENDED_ERROR_FUNCTION: u8 = 0x59;
+
+/// Size of the PSP area with the two FCBs and the command tail, from
+/// `PSP:005Ch` to the end of the PSP.
+const PSP_PARAMETER_AREA_SIZE: usize = 0x100 - tables::PSP_OFF_FCB1 as usize;
+
+/// AX of a successful `AH=3Bh` on a DOS 3 kernel.
+const CHANGE_DIRECTORY_AX: u16 = 0x0000;
+
+/// AX of a successful `AH=47h` on a local drive.
+const LOCAL_CURRENT_DIRECTORY_AX: u16 = 0x0100;
+
+/// Last character I/O function. The functions `01h`-`0Ch` keep the locus of
+/// the last error.
+const LAST_CHARACTER_FUNCTION: u8 = 0x0C;
+
+/// Returns true when the function `ah` starts with the locus of an unknown
+/// place, like the MS-DOS dispatcher.
+fn resets_error_locus(ah: u8) -> bool {
+    !(1..=LAST_CHARACTER_FUNCTION).contains(&ah) && ah != EXTENDED_ERROR_FUNCTION
+}
 
 impl NeetanDos {
     /// Dispatches an INT 21h call based on the AH register.
@@ -16,11 +47,16 @@ impl NeetanDos {
         memory: &mut dyn MemoryAccess,
         disk: &mut dyn DriveIo,
     ) {
-        let indos_addr = self.state.indos_addr;
+        let indos_addr = self.state.indos_address();
         let indos = memory.read_byte(indos_addr);
         memory.write_byte(indos_addr, indos.wrapping_add(1));
 
         let ah = (cpu.ax() >> 8) as u8;
+        self.state.handler_carry.set(None);
+        if resets_error_locus(ah) {
+            self.state
+                .set_error_locus(memory, extended_error::LOCUS_UNKNOWN);
+        }
         match ah {
             0x00 => {
                 self.terminate_process(cpu, memory, 0, 0);
@@ -34,21 +70,22 @@ impl NeetanDos {
             0x0A => self.int21h_0ah_buffered_input(cpu, memory),
             0x0B => self.int21h_0bh_check_keyboard_status(cpu, memory),
             0x0C => self.int21h_0ch_flush_and_invoke(cpu, memory),
-            0x0D => self.int21h_0dh_disk_reset(disk),
+            0x0D => self.int21h_0dh_disk_reset(cpu, disk),
             0x0E => self.int21h_0eh_select_drive(cpu, memory),
             0x19 => self.int21h_19h_get_current_drive(cpu),
             0x1A => self.int21h_1ah_set_dta(cpu),
-            0x1C => self.int21h_1ch_get_alloc_info(cpu, memory),
-            0x1F => self.int21h_1fh_get_dpb_default(cpu, memory),
+            0x1C => self.int21h_1ch_get_alloc_info(cpu, memory, disk),
+            0x1F => self.int21h_1fh_get_dpb_default(cpu, memory, disk),
             0x25 => self.int21h_25h_set_interrupt_vector(cpu, memory),
             0x29 => self.int21h_29h_parse_filename(cpu, memory),
             0x2A => self.int21h_2ah_get_date(cpu),
             0x2B => self.int21h_2bh_set_date(cpu),
             0x2C => self.int21h_2ch_get_time(cpu),
             0x2D => self.int21h_2dh_set_time(cpu),
+            0x2E => self.int21h_2eh_set_verify(cpu),
             0x2F => self.int21h_2fh_get_dta(cpu),
             0x30 => self.int21h_30h_get_version(cpu),
-            0x32 => self.int21h_32h_get_dpb(cpu, memory),
+            0x32 => self.int21h_32h_get_dpb(cpu, memory, disk),
             0x33 => self.int21h_33h_extended(cpu),
             0x34 => self.int21h_34h_get_indos(cpu),
             0x35 => self.int21h_35h_get_interrupt_vector(cpu, memory),
@@ -111,16 +148,18 @@ impl NeetanDos {
             0x51 => self.int21h_51h_get_psp(cpu),
             0x52 => self.int21h_52h_get_sysvars(cpu),
             0x53 => self.int21h_53h_create_dpb_from_bpb(cpu, memory),
+            0x54 => self.int21h_54h_get_verify(cpu),
             0x55 => self.int21h_55h_create_child_psp(cpu, memory),
             0x56 => {
                 self.int21h_56h_rename(cpu, memory, disk);
             }
             0x57 => self.int21h_57h_get_set_datetime(cpu, memory),
             0x58 => self.int21h_58h_allocation_strategy(cpu, memory),
+            0x59 => self.int21h_59h_get_extended_error(cpu, memory),
             0x5D => self.int21h_5dh_server_call(cpu, memory),
             0x5E | 0x5F => {
                 cpu.set_ax(0x0001);
-                set_iret_carry(cpu, memory, true);
+                self.state.set_iret_carry(cpu, memory, true);
             }
             0x60 => self.int21h_60h_truename(cpu, memory),
             0x61 => cpu.set_ax(cpu.ax() & 0xFF00),
@@ -133,11 +172,31 @@ impl NeetanDos {
             0x69 => self.int21h_69h_get_set_media_info(cpu, memory),
             0x6B => {
                 cpu.set_ax(0x0001);
-                set_iret_carry(cpu, memory, true);
+                self.state.set_iret_carry(cpu, memory, true);
             }
             0xDC => self.int21h_dch_netware_connection_number(cpu, memory),
-            0xFF => self.int21h_ffh_shell_step(cpu, memory, disk),
+            // OEM function range without an OEM handler. DOS answers it like
+            // an invalid function with AL=00h.
+            OEM_FUNCTION_FIRST..=OEM_FUNCTION_LAST => cpu.set_ax(cpu.ax() & 0xFF00),
             _ => warn!("INT 21h AH={ah:#04X} is unimplemented"),
+        }
+
+        if ah != EXTENDED_ERROR_FUNCTION
+            && !self.state.guest_requests.redispatch
+            && self.state.handler_carry.get() == Some(true)
+        {
+            let code = cpu.ax() & 0x00FF;
+            let extended_code = if self.state.critical_error_failed {
+                crate::critical_error::ERROR_FAIL_ON_CRITICAL_ERROR
+            } else {
+                code
+            };
+            self.state.record_extended_error(memory, extended_code);
+            cpu.set_ax(extended_error::function_error_code(
+                self.state.platform.layout,
+                ah,
+                code,
+            ));
         }
 
         let indos = memory.read_byte(indos_addr);
@@ -178,7 +237,7 @@ impl NeetanDos {
         let Ok(sft_index) = self.state.handle_to_sft_index(1, memory) else {
             return false;
         };
-        let Some(sft_addr) = self.state.sft_entry_addr(sft_index) else {
+        let Some(sft_addr) = self.state.sft_entry_addr(sft_index, memory) else {
             return false;
         };
         let dev_info = memory.read_word(sft_addr + tables::SFT_ENT_DEV_INFO);
@@ -188,7 +247,7 @@ impl NeetanDos {
     /// Writes one byte through the active console output path.
     pub(crate) fn write_stdout_byte(&mut self, memory: &mut dyn MemoryAccess, byte: u8) {
         if self.stdout_route(memory).reaches_console() {
-            self.console.process_byte(memory, byte);
+            self.console_output().write_byte(memory, byte);
         }
     }
 
@@ -251,15 +310,15 @@ impl NeetanDos {
     ///
     /// Returns `Some(byte)` if a byte is available, `None` if the keyboard
     /// buffer is empty (and no pending bytes).
-    fn read_input_byte(&mut self, memory: &mut dyn MemoryAccess) -> Option<u8> {
+    pub(crate) fn read_input_byte(&mut self, memory: &mut dyn MemoryAccess) -> Option<u8> {
         if let Some(byte) = self.state.pending_key_bytes.pop_front() {
             return Some(byte);
         }
-        if !tables::key_available(memory) {
-            return None;
-        }
-        let (scan, ch) = tables::read_key(memory);
-        if ch == 0x00 {
+        let key = self.keyboard().read_key(memory)?;
+        let ch = key.character;
+        if let Some(scan) = key.scan_code
+            && ch == 0x00
+        {
             // Extended key: look up the escape sequence in the function key map.
             if let Some(seq) = self.lookup_fnkey_sequence(scan) {
                 if seq.is_empty() {
@@ -281,8 +340,14 @@ impl NeetanDos {
     }
 
     /// Returns true if an input byte is ready (pending bytes or key in buffer).
-    fn input_byte_available(&self, memory: &dyn MemoryAccess) -> bool {
-        !self.state.pending_key_bytes.is_empty() || tables::key_available(memory)
+    fn input_byte_available(&mut self, memory: &dyn MemoryAccess) -> bool {
+        !self.state.pending_key_bytes.is_empty() || self.keyboard().key_available(memory)
+    }
+
+    /// Returns true when the keyboard backend reports the device state of
+    /// this entry. A guest console needs a status call first.
+    fn input_status_is_current(&mut self) -> bool {
+        !self.state.pending_key_bytes.is_empty() || self.keyboard().status_is_current()
     }
 
     /// Looks up the escape sequence for a hardware scan code in the function key map.
@@ -337,12 +402,12 @@ impl NeetanDos {
     ) -> bool {
         match self.read_input_byte(memory) {
             Some(ch) => {
-                self.console.process_byte(memory, ch);
+                self.console_output().write_byte(memory, ch);
                 cpu.set_ax((cpu.ax() & 0xFF00) | ch as u16);
                 true
             }
             None => {
-                adjust_iret_ip(cpu, memory, -2);
+                self.wait_for_console_input(cpu, memory);
                 false
             }
         }
@@ -366,6 +431,10 @@ impl NeetanDos {
     ) -> bool {
         let dl = (cpu.dx() & 0xFF) as u8;
         if dl == 0xFF {
+            if !self.input_byte_available(memory) && !self.input_status_is_current() {
+                self.wait_for_console_input(cpu, memory);
+                return false;
+            }
             match self.read_input_byte(memory) {
                 Some(ch) => {
                     cpu.set_ax((cpu.ax() & 0xFF00) | ch as u16);
@@ -423,7 +492,7 @@ impl NeetanDos {
                 true
             }
             None => {
-                adjust_iret_ip(cpu, memory, -2);
+                self.wait_for_console_input(cpu, memory);
                 false
             }
         }
@@ -450,7 +519,7 @@ impl NeetanDos {
                 true
             }
             None => {
-                adjust_iret_ip(cpu, memory, -2);
+                self.wait_for_console_input(cpu, memory);
                 false
             }
         }
@@ -487,7 +556,7 @@ impl NeetanDos {
         let ch = match self.read_input_byte(memory) {
             Some(ch) => ch,
             None => {
-                adjust_iret_ip(cpu, memory, -2);
+                self.wait_for_console_input(cpu, memory);
                 return false;
             }
         };
@@ -499,8 +568,8 @@ impl NeetanDos {
                 let pos = bi.current_pos;
                 memory.write_byte(addr + 1, pos);
                 memory.write_byte(addr + 2 + pos as u32, 0x0D);
-                self.console.process_byte(memory, b'\r');
-                self.console.process_byte(memory, b'\n');
+                self.console_output().write_byte(memory, b'\r');
+                self.console_output().write_byte(memory, b'\n');
                 self.state.buffered_input = None;
                 true
             }
@@ -509,11 +578,11 @@ impl NeetanDos {
                     && bi.current_pos > 0
                 {
                     bi.current_pos -= 1;
-                    self.console.process_byte(memory, 0x08);
-                    self.console.process_byte(memory, b' ');
-                    self.console.process_byte(memory, 0x08);
+                    self.console_output().write_byte(memory, 0x08);
+                    self.console_output().write_byte(memory, b' ');
+                    self.console_output().write_byte(memory, 0x08);
                 }
-                adjust_iret_ip(cpu, memory, -2);
+                self.wait_for_console_input(cpu, memory);
                 false
             }
             _ => {
@@ -522,9 +591,9 @@ impl NeetanDos {
                     let addr = bi.buffer_addr + 2 + bi.current_pos as u32;
                     memory.write_byte(addr, ch);
                     bi.current_pos += 1;
-                    self.console.process_byte(memory, ch);
+                    self.console_output().write_byte(memory, ch);
                 }
-                adjust_iret_ip(cpu, memory, -2);
+                self.wait_for_console_input(cpu, memory);
                 false
             }
         }
@@ -532,12 +601,17 @@ impl NeetanDos {
 
     /// AH=0Bh: Check keyboard status (non-blocking).
     /// Returns AL = FFh if key available, 00h if not.
-    fn int21h_0bh_check_keyboard_status(&self, cpu: &mut dyn CpuAccess, memory: &dyn MemoryAccess) {
-        let al: u8 = if self.input_byte_available(memory) {
-            0xFF
-        } else {
-            0x00
-        };
+    fn int21h_0bh_check_keyboard_status(
+        &mut self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+    ) {
+        let available = self.input_byte_available(memory);
+        if !available && !self.input_status_is_current() {
+            self.wait_for_console_input(cpu, memory);
+            return;
+        }
+        let al: u8 = if available { 0xFF } else { 0x00 };
         cpu.set_ax((cpu.ax() & 0xFF00) | al as u16);
     }
 
@@ -551,7 +625,7 @@ impl NeetanDos {
         let input_function = match self.state.flush_input_function {
             Some(input_function) => input_function,
             None => {
-                tables::flush_keyboard_buffer(memory);
+                self.keyboard().flush(memory);
                 self.state.pending_key_bytes.clear();
                 let input_function = (cpu.ax() & 0xFF) as u8;
                 self.state.flush_input_function = Some(input_function);
@@ -622,7 +696,8 @@ impl NeetanDos {
     /// Returns AL = number of logical drives (LASTDRIVE).
     fn int21h_0eh_select_drive(&mut self, cpu: &mut dyn CpuAccess, memory: &dyn MemoryAccess) {
         self.state.current_drive = cpu.dx() as u8;
-        let lastdrive = memory.read_byte(self.state.sysvars_base + tables::SYSVARS_OFF_LASTDRIVE);
+        let lastdrive =
+            memory.read_byte(self.state.list_of_lists_address() + tables::SYSVARS_OFF_LASTDRIVE);
         cpu.set_ax((cpu.ax() & 0xFF00) | lastdrive as u16);
     }
 
@@ -669,20 +744,33 @@ impl NeetanDos {
 
     /// AH=1Fh: Get DPB for the default drive (undocumented).
     /// Returns DS:BX = DPB pointer, AL=00h. AL=FFh if invalid drive.
-    fn int21h_1fh_get_dpb_default(&self, cpu: &mut dyn CpuAccess, memory: &dyn MemoryAccess) {
-        self.get_dpb_for_drive(cpu, memory, self.state.current_drive);
+    fn int21h_1fh_get_dpb_default(
+        &mut self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+        disk: &mut dyn DriveIo,
+    ) {
+        let drive_index = self.state.current_drive;
+        self.state.refresh_drive_geometry(drive_index, memory, disk);
+        self.get_dpb_for_drive(cpu, memory, drive_index);
     }
 
     /// AH=32h: Get DPB for specified drive (undocumented).
     /// DL = drive (0=default, 1=A, 2=B, ...).
     /// Returns DS:BX = DPB pointer, AL=00h. AL=FFh if invalid drive.
-    fn int21h_32h_get_dpb(&self, cpu: &mut dyn CpuAccess, memory: &dyn MemoryAccess) {
+    fn int21h_32h_get_dpb(
+        &mut self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+        disk: &mut dyn DriveIo,
+    ) {
         let dl = (cpu.dx() & 0xFF) as u8;
         let drive_index = if dl == 0 {
             self.state.current_drive
         } else {
             dl - 1
         };
+        self.state.refresh_drive_geometry(drive_index, memory, disk);
         self.get_dpb_for_drive(cpu, memory, drive_index);
     }
 
@@ -697,7 +785,7 @@ impl NeetanDos {
             return;
         }
 
-        let cds_addr = tables::CDS_BASE + (drive_index as u32) * tables::CDS_ENTRY_SIZE;
+        let cds_addr = self.state.cds_entry_addr(drive_index, memory);
         let cds_flags = memory.read_word(cds_addr + tables::CDS_OFF_FLAGS);
         if cds_flags == 0 {
             cpu.set_ax((cpu.ax() & 0xFF00) | 0xFF);
@@ -729,7 +817,7 @@ impl NeetanDos {
 
         if path.is_empty() {
             cpu.set_ax(0x0003);
-            set_iret_carry(cpu, memory, true);
+            self.state.set_iret_carry(cpu, memory, true);
             return;
         }
 
@@ -742,7 +830,7 @@ impl NeetanDos {
 
         if !drive_letter.is_ascii_uppercase() {
             cpu.set_ax(0x000F);
-            set_iret_carry(cpu, memory, true);
+            self.state.set_iret_carry(cpu, memory, true);
             return;
         }
 
@@ -755,8 +843,7 @@ impl NeetanDos {
             full.extend_from_slice(rest);
         } else {
             // Read the CWD from CDS for this drive.
-            let drive_index = (drive_letter - b'A') as u32;
-            let cds_addr = tables::CDS_BASE + drive_index * tables::CDS_ENTRY_SIZE;
+            let cds_addr = self.state.cds_entry_addr(drive_letter - b'A', memory);
 
             let mut cwd = Vec::new();
             for i in 0..67u32 {
@@ -796,16 +883,17 @@ impl NeetanDos {
         }
         memory.write_byte(output_addr + normalized.len() as u32, 0x00);
 
-        set_iret_carry(cpu, memory, false);
+        self.state.set_iret_carry(cpu, memory, false);
     }
 
     /// AH=30h: Get DOS version number.
-    /// Returns AL=major (6), AH=minor (20), BH=OEM, BL=0.
+    /// Returns AL=major, AH=minor and BH=OEM number of the platform version.
+    /// BL:CX is the user serial number, which is zero.
     fn int21h_30h_get_version(&self, cpu: &mut dyn CpuAccess) {
-        let (major, minor) = self.state.version;
-        cpu.set_ax((minor as u16) << 8 | major as u16);
-        // BH=OEM serial number (0x00 = IBM/NEC compatible), BL=0x00
-        cpu.set_bx(0x0000);
+        let version = self.state.platform.version;
+        cpu.set_ax(u16::from(version.minor) << 8 | u16::from(version.major));
+        cpu.set_bx(u16::from(version.oem_number) << 8);
+        cpu.set_cx(0x0000);
     }
 
     /// AH=33h: Extended functions.
@@ -832,8 +920,8 @@ impl NeetanDos {
                 cpu.set_ax((cpu.ax() & 0xFF00) | 0xFF);
             }
             0x06 => {
-                let (major, minor) = self.state.version;
-                cpu.set_bx((minor as u16) << 8 | major as u16);
+                let version = self.state.platform.version;
+                cpu.set_bx(u16::from(version.minor) << 8 | u16::from(version.major));
                 cpu.set_dx(0x0000);
             }
             _ => {}
@@ -843,10 +931,8 @@ impl NeetanDos {
     /// AH=34h: Get address of InDOS flag.
     /// Returns ES:BX pointing to the InDOS byte.
     fn int21h_34h_get_indos(&self, cpu: &mut dyn CpuAccess) {
-        let segment = (self.state.indos_addr >> 4) as u16;
-        let offset = (self.state.indos_addr & 0x0F) as u16;
-        cpu.set_es(segment);
-        cpu.set_bx(offset);
+        cpu.set_es(self.state.dos_data_segment());
+        cpu.set_bx(self.state.structures().swappable_data_area.indos_offset());
     }
 
     /// AH=35h: Get interrupt vector.
@@ -896,11 +982,13 @@ impl NeetanDos {
         let buffer_addr = cpu.linear_address(SegmentRegister::DS, cpu.dx());
         country::write_country_info(memory, buffer_addr);
         cpu.set_bx(country::COUNTRY_CODE);
-        set_iret_carry(cpu, memory, false);
+        self.state.set_iret_carry(cpu, memory, false);
     }
 
     /// AH=3Bh: Change current directory (CHDIR).
-    /// DS:DX = ASCIIZ pathname.
+    /// DS:DX = ASCIIZ pathname. On success a DOS 3 kernel returns AX
+    /// `0000h`: it leaves AX `0003h` of its directory search and clears AL.
+    /// Other kernels keep AX.
     fn int21h_3bh_chdir(
         &mut self,
         cpu: &mut dyn CpuAccess,
@@ -920,11 +1008,14 @@ impl NeetanDos {
 
         match filesystem::change_directory(&mut self.state, memory, disk, &path_bytes) {
             Ok(()) => {
-                set_iret_carry(cpu, memory, false);
+                if self.state.is_dos3_kernel() {
+                    cpu.set_ax(CHANGE_DIRECTORY_AX);
+                }
+                self.state.set_iret_carry(cpu, memory, false);
             }
             Err(error_code) => {
                 cpu.set_ax(error_code);
-                set_iret_carry(cpu, memory, true);
+                self.state.set_iret_carry(cpu, memory, true);
             }
         }
     }
@@ -932,6 +1023,9 @@ impl NeetanDos {
     /// AH=47h: Get current directory.
     /// DL = drive (0=default, 1=A, 2=B, ...).
     /// DS:SI = 64-byte buffer for path (without leading backslash).
+    /// On success AL is `00h`. AH is `01h` on a local drive, the answer
+    /// "unchanged" of the media check of the kernel. A network drive keeps
+    /// AH.
     fn int21h_47h_get_current_directory(
         &self,
         cpu: &mut dyn CpuAccess,
@@ -946,15 +1040,15 @@ impl NeetanDos {
 
         if drive_index >= 26 {
             cpu.set_ax(0x000F); // invalid drive
-            set_iret_carry(cpu, memory, true);
+            self.state.set_iret_carry(cpu, memory, true);
             return;
         }
 
-        let cds_addr = tables::CDS_BASE + (drive_index as u32) * tables::CDS_ENTRY_SIZE;
+        let cds_addr = self.state.cds_entry_addr(drive_index, memory);
         let cds_flags = memory.read_word(cds_addr + tables::CDS_OFF_FLAGS);
         if cds_flags == 0 {
             cpu.set_ax(0x000F);
-            set_iret_carry(cpu, memory, true);
+            self.state.set_iret_carry(cpu, memory, true);
             return;
         }
 
@@ -984,7 +1078,12 @@ impl NeetanDos {
         }
         memory.write_byte(buffer_addr + remaining.len() as u32, 0x00);
 
-        set_iret_carry(cpu, memory, false);
+        if cds_flags & tables::CDS_FLAG_NETWORK == 0 {
+            cpu.set_ax(LOCAL_CURRENT_DIRECTORY_AX);
+        } else {
+            cpu.set_ax(cpu.ax() & 0xFF00);
+        }
+        self.state.set_iret_carry(cpu, memory, false);
     }
 
     /// AH=48h: Allocate memory block.
@@ -993,31 +1092,25 @@ impl NeetanDos {
     /// Failure: CF=1, AX = 8 (insufficient memory), BX = largest available.
     fn int21h_48h_allocate(&mut self, cpu: &mut dyn CpuAccess, memory: &mut dyn MemoryAccess) {
         let paragraphs = cpu.bx();
-        let first_mcb = memory.read_word(self.state.sysvars_base - 2);
         // UMB is considered for allocation only when DOS has been told to
         // link UMB (INT 21h AX=5803h) and the memory manager has a UMB
         // region. Strategy flags +0x40/+0x80 drive the actual preference.
-        let umb_first = self
-            .state
-            .umb_link
-            .then(|| self.umb_first_mcb_segment())
-            .flatten();
+        let chains = self.state.linked_mcb_chains(memory);
         match memory::allocate_dos(
             memory,
-            first_mcb,
-            umb_first,
+            chains,
             paragraphs,
             self.state.current_psp,
             self.state.allocation_strategy,
         ) {
             Ok(segment) => {
                 cpu.set_ax(segment);
-                set_iret_carry(cpu, memory, false);
+                self.state.set_iret_carry(cpu, memory, false);
             }
             Err((error_code, largest)) => {
                 cpu.set_ax(error_code as u16);
                 cpu.set_bx(largest);
-                set_iret_carry(cpu, memory, true);
+                self.state.set_iret_carry(cpu, memory, true);
             }
         }
     }
@@ -1028,19 +1121,14 @@ impl NeetanDos {
     /// Failure: CF=1, AX = error code.
     fn int21h_49h_free(&self, cpu: &mut dyn CpuAccess, memory: &mut dyn MemoryAccess) {
         let data_segment = cpu.es();
-        let first_mcb = memory.read_word(self.state.sysvars_base - 2);
-        let umb_first = self
-            .state
-            .umb_link
-            .then(|| self.umb_first_mcb_segment())
-            .flatten();
-        match memory::free_dos(memory, first_mcb, umb_first, data_segment) {
+        let chains = self.state.linked_mcb_chains(memory);
+        match memory::free_dos(memory, chains, data_segment) {
             Ok(()) => {
-                set_iret_carry(cpu, memory, false);
+                self.state.set_iret_carry(cpu, memory, false);
             }
             Err(error_code) => {
                 cpu.set_ax(error_code as u16);
-                set_iret_carry(cpu, memory, true);
+                self.state.set_iret_carry(cpu, memory, true);
             }
         }
     }
@@ -1052,20 +1140,15 @@ impl NeetanDos {
     fn int21h_4ah_resize(&self, cpu: &mut dyn CpuAccess, memory: &mut dyn MemoryAccess) {
         let data_segment = cpu.es();
         let new_paragraphs = cpu.bx();
-        let first_mcb = memory.read_word(self.state.sysvars_base - 2);
-        let umb_first = self
-            .state
-            .umb_link
-            .then(|| self.umb_first_mcb_segment())
-            .flatten();
-        match memory::resize_dos(memory, first_mcb, umb_first, data_segment, new_paragraphs) {
+        let chains = self.state.linked_mcb_chains(memory);
+        match memory::resize_dos(memory, chains, data_segment, new_paragraphs) {
             Ok(()) => {
-                set_iret_carry(cpu, memory, false);
+                self.state.set_iret_carry(cpu, memory, false);
             }
             Err((error_code, max_available)) => {
                 cpu.set_ax(error_code as u16);
                 cpu.set_bx(max_available);
-                set_iret_carry(cpu, memory, true);
+                self.state.set_iret_carry(cpu, memory, true);
             }
         }
     }
@@ -1109,16 +1192,22 @@ impl NeetanDos {
     }
 
     /// AH=52h: Get List of Lists (SYSVARS pointer).
-    /// Returns ES:BX pointing to SYSVARS. The pointer carries a non-zero
-    /// offset so that programs can read the negative-offset fields (e.g. the
-    /// first-MCB pointer at SYSVARS-2) via ES:[BX-2] without underflowing BX.
+    /// Returns ES:BX pointing to SYSVARS in the form of the structure layout.
+    /// The DOS 6.20 layout returns a pointer one paragraph lower with a
+    /// non-zero offset, so that programs can read the first-MCB pointer at
+    /// SYSVARS-2 via ES:[BX-2] without underflowing BX.
     fn int21h_52h_get_sysvars(&self, cpu: &mut dyn CpuAccess) {
-        cpu.set_es(tables::SYSVARS_LIST_SEGMENT);
-        cpu.set_bx(tables::SYSVARS_LIST_OFFSET);
+        let (segment, offset) = self
+            .state
+            .structures()
+            .list_of_lists
+            .returned_pointer(self.state.dos_data_segment());
+        cpu.set_es(segment);
+        cpu.set_bx(offset);
     }
 
-    /// AH=53h: Translate a BIOS Parameter Block (DS:SI) into a DOS 4.x Drive
-    /// Parameter Block (ES:BP).
+    /// AH=53h: Translate a BIOS Parameter Block (DS:SI) into a Drive
+    /// Parameter Block (ES:BP) of the structure layout.
     fn int21h_53h_create_dpb_from_bpb(
         &self,
         cpu: &mut dyn CpuAccess,
@@ -1150,56 +1239,29 @@ impl NeetanDos {
             || total_sectors == 0
         {
             cpu.set_ax(0x0001);
-            set_iret_carry(cpu, memory, true);
+            self.state.set_iret_carry(cpu, memory, true);
             return;
         }
 
-        let first_root_sector = reserved_sectors as u32 + num_fats as u32 * sectors_per_fat as u32;
-        let root_dir_sectors = (root_entries as u32 * 32).div_ceil(bytes_per_sector as u32);
-        let first_data_sector = first_root_sector + root_dir_sectors;
-        let max_cluster = total_sectors
-            .saturating_sub(first_data_sector)
-            .checked_div(sectors_per_cluster as u32)
-            .unwrap_or(0)
-            + 1;
-
-        memory.write_word(
-            dpb_addr + tables::DPB_OFF_BYTES_PER_SECTOR,
+        let bpb = Bpb {
             bytes_per_sector,
-        );
-        memory.write_byte(
-            dpb_addr + tables::DPB_OFF_CLUSTER_MASK,
-            sectors_per_cluster - 1,
-        );
-        memory.write_byte(
-            dpb_addr + tables::DPB_OFF_CLUSTER_SHIFT,
-            sectors_per_cluster.trailing_zeros() as u8,
-        );
-        memory.write_word(
-            dpb_addr + tables::DPB_OFF_RESERVED_SECTORS,
+            sectors_per_cluster,
             reserved_sectors,
-        );
-        memory.write_byte(dpb_addr + tables::DPB_OFF_NUM_FATS, num_fats);
-        memory.write_word(dpb_addr + tables::DPB_OFF_ROOT_ENTRIES, root_entries);
-        memory.write_word(
-            dpb_addr + tables::DPB_OFF_FIRST_DATA_SECTOR,
-            first_data_sector.min(u16::MAX as u32) as u16,
-        );
-        memory.write_word(
-            dpb_addr + tables::DPB_OFF_MAX_CLUSTER,
-            max_cluster.min(u16::MAX as u32) as u16,
-        );
-        memory.write_word(dpb_addr + tables::DPB_OFF_SECTORS_PER_FAT, sectors_per_fat);
-        memory.write_word(
-            dpb_addr + tables::DPB_OFF_FIRST_ROOT_SECTOR,
-            first_root_sector.min(u16::MAX as u32) as u16,
-        );
-        memory.write_byte(dpb_addr + tables::DPB_OFF_MEDIA_DESC, media_descriptor);
-        // Real DOS 6.20 leaves the access flag (+0x18) untouched; AH=53h only
-        // fills fields derivable from the BPB.
-        memory.write_word(dpb_addr + 0x1D, 0x0000);
-        memory.write_word(dpb_addr + 0x1F, 0xFFFF);
-        set_iret_carry(cpu, memory, false);
+            num_fats,
+            root_entry_count: root_entries,
+            total_sectors_16,
+            media_descriptor,
+            sectors_per_fat,
+            total_sectors_32,
+        };
+        let structures = self.state.structures();
+        layout::DpbGeometry::from_bpb(&bpb).write(memory, dpb_addr, structures);
+        // Real DOS leaves the access flag untouched. AH=53h fills the fields
+        // of the BPB and resets the free cluster bookkeeping.
+        let dpb_layout = &structures.drive_parameter_block;
+        memory.write_word(dpb_addr + dpb_layout.free_search_cluster, 0x0000);
+        memory.write_word(dpb_addr + dpb_layout.free_cluster_count, 0xFFFF);
+        self.state.set_iret_carry(cpu, memory, false);
     }
 
     /// AH=58h: Get/set memory allocation strategy / UMB link.
@@ -1217,7 +1279,7 @@ impl NeetanDos {
         match al {
             0x00 => {
                 cpu.set_ax(self.state.allocation_strategy);
-                set_iret_carry(cpu, memory, false);
+                self.state.set_iret_carry(cpu, memory, false);
             }
             0x01 => {
                 // Valid strategies: low nibble 0..=2 (first/best/last fit),
@@ -1230,50 +1292,49 @@ impl NeetanDos {
                     0x00 | 0x01 | 0x02 | 0x40 | 0x41 | 0x42 | 0x80 | 0x81 | 0x82
                 ) {
                     self.state.allocation_strategy = strategy;
-                    set_iret_carry(cpu, memory, false);
+                    self.state.set_iret_carry(cpu, memory, false);
                 } else {
                     cpu.set_ax(0x0001);
-                    set_iret_carry(cpu, memory, true);
+                    self.state.set_iret_carry(cpu, memory, true);
                 }
             }
             0x02 => {
                 // Returns the link state in AL, preserving the AH=58h
                 // function code in AH (real DOS leaves AH untouched).
                 cpu.set_ax((cpu.ax() & 0xFF00) | u16::from(self.state.umb_link));
-                set_iret_carry(cpu, memory, false);
+                self.state.set_iret_carry(cpu, memory, false);
             }
             0x03 => {
                 let link_state = cpu.bx();
                 if link_state > 1 {
                     cpu.set_ax(0x0001);
-                    set_iret_carry(cpu, memory, true);
+                    self.state.set_iret_carry(cpu, memory, true);
                     return;
                 }
 
                 // Only accept the UMB link request if UMB is actually
                 // available (memory manager initialized and UMB enabled).
-                if let Some(umb_first) = self.umb_first_mcb_segment() {
-                    let first_mcb = memory.read_word(self.state.sysvars_base - 2);
+                if let Some(umb_first) = self.state.umb_first_mcb_segment() {
+                    let chains = self.state.mcb_chains(memory, Some(umb_first));
                     let linked = link_state != 0;
-                    match memory::set_dos_umb_link_state(memory, first_mcb, Some(umb_first), linked)
-                    {
+                    match memory::set_dos_umb_link_state(memory, chains, linked) {
                         Ok(()) => {
                             self.state.umb_link = linked;
-                            set_iret_carry(cpu, memory, false);
+                            self.state.set_iret_carry(cpu, memory, false);
                         }
                         Err(error_code) => {
                             cpu.set_ax(error_code as u16);
-                            set_iret_carry(cpu, memory, true);
+                            self.state.set_iret_carry(cpu, memory, true);
                         }
                     }
                 } else {
                     self.state.umb_link = false;
-                    set_iret_carry(cpu, memory, false);
+                    self.state.set_iret_carry(cpu, memory, false);
                 }
             }
             _ => {
                 cpu.set_ax(0x0001); // invalid function
-                set_iret_carry(cpu, memory, true);
+                self.state.set_iret_carry(cpu, memory, true);
             }
         }
     }
@@ -1327,7 +1388,7 @@ impl NeetanDos {
             0x20 | 0xA0 => {
                 let ch = (cpu.dx() & 0xFF) as u8;
                 cpu.set_dx((cpu.dx() & 0xFF00) | country::uppercase_char(ch) as u16);
-                set_iret_carry(cpu, memory, false);
+                self.state.set_iret_carry(cpu, memory, false);
             }
             0x21 | 0xA1 => {
                 let addr = cpu.linear_address(SegmentRegister::DS, cpu.dx());
@@ -1336,7 +1397,7 @@ impl NeetanDos {
                     let ch = memory.read_byte(addr + i);
                     memory.write_byte(addr + i, country::uppercase_char(ch));
                 }
-                set_iret_carry(cpu, memory, false);
+                self.state.set_iret_carry(cpu, memory, false);
             }
             0x22 | 0xA2 => {
                 let addr = cpu.linear_address(SegmentRegister::DS, cpu.dx());
@@ -1347,7 +1408,7 @@ impl NeetanDos {
                     }
                     memory.write_byte(addr + i, country::uppercase_char(ch));
                 }
-                set_iret_carry(cpu, memory, false);
+                self.state.set_iret_carry(cpu, memory, false);
             }
             0x23 | 0xA3 => {
                 let ch = (cpu.dx() & 0xFF) as u8;
@@ -1356,7 +1417,7 @@ impl NeetanDos {
                 } else {
                     cpu.set_ax(0x0002);
                 }
-                set_iret_carry(cpu, memory, false);
+                self.state.set_iret_carry(cpu, memory, false);
             }
             0x01 | 0x03 | 0x05 | 0x07 => {
                 let buffer_addr = cpu.linear_address(SegmentRegister::ES, cpu.di());
@@ -1382,63 +1443,38 @@ impl NeetanDos {
 
                 if written > 0 {
                     cpu.set_cx(written);
-                    set_iret_carry(cpu, memory, false);
+                    self.state.set_iret_carry(cpu, memory, false);
                 } else {
                     cpu.set_ax(0x0001);
-                    set_iret_carry(cpu, memory, true);
+                    self.state.set_iret_carry(cpu, memory, true);
                 }
             }
             _ => {
                 cpu.set_ax(0x0001);
-                set_iret_carry(cpu, memory, true);
+                self.state.set_iret_carry(cpu, memory, true);
             }
         }
     }
 
-    /// AH=55h: Create child PSP (undocumented).
-    /// DX = segment for new PSP. SI = memory top for child.
-    fn int21h_55h_create_child_psp(&self, cpu: &dyn CpuAccess, memory: &mut dyn MemoryAccess) {
-        let child_seg = cpu.dx();
-        let mem_top = cpu.si();
-        let base = (child_seg as u32) << 4;
-
-        // Write INT 20h at PSP:0000.
-        memory.write_byte(base, 0xCD);
-        memory.write_byte(base + 1, 0x20);
-
-        // Memory top segment.
-        memory.write_word(base + tables::PSP_OFF_MEM_TOP, mem_top);
-
-        let parent_base = (self.state.current_psp as u32) << 4;
-        let (parent_jft_addr, parent_jft_size) =
-            crate::DosState::handle_table_info_for_psp(memory, self.state.current_psp);
-        for i in 0..20u32 {
-            let handle = if i < parent_jft_size as u32 {
-                memory.read_byte(parent_jft_addr + i)
-            } else {
-                0xFF
-            };
-            memory.write_byte(base + tables::PSP_OFF_JFT + i, handle);
-        }
-
-        // Default handle table size and pointer.
-        memory.write_word(base + tables::PSP_OFF_HANDLE_SIZE, 20);
-        tables::write_far_ptr(
-            memory,
-            base + tables::PSP_OFF_HANDLE_PTR,
-            child_seg,
-            tables::PSP_OFF_JFT as u16,
-        );
-
-        // Parent PSP.
-        memory.write_word(base + tables::PSP_OFF_PARENT_PSP, self.state.current_psp);
-
-        // Environment segment (inherited from parent).
+    /// AH=55h: Create child PSP.
+    /// DX = segment of the new PSP, SI = memory top for PSP:0002h.
+    ///
+    /// The new PSP takes the terminate, break and critical error vectors
+    /// from the interrupt table, inherits the handles of the current PSP and
+    /// copies its FCBs and command tail. Its parent is the current PSP. The
+    /// new PSP becomes the current PSP.
+    fn int21h_55h_create_child_psp(&mut self, cpu: &dyn CpuAccess, memory: &mut dyn MemoryAccess) {
+        let child_psp = cpu.dx();
+        let parent_psp = self.state.current_psp;
+        let parent_base = u32::from(parent_psp) << 4;
         let parent_env = memory.read_word(parent_base + tables::PSP_OFF_ENV_SEG);
-        memory.write_word(base + tables::PSP_OFF_ENV_SEG, parent_env);
-
-        // INT 21h / RETF stub at PSP:0050h.
-        memory.write_block(base + tables::PSP_OFF_INT21_STUB, &[0xCD, 0x21, 0xCB]);
+        process::write_psp(memory, child_psp, parent_psp, parent_env, cpu.si());
+        process::inherit_parent_handles(memory, child_psp, parent_psp, &self.state);
+        let child_base = u32::from(child_psp) << 4;
+        let mut parameters = [0u8; PSP_PARAMETER_AREA_SIZE];
+        memory.read_block(parent_base + tables::PSP_OFF_FCB1, &mut parameters);
+        memory.write_block(child_base + tables::PSP_OFF_FCB1, &parameters);
+        self.state.current_psp = child_psp;
     }
 
     /// AH=67h: Set handle count.
@@ -1451,29 +1487,23 @@ impl NeetanDos {
         let requested = cpu.bx();
         if requested > u8::MAX as u16 + 1 {
             cpu.set_ax(0x0004);
-            set_iret_carry(cpu, memory, true);
+            self.state.set_iret_carry(cpu, memory, true);
             return;
         }
 
         let psp_base = (self.state.current_psp as u32) << 4;
         let (old_table_addr, current_size) = self.state.handle_table_info(memory);
         if requested <= current_size {
-            set_iret_carry(cpu, memory, false);
+            self.state.set_iret_carry(cpu, memory, false);
             return;
         }
 
         let paragraphs = requested.div_ceil(16);
-        let first_mcb = memory.read_word(self.state.sysvars_base - 2);
-        let umb_first = self
-            .state
-            .umb_link
-            .then(|| self.umb_first_mcb_segment())
-            .flatten();
+        let chains = self.state.linked_mcb_chains(memory);
 
         let new_segment = match memory::allocate_dos(
             memory,
-            first_mcb,
-            umb_first,
+            chains,
             paragraphs,
             self.state.current_psp,
             self.state.allocation_strategy,
@@ -1482,7 +1512,7 @@ impl NeetanDos {
             Err((error_code, largest)) => {
                 cpu.set_ax(error_code as u16);
                 cpu.set_bx(largest);
-                set_iret_carry(cpu, memory, true);
+                self.state.set_iret_carry(cpu, memory, true);
                 return;
             }
         };
@@ -1507,10 +1537,10 @@ impl NeetanDos {
         );
 
         if old_segment != self.state.current_psp || old_offset != tables::PSP_OFF_JFT as u16 {
-            let _ = memory::free_dos(memory, first_mcb, umb_first, old_segment);
+            let _ = memory::free_dos(memory, chains, old_segment);
         }
 
-        set_iret_carry(cpu, memory, false);
+        self.state.set_iret_carry(cpu, memory, false);
     }
 
     /// AH=68h / AH=6Ah: Commit (flush) file.
@@ -1518,10 +1548,10 @@ impl NeetanDos {
     fn int21h_68h_commit_file(&self, cpu: &mut dyn CpuAccess, memory: &mut dyn MemoryAccess) {
         let handle = cpu.bx();
         match self.state.handle_to_sft_index(handle, memory) {
-            Ok(_) => set_iret_carry(cpu, memory, false),
+            Ok(_) => self.state.set_iret_carry(cpu, memory, false),
             Err(err) => {
                 cpu.set_ax(err);
-                set_iret_carry(cpu, memory, true);
+                self.state.set_iret_carry(cpu, memory, true);
             }
         }
     }
@@ -1544,7 +1574,7 @@ impl NeetanDos {
 
         if drive_index >= 26 {
             cpu.set_ax(0x000F);
-            set_iret_carry(cpu, memory, true);
+            self.state.set_iret_carry(cpu, memory, true);
             return;
         }
 
@@ -1560,14 +1590,14 @@ impl NeetanDos {
                 memory.write_block(buffer_addr + 6, b"NO NAME    ");
                 // File system type (8 bytes).
                 memory.write_block(buffer_addr + 17, b"FAT12   ");
-                set_iret_carry(cpu, memory, false);
+                self.state.set_iret_carry(cpu, memory, false);
             }
             0x01 => {
-                set_iret_carry(cpu, memory, false);
+                self.state.set_iret_carry(cpu, memory, false);
             }
             _ => {
                 cpu.set_ax(0x0001);
-                set_iret_carry(cpu, memory, true);
+                self.state.set_iret_carry(cpu, memory, true);
             }
         }
     }
@@ -1575,10 +1605,12 @@ impl NeetanDos {
     /// AH=2Ah: Get system date.
     /// Returns CX=year, DH=month, DL=day, AL=day-of-week.
     fn int21h_2ah_get_date(&mut self, cpu: &mut dyn CpuAccess) {
-        let (year, month, day, dow) = self.state.current_date_parts();
-        cpu.set_cx(year);
-        cpu.set_dx((month << 8) | day);
-        cpu.set_ax((cpu.ax() & 0xFF00) | dow);
+        let Some(now) = self.state.dos_clock() else {
+            return;
+        };
+        cpu.set_cx(now.year);
+        cpu.set_dx(u16::from(now.month) << 8 | u16::from(now.day));
+        cpu.set_ax((cpu.ax() & 0xFF00) | u16::from(now.day_of_week));
     }
 
     /// AH=2Bh: Set system date (no-op).
@@ -1590,9 +1622,21 @@ impl NeetanDos {
     /// AH=2Ch: Get system time.
     /// Returns CH=hour, CL=minute, DH=second, DL=hundredths.
     fn int21h_2ch_get_time(&mut self, cpu: &mut dyn CpuAccess) {
-        let (hour, minute, second) = self.state.current_time_parts();
-        cpu.set_cx((hour as u16) << 8 | minute as u16);
-        cpu.set_dx((second as u16) << 8);
+        let Some(now) = self.state.dos_clock() else {
+            return;
+        };
+        cpu.set_cx(u16::from(now.hour) << 8 | u16::from(now.minute));
+        cpu.set_dx(u16::from(now.second) << 8 | u16::from(now.hundredths));
+    }
+
+    /// AH=2Eh: Set the verify flag. AL = 00h off, 01h on.
+    fn int21h_2eh_set_verify(&mut self, cpu: &dyn CpuAccess) {
+        self.state.verify_writes = cpu.ax() & 0x00FF != 0;
+    }
+
+    /// AH=54h: Get the verify flag. Returns AL = 00h off, 01h on.
+    fn int21h_54h_get_verify(&self, cpu: &mut dyn CpuAccess) {
+        cpu.set_ax((cpu.ax() & 0xFF00) | u16::from(self.state.verify_writes));
     }
 
     /// AH=2Dh: Set system time (no-op).
@@ -1610,18 +1654,7 @@ impl NeetanDos {
         memory: &mut dyn MemoryAccess,
     ) {
         cpu.set_ax(cpu.ax() & 0xFF00);
-        set_iret_carry(cpu, memory, false);
-    }
-
-    /// First MCB segment of the UMB chain, or `None` when no UMB region is
-    /// available. The segment depends on whether EMS is enabled (D000h with
-    /// EMS, C000h without).
-    fn umb_first_mcb_segment(&self) -> Option<u16> {
-        self.state
-            .memory_manager
-            .as_ref()
-            .filter(|memory_manager| memory_manager.is_umb_enabled())
-            .map(|memory_manager| memory_manager.umb_first_mcb_segment())
+        self.state.set_iret_carry(cpu, memory, false);
     }
 }
 
@@ -1692,11 +1725,13 @@ pub(crate) fn route_for_character_device(memory: &dyn MemoryAccess, is_nul: bool
 /// Normalizes a DOS path by resolving `.` and `..` components.
 /// Input/output is a byte vector like `A:\FOO\BAR\..\BAZ`.
 pub(crate) fn normalize_path(path: &[u8]) -> Vec<u8> {
-    // Find the root prefix (e.g. "A:\")
+    // Find the root prefix (e.g. "A:\" or "\")
     let root_len = if path.len() >= 3 && path[1] == b':' && path[2] == b'\\' {
         3
     } else if path.len() >= 2 && path[1] == b':' {
         2
+    } else if path.first() == Some(&b'\\') {
+        1
     } else {
         0
     };
@@ -1739,24 +1774,40 @@ fn read_dword(memory: &dyn MemoryAccess, address: u32) -> u32 {
 mod tests {
     use super::int29_handler_is_iret;
     use crate::{
-        CpuAccess, MemoryAccess, NeetanDos,
+        CpuAccess, DosPlatform, MemoryAccess, NeetanDos,
         memory::{self, memory_manager::MemoryManager},
         tables::{
-            ENV_BLOCK_PARAGRAPHS, FIRST_MCB_SEGMENT, FREE_MCB_SEGMENT, MCB_OFF_NAME, MCB_OFF_OWNER,
-            MCB_OFF_SIZE, MCB_OFF_TYPE, MCB_OWNER_DOS, MEMORY_TOP_SEGMENT, SYSVARS_BASE,
-            UMB_FIRST_MCB_SEGMENT,
+            ENV_BLOCK_PARAGRAPHS, MCB_OFF_NAME, MCB_OFF_OWNER, MCB_OFF_SIZE, MCB_OFF_TYPE,
+            MCB_OWNER_DOS, SYSVARS_FIRST_MCB_DISTANCE,
         },
         test_support::{MockCpu, MockMemory},
         trace::{DosTraceEvent, route, source},
     };
 
+    /// First MCB of the PC-98 UMB chain with EMS.
+    const UMB_FIRST_MCB_SEGMENT: u16 = 0xD000;
+
+    #[test]
+    fn normalize_path_keeps_the_root_of_a_path_without_drive() {
+        assert_eq!(super::normalize_path(b"\\RUN386.EXE"), b"\\RUN386.EXE");
+        assert_eq!(super::normalize_path(b"\\PD\\..\\RUN386"), b"\\RUN386");
+        assert_eq!(super::normalize_path(b"PD\\FILE"), b"PD\\FILE");
+        assert_eq!(super::normalize_path(b"C:MSCDEX"), b"C:MSCDEX");
+        assert_eq!(super::normalize_path(b"Q:\\PD\\.\\FILE"), b"Q:\\PD\\FILE");
+    }
+
     fn prepare_dos_with_umb() -> (NeetanDos, MockMemory) {
-        let mut dos = NeetanDos::new();
+        let mut dos = NeetanDos::new(DosPlatform::pc98());
         let mut memory = MockMemory::with_extended_memory(0x200000, 0x200000);
-        let layout = memory::initial_mcb_layout(ENV_BLOCK_PARAGRAPHS);
-        memory::write_initial_mcb_chain(&mut memory, layout);
-        memory.write_word(SYSVARS_BASE - 2, FIRST_MCB_SEGMENT);
-        dos.state.memory_manager = Some(MemoryManager::new(
+        let placement = dos.state.platform.placement;
+        let layout = memory::initial_mcb_layout(placement.first_mcb_segment, ENV_BLOCK_PARAGRAPHS);
+        memory::write_initial_mcb_chain(&mut memory, placement, layout);
+        memory.write_word(
+            dos.state.list_of_lists_address() - SYSVARS_FIRST_MCB_DISTANCE,
+            placement.first_mcb_segment,
+        );
+        dos.state.memory_manager = Some(MemoryManager::new_for_platform(
+            &dos.state.platform,
             memory.extended_memory_size(),
             true,
             true,
@@ -1821,12 +1872,19 @@ mod tests {
     const TEST_PSP: u16 = 0x2000;
 
     fn dos_with_stdout_handle(dev_info: u16) -> (NeetanDos, MockMemory) {
-        let mut dos = NeetanDos::new();
+        let mut dos = NeetanDos::new(DosPlatform::pc98());
         let mut memory = MockMemory::with_extended_memory(0x200000, 0);
         dos.state.current_psp = TEST_PSP;
         let psp_base = (TEST_PSP as u32) << 4;
         memory.write_byte(psp_base + crate::tables::PSP_OFF_JFT + 1, 1);
-        let sft_addr = dos.state.sft_entry_addr(1).unwrap();
+        crate::tables::write_far_ptr(
+            &mut memory,
+            dos.state.list_of_lists_address() + crate::tables::SYSVARS_OFF_SFT_PTR,
+            dos.state.dos_data_segment(),
+            dos.state.structures().system_file_table.first_block_offset,
+        );
+        dos.write_sft(&mut memory);
+        let sft_addr = dos.state.sft_entry_addr(1, &memory).unwrap();
         memory.write_word(sft_addr + crate::tables::SFT_ENT_DEV_INFO, dev_info);
         dos.console
             .dos_trace
@@ -1864,7 +1922,7 @@ mod tests {
 
     #[test]
     fn int21h_25h_records_vector_event() {
-        let dos = NeetanDos::new();
+        let dos = NeetanDos::new(DosPlatform::pc98());
         let mut memory = MockMemory::with_extended_memory(0x200000, 0);
         dos.console
             .dos_trace
@@ -2011,7 +2069,7 @@ mod tests {
 
     #[test]
     fn int21h_dch_reports_netware_absent() {
-        let dos = NeetanDos::new();
+        let dos = NeetanDos::new(DosPlatform::pc98());
         let mut memory = MockMemory::with_extended_memory(0x200000, 0);
         let mut cpu = MockCpu::default();
 
@@ -2060,30 +2118,35 @@ mod tests {
         cpu.set_bx(1);
         dos.int21h_58h_allocation_strategy(&mut cpu, &mut memory);
 
+        let placement = dos.state.platform.placement;
+        let free_mcb_segment =
+            memory::initial_mcb_layout(placement.first_mcb_segment, ENV_BLOCK_PARAGRAPHS)
+                .free_mcb_segment;
+        let memory_top_segment = placement.memory_top_segment;
         assert!(dos.state.umb_link);
         assert!(!iret_carry(&memory, &cpu));
         assert_eq!(
-            memory.read_byte(mcb_addr(FREE_MCB_SEGMENT) + MCB_OFF_TYPE),
+            memory.read_byte(mcb_addr(free_mcb_segment) + MCB_OFF_TYPE),
             0x4D
         );
         assert_eq!(
-            memory.read_byte(mcb_addr(MEMORY_TOP_SEGMENT) + MCB_OFF_TYPE),
+            memory.read_byte(mcb_addr(memory_top_segment) + MCB_OFF_TYPE),
             0x4D
         );
         assert_eq!(
-            memory.read_word(mcb_addr(MEMORY_TOP_SEGMENT) + MCB_OFF_OWNER),
+            memory.read_word(mcb_addr(memory_top_segment) + MCB_OFF_OWNER),
             MCB_OWNER_DOS
         );
         assert_eq!(
-            memory.read_word(mcb_addr(MEMORY_TOP_SEGMENT) + MCB_OFF_SIZE),
-            UMB_FIRST_MCB_SEGMENT - MEMORY_TOP_SEGMENT - 1
+            memory.read_word(mcb_addr(memory_top_segment) + MCB_OFF_SIZE),
+            UMB_FIRST_MCB_SEGMENT - memory_top_segment - 1
         );
         assert_eq!(
-            memory.read_byte(mcb_addr(MEMORY_TOP_SEGMENT) + MCB_OFF_NAME),
+            memory.read_byte(mcb_addr(memory_top_segment) + MCB_OFF_NAME),
             b'C'
         );
         assert_eq!(
-            memory.read_byte(mcb_addr(MEMORY_TOP_SEGMENT) + MCB_OFF_NAME + 1),
+            memory.read_byte(mcb_addr(memory_top_segment) + MCB_OFF_NAME + 1),
             b'S'
         );
 
@@ -2094,7 +2157,7 @@ mod tests {
         assert!(!dos.state.umb_link);
         assert!(!iret_carry(&memory, &cpu));
         assert_eq!(
-            memory.read_byte(mcb_addr(FREE_MCB_SEGMENT) + MCB_OFF_TYPE),
+            memory.read_byte(mcb_addr(free_mcb_segment) + MCB_OFF_TYPE),
             0x5A
         );
     }
@@ -2112,8 +2175,8 @@ mod tests {
             .expect("UMB allocation should succeed")
             .0;
 
-        let first_mcb = memory.read_word(SYSVARS_BASE - 2);
-        let expected_max = memory::largest_available_dos(&memory, first_mcb, None, 0);
+        let expected_max =
+            memory::largest_available_dos(&memory, dos.state.mcb_chains(&memory, None), 0);
 
         cpu.set_es(segment);
         cpu.set_bx(0x0008);
@@ -2133,10 +2196,8 @@ mod tests {
 
         assert!(!iret_carry(&memory, &cpu));
 
-        let first_mcb_after = memory.read_word(SYSVARS_BASE - 2);
-        let umb_first = Some(UMB_FIRST_MCB_SEGMENT);
-        let expected_max_linked =
-            memory::largest_available_dos(&memory, first_mcb_after, umb_first, 0);
+        let chains = dos.state.mcb_chains(&memory, Some(UMB_FIRST_MCB_SEGMENT));
+        let expected_max_linked = memory::largest_available_dos(&memory, chains, 0);
 
         cpu.set_es(0xEEEE);
         cpu.set_bx(0x1234);
@@ -2153,7 +2214,7 @@ mod tests {
         let (dos, mut memory) = prepare_dos_with_umb();
         let mut cpu = MockCpu::default();
 
-        let first_mcb = memory.read_word(SYSVARS_BASE - 2);
+        let first_mcb = dos.state.first_mcb_segment(&memory);
         memory.write_byte((first_mcb as u32) << 4, 0x42);
 
         cpu.set_es(first_mcb + 1);
@@ -2191,5 +2252,361 @@ mod tests {
         assert!(iret_carry(&memory, &cpu));
         assert_eq!(cpu.ax(), 0x0008);
         assert_ne!(cpu.bx(), 0xFFFF);
+    }
+
+    /// Placement of an FM Towns kernel in the tests.
+    const TOWNS_PLACEMENT: crate::DosPlacement = crate::DosPlacement {
+        dos_data_segment: 0x1076,
+        first_mcb_segment: 0x1800,
+        memory_top_segment: 0xC000,
+    };
+
+    /// Returns an FM Towns NeetanDos with 1 MiB of memory.
+    fn fm_towns_dos() -> (NeetanDos, MockMemory) {
+        let dos = NeetanDos::new(DosPlatform::fm_towns(TOWNS_PLACEMENT));
+        let memory = MockMemory::with_extended_memory(0x100000, 0);
+        (dos, memory)
+    }
+
+    /// Returns a PC-98 NeetanDos with 1 MiB of memory.
+    fn pc98_dos() -> (NeetanDos, MockMemory) {
+        let dos = NeetanDos::new(DosPlatform::pc98());
+        let memory = MockMemory::with_extended_memory(0x100000, 0);
+        (dos, memory)
+    }
+
+    #[test]
+    fn int21h_30h_reports_the_platform_version() {
+        let (dos, _) = pc98_dos();
+        let mut cpu = MockCpu::default();
+        cpu.set_bx(0xAAAA);
+        cpu.set_cx(0x5555);
+        dos.int21h_30h_get_version(&mut cpu);
+        assert_eq!(cpu.ax(), 0x1406);
+        assert_eq!(cpu.bx(), 0x0000);
+        assert_eq!(cpu.cx(), 0x0000);
+
+        let (dos, _) = fm_towns_dos();
+        let mut cpu = MockCpu::default();
+        cpu.set_bx(0xAAAA);
+        cpu.set_cx(0x5555);
+        dos.int21h_30h_get_version(&mut cpu);
+        assert_eq!(cpu.ax(), 0x0A03);
+        assert_eq!(cpu.bx(), 0xFF00);
+        assert_eq!(cpu.cx(), 0x0000);
+    }
+
+    #[test]
+    fn int21h_3306h_reports_the_platform_version() {
+        let (mut dos, _) = fm_towns_dos();
+        let mut cpu = MockCpu::default();
+        cpu.set_ax(0x3306);
+        dos.int21h_33h_extended(&mut cpu);
+        assert_eq!(cpu.bx(), 0x0A03);
+    }
+
+    #[test]
+    fn int21h_34h_points_into_the_platform_sda() {
+        let (dos, _) = pc98_dos();
+        let mut cpu = MockCpu::default();
+        dos.int21h_34h_get_indos(&mut cpu);
+        assert_eq!((cpu.es(), cpu.bx()), (0x0200, 0x0F41));
+
+        let (dos, _) = fm_towns_dos();
+        let mut cpu = MockCpu::default();
+        dos.int21h_34h_get_indos(&mut cpu);
+        assert_eq!((cpu.es(), cpu.bx()), (0x1076, 0x02CF));
+    }
+
+    #[test]
+    fn int21h_52h_returns_the_list_of_lists_of_the_layout() {
+        let (dos, _) = pc98_dos();
+        let mut cpu = MockCpu::default();
+        dos.int21h_52h_get_sysvars(&mut cpu);
+        assert_eq!((cpu.es(), cpu.bx()), (0x01FF, 0x0010));
+        assert_eq!(
+            (u32::from(cpu.es()) << 4) + u32::from(cpu.bx()),
+            dos.state.list_of_lists_address()
+        );
+
+        let (dos, _) = fm_towns_dos();
+        let mut cpu = MockCpu::default();
+        dos.int21h_52h_get_sysvars(&mut cpu);
+        assert_eq!((cpu.es(), cpu.bx()), (0x1076, 0x0026));
+        assert_eq!(dos.state.nul_device_offset(), 0x0048);
+    }
+
+    /// Writes the BPB of the FM Towns OS ROM drive at `address`.
+    fn write_os_rom_bpb(memory: &mut MockMemory, address: u32) {
+        memory.write_word(address, 0x0200);
+        memory.write_byte(address + 0x02, 2);
+        memory.write_word(address + 0x03, 1);
+        memory.write_byte(address + 0x05, 2);
+        memory.write_word(address + 0x06, 0x0070);
+        memory.write_word(address + 0x08, 0x0500);
+        memory.write_byte(address + 0x0A, 0xFB);
+        memory.write_word(address + 0x0B, 2);
+    }
+
+    /// Runs AH=53h with the BPB at 3000:0000 and the DPB at 4000:0000.
+    fn run_int21h_53h(dos: &NeetanDos, memory: &mut MockMemory) -> u32 {
+        const BPB_SEGMENT: u16 = 0x3000;
+        const DPB_SEGMENT: u16 = 0x4000;
+        write_os_rom_bpb(memory, u32::from(BPB_SEGMENT) << 4);
+        let dpb_address = u32::from(DPB_SEGMENT) << 4;
+        memory.write_block(dpb_address, &[0xEE; 0x24]);
+        let mut cpu = MockCpu {
+            ds: BPB_SEGMENT,
+            si: 0,
+            es: DPB_SEGMENT,
+            bp: 0,
+            ..MockCpu::default()
+        };
+        dos.int21h_53h_create_dpb_from_bpb(&mut cpu, memory);
+        assert!(!iret_carry(memory, &cpu));
+        dpb_address
+    }
+
+    #[test]
+    fn int21h_53h_builds_a_dos_620_dpb() {
+        let (dos, mut memory) = pc98_dos();
+        let dpb = run_int21h_53h(&dos, &mut memory);
+        assert_eq!(memory.read_word(dpb + 0x02), 0x0200);
+        assert_eq!(memory.read_byte(dpb + 0x04), 0x01);
+        assert_eq!(memory.read_byte(dpb + 0x05), 0x01);
+        assert_eq!(memory.read_word(dpb + 0x06), 0x0001);
+        assert_eq!(memory.read_byte(dpb + 0x08), 0x02);
+        assert_eq!(memory.read_word(dpb + 0x09), 0x0070);
+        assert_eq!(memory.read_word(dpb + 0x0B), 0x000C);
+        assert_eq!(memory.read_word(dpb + 0x0D), 0x027B);
+        assert_eq!(memory.read_word(dpb + 0x0F), 0x0002);
+        assert_eq!(memory.read_word(dpb + 0x11), 0x0005);
+        assert_eq!(memory.read_byte(dpb + 0x17), 0xFB);
+        assert_eq!(memory.read_byte(dpb + 0x18), 0xEE);
+        assert_eq!(memory.read_word(dpb + 0x1D), 0x0000);
+        assert_eq!(memory.read_word(dpb + 0x1F), 0xFFFF);
+    }
+
+    #[test]
+    fn int21h_53h_builds_a_dos_310_dpb() {
+        let (dos, mut memory) = fm_towns_dos();
+        let dpb = run_int21h_53h(&dos, &mut memory);
+        assert_eq!(memory.read_byte(dpb), 0xEE);
+        assert_eq!(memory.read_byte(dpb + 0x01), 0xEE);
+        assert_eq!(memory.read_word(dpb + 0x02), 0x0200);
+        assert_eq!(memory.read_byte(dpb + 0x04), 0x01);
+        assert_eq!(memory.read_byte(dpb + 0x05), 0x01);
+        assert_eq!(memory.read_word(dpb + 0x06), 0x0001);
+        assert_eq!(memory.read_byte(dpb + 0x08), 0x02);
+        assert_eq!(memory.read_word(dpb + 0x09), 0x0070);
+        assert_eq!(memory.read_word(dpb + 0x0B), 0x000C);
+        assert_eq!(memory.read_word(dpb + 0x0D), 0x027B);
+        assert_eq!(memory.read_byte(dpb + 0x0F), 0x02);
+        assert_eq!(memory.read_word(dpb + 0x10), 0x0005);
+        assert_eq!(memory.read_byte(dpb + 0x16), 0xFB);
+        for offset in [0x12, 0x13, 0x14, 0x15, 0x17, 0x18, 0x19, 0x1A, 0x1B] {
+            assert_eq!(memory.read_byte(dpb + offset), 0xEE, "{offset:#x}");
+        }
+        assert_eq!(memory.read_word(dpb + 0x1C), 0x0000);
+        assert_eq!(memory.read_word(dpb + 0x1E), 0xFFFF);
+        for offset in 0x20..0x24 {
+            assert_eq!(memory.read_byte(dpb + offset), 0xEE, "{offset:#x}");
+        }
+    }
+
+    #[test]
+    fn int21h_5d06h_returns_the_sda_of_the_layout() {
+        let (mut dos, mut memory) = pc98_dos();
+        let mut cpu = MockCpu::default();
+        cpu.set_ax(0x5D06);
+        dos.int21h_5dh_server_call(&mut cpu, &mut memory);
+        assert_eq!((cpu.ds, cpu.si), (0x0200, 0x0F40));
+        assert_eq!((cpu.cx(), cpu.dx()), (0x078C, 0x001A));
+
+        let (towns, mut memory) = fm_towns_dos();
+        dos = towns;
+        dos.state.current_psp = 0x2345;
+        dos.state.dta_segment = 0x2345;
+        dos.state.dta_offset = 0x0080;
+        dos.state.current_drive = 16;
+        let mut cpu = MockCpu::default();
+        cpu.set_ax(0x5D06);
+        dos.int21h_5dh_server_call(&mut cpu, &mut memory);
+        assert!(!iret_carry(&memory, &cpu));
+        assert_eq!((cpu.ds, cpu.si), (0x1076, 0x02CE));
+        assert_eq!((cpu.cx(), cpu.dx()), (0x0738, 0x0018));
+        let dos_data = TOWNS_PLACEMENT.dos_data_base();
+        assert_eq!(memory.read_word(dos_data + 0x02DA), 0x0080);
+        assert_eq!(memory.read_word(dos_data + 0x02DC), 0x2345);
+        assert_eq!(memory.read_word(dos_data + 0x02DE), 0x2345);
+        assert_eq!(memory.read_byte(dos_data + 0x02E4), 16);
+    }
+
+    #[test]
+    fn dos_310_tables_are_read_through_the_list_of_lists() {
+        let (dos, mut memory) = fm_towns_dos();
+        let list_of_lists = dos.state.list_of_lists_address();
+        assert_eq!(list_of_lists, TOWNS_PLACEMENT.dos_data_base() + 0x0026);
+
+        crate::tables::write_far_ptr(
+            &mut memory,
+            list_of_lists + crate::tables::SYSVARS_OFF_SFT_PTR,
+            0x1076,
+            0x0098,
+        );
+        let first_block = TOWNS_PLACEMENT.dos_data_base() + 0x0098;
+        crate::tables::write_far_ptr(&mut memory, first_block, 0xBF00, 0x0000);
+        memory.write_word(first_block + 4, 5);
+        crate::tables::write_far_ptr(&mut memory, 0xBF000, 0xFFFF, 0xFFFF);
+        memory.write_word(0xBF004, 15);
+        assert_eq!(
+            dos.state.sft_entry_addr(4, &memory),
+            Some(first_block + 6 + 4 * 0x35)
+        );
+        assert_eq!(dos.state.sft_entry_addr(6, &memory), Some(0xBF006 + 0x35));
+        assert_eq!(dos.state.sft_entry_addr(20, &memory), None);
+
+        crate::tables::write_far_ptr(
+            &mut memory,
+            list_of_lists + crate::tables::SYSVARS_OFF_CDS_PTR,
+            0xAF00,
+            0x0000,
+        );
+        assert_eq!(dos.state.cds_entry_addr(2, &memory), 0xAF000 + 2 * 0x51);
+
+        memory.write_word(list_of_lists - 2, 0x1234);
+        assert_eq!(dos.state.first_mcb_segment(&memory), 0x1234);
+    }
+
+    #[test]
+    fn redirected_printer_calls_fail_without_a_redirector_on_both_platforms() {
+        for (mut dos, mut memory) in [pc98_dos(), fm_towns_dos()] {
+            for subfunction in [0x07u16, 0x08, 0x09] {
+                let mut cpu = MockCpu::default();
+                memory.write_word(cpu.iret_flags_addr(), 0x0202);
+                cpu.set_ax(0x5D00 | subfunction);
+                cpu.set_dx(0x0001);
+                dos.int21h(&mut cpu, &mut memory, &mut crate::test_support::NoDrives);
+                assert_eq!(cpu.ax(), 0x0001);
+                assert_eq!(cpu.dx(), 0x0001);
+                assert_eq!(memory.read_word(cpu.iret_flags_addr()) & 1, 1);
+
+                let mut cpu = MockCpu::default();
+                cpu.set_ax(0x5900);
+                dos.int21h(&mut cpu, &mut memory, &mut crate::test_support::NoDrives);
+                assert_eq!(cpu.ax(), 0x0001);
+                assert_eq!(cpu.cx() >> 8, 0x01);
+            }
+        }
+    }
+
+    #[test]
+    fn failed_call_returns_a_code_of_its_list_and_keeps_the_real_error() {
+        for (mut dos, mut memory) in [pc98_dos(), fm_towns_dos()] {
+            dos.state.drive_map.set(
+                0,
+                crate::drive_map::pc98::drive_entry(0x90).expect("floppy drive"),
+            );
+            memory.write_block(0x0600, b"A:\\*.*\0");
+            let mut cpu = MockCpu {
+                ds: 0x0060,
+                ..MockCpu::default()
+            };
+            memory.write_word(cpu.iret_flags_addr(), 0x0202);
+            cpu.set_ax(0x4E00);
+            cpu.set_cx(0x0000);
+            cpu.set_dx(0x0000);
+            dos.int21h(&mut cpu, &mut memory, &mut crate::test_support::NoDrives);
+            assert_eq!(cpu.ax(), 0x0012);
+
+            let mut cpu = MockCpu::default();
+            cpu.set_ax(0x5900);
+            dos.int21h(&mut cpu, &mut memory, &mut crate::test_support::NoDrives);
+            assert_eq!(cpu.ax(), 0x001F);
+        }
+    }
+
+    #[test]
+    fn path_on_a_missing_drive_is_not_found() {
+        for (mut dos, mut memory) in [pc98_dos(), fm_towns_dos()] {
+            memory.write_block(0x0600, b"Q:\\FILE.TXT\0");
+            for function in [0x3Bu8, 0x3C, 0x3D, 0x41, 0x43, 0x4B, 0x4E] {
+                let mut cpu = MockCpu {
+                    ds: 0x0060,
+                    es: 0x0060,
+                    ..MockCpu::default()
+                };
+                memory.write_word(cpu.iret_flags_addr(), 0x0202);
+                cpu.set_ax(u16::from(function) << 8);
+                cpu.set_dx(0x0000);
+                dos.int21h(&mut cpu, &mut memory, &mut crate::test_support::NoDrives);
+                assert_eq!(cpu.ax(), 0x0003, "AH={function:02X}");
+
+                let mut cpu = MockCpu::default();
+                cpu.set_ax(0x5900);
+                dos.int21h(&mut cpu, &mut memory, &mut crate::test_support::NoDrives);
+                assert_eq!(cpu.ax(), 0x0003, "AH={function:02X}");
+            }
+        }
+    }
+
+    #[test]
+    fn failed_call_sets_the_extended_error_on_both_platforms() {
+        for (mut dos, mut memory) in [pc98_dos(), fm_towns_dos()] {
+            let mut cpu = MockCpu::default();
+            cpu.set_ax(0x5D0A);
+            cpu.ds = 0x0050;
+            memory.write_word(0x0500, 0x0002);
+            dos.int21h(&mut cpu, &mut memory, &mut crate::test_support::NoDrives);
+
+            let mut cpu = MockCpu::default();
+            memory.write_word(cpu.iret_flags_addr(), 0x0203);
+            cpu.set_ax(0x3000);
+            dos.int21h(&mut cpu, &mut memory, &mut crate::test_support::NoDrives);
+
+            let mut cpu = MockCpu::default();
+            cpu.set_ax(0x5900);
+            dos.int21h(&mut cpu, &mut memory, &mut crate::test_support::NoDrives);
+            assert_eq!(
+                cpu.ax(),
+                0x0002,
+                "a call without an error keeps the last error"
+            );
+
+            let mut cpu = MockCpu::default();
+            cpu.set_ax(0x4900);
+            cpu.es = 0x0001;
+            dos.int21h(&mut cpu, &mut memory, &mut crate::test_support::NoDrives);
+            assert_eq!(memory.read_word(cpu.iret_flags_addr()) & 1, 1);
+            let error = cpu.ax();
+
+            let mut cpu = MockCpu::default();
+            cpu.set_ax(0x5900);
+            dos.int21h(&mut cpu, &mut memory, &mut crate::test_support::NoDrives);
+            assert_eq!(cpu.ax(), error);
+        }
+    }
+
+    #[test]
+    fn extended_error_survives_a_save_state_round_trip() {
+        for (mut dos, mut memory) in [pc98_dos(), fm_towns_dos()] {
+            let mut cpu = MockCpu::default();
+            cpu.set_ax(0x4900);
+            cpu.es = 0x0001;
+            dos.int21h(&mut cpu, &mut memory, &mut crate::test_support::NoDrives);
+            assert_eq!(memory.read_word(cpu.iret_flags_addr()) & 1, 1);
+            let error = cpu.ax();
+
+            let mut encoded = Vec::new();
+            save_state::StateEncode::encode_state(&dos, &mut encoded);
+            let mut decoder = save_state::StateDecoder::new(&encoded, usize::MAX);
+            let mut restored: NeetanDos =
+                save_state::StateDecode::decode_state(&mut decoder).unwrap();
+
+            let mut cpu = MockCpu::default();
+            cpu.set_ax(0x5900);
+            restored.int21h(&mut cpu, &mut memory, &mut crate::test_support::NoDrives);
+            assert_eq!(cpu.ax(), error);
+        }
     }
 }

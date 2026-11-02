@@ -64,6 +64,26 @@ fn cds_boot_drive_flags() {
 }
 
 #[test]
+fn cds_boot_drive_root_length() {
+    let mut machine = harness::boot_hle();
+    let sysvars = harness::get_sysvars_address(&mut machine);
+
+    let (cds_seg, cds_off) = harness::read_far_ptr(&machine.bus, sysvars + 0x16);
+    let cds_addr = harness::far_to_linear(cds_seg, cds_off);
+    let boot_drive = harness::read_byte(&machine.bus, sysvars + 0x43);
+    let drive_index = (boot_drive - 1) as u32;
+    let entry_addr = cds_addr + drive_index * 0x58;
+
+    // DOS 4.0 and later keep the root length word at +0x4F. It indexes the
+    // backslash behind "X:".
+    let root_length = harness::read_word(&machine.bus, entry_addr + 0x4F);
+    assert_eq!(
+        root_length, 2,
+        "CDS root length should be 2, got {root_length}"
+    );
+}
+
+#[test]
 fn dpb_first_entry_fields() {
     let mut machine = harness::boot_hle();
     let sysvars = harness::get_sysvars_address(&mut machine);
@@ -175,8 +195,8 @@ fn indos_flag_is_zero_at_idle() {
     let segment = harness::result_word(&machine.bus, 2);
     let indos_addr = harness::far_to_linear(segment, offset);
 
-    // In HLE mode, all INT 21h calls (including the shell's AH=FFh step)
-    // complete instantly: InDOS is incremented on entry and decremented on
+    // In HLE mode, all INT 21h calls and the shell step trap complete
+    // instantly: InDOS is incremented on entry and decremented on
     // return within the same handler invocation. When inject_and_run takes
     // over the CPU between iterations of COMMAND.COM's stub loop, InDOS is 0.
     let indos_value = harness::read_byte(&machine.bus, indos_addr);
@@ -237,4 +257,18 @@ fn dbcs_table_at_fixed_address() {
         terminator2, 0x00,
         "DBCS table terminator byte 2 should be 0x00"
     );
+}
+
+#[test]
+fn trap_codes_have_no_interrupt_vectors() {
+    let machine = harness::boot_hle();
+    for trap in dos::DosTrapCode::ALL {
+        let vector_address = u32::from(trap.code()) * 4;
+        assert_eq!(
+            harness::read_far_ptr(&machine.bus, vector_address),
+            (0x0000, 0x0000),
+            "trap code {:#04X} must not own an interrupt vector",
+            trap.code()
+        );
+    }
 }

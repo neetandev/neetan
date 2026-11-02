@@ -1,14 +1,61 @@
 //! Program Segment Prefix (PSP) creation, EXEC, terminate, process stack.
 
 /// COMMAND.COM code stub (assembled from `utils/dos/dos.asm`).
-pub(crate) static COMMAND_COM_STUB: &[u8] = include_bytes!("../../../utils/dos/dos.rom");
+pub(crate) const COMMAND_COM_STUB: &[u8] = include_bytes!("../../../utils/dos/dos.rom");
+
+/// Offset of the COMMAND.COM entry point in its PSP segment.
+pub(crate) const COMMAND_COM_ENTRY_OFFSET: u16 = 0x0100;
+
+/// Offset of the shell scratch area behind the COMMAND.COM code stub. The
+/// shell writes the program name, the command tail and the EXEC parameter
+/// block of a launched program there.
+pub(crate) const SHELL_SCRATCH_OFFSET: u16 =
+    COMMAND_COM_ENTRY_OFFSET + COMMAND_COM_STUB.len() as u16;
+
+/// Bytes of the initial stack of a `.COM` program: the zero word that a
+/// near `RET` pops to reach `INT 20h`.
+const COM_INITIAL_STACK_BYTES: usize = 2;
+
+/// Bytes per paragraph.
+const PARAGRAPH_BYTES: usize = 16;
+
+/// Initial stack pointer of a `.COM` program in a block of 64 KiB or more.
+const COM_FULL_SEGMENT_STACK_POINTER: u16 = 0xFFFE;
+
+/// Bytes of the IRET frame that starts a child program.
+const IRET_FRAME_BYTES: u16 = 6;
+
+/// Offset of the command tail in the shell scratch area.
+pub(crate) const SHELL_SCRATCH_TAIL_OFFSET: u16 = 0x0080;
+
+/// Longest command tail that the shell passes to EXEC. The length byte and
+/// the closing carriage return fill the rest of the 128 byte tail.
+pub(crate) const SHELL_COMMAND_TAIL_MAX_LENGTH: usize = 126;
+
+/// Offset of the EXEC parameter block in the shell scratch area.
+pub(crate) const SHELL_SCRATCH_PARAMETER_BLOCK_OFFSET: u16 = 0x0100;
 
 use crate::{
     CpuAccess, DiskIo, DosState, DriveIo, MemoryAccess, NeetanDos, SegmentRegister, country, dos,
     filesystem::{fat::FatVolume, fat_dir, fat_file, find_read_entry, read_entry_all},
-    memory, set_iret_carry,
+    memory,
     tables::*,
 };
+
+/// Program loaded by EXEC without the transfer of control.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct LoadedProgram {
+    /// Segment of the PSP.
+    psp_segment: u16,
+    /// Initial SS.
+    stack_segment: u16,
+    /// Initial SP.
+    stack_pointer: u16,
+    /// Initial CS.
+    code_segment: u16,
+    /// Initial IP.
+    instruction_pointer: u16,
+}
 
 /// Parameters parsed from the EXEC parameter block (ES:BX).
 pub(crate) struct ExecParams {
@@ -64,11 +111,6 @@ state_struct_codec!(ProcessContext {
     saved_dta_off,
     saved_dta_addr,
 });
-
-pub(crate) struct SftBases {
-    pub primary: u32,
-    pub secondary: u32,
-}
 
 fn allocated_block_end_segment(mem: &dyn MemoryAccess, data_segment: u16) -> u16 {
     let mcb_addr = ((data_segment - 1) as u32) << 4;
@@ -311,8 +353,7 @@ fn build_program_path(state: &DosState, mem: &dyn MemoryAccess, path: &[u8]) -> 
     if rest.first() == Some(&b'\\') || rest.first() == Some(&b'/') {
         full.extend_from_slice(rest);
     } else {
-        let drive_index = (drive_letter - b'A') as u32;
-        let cds_addr = CDS_BASE + drive_index * CDS_ENTRY_SIZE;
+        let cds_addr = state.cds_entry_addr(drive_letter - b'A', mem);
 
         let mut cwd = Vec::new();
         for i in 0..67u32 {
@@ -428,17 +469,24 @@ fn environment_strings_len(mem: &dyn MemoryAccess, env_segment: u16, max_bytes: 
     2
 }
 
+/// Allocates the environment block of a child program and copies the
+/// environment `source_env` into it, followed by the program path. A child
+/// of a parent without environment gets none, like on MS-DOS, and the
+/// result is 0. The command processor creates its own environment and gets
+/// the default block of the root shell in that case, with its own path as
+/// `COMSPEC`.
 fn allocate_child_environment(
     mem: &mut dyn MemoryAccess,
-    first_mcb: u16,
-    umb_first_mcb: Option<u16>,
+    chains: memory::McbChains,
     source_env: u16,
     allocation_strategy: u16,
     program_path: &[u8],
 ) -> Result<u16, u16> {
+    if source_env == 0 && !is_command_processor_path(program_path) {
+        return Ok(0);
+    }
     let env_paragraphs = if source_env == 0 {
-        environment_block_paragraphs(b"Z:\\COMMAND.COM", 0)
-            .max(environment_block_paragraphs(program_path, 0))
+        environment_block_paragraphs(program_path, ENV_BLOCK_PARAGRAPHS * PARAGRAPH_BYTES as u16)
     } else {
         let source_size = environment_block_size_bytes(mem, source_env);
         let strings_len = environment_strings_len(mem, source_env, source_size);
@@ -447,8 +495,7 @@ fn allocate_child_environment(
 
     let env_segment = memory::allocate_dos(
         mem,
-        first_mcb,
-        umb_first_mcb,
+        chains,
         env_paragraphs,
         MCB_OWNER_DOS,
         allocation_strategy,
@@ -456,7 +503,7 @@ fn allocate_child_environment(
     .map_err(|(e, _)| e as u16)?;
 
     if source_env == 0 {
-        write_environment_block(mem, env_segment, env_paragraphs, b"Z:\\COMMAND.COM");
+        write_environment_block(mem, env_segment, env_paragraphs, program_path);
     } else {
         let source_base = (source_env as u32) << 4;
         let dest_base = (env_segment as u32) << 4;
@@ -474,19 +521,44 @@ fn allocate_child_environment(
     Ok(env_segment)
 }
 
-fn dos_allocation_umb_first(state: &DosState) -> Option<u16> {
-    state
-        .umb_link
-        .then(|| memory_manager_umb_first(state))
-        .flatten()
+/// Frees the environment block `env_segment` of a child that failed to
+/// load. A child without environment has the segment 0.
+fn free_child_environment(mem: &mut dyn MemoryAccess, chains: memory::McbChains, env_segment: u16) {
+    if env_segment != 0 {
+        let _ = memory::free_dos(mem, chains, env_segment);
+    }
 }
 
-fn memory_manager_umb_first(state: &DosState) -> Option<u16> {
-    state
-        .memory_manager
-        .as_ref()
-        .filter(|memory_manager| memory_manager.is_umb_enabled())
-        .map(|memory_manager| memory_manager.umb_first_mcb_segment())
+/// Makes `owner` the owner of the environment block `env_segment`. A child
+/// without environment has the segment 0.
+fn set_environment_owner(mem: &mut dyn MemoryAccess, env_segment: u16, owner: u16) {
+    if env_segment != 0 {
+        mem.write_word(((env_segment as u32 - 1) << 4) + MCB_OFF_OWNER, owner);
+    }
+}
+
+/// Returns the initial stack pointer of a `.COM` program in the block
+/// `psp_segment` to `block_end_segment`: `FFFEh`, or the last word of a
+/// block smaller than 64 KiB.
+fn com_stack_pointer(psp_segment: u16, block_end_segment: u16) -> u16 {
+    let block_bytes =
+        u32::from(block_end_segment.wrapping_sub(psp_segment)) * PARAGRAPH_BYTES as u32;
+    u16::try_from(block_bytes.saturating_sub(COM_INITIAL_STACK_BYTES as u32))
+        .map_or(COM_FULL_SEGMENT_STACK_POINTER, |pointer| {
+            pointer.min(COM_FULL_SEGMENT_STACK_POINTER)
+        })
+}
+
+/// Returns the smallest memory block in paragraphs that a `.COM` program
+/// needs: the PSP, the image and the word of the initial stack. The built-in
+/// shell needs the block of its code stub with the scratch area and the
+/// stack.
+fn com_program_paragraphs(file_data: &[u8], program_path: &[u8]) -> u16 {
+    if is_command_processor_path(program_path) {
+        return COMMAND_BLOCK_PARAGRAPHS;
+    }
+    let bytes = usize::from(COMMAND_COM_ENTRY_OFFSET) + file_data.len() + COM_INITIAL_STACK_BYTES;
+    u16::try_from(bytes.div_ceil(PARAGRAPH_BYTES)).unwrap_or(u16::MAX)
 }
 
 fn child_allocation_owner() -> u16 {
@@ -495,8 +567,7 @@ fn child_allocation_owner() -> u16 {
 
 fn allocate_exe_memory(
     mem: &mut dyn MemoryAccess,
-    first_mcb: u16,
-    umb_first: Option<u16>,
+    chains: memory::McbChains,
     allocation_strategy: u16,
     image_paragraphs: u16,
     min_alloc: u16,
@@ -515,8 +586,7 @@ fn allocate_exe_memory(
 
     match memory::allocate_dos(
         mem,
-        first_mcb,
-        umb_first,
+        chains,
         requested,
         child_allocation_owner(),
         allocation_strategy,
@@ -528,8 +598,7 @@ fn allocate_exe_memory(
             }
             memory::allocate_dos(
                 mem,
-                first_mcb,
-                umb_first,
+                chains,
                 largest,
                 child_allocation_owner(),
                 allocation_strategy,
@@ -545,8 +614,42 @@ fn allocate_exe_memory(
 /// hooked to the idle interrupt get a chance to run.
 pub(crate) fn write_command_com_stub(mem: &mut dyn MemoryAccess, psp_segment: u16) {
     let base = (psp_segment as u32) << 4;
-    let entry = base + 0x0100;
+    let entry = base + u32::from(COMMAND_COM_ENTRY_OFFSET);
     mem.write_block(entry, COMMAND_COM_STUB);
+}
+
+/// Copies the first 20 handles of `parent_psp` into the JFT of `child_psp`
+/// and raises the reference count of every inherited SFT entry. A handle
+/// opened with the no-inherit bit stays closed in the child.
+pub(crate) fn inherit_parent_handles(
+    mem: &mut dyn MemoryAccess,
+    child_psp: u16,
+    parent_psp: u16,
+    state: &DosState,
+) {
+    let child_base = (child_psp as u32) << 4;
+    let (parent_jft_addr, parent_jft_size) = DosState::handle_table_info_for_psp(mem, parent_psp);
+    for i in 0..20u32 {
+        let parent_index = if i < parent_jft_size as u32 {
+            mem.read_byte(parent_jft_addr + i)
+        } else {
+            0xFF
+        };
+        let sft = state
+            .sft_entry_addr(parent_index, mem)
+            .filter(|_| parent_index != 0xFF)
+            .filter(|&sft_addr| {
+                mem.read_word(sft_addr + SFT_ENT_OPEN_MODE) & OPEN_MODE_NO_INHERIT == 0
+            });
+        match sft {
+            Some(sft_addr) => {
+                mem.write_byte(child_base + PSP_OFF_JFT + i, parent_index);
+                let ref_count = mem.read_word(sft_addr + SFT_ENT_REF_COUNT);
+                mem.write_word(sft_addr + SFT_ENT_REF_COUNT, ref_count + 1);
+            }
+            None => mem.write_byte(child_base + PSP_OFF_JFT + i, 0xFF),
+        }
+    }
 }
 
 /// Writes a child PSP with inherited handles, command tail, and FCBs.
@@ -557,29 +660,12 @@ pub(crate) fn write_child_psp(
     env_segment: u16,
     mem_top: u16,
     params: &ExecParams,
-    sft_bases: SftBases,
+    state: &DosState,
 ) {
     write_psp(mem, child_psp, parent_psp, env_segment, mem_top);
+    inherit_parent_handles(mem, child_psp, parent_psp, state);
 
     let child_base = (child_psp as u32) << 4;
-
-    // Inherit the first 20 parent handles and increment SFT ref counts.
-    let (parent_jft_addr, parent_jft_size) = DosState::handle_table_info_for_psp(mem, parent_psp);
-    for i in 0..20u32 {
-        let sft_index = if i < parent_jft_size as u32 {
-            mem.read_byte(parent_jft_addr + i)
-        } else {
-            0xFF
-        };
-        mem.write_byte(child_base + PSP_OFF_JFT + i, sft_index);
-        if sft_index != 0xFF
-            && let Some(sft_addr) =
-                sft_entry_addr(sft_index, sft_bases.primary, sft_bases.secondary)
-        {
-            let ref_count = mem.read_word(sft_addr + SFT_ENT_REF_COUNT);
-            mem.write_word(sft_addr + SFT_ENT_REF_COUNT, ref_count + 1);
-        }
-    }
 
     // Copy command tail: length byte at +0x80, text at +0x81.
     let tail_len = mem.read_byte(params.cmd_tail_addr);
@@ -602,20 +688,117 @@ pub(crate) fn write_child_psp(
     }
 }
 
-/// Resolves an SFT entry address from its index, checking both SFT blocks.
-fn sft_entry_addr(index: u8, sft_base: u32, sft2_base: u32) -> Option<u32> {
-    let idx = index as u32;
-    if idx < SFT_INITIAL_COUNT as u32 {
-        Some(sft_base + SFT_HEADER_SIZE + idx * SFT_ENTRY_SIZE)
-    } else if idx < SFT_TOTAL_COUNT as u32 {
-        let local = idx - SFT_INITIAL_COUNT as u32;
-        Some(sft2_base + SFT_HEADER_SIZE + local * SFT_ENTRY_SIZE)
-    } else {
-        None
+/// Reads entire file contents from a FAT volume by walking the cluster chain.
+/// Offset of the load segment word in the overlay parameter block.
+const OVERLAY_OFF_LOAD_SEGMENT: u32 = 0x00;
+
+/// Offset of the relocation factor word in the overlay parameter block.
+const OVERLAY_OFF_RELOCATION_FACTOR: u32 = 0x02;
+
+/// Size of the fixed part of an EXE header.
+const EXE_HEADER_SIZE: usize = 0x1C;
+
+/// Size of an EXE page.
+const EXE_PAGE_SIZE: u32 = 512;
+
+/// Size of one relocation entry (offset and segment word).
+const EXE_RELOCATION_ENTRY_SIZE: usize = 4;
+
+/// DOS error code of an invalid format.
+const ERROR_BAD_FORMAT: u16 = 0x000B;
+
+/// Returns true when the file starts with an `MZ` or `ZM` signature.
+fn is_exe_image(file_data: &[u8]) -> bool {
+    matches!(file_data, [0x4D, 0x5A, ..] | [0x5A, 0x4D, ..])
+}
+
+/// Header fields of an EXE file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ExeLayout {
+    /// Size of the header in bytes.
+    header_size: u32,
+    /// Size of the load image behind the header in bytes.
+    load_size: u32,
+    /// Number of relocation entries.
+    relocation_count: usize,
+    /// File offset of the relocation table.
+    relocation_table_offset: usize,
+    /// Minimum extra paragraphs.
+    min_alloc: u16,
+    /// Maximum extra paragraphs.
+    max_alloc: u16,
+    /// Initial SS relative to the load segment.
+    initial_ss: u16,
+    /// Initial SP.
+    initial_sp: u16,
+    /// Initial IP.
+    initial_ip: u16,
+    /// Initial CS relative to the load segment.
+    initial_cs: u16,
+}
+
+impl ExeLayout {
+    /// Parses the header of an EXE file.
+    fn parse(file_data: &[u8]) -> Result<Self, u16> {
+        if file_data.len() < EXE_HEADER_SIZE {
+            return Err(ERROR_BAD_FORMAT);
+        }
+        let word = |offset: usize| u16::from_le_bytes([file_data[offset], file_data[offset + 1]]);
+        let bytes_last_page = word(0x02);
+        let total_pages = word(0x04);
+        let header_size = u32::from(word(0x08)) * 16;
+        let mut load_size = u32::from(total_pages) * EXE_PAGE_SIZE;
+        if bytes_last_page != 0 {
+            load_size = load_size.saturating_sub(EXE_PAGE_SIZE - u32::from(bytes_last_page));
+        }
+        if load_size < header_size {
+            return Err(ERROR_BAD_FORMAT);
+        }
+        Ok(Self {
+            header_size,
+            load_size: load_size - header_size,
+            relocation_count: usize::from(word(0x06)),
+            relocation_table_offset: usize::from(word(0x18)),
+            min_alloc: word(0x0A),
+            max_alloc: word(0x0C),
+            initial_ss: word(0x0E),
+            initial_sp: word(0x10),
+            initial_ip: word(0x14),
+            initial_cs: word(0x16),
+        })
+    }
+
+    /// Returns the load image: the bytes behind the header up to the load size.
+    fn load_image<'a>(&self, file_data: &'a [u8]) -> &'a [u8] {
+        let start = (self.header_size as usize).min(file_data.len());
+        let end = (start + self.load_size as usize).min(file_data.len());
+        &file_data[start..end]
+    }
+
+    /// Adds `relocation_factor` to every relocated word of an image loaded
+    /// at `load_segment`.
+    fn relocate(
+        &self,
+        file_data: &[u8],
+        mem: &mut dyn MemoryAccess,
+        load_segment: u16,
+        relocation_factor: u16,
+    ) {
+        for index in 0..self.relocation_count {
+            let entry = self.relocation_table_offset + index * EXE_RELOCATION_ENTRY_SIZE;
+            let Some(bytes) = file_data.get(entry..entry + EXE_RELOCATION_ENTRY_SIZE) else {
+                break;
+            };
+            let fixup_offset = u16::from_le_bytes([bytes[0], bytes[1]]);
+            let fixup_segment = u16::from_le_bytes([bytes[2], bytes[3]]);
+            let fixup_address =
+                ((load_segment.wrapping_add(fixup_segment) as u32) << 4) + fixup_offset as u32;
+            let value = mem.read_word(fixup_address);
+            mem.write_word(fixup_address, value.wrapping_add(relocation_factor));
+        }
     }
 }
 
-/// Reads entire file contents from a FAT volume by walking the cluster chain.
 pub(crate) fn read_file_data(
     vol: &FatVolume,
     entry: &fat_dir::DirEntry,
@@ -627,10 +810,10 @@ pub(crate) fn read_file_data(
 impl NeetanDos {
     /// INT 21h AH=4Bh: Execute program (EXEC).
     ///
-    /// AL=00h: Load and execute.
-    /// DS:DX = ASCIIZ program filename.
-    /// ES:BX = parameter block (env_seg, cmd_tail, FCB1, FCB2).
-    /// AL=00h: Load and execute. AL=01h: Load only.
+    /// DS:DX = ASCIIZ program filename, ES:BX = parameter block.
+    /// AL=00h: Load and execute (env_seg, cmd_tail, FCB1, FCB2).
+    /// AL=01h: Load only (the same block, entry registers returned in it).
+    /// AL=03h: Load overlay (load segment, relocation factor).
     pub(crate) fn int21h_4bh_exec(
         &mut self,
         cpu: &mut dyn CpuAccess,
@@ -641,17 +824,18 @@ impl NeetanDos {
         let result = match al {
             0x00 => self.exec_load_and_execute(cpu, mem, disk),
             0x01 => self.exec_load_only(cpu, mem, disk),
+            0x03 => self.exec_load_overlay(cpu, mem, disk),
             _ => {
                 cpu.set_ax(0x0001);
-                set_iret_carry(cpu, mem, true);
+                self.state.set_iret_carry(cpu, mem, true);
                 return;
             }
         };
         match result {
-            Ok(()) => set_iret_carry(cpu, mem, false),
+            Ok(()) => self.state.set_iret_carry(cpu, mem, false),
             Err(error_code) => {
                 cpu.set_ax(error_code);
-                set_iret_carry(cpu, mem, true);
+                self.state.set_iret_carry(cpu, mem, true);
             }
         }
     }
@@ -703,11 +887,7 @@ impl NeetanDos {
         }
 
         // Detect .COM vs .EXE.
-        let is_exe = file_data.len() >= 2
-            && ((file_data[0] == 0x4D && file_data[1] == 0x5A)
-                || (file_data[0] == 0x5A && file_data[1] == 0x4D));
-
-        if is_exe {
+        if is_exe_image(&file_data) {
             self.exec_exe(cpu, mem, &file_data, &params, &program_path)
         } else {
             self.exec_com(cpu, mem, &file_data, &params, &program_path)
@@ -744,12 +924,8 @@ impl NeetanDos {
         };
 
         if is_command_processor_path(&program_path) {
-            let (entry_ss, entry_sp, entry_cs, entry_ip) =
-                self.load_com(mem, COMMAND_COM_STUB, &params, &program_path)?;
-            mem.write_word(pb_addr + 0x0E, entry_sp);
-            mem.write_word(pb_addr + 0x10, entry_ss);
-            mem.write_word(pb_addr + 0x12, entry_ip);
-            mem.write_word(pb_addr + 0x14, entry_cs);
+            let loaded = self.load_com(mem, COMMAND_COM_STUB, &params, &program_path)?;
+            self.finish_load_only(cpu, mem, pb_addr, loaded);
             return Ok(());
         }
 
@@ -766,35 +942,92 @@ impl NeetanDos {
             return Err(0x000B);
         }
 
-        let is_exe = file_data.len() >= 2
-            && ((file_data[0] == 0x4D && file_data[1] == 0x5A)
-                || (file_data[0] == 0x5A && file_data[1] == 0x4D));
-
-        let (entry_ss, entry_sp, entry_cs, entry_ip) = if is_exe {
+        let loaded = if is_exe_image(&file_data) {
             self.load_exe(mem, &file_data, &params, &program_path)?
         } else {
             self.load_com(mem, &file_data, &params, &program_path)?
         };
-
-        mem.write_word(pb_addr + 0x0E, entry_sp);
-        mem.write_word(pb_addr + 0x10, entry_ss);
-        mem.write_word(pb_addr + 0x12, entry_ip);
-        mem.write_word(pb_addr + 0x14, entry_cs);
+        self.finish_load_only(cpu, mem, pb_addr, loaded);
 
         Ok(())
     }
 
-    /// Loads a .COM file into memory without executing. Returns (SS, SP, CS, IP).
-    fn load_com(
+    /// Writes the entry registers of a program loaded with `AX=4B01h` into
+    /// the parameter block at `parameter_block` and makes the program the
+    /// current process, like MS-DOS.
+    fn finish_load_only(
+        &mut self,
+        cpu: &mut dyn CpuAccess,
+        mem: &mut dyn MemoryAccess,
+        parameter_block: u32,
+        loaded: LoadedProgram,
+    ) {
+        mem.write_word(parameter_block + 0x0E, loaded.stack_pointer);
+        mem.write_word(parameter_block + 0x10, loaded.stack_segment);
+        mem.write_word(parameter_block + 0x12, loaded.instruction_pointer);
+        mem.write_word(parameter_block + 0x14, loaded.code_segment);
+        self.enter_child_process(cpu, mem, loaded.psp_segment);
+    }
+
+    /// AX=4B03h: Load overlay.
+    ///
+    /// The parameter block at ES:BX holds the load segment and the
+    /// relocation factor. DOS creates no PSP and no environment and
+    /// allocates no memory. A COM file lands as it is at the load segment.
+    /// An EXE file lands without its header, and every relocation adds the
+    /// relocation factor.
+    fn exec_load_overlay(
+        &mut self,
+        cpu: &mut dyn CpuAccess,
+        mem: &mut dyn MemoryAccess,
+        disk: &mut dyn DriveIo,
+    ) -> Result<(), u16> {
+        let filename_addr = cpu.linear_address(SegmentRegister::DS, cpu.dx());
+        let path = DosState::read_asciiz(mem, filename_addr, 128);
+        let program_path = build_program_path(&self.state, mem, &path);
+        let parameter_block = cpu.linear_address(SegmentRegister::ES, cpu.bx());
+        let load_segment = mem.read_word(parameter_block + OVERLAY_OFF_LOAD_SEGMENT);
+        let relocation_factor = mem.read_word(parameter_block + OVERLAY_OFF_RELOCATION_FACTOR);
+
+        let file_data = if is_command_processor_path(&program_path) {
+            COMMAND_COM_STUB.to_vec()
+        } else {
+            let read_path =
+                crate::filesystem::resolve_read_file_path(&mut self.state, &path, mem, disk)?;
+            if read_path.drive_index == 25 {
+                return Err(0x0002);
+            }
+            let dir_entry = find_read_entry(&self.state, &read_path, disk)?.ok_or(0x0002u16)?;
+            read_entry_all(&self.state, read_path.drive_index, &dir_entry, disk)?
+        };
+        if file_data.is_empty() {
+            return Err(0x000B);
+        }
+
+        let load_base = (load_segment as u32) << 4;
+        if is_exe_image(&file_data) {
+            let layout = ExeLayout::parse(&file_data)?;
+            mem.write_block(load_base, layout.load_image(&file_data));
+            layout.relocate(&file_data, mem, load_segment, relocation_factor);
+        } else {
+            mem.write_block(load_base, &file_data);
+        }
+        Ok(())
+    }
+
+    /// Allocates the environment and the largest free block for a `.COM`
+    /// program and makes the child own both. The built-in shell keeps only
+    /// the block of its code stub, like the resident part of COMMAND.COM.
+    /// Returns the PSP and the environment segment.
+    fn allocate_com_block(
         &mut self,
         mem: &mut dyn MemoryAccess,
         file_data: &[u8],
         params: &ExecParams,
         program_path: &[u8],
-    ) -> Result<(u16, u16, u16, u16), u16> {
-        let first_mcb = mem.read_word(self.state.sysvars_base - 2);
+    ) -> Result<(u16, u16), u16> {
+        let chains = self.state.linked_mcb_chains(mem);
         let parent_base = (self.state.current_psp as u32) << 4;
-        let umb_first = dos_allocation_umb_first(&self.state);
         let source_env = if params.env_seg == 0 {
             mem.read_word(parent_base + PSP_OFF_ENV_SEG)
         } else {
@@ -802,41 +1035,52 @@ impl NeetanDos {
         };
         let env_segment = allocate_child_environment(
             mem,
-            first_mcb,
-            umb_first,
+            chains,
             source_env,
             self.state.allocation_strategy,
             program_path,
         )?;
 
-        let largest = memory::largest_available_dos(
-            mem,
-            first_mcb,
-            umb_first,
-            self.state.allocation_strategy,
-        );
+        let largest = memory::largest_available_dos(mem, chains, self.state.allocation_strategy);
 
-        if largest == 0 {
-            let _ = memory::free_dos(mem, first_mcb, umb_first, env_segment);
+        if largest < com_program_paragraphs(file_data, program_path) {
+            free_child_environment(mem, chains, env_segment);
             return Err(0x0008);
         }
 
         let child_psp = memory::allocate_dos(
             mem,
-            first_mcb,
-            umb_first,
+            chains,
             largest,
             child_allocation_owner(),
             self.state.allocation_strategy,
         )
         .map_err(|(e, _)| {
-            let _ = memory::free_dos(mem, first_mcb, umb_first, env_segment);
+            free_child_environment(mem, chains, env_segment);
             e as u16
         })?;
 
+        // Set MCB owner to the child PSP segment and name.
         let mcb_segment = child_psp - 1;
         mem.write_word(((mcb_segment as u32) << 4) + MCB_OFF_OWNER, child_psp);
-        mem.write_word(((env_segment as u32 - 1) << 4) + MCB_OFF_OWNER, child_psp);
+        set_environment_owner(mem, env_segment, child_psp);
+        if is_command_processor_path(program_path) {
+            let _ = memory::resize_dos(mem, chains, child_psp, COMMAND_BLOCK_PARAGRAPHS);
+        }
+
+        Ok((child_psp, env_segment))
+    }
+
+    /// Loads a .COM file into memory without executing it.
+    fn load_com(
+        &mut self,
+        mem: &mut dyn MemoryAccess,
+        file_data: &[u8],
+        params: &ExecParams,
+        program_path: &[u8],
+    ) -> Result<LoadedProgram, u16> {
+        let (child_psp, env_segment) =
+            self.allocate_com_block(mem, file_data, params, program_path)?;
 
         let child_mem_top = allocated_block_end_segment(mem, child_psp);
         write_child_psp(
@@ -846,61 +1090,39 @@ impl NeetanDos {
             env_segment,
             child_mem_top,
             params,
-            SftBases {
-                primary: SFT_BASE,
-                secondary: self.state.sft2_base,
-            },
+            &self.state,
         );
 
         let load_addr = ((child_psp as u32) << 4) + 0x0100;
         mem.write_block(load_addr, file_data);
 
-        let stack_top = ((child_psp as u32) << 4) + 0xFFFE;
+        let stack_pointer = com_stack_pointer(child_psp, child_mem_top);
+        let stack_top = ((child_psp as u32) << 4) + u32::from(stack_pointer);
         mem.write_word(stack_top, 0x0000);
 
-        Ok((child_psp, 0xFFFE, child_psp, 0x0100))
+        Ok(LoadedProgram {
+            psp_segment: child_psp,
+            stack_segment: child_psp,
+            stack_pointer,
+            code_segment: child_psp,
+            instruction_pointer: 0x0100,
+        })
     }
 
-    /// Loads an .EXE file into memory without executing. Returns (SS, SP, CS, IP).
+    /// Loads an .EXE file into memory without executing it.
     fn load_exe(
         &mut self,
         mem: &mut dyn MemoryAccess,
         file_data: &[u8],
         params: &ExecParams,
         program_path: &[u8],
-    ) -> Result<(u16, u16, u16, u16), u16> {
-        if file_data.len() < 28 {
-            return Err(0x000B);
-        }
-
-        let bytes_last_page = u16::from_le_bytes([file_data[2], file_data[3]]);
-        let total_pages = u16::from_le_bytes([file_data[4], file_data[5]]);
-        let reloc_count = u16::from_le_bytes([file_data[6], file_data[7]]) as usize;
-        let header_paragraphs = u16::from_le_bytes([file_data[8], file_data[9]]);
-        let min_alloc = u16::from_le_bytes([file_data[10], file_data[11]]);
-        let max_alloc = u16::from_le_bytes([file_data[12], file_data[13]]);
-        let init_ss = u16::from_le_bytes([file_data[14], file_data[15]]);
-        let init_sp = u16::from_le_bytes([file_data[16], file_data[17]]);
-        let init_ip = u16::from_le_bytes([file_data[20], file_data[21]]);
-        let init_cs = u16::from_le_bytes([file_data[22], file_data[23]]);
-        let reloc_table_offset = u16::from_le_bytes([file_data[24], file_data[25]]) as usize;
-
-        let header_size = (header_paragraphs as u32) * 16;
-        let mut load_size = (total_pages as u32) * 512;
-        if bytes_last_page != 0 {
-            load_size -= 512 - bytes_last_page as u32;
-        }
-        if load_size < header_size {
-            return Err(0x000B);
-        }
-        load_size -= header_size;
-
-        let image_paragraphs = load_size.div_ceil(16) as u16;
+    ) -> Result<LoadedProgram, u16> {
+        let layout = ExeLayout::parse(file_data)?;
+        let image_paragraphs = layout.load_size.div_ceil(16) as u16;
         let psp_paragraphs: u16 = 0x10;
 
-        let first_mcb = mem.read_word(self.state.sysvars_base - 2);
+        let chains = self.state.linked_mcb_chains(mem);
         let parent_base = (self.state.current_psp as u32) << 4;
-        let umb_first = dos_allocation_umb_first(&self.state);
         let source_env = if params.env_seg == 0 {
             mem.read_word(parent_base + PSP_OFF_ENV_SEG)
         } else {
@@ -908,8 +1130,7 @@ impl NeetanDos {
         };
         let env_segment = allocate_child_environment(
             mem,
-            first_mcb,
-            umb_first,
+            chains,
             source_env,
             self.state.allocation_strategy,
             program_path,
@@ -917,20 +1138,19 @@ impl NeetanDos {
 
         let child_psp = allocate_exe_memory(
             mem,
-            first_mcb,
-            umb_first,
+            chains,
             self.state.allocation_strategy,
             image_paragraphs,
-            min_alloc,
-            max_alloc,
+            layout.min_alloc,
+            layout.max_alloc,
         )
         .inspect_err(|_| {
-            let _ = memory::free_dos(mem, first_mcb, umb_first, env_segment);
+            free_child_environment(mem, chains, env_segment);
         })?;
 
         let mcb_segment = child_psp - 1;
         mem.write_word(((mcb_segment as u32) << 4) + MCB_OFF_OWNER, child_psp);
-        mem.write_word(((env_segment as u32 - 1) << 4) + MCB_OFF_OWNER, child_psp);
+        set_environment_owner(mem, env_segment, child_psp);
 
         let child_mem_top = allocated_block_end_segment(mem, child_psp);
         write_child_psp(
@@ -940,35 +1160,23 @@ impl NeetanDos {
             env_segment,
             child_mem_top,
             params,
-            SftBases {
-                primary: SFT_BASE,
-                secondary: self.state.sft2_base,
-            },
+            &self.state,
         );
 
         let load_segment = child_psp + psp_paragraphs;
-        let load_base = (load_segment as u32) << 4;
-        let image_start = header_size as usize;
-        let image_end = (image_start + load_size as usize).min(file_data.len());
-        mem.write_block(load_base, &file_data[image_start..image_end]);
+        mem.write_block((load_segment as u32) << 4, layout.load_image(file_data));
+        layout.relocate(file_data, mem, load_segment, load_segment);
 
-        for i in 0..reloc_count {
-            let reloc_off = reloc_table_offset + i * 4;
-            if reloc_off + 4 > file_data.len() {
-                break;
-            }
-            let fixup_off = u16::from_le_bytes([file_data[reloc_off], file_data[reloc_off + 1]]);
-            let fixup_seg =
-                u16::from_le_bytes([file_data[reloc_off + 2], file_data[reloc_off + 3]]);
-            let fixup_addr = (((load_segment + fixup_seg) as u32) << 4) + fixup_off as u32;
-            let old_val = mem.read_word(fixup_addr);
-            mem.write_word(fixup_addr, old_val.wrapping_add(load_segment));
-        }
+        let exe_cs = load_segment.wrapping_add(layout.initial_cs);
+        let exe_ss = load_segment.wrapping_add(layout.initial_ss);
 
-        let exe_cs = load_segment.wrapping_add(init_cs);
-        let exe_ss = load_segment.wrapping_add(init_ss);
-
-        Ok((exe_ss, init_sp, exe_cs, init_ip))
+        Ok(LoadedProgram {
+            psp_segment: child_psp,
+            stack_segment: exe_ss,
+            stack_pointer: layout.initial_sp,
+            code_segment: exe_cs,
+            instruction_pointer: layout.initial_ip,
+        })
     }
 
     fn exec_com(
@@ -979,53 +1187,8 @@ impl NeetanDos {
         params: &ExecParams,
         program_path: &[u8],
     ) -> Result<(), u16> {
-        let first_mcb = mem.read_word(self.state.sysvars_base - 2);
-        let parent_base = (self.state.current_psp as u32) << 4;
-        let umb_first = dos_allocation_umb_first(&self.state);
-        let source_env = if params.env_seg == 0 {
-            mem.read_word(parent_base + PSP_OFF_ENV_SEG)
-        } else {
-            params.env_seg
-        };
-        let env_segment = allocate_child_environment(
-            mem,
-            first_mcb,
-            umb_first,
-            source_env,
-            self.state.allocation_strategy,
-            program_path,
-        )?;
-
-        // Allocate largest available block for the .COM program.
-        let largest = memory::largest_available_dos(
-            mem,
-            first_mcb,
-            umb_first,
-            self.state.allocation_strategy,
-        );
-
-        if largest == 0 {
-            let _ = memory::free_dos(mem, first_mcb, umb_first, env_segment);
-            return Err(0x0008);
-        }
-
-        let child_psp = memory::allocate_dos(
-            mem,
-            first_mcb,
-            umb_first,
-            largest,
-            child_allocation_owner(),
-            self.state.allocation_strategy,
-        )
-        .map_err(|(e, _)| {
-            let _ = memory::free_dos(mem, first_mcb, umb_first, env_segment);
-            e as u16
-        })?;
-
-        // Set MCB owner to the child PSP segment and name.
-        let mcb_segment = child_psp - 1;
-        mem.write_word(((mcb_segment as u32) << 4) + MCB_OFF_OWNER, child_psp);
-        mem.write_word(((env_segment as u32 - 1) << 4) + MCB_OFF_OWNER, child_psp);
+        let (child_psp, env_segment) =
+            self.allocate_com_block(mem, file_data, params, program_path)?;
 
         // Write child PSP with inherited handles, command tail, FCBs.
         let child_mem_top = allocated_block_end_segment(mem, child_psp);
@@ -1036,25 +1199,24 @@ impl NeetanDos {
             env_segment,
             child_mem_top,
             params,
-            SftBases {
-                primary: SFT_BASE,
-                secondary: self.state.sft2_base,
-            },
+            &self.state,
         );
 
         // Load .COM data at PSP:0100h.
         let load_addr = ((child_psp as u32) << 4) + 0x0100;
         mem.write_block(load_addr, file_data);
 
-        // Write safety return word (0x0000) at PSP:FFFEh.
-        let stack_top = ((child_psp as u32) << 4) + 0xFFFE;
+        // Write the safety return word (0x0000) at the top of the stack.
+        let stack_pointer = com_stack_pointer(child_psp, child_mem_top);
+        let stack_top = ((child_psp as u32) << 4) + u32::from(stack_pointer);
         mem.write_word(stack_top, 0x0000);
 
         // Perform context switch and build child IRET frame.
-        self.exec_context_switch(cpu, mem, child_psp, child_psp, 0xFFF8);
+        let frame_offset = stack_pointer - IRET_FRAME_BYTES;
+        self.exec_context_switch(cpu, mem, child_psp, child_psp, frame_offset);
 
         // Build IRET frame on child stack.
-        let iret_base = ((child_psp as u32) << 4) + 0xFFF8;
+        let iret_base = ((child_psp as u32) << 4) + u32::from(frame_offset);
         mem.write_word(iret_base, 0x0100); // IP
         mem.write_word(iret_base + 2, child_psp); // CS
         mem.write_word(iret_base + 4, 0x0202); // FLAGS (IF set)
@@ -1074,41 +1236,13 @@ impl NeetanDos {
         params: &ExecParams,
         program_path: &[u8],
     ) -> Result<(), u16> {
-        if file_data.len() < 28 {
-            return Err(0x000B);
-        }
-
-        // Parse MZ header.
-        let bytes_last_page = u16::from_le_bytes([file_data[2], file_data[3]]);
-        let total_pages = u16::from_le_bytes([file_data[4], file_data[5]]);
-        let reloc_count = u16::from_le_bytes([file_data[6], file_data[7]]) as usize;
-        let header_paragraphs = u16::from_le_bytes([file_data[8], file_data[9]]);
-        let min_alloc = u16::from_le_bytes([file_data[10], file_data[11]]);
-        let max_alloc = u16::from_le_bytes([file_data[12], file_data[13]]);
-        let init_ss = u16::from_le_bytes([file_data[14], file_data[15]]);
-        let init_sp = u16::from_le_bytes([file_data[16], file_data[17]]);
-        // checksum at [18..20] is ignored
-        let init_ip = u16::from_le_bytes([file_data[20], file_data[21]]);
-        let init_cs = u16::from_le_bytes([file_data[22], file_data[23]]);
-        let reloc_table_offset = u16::from_le_bytes([file_data[24], file_data[25]]) as usize;
-
-        let header_size = (header_paragraphs as u32) * 16;
-        let mut load_size = (total_pages as u32) * 512;
-        if bytes_last_page != 0 {
-            load_size -= 512 - bytes_last_page as u32;
-        }
-        if load_size < header_size {
-            return Err(0x000B);
-        }
-        load_size -= header_size;
-
-        let image_paragraphs = load_size.div_ceil(16) as u16;
+        let layout = ExeLayout::parse(file_data)?;
+        let image_paragraphs = layout.load_size.div_ceil(16) as u16;
         // Total = PSP (0x10 paragraphs) + image + extra
         let psp_paragraphs: u16 = 0x10;
 
-        let first_mcb = mem.read_word(self.state.sysvars_base - 2);
+        let chains = self.state.linked_mcb_chains(mem);
         let parent_base = (self.state.current_psp as u32) << 4;
-        let umb_first = dos_allocation_umb_first(&self.state);
         let source_env = if params.env_seg == 0 {
             mem.read_word(parent_base + PSP_OFF_ENV_SEG)
         } else {
@@ -1116,8 +1250,7 @@ impl NeetanDos {
         };
         let env_segment = allocate_child_environment(
             mem,
-            first_mcb,
-            umb_first,
+            chains,
             source_env,
             self.state.allocation_strategy,
             program_path,
@@ -1125,21 +1258,20 @@ impl NeetanDos {
 
         let child_psp = allocate_exe_memory(
             mem,
-            first_mcb,
-            umb_first,
+            chains,
             self.state.allocation_strategy,
             image_paragraphs,
-            min_alloc,
-            max_alloc,
+            layout.min_alloc,
+            layout.max_alloc,
         )
         .inspect_err(|_| {
-            let _ = memory::free_dos(mem, first_mcb, umb_first, env_segment);
+            free_child_environment(mem, chains, env_segment);
         })?;
 
         // Set MCB owner to child PSP.
         let mcb_segment = child_psp - 1;
         mem.write_word(((mcb_segment as u32) << 4) + MCB_OFF_OWNER, child_psp);
-        mem.write_word(((env_segment as u32 - 1) << 4) + MCB_OFF_OWNER, child_psp);
+        set_environment_owner(mem, env_segment, child_psp);
 
         // Write child PSP.
         let child_mem_top = allocated_block_end_segment(mem, child_psp);
@@ -1150,41 +1282,22 @@ impl NeetanDos {
             env_segment,
             child_mem_top,
             params,
-            SftBases {
-                primary: SFT_BASE,
-                secondary: self.state.sft2_base,
-            },
+            &self.state,
         );
 
         // Load EXE image after PSP (at child_psp + 0x10).
         let load_segment = child_psp + psp_paragraphs;
-        let load_base = (load_segment as u32) << 4;
-        let image_start = header_size as usize;
-        let image_end = (image_start + load_size as usize).min(file_data.len());
-        mem.write_block(load_base, &file_data[image_start..image_end]);
-
-        // Apply segment relocations.
-        for i in 0..reloc_count {
-            let reloc_off = reloc_table_offset + i * 4;
-            if reloc_off + 4 > file_data.len() {
-                break;
-            }
-            let fixup_off = u16::from_le_bytes([file_data[reloc_off], file_data[reloc_off + 1]]);
-            let fixup_seg =
-                u16::from_le_bytes([file_data[reloc_off + 2], file_data[reloc_off + 3]]);
-            let fixup_addr = (((load_segment + fixup_seg) as u32) << 4) + fixup_off as u32;
-            let old_val = mem.read_word(fixup_addr);
-            mem.write_word(fixup_addr, old_val.wrapping_add(load_segment));
-        }
+        mem.write_block((load_segment as u32) << 4, layout.load_image(file_data));
+        layout.relocate(file_data, mem, load_segment, load_segment);
 
         // Compute entry point.
-        let exe_cs = load_segment.wrapping_add(init_cs);
-        let exe_ss = load_segment.wrapping_add(init_ss);
+        let exe_cs = load_segment.wrapping_add(layout.initial_cs);
+        let exe_ss = load_segment.wrapping_add(layout.initial_ss);
 
         // Build IRET frame on the EXE's stack.
-        let iret_sp = init_sp.wrapping_sub(6);
+        let iret_sp = layout.initial_sp.wrapping_sub(6);
         let iret_base = ((exe_ss as u32) << 4) + iret_sp as u32;
-        mem.write_word(iret_base, init_ip); // IP
+        mem.write_word(iret_base, layout.initial_ip); // IP
         mem.write_word(iret_base + 2, exe_cs); // CS
         mem.write_word(iret_base + 4, 0x0202); // FLAGS (IF set)
 
@@ -1206,6 +1319,23 @@ impl NeetanDos {
         child_psp: u16,
         child_ss: u16,
         child_sp: u16,
+    ) {
+        self.enter_child_process(cpu, mem, child_psp);
+
+        // Point CPU at child's IRET frame.
+        cpu.set_ss(child_ss);
+        cpu.set_sp(child_sp);
+    }
+
+    /// Makes the loaded program `child_psp` the current process: saves the
+    /// context of the parent for the termination, sets the terminate address
+    /// `PSP:000Ah` and the vector `22h` to the return address of the EXEC
+    /// call and points the DTA at `PSP:0080h`.
+    fn enter_child_process(
+        &mut self,
+        cpu: &mut dyn CpuAccess,
+        mem: &mut dyn MemoryAccess,
+        child_psp: u16,
     ) {
         // Read parent's full IRET frame (IP/CS/FLAGS) for INT 22h and for
         // possible restore on termination.
@@ -1236,19 +1366,18 @@ impl NeetanDos {
             saved_dta_addr: self.state.dta_address,
         });
 
-        // Set IVT INT 22h to parent's return address.
+        // Set IVT INT 22h and the terminate address of the child to the
+        // parent's return address.
         mem.write_word(0x0088, return_ip);
         mem.write_word(0x008A, return_cs);
+        let child_base = u32::from(child_psp) << 4;
+        write_far_ptr(mem, child_base + PSP_OFF_INT22_VEC, return_cs, return_ip);
 
         // Switch to child process.
         self.state.current_psp = child_psp;
         self.state.dta_segment = child_psp;
         self.state.dta_offset = 0x0080;
         self.state.dta_address = ((child_psp as u32) << 4) + 0x0080;
-
-        // Point CPU at child's IRET frame.
-        cpu.set_ss(child_ss);
-        cpu.set_sp(child_sp);
     }
 
     /// Terminates the current process (normal termination).
@@ -1262,10 +1391,9 @@ impl NeetanDos {
         return_code: u8,
         termination_type: u8,
     ) {
-        if !self.pending_native_drivers.is_empty() {
+        if self.end_native_driver_init_on_terminate(cpu, mem) {
             self.state.last_return_code = return_code;
             self.state.last_termination_type = termination_type;
-            self.complete_native_driver_init(cpu, mem);
             return;
         }
 
@@ -1279,10 +1407,13 @@ impl NeetanDos {
             .last()
             .is_none_or(|context| context.child_psp_segment != child_psp)
         {
-            set_iret_carry(cpu, mem, false);
+            if !self.terminate_created_process(cpu, mem, return_code, termination_type) {
+                self.state.set_iret_carry(cpu, mem, false);
+            }
             return;
         }
 
+        self.discard_guest_operations_of_process(child_psp, mem);
         let child_psp_base = (child_psp as u32) << 4;
         let is_shell_process = self.shells.remove(&child_psp).is_some();
 
@@ -1295,8 +1426,8 @@ impl NeetanDos {
         // running on memory it owns (normal IRET-frame restore) or on memory
         // borrowed from the parent (preserve whatever IRET frame the parent
         // has pre-installed at the current SS:SP).
-        let first_mcb = mem.read_word(self.state.sysvars_base - 2);
-        let umb_first = memory_manager_umb_first(&self.state);
+        let first_mcb = self.state.first_mcb_segment(mem);
+        let umb_first = self.state.umb_first_mcb_segment();
         let terminate_stack_owned_by_child = cpu.ss() == child_psp
             || process_owns_segment(mem, first_mcb, umb_first, child_psp, cpu.ss());
         memory::free_process_blocks_dos(mem, first_mcb, umb_first, self.state.current_psp);
@@ -1347,7 +1478,7 @@ impl NeetanDos {
         // EXEC that never switched SS), do not overwrite the parent's IRET
         // frame; trust whatever the parent already has in flight.
         if !terminate_stack_owned_by_child {
-            set_iret_carry(cpu, mem, false);
+            self.state.set_iret_carry(cpu, mem, false);
             return;
         }
 
@@ -1363,10 +1494,86 @@ impl NeetanDos {
         cpu.set_ss(parent.return_ss);
         cpu.set_sp(parent.return_sp);
         let return_addr = cpu.linear_address(SegmentRegister::SS, cpu.sp());
-        mem.write_word(return_addr, parent.return_ip);
-        mem.write_word(return_addr + 2, parent.return_cs);
+        mem.write_word(return_addr, int22_off);
+        mem.write_word(return_addr + 2, int22_seg);
         mem.write_word(return_addr + 4, parent.return_flags);
-        set_iret_carry(cpu, mem, false);
+        self.state.set_iret_carry(cpu, mem, false);
+    }
+
+    /// Returns true when the current process has a parent to return to: a
+    /// child of EXEC or a PSP that a program created with another parent.
+    pub(crate) fn current_process_can_end(&self, mem: &dyn MemoryAccess) -> bool {
+        let psp = self.state.current_psp;
+        if self
+            .state
+            .process_stack
+            .last()
+            .is_some_and(|context| context.child_psp_segment == psp)
+        {
+            return true;
+        }
+        let parent_psp = mem.read_word((u32::from(psp) << 4) + PSP_OFF_PARENT_PSP);
+        parent_psp != psp && parent_psp != 0
+    }
+
+    /// Terminates the current PSP when a program created it without EXEC,
+    /// with `AH=26h` or `AH=55h`. Like MS-DOS, it closes the handles and
+    /// frees the memory of the PSP, restores the vectors `22h`-`24h` from it,
+    /// makes the parent of the PSP current and continues at the terminate
+    /// address `PSP:000Ah` on the stack of the caller. Returns false for a PSP
+    /// that is its own parent, like the root shell.
+    fn terminate_created_process(
+        &mut self,
+        cpu: &mut dyn CpuAccess,
+        mem: &mut dyn MemoryAccess,
+        return_code: u8,
+        termination_type: u8,
+    ) -> bool {
+        let child_psp = self.state.current_psp;
+        let child_psp_base = u32::from(child_psp) << 4;
+        let parent_psp = mem.read_word(child_psp_base + PSP_OFF_PARENT_PSP);
+        if parent_psp == child_psp || parent_psp == 0 {
+            return false;
+        }
+        self.discard_guest_operations_of_process(child_psp, mem);
+        self.shells.remove(&child_psp);
+
+        let (_, handle_count) = DosState::handle_table_info_for_psp(mem, child_psp);
+        for handle in 0..handle_count.min(u8::MAX as u16 + 1) {
+            self.state.free_handle(handle, mem);
+        }
+        let first_mcb = self.state.first_mcb_segment(mem);
+        let umb_first = self.state.umb_first_mcb_segment();
+        memory::free_process_blocks_dos(mem, first_mcb, umb_first, child_psp);
+
+        let terminate_offset = mem.read_word(child_psp_base + PSP_OFF_INT22_VEC);
+        let terminate_segment = mem.read_word(child_psp_base + PSP_OFF_INT22_VEC + 2);
+        for (psp_offset, vector_address) in [
+            (PSP_OFF_INT22_VEC, 0x0088),
+            (PSP_OFF_INT23_VEC, 0x008C),
+            (PSP_OFF_INT24_VEC, 0x0090),
+        ] {
+            let offset = mem.read_word(child_psp_base + psp_offset);
+            let segment = mem.read_word(child_psp_base + psp_offset + 2);
+            mem.write_word(vector_address, offset);
+            mem.write_word(vector_address + 2, segment);
+        }
+
+        self.state.current_psp = parent_psp;
+        self.state.dta_segment = parent_psp;
+        self.state.dta_offset = PSP_OFF_CMD_TAIL_LEN as u16;
+        self.state.dta_address = (u32::from(parent_psp) << 4) + PSP_OFF_CMD_TAIL_LEN;
+        self.state.last_return_code = return_code;
+        self.state.last_termination_type = termination_type;
+        self.state.buffered_input = None;
+        self.state.flush_input_function = None;
+        self.state.pending_key_bytes.clear();
+
+        let frame = cpu.linear_address(SegmentRegister::SS, cpu.sp());
+        mem.write_word(frame, terminate_offset);
+        mem.write_word(frame + 2, terminate_segment);
+        self.state.set_iret_carry(cpu, mem, false);
+        true
     }
 
     /// Pops nested EXEC contexts that match the currently-running process,
@@ -1390,15 +1597,17 @@ impl NeetanDos {
                 self.state.free_handle(handle, mem);
             }
 
-            let first_mcb = mem.read_word(self.state.sysvars_base - 2);
-            let umb_first = memory_manager_umb_first(&self.state);
+            let first_mcb = self.state.first_mcb_segment(mem);
+            let umb_first = self.state.umb_first_mcb_segment();
             memory::free_process_blocks_dos(mem, first_mcb, umb_first, abandoned_psp);
             self.state.current_psp = saved_psp;
             self.state.process_stack.pop();
         }
     }
 
-    /// Terminates with TSR: resize the PSP's MCB instead of freeing it.
+    /// Terminates with TSR: resize the PSP's MCB instead of freeing it. The
+    /// handles of the program stay open and keep their SFT references, like
+    /// `$KEEP_PROCESS` of MS-DOS.
     pub(crate) fn terminate_process_tsr(
         &mut self,
         cpu: &mut dyn CpuAccess,
@@ -1406,10 +1615,9 @@ impl NeetanDos {
         return_code: u8,
         keep_paragraphs: u16,
     ) {
-        if !self.pending_native_drivers.is_empty() {
+        if self.end_native_driver_init_on_terminate(cpu, mem) {
             self.state.last_return_code = return_code;
             self.state.last_termination_type = 3;
-            self.complete_native_driver_init(cpu, mem);
             return;
         }
 
@@ -1422,21 +1630,17 @@ impl NeetanDos {
             .last()
             .is_none_or(|context| context.child_psp_segment != child_psp)
         {
-            set_iret_carry(cpu, mem, false);
+            self.state.set_iret_carry(cpu, mem, false);
             return;
         }
 
+        self.discard_guest_operations_of_process(child_psp, mem);
         let child_psp_base = (child_psp as u32) << 4;
         self.shells.remove(&child_psp);
 
-        let (_, handle_count) = DosState::handle_table_info_for_psp(mem, child_psp);
-        for handle in 0..handle_count.min(u8::MAX as u16 + 1) {
-            self.state.free_handle(handle, mem);
-        }
-
         // Resize PSP's MCB and free other blocks.
-        let first_mcb = mem.read_word(self.state.sysvars_base - 2);
-        let umb_first = memory_manager_umb_first(&self.state);
+        let first_mcb = self.state.first_mcb_segment(mem);
+        let umb_first = self.state.umb_first_mcb_segment();
         memory::free_process_blocks_tsr_dos(
             mem,
             first_mcb,
@@ -1488,10 +1692,10 @@ impl NeetanDos {
         cpu.set_ss(parent.return_ss);
         cpu.set_sp(parent.return_sp);
         let return_addr = cpu.linear_address(SegmentRegister::SS, cpu.sp());
-        mem.write_word(return_addr, parent.return_ip);
-        mem.write_word(return_addr + 2, parent.return_cs);
+        mem.write_word(return_addr, int22_off);
+        mem.write_word(return_addr + 2, int22_seg);
         mem.write_word(return_addr + 4, parent.return_flags);
-        set_iret_carry(cpu, mem, false);
+        self.state.set_iret_carry(cpu, mem, false);
     }
 }
 
@@ -1500,6 +1704,49 @@ mod tests {
     use super::*;
     use crate::test_support::{MockCpu, MockMemory};
 
+    /// Opcode of `MOV SP, imm16`.
+    const MOV_SP_IMMEDIATE_OPCODE: u8 = 0xBC;
+
+    /// Opcode of `MOV AL, imm8`.
+    const MOV_AL_IMMEDIATE_OPCODE: u8 = 0xB0;
+
+    /// Size of an `AX=4B00h` EXEC parameter block in bytes.
+    const EXEC_PARAMETER_BLOCK_SIZE: u16 = 14;
+
+    /// Bytes that the shell loop and the shell step routine push below the
+    /// initial stack pointer: the IRET frame (FLAGS, CS, IP), AX and DX.
+    const SHELL_STEP_FRAME_SIZE: u16 = 10;
+
+    #[test]
+    fn shell_scratch_area_stays_below_the_shell_step_frame() {
+        let stack_pointer_position = COMMAND_COM_STUB
+            .iter()
+            .position(|&byte| byte == MOV_SP_IMMEDIATE_OPCODE)
+            .expect("stub sets SP");
+        let stack_top = u16::from_le_bytes([
+            COMMAND_COM_STUB[stack_pointer_position + 1],
+            COMMAND_COM_STUB[stack_pointer_position + 2],
+        ]);
+        let scratch_end =
+            SHELL_SCRATCH_OFFSET + SHELL_SCRATCH_PARAMETER_BLOCK_OFFSET + EXEC_PARAMETER_BLOCK_SIZE;
+        assert!(SHELL_SCRATCH_OFFSET >= COMMAND_COM_ENTRY_OFFSET + COMMAND_COM_STUB.len() as u16);
+        assert!(
+            scratch_end <= stack_top - SHELL_STEP_FRAME_SIZE,
+            "scratch ends at {scratch_end:#06X}, stack frame starts at {:#06X}",
+            stack_top - SHELL_STEP_FRAME_SIZE
+        );
+    }
+
+    #[test]
+    fn shell_stub_traps_with_the_shell_step_code() {
+        let trap_code = crate::DosTrapCode::ShellStep.code();
+        assert!(
+            COMMAND_COM_STUB
+                .windows(2)
+                .any(|pair| pair == [MOV_AL_IMMEDIATE_OPCODE, trap_code])
+        );
+    }
+
     fn write_mcb(mem: &mut MockMemory, segment: u16, block_type: u8, owner: u16, size: u16) {
         let address = (u32::from(segment)) << 4;
         mem.write_byte(address + MCB_OFF_TYPE, block_type);
@@ -1507,12 +1754,24 @@ mod tests {
         mem.write_word(address + MCB_OFF_SIZE, size);
     }
 
+    /// Segment of the terminate address that EXEC writes into the child PSP:
+    /// the return address of the parent in `parent_context`.
+    const PARENT_RETURN_SEGMENT: u16 = 0x1234;
+    /// Offset of the terminate address of the child PSP.
+    const PARENT_RETURN_OFFSET: u16 = 0x0200;
+
     fn initialize_child_psp(mem: &mut MockMemory, child_psp: u16, parent_psp: u16) {
         write_psp(mem, child_psp, parent_psp, 0, child_psp + 0x20);
         let psp_base = (u32::from(child_psp)) << 4;
         for offset in 0..20 {
             mem.write_byte(psp_base + PSP_OFF_JFT + offset, 0xFF);
         }
+        write_far_ptr(
+            mem,
+            psp_base + PSP_OFF_INT22_VEC,
+            PARENT_RETURN_SEGMENT,
+            PARENT_RETURN_OFFSET,
+        );
     }
 
     fn parent_context(parent_psp: u16, child_psp: u16) -> ProcessContext {
@@ -1525,8 +1784,8 @@ mod tests {
             return_dx: 0x3333,
             return_ss: 0x1040,
             return_sp: 0x0100,
-            return_ip: 0x0200,
-            return_cs: 0x1234,
+            return_ip: PARENT_RETURN_OFFSET,
+            return_cs: PARENT_RETURN_SEGMENT,
             return_flags: 0x0243,
             return_si: 0x4444,
             return_di: 0x5555,
@@ -1540,11 +1799,14 @@ mod tests {
 
     #[test]
     fn terminate_restores_exec_frame_when_child_owns_stack() {
-        let mut dos = NeetanDos::new();
+        let mut dos = NeetanDos::new(crate::DosPlatform::pc98());
         let mut mem = MockMemory::with_extended_memory(0x100000, 0);
         let parent_psp = 0x1001;
         let child_psp = 0x1101;
-        mem.write_word(dos.state.sysvars_base - 2, 0x1000);
+        mem.write_word(
+            dos.state.list_of_lists_address() - SYSVARS_FIRST_MCB_DISTANCE,
+            0x1000,
+        );
         write_mcb(&mut mem, 0x1000, b'M', parent_psp, 0x00FF);
         write_mcb(&mut mem, 0x1100, b'Z', child_psp, 0x0020);
         initialize_child_psp(&mut mem, child_psp, parent_psp);
@@ -1580,12 +1842,123 @@ mod tests {
     }
 
     #[test]
-    fn terminate_restores_exec_frame_when_child_stack_is_psp_after_mcb_owner_changed() {
-        let mut dos = NeetanDos::new();
+    fn terminate_discards_the_guest_operations_of_the_program_and_lowers_indos() {
+        use crate::guest_call::{GuestCompletion, GuestOperation};
+
+        let mut dos = NeetanDos::new(crate::DosPlatform::pc98());
         let mut mem = MockMemory::with_extended_memory(0x100000, 0);
         let parent_psp = 0x1001;
         let child_psp = 0x1101;
-        mem.write_word(dos.state.sysvars_base - 2, 0x1000);
+        mem.write_word(
+            dos.state.list_of_lists_address() - SYSVARS_FIRST_MCB_DISTANCE,
+            0x1000,
+        );
+        write_mcb(&mut mem, 0x1000, b'M', parent_psp, 0x00FF);
+        write_mcb(&mut mem, 0x1100, b'Z', child_psp, 0x0020);
+        initialize_child_psp(&mut mem, child_psp, parent_psp);
+
+        let area = dos.guest_call_area();
+        let mut parent_operation = GuestOperation::deferred(
+            &area,
+            std::collections::VecDeque::new(),
+            GuestCompletion::Return,
+        );
+        parent_operation.awaiting_start = false;
+        parent_operation.psp = parent_psp;
+        parent_operation.holds_indos = true;
+        let mut child_operation = parent_operation.clone();
+        child_operation.psp = child_psp;
+        dos.guest_calls.push(parent_operation);
+        dos.guest_calls.push(child_operation);
+        dos.state.adjust_indos(&mut mem, 2);
+
+        dos.state.current_psp = child_psp;
+        dos.state
+            .process_stack
+            .push(parent_context(parent_psp, child_psp));
+        let mut cpu = MockCpu {
+            eax: 0x4C00,
+            ss: 0x1110,
+            sp: 0x0100,
+            ..MockCpu::default()
+        };
+        dos.terminate_process(&mut cpu, &mut mem, 0, 0);
+
+        assert_eq!(dos.guest_calls.len(), 1);
+        assert_eq!(dos.guest_calls[0].psp, parent_psp);
+        assert_eq!(mem.read_byte(dos.state.indos_address()), 1);
+    }
+
+    #[test]
+    fn terminate_in_the_critical_error_handler_leaves_the_critical_error_state() {
+        use crate::{
+            critical_error::CriticalErrorStep,
+            guest_call::{FarPointer, GuestCompletion, GuestOperation, GuestStep},
+        };
+
+        let mut dos = NeetanDos::new(crate::DosPlatform::pc98());
+        let mut mem = MockMemory::with_extended_memory(0x100000, 0);
+        let parent_psp = 0x1001;
+        let child_psp = 0x1101;
+        mem.write_word(
+            dos.state.list_of_lists_address() - SYSVARS_FIRST_MCB_DISTANCE,
+            0x1000,
+        );
+        write_mcb(&mut mem, 0x1000, b'M', parent_psp, 0x00FF);
+        write_mcb(&mut mem, 0x1100, b'Z', child_psp, 0x0020);
+        initialize_child_psp(&mut mem, child_psp, parent_psp);
+
+        let area = dos.guest_call_area();
+        let mut operation = GuestOperation::deferred(
+            &area,
+            std::collections::VecDeque::new(),
+            GuestCompletion::Return,
+        );
+        operation.awaiting_start = false;
+        operation.psp = child_psp;
+        operation.holds_indos = true;
+        let step = CriticalErrorStep {
+            drive_index: 17,
+            error: 0x02,
+            flags: 0x1E,
+            device: FarPointer::new(0x1ED3, 0x0006),
+            retry: Vec::new(),
+            ignore: Vec::new(),
+            fail: Vec::new(),
+        };
+        dos.state.adjust_indos(&mut mem, 1);
+        dos.guest_calls.push(operation);
+        let _ = dos.prepare_critical_error_step(&step, &mut mem);
+        dos.guest_calls.last_mut().expect("operation").in_flight =
+            Some(GuestStep::CriticalError(step));
+
+        dos.state.current_psp = child_psp;
+        dos.state
+            .process_stack
+            .push(parent_context(parent_psp, child_psp));
+        let mut cpu = MockCpu {
+            eax: 0x4C00,
+            ss: 0x1110,
+            sp: 0x0100,
+            ..MockCpu::default()
+        };
+        dos.terminate_process(&mut cpu, &mut mem, 0, 0);
+
+        assert!(dos.guest_calls.is_empty());
+        assert_eq!(mem.read_byte(dos.state.critical_error_flag_address()), 0);
+        assert_eq!(mem.read_byte(dos.state.indos_address()), 0);
+    }
+
+    #[test]
+    fn terminate_restores_exec_frame_when_child_stack_is_psp_after_mcb_owner_changed() {
+        let mut dos = NeetanDos::new(crate::DosPlatform::pc98());
+        let mut mem = MockMemory::with_extended_memory(0x100000, 0);
+        let parent_psp = 0x1001;
+        let child_psp = 0x1101;
+        mem.write_word(
+            dos.state.list_of_lists_address() - SYSVARS_FIRST_MCB_DISTANCE,
+            0x1000,
+        );
         write_mcb(&mut mem, 0x1000, b'M', parent_psp, 0x00FF);
         write_mcb(&mut mem, 0x1100, b'Z', MCB_OWNER_FREE, 0x0020);
         initialize_child_psp(&mut mem, child_psp, parent_psp);
@@ -1618,11 +1991,14 @@ mod tests {
 
     #[test]
     fn terminate_preserves_parent_stack_return_when_child_borrowed_parent_stack() {
-        let mut dos = NeetanDos::new();
+        let mut dos = NeetanDos::new(crate::DosPlatform::pc98());
         let mut mem = MockMemory::with_extended_memory(0x100000, 0);
         let parent_psp = 0x1001;
         let child_psp = 0x1101;
-        mem.write_word(dos.state.sysvars_base - 2, 0x1000);
+        mem.write_word(
+            dos.state.list_of_lists_address() - SYSVARS_FIRST_MCB_DISTANCE,
+            0x1000,
+        );
         write_mcb(&mut mem, 0x1000, b'M', parent_psp, 0x00FF);
         write_mcb(&mut mem, 0x1100, b'Z', child_psp, 0x0020);
         initialize_child_psp(&mut mem, child_psp, parent_psp);
@@ -1674,10 +2050,13 @@ mod tests {
 
     #[test]
     fn terminate_without_matching_exec_context_does_not_pop_or_free_root_process() {
-        let mut dos = NeetanDos::new();
+        let mut dos = NeetanDos::new(crate::DosPlatform::pc98());
         let mut mem = MockMemory::with_extended_memory(0x100000, 0);
         let root_psp = 0x1001;
-        mem.write_word(dos.state.sysvars_base - 2, 0x1000);
+        mem.write_word(
+            dos.state.list_of_lists_address() - SYSVARS_FIRST_MCB_DISTANCE,
+            0x1000,
+        );
         write_mcb(&mut mem, 0x1000, b'Z', root_psp, 0x00FF);
         initialize_child_psp(&mut mem, root_psp, root_psp);
 
@@ -1709,12 +2088,15 @@ mod tests {
 
     #[test]
     fn terminate_discards_abandoned_child_exec_when_parent_process_exits() {
-        let mut dos = NeetanDos::new();
+        let mut dos = NeetanDos::new(crate::DosPlatform::pc98());
         let mut mem = MockMemory::with_extended_memory(0x100000, 0);
         let grandparent_psp = 0x1001;
         let parent_psp = 0x1101;
         let abandoned_child_psp = 0x1201;
-        mem.write_word(dos.state.sysvars_base - 2, 0x1000);
+        mem.write_word(
+            dos.state.list_of_lists_address() - SYSVARS_FIRST_MCB_DISTANCE,
+            0x1000,
+        );
         write_mcb(&mut mem, 0x1000, b'M', grandparent_psp, 0x00FF);
         write_mcb(&mut mem, 0x1100, b'M', parent_psp, 0x00FF);
         write_mcb(&mut mem, 0x1200, b'Z', abandoned_child_psp, 0x0020);
@@ -1750,5 +2132,44 @@ mod tests {
             mem.read_word(((u32::from(abandoned_child_psp - 1)) << 4) + MCB_OFF_OWNER),
             MCB_OWNER_FREE
         );
+    }
+
+    /// Returns an EXE file with one relocation at image offset 2.
+    fn small_exe() -> Vec<u8> {
+        let mut exe = vec![0u8; 0x20];
+        exe[0..2].copy_from_slice(b"MZ");
+        exe[2] = 0x26;
+        exe[4] = 1;
+        exe[6] = 1;
+        exe[8] = 2;
+        exe[0x18] = 0x1C;
+        exe[0x1C] = 0x02;
+        exe.extend_from_slice(&[0xAA, 0xBB, 0x10, 0x00, 0xCC, 0xDD]);
+        exe
+    }
+
+    #[test]
+    fn exe_layout_takes_the_image_behind_the_header() {
+        let exe = small_exe();
+        assert!(is_exe_image(&exe));
+        let layout = ExeLayout::parse(&exe).unwrap();
+        assert_eq!(layout.header_size, 0x20);
+        assert_eq!(layout.load_size, 6);
+        assert_eq!(
+            layout.load_image(&exe),
+            [0xAA, 0xBB, 0x10, 0x00, 0xCC, 0xDD]
+        );
+        assert_eq!(ExeLayout::parse(&exe[..0x10]), Err(ERROR_BAD_FORMAT));
+    }
+
+    #[test]
+    fn exe_relocation_adds_the_relocation_factor() {
+        let exe = small_exe();
+        let layout = ExeLayout::parse(&exe).unwrap();
+        let mut mem = MockMemory::with_extended_memory(0x40000, 0);
+        mem.write_block(0x30000, layout.load_image(&exe));
+        layout.relocate(&exe, &mut mem, 0x3000, 0x1234);
+        assert_eq!(mem.read_word(0x30002), 0x1244);
+        assert_eq!(mem.read_word(0x30000), 0xBBAA);
     }
 }

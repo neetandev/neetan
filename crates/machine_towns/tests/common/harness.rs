@@ -6,7 +6,7 @@ use std::{cell::RefCell, collections::BTreeSet, rc::Rc};
 
 use common::{Bus, Cpu, CpuMode, HostDateTime, TraceSink};
 use cpu::{CPU_MODEL_386_DX, CPU_MODEL_386_SX, CPU_MODEL_486_DX, I386State, SegReg32};
-use machine_towns::{LoadedRoms, TownsBus, TownsMachine, TownsModel};
+use machine_towns::{LoadedRoms, TownsBus, TownsFirmware, TownsMachine, TownsModel};
 
 /// SYSROM / FONT slot size (256 KiB).
 const ROM_SYSTEM_LEN: usize = 0x4_0000;
@@ -26,12 +26,23 @@ pub const VRAM_BASE: u32 = 0x8000_0000;
 /// index into valid backing storage.
 pub fn synthetic_roms() -> LoadedRoms {
     LoadedRoms {
-        dos: vec![0; ROM_LARGE_LEN],
+        firmware: TownsFirmware::Rom {
+            system: vec![0; ROM_SYSTEM_LEN],
+            os: vec![0; ROM_LARGE_LEN],
+        },
         font: vec![0; ROM_SYSTEM_LEN],
-        system: vec![0; ROM_SYSTEM_LEN],
         f20: vec![0; ROM_LARGE_LEN],
         dictionary: vec![0; ROM_LARGE_LEN],
         serial: vec![0; ROM_SERIAL_LEN],
+    }
+}
+
+/// A zero-filled ROM set with the HLE firmware: the HLE system ROM and the HLE
+/// OS ROM image.
+pub fn hle_roms() -> LoadedRoms {
+    LoadedRoms {
+        firmware: TownsFirmware::Hle,
+        ..synthetic_roms()
     }
 }
 
@@ -39,9 +50,11 @@ pub fn synthetic_roms() -> LoadedRoms {
 /// I/O surface directly, so no ROM content is indexed).
 pub fn empty_roms() -> LoadedRoms {
     LoadedRoms {
-        dos: Vec::new(),
+        firmware: TownsFirmware::Rom {
+            system: Vec::new(),
+            os: Vec::new(),
+        },
         font: Vec::new(),
-        system: Vec::new(),
         f20: Vec::new(),
         dictionary: Vec::new(),
         serial: Vec::new(),
@@ -51,9 +64,11 @@ pub fn empty_roms() -> LoadedRoms {
 /// A ROM set with custom FONT (kanji CG-ROM) and serial-ID images.
 pub fn font_serial_roms(font: Vec<u8>, serial: Vec<u8>) -> LoadedRoms {
     LoadedRoms {
-        dos: vec![0; ROM_LARGE_LEN],
+        firmware: TownsFirmware::Rom {
+            system: vec![0; ROM_SYSTEM_LEN],
+            os: vec![0; ROM_LARGE_LEN],
+        },
         font,
-        system: vec![0; ROM_SYSTEM_LEN],
         f20: vec![0; ROM_LARGE_LEN],
         dictionary: vec![0; ROM_LARGE_LEN],
         serial,
@@ -63,6 +78,11 @@ pub fn font_serial_roms(font: Vec<u8>, serial: Vec<u8>) -> LoadedRoms {
 /// An MX machine (i486, High mode) over synthetic ROMs.
 pub fn machine_mx() -> TownsMachine<{ CPU_MODEL_486_DX }> {
     build_machine(TownsModel::FmTownsIIMx, CpuMode::High, synthetic_roms())
+}
+
+/// An MX machine (i486, High mode) that runs the HLE system ROM.
+pub fn machine_mx_hle() -> TownsMachine<{ CPU_MODEL_486_DX }> {
+    build_machine(TownsModel::FmTownsIIMx, CpuMode::High, hle_roms())
 }
 
 /// A CX machine (i386, Low mode) over synthetic ROMs.

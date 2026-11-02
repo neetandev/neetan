@@ -457,6 +457,21 @@ pub(crate) mod tests {
         );
     }
 
+    #[cfg(feature = "towns")]
+    /// Verifies the machine section of the FM Towns and that every model reads `bios`.
+    #[test]
+    fn the_towns_form_has_the_bios_switch() {
+        let target = Target::Towns;
+        assert_eq!(
+            keys(target, EditorSection::Machine),
+            ["machine", "cpu-mode", "boot-device", "bios", "towns-pad"]
+        );
+        let bios = machine_factory::config::settings::find_setting("bios").expect("key");
+        for name in ["FMTowns", "FMTownsIICX", "FMTownsIIMX"] {
+            assert_eq!(ignored_note(bios, model(name)), None, "{name}");
+        }
+    }
+
     #[cfg(feature = "pc60")]
     /// Verifies the media of the PC-6000 and the floppy drives that only the PC-6601 models have.
     #[test]

@@ -237,7 +237,7 @@ impl NeetanDos {
                             memory.write_word(new_iret_base + 2, target_cs);
                             memory.write_word(new_iret_base + 4, original_flags);
                             memory.write_word(new_iret_base + 6, tables::EMS_PGMAPRET_STUB_OFFSET);
-                            memory.write_word(new_iret_base + 8, tables::EMS_PGMAPRET_STUB_SEGMENT);
+                            memory.write_word(new_iret_base + 8, self.state.dos_data_segment());
                             memory.write_word(new_iret_base + 10, original_ip);
                             memory.write_word(new_iret_base + 12, original_cs);
                             memory.write_word(new_iret_base + 14, original_flags);
@@ -851,9 +851,10 @@ mod tests {
     };
 
     fn prepare_dos_with_ems() -> (NeetanDos, MockMemory) {
-        let mut dos = NeetanDos::new();
+        let mut dos = NeetanDos::new(crate::DosPlatform::pc98());
         let mut memory = MockMemory::with_extended_memory(0x200000, 0x200000);
-        dos.state.memory_manager = Some(MemoryManager::new(
+        dos.state.memory_manager = Some(MemoryManager::new_for_platform(
+            &dos.state.platform,
             memory.extended_memory_size(),
             true,
             false,

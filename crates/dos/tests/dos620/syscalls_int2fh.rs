@@ -259,7 +259,7 @@ fn dos_internal_data_segment() {
 
     assert_eq!(
         harness::result_word(&machine.bus, 0),
-        tables::DOS_DATA_SEGMENT,
+        harness::dos_data_segment(),
         "AX=1203h should return the DOS data segment in DS"
     );
 }
@@ -344,12 +344,12 @@ fn dos_internal_error_table_addresses() {
     let (retriever_segment, retriever_offset) = get_dos_internal_error_table(0x08);
     assert_eq!(
         retriever_segment,
-        tables::DOS_DATA_SEGMENT,
+        harness::dos_data_segment(),
         "AX=122Eh DL=08h should return the retriever stub segment"
     );
     assert_eq!(
         retriever_offset,
-        tables::ERROR_RETRIEVER_STUB_OFFSET,
+        harness::pc98_structures().private_area.error_retriever_stub,
         "AX=122Eh DL=08h should return the retriever stub offset"
     );
 
@@ -398,8 +398,11 @@ fn dos_internal_error_table_addresses() {
 
     let segment = harness::result_word(&machine.bus, 0);
     let offset = harness::result_word(&machine.bus, 2);
-    assert_eq!(segment, tables::DOS_DATA_SEGMENT);
-    assert_eq!(offset, tables::ERROR_MESSAGE_BUFFER_OFFSET);
+    assert_eq!(segment, harness::dos_data_segment());
+    assert_eq!(
+        offset,
+        harness::pc98_structures().private_area.error_message_buffer
+    );
     let message_addr = harness::far_to_linear(segment, offset);
     let message_len = harness::read_byte(&machine.bus, message_addr) as usize;
     let message = harness::read_bytes(&machine.bus, message_addr + 1, message_len);
@@ -507,7 +510,7 @@ fn windows_dosmgr_virtual_device_api_reports_dos5_kernel_support() {
     assert_eq!(harness::result_word(&machine.bus, 6), 0x0000);
     assert_eq!(
         harness::result_word(&machine.bus, 8),
-        tables::DOS_DATA_SEGMENT
+        harness::dos_data_segment()
     );
     assert_eq!(
         harness::result_word(&machine.bus, 2),
@@ -521,11 +524,13 @@ fn windows_dosmgr_virtual_device_api_reports_dos5_kernel_support() {
     assert_eq!(harness::read_word(&machine.bus, patch_table), 0x1406);
     assert_eq!(
         harness::read_word(&machine.bus, patch_table + 0x06),
-        tables::INDOS_FLAG_OFFSET
+        harness::pc98_structures()
+            .swappable_data_area
+            .indos_offset()
     );
     assert_eq!(
         harness::read_word(&machine.bus, patch_table + 0x0C),
-        tables::FIRST_MCB_SEGMENT
+        harness::first_mcb_segment(&machine.bus)
     );
     assert_eq!(
         harness::read_word(&machine.bus, patch_table + 0x0A),
@@ -534,18 +539,24 @@ fn windows_dosmgr_virtual_device_api_reports_dos5_kernel_support() {
     assert_eq!(
         harness::read_word(
             &machine.bus,
-            tables::WINDOWS_DOSMGR_CRITICAL_SECTION_TABLE_ADDR
+            harness::dos_data_address(tables::WINDOWS_DOSMGR_CRITICAL_SECTION_TABLE_OFFSET)
         ),
         0x0D0C
     );
-    let umb_head = harness::read_word(&machine.bus, tables::WINDOWS_DOSMGR_UMB_HEAD_ADDR);
+    let umb_head = harness::read_word(
+        &machine.bus,
+        harness::dos_data_address(tables::WINDOWS_DOSMGR_UMB_HEAD_OFFSET),
+    );
     let umb_head_addr = harness::far_to_linear(umb_head, 0);
     let umb_head_size = harness::read_word(&machine.bus, umb_head_addr + tables::MCB_OFF_SIZE);
     assert!(
         matches!(harness::read_byte(&machine.bus, umb_head_addr), b'M' | b'Z'),
         "UMB_HEAD should point at an MCB"
     );
-    assert_eq!(umb_head + umb_head_size + 1, tables::MEMORY_TOP_SEGMENT);
+    assert_eq!(
+        umb_head + umb_head_size + 1,
+        harness::pc98_placement().memory_top_segment
+    );
 
     assert_eq!(harness::result_word(&machine.bus, 10), 0x1607);
     assert_eq!(harness::result_word(&machine.bus, 12), 0x0015);
@@ -560,10 +571,11 @@ fn windows_dosmgr_virtual_device_api_reports_dos5_kernel_support() {
 #[test]
 fn windows_dosmgr_virtual_device_api_reports_hle_device_driver_size() {
     let mut machine = harness::boot_hle();
+    let dos_data_segment = harness::dos_data_segment();
     #[rustfmt::skip]
     let code: &[u8] = &[
-        0xB8, (tables::DOS_DATA_SEGMENT & 0x00FF) as u8,
-              (tables::DOS_DATA_SEGMENT >> 8) as u8, // MOV AX, DOS_DATA_SEGMENT
+        0xB8, (dos_data_segment & 0x00FF) as u8,
+              (dos_data_segment >> 8) as u8,     // MOV AX, DOS data segment
         0x8E, 0xC0,                         // MOV ES, AX
         0xBF, (tables::DEV_CON_OFFSET & 0x00FF) as u8,
               (tables::DEV_CON_OFFSET >> 8) as u8,   // MOV DI, DEV_CON_OFFSET
@@ -596,7 +608,7 @@ fn windows_dosmgr_virtual_device_api_reports_hle_device_driver_size() {
     assert_eq!(harness::result_word(&machine.bus, 2), 0x0000);
     assert_eq!(
         harness::result_word(&machine.bus, 4),
-        tables::FIRST_MCB_OFFSET
+        harness::dos_data_size(&machine.bus) as u16
     );
     assert_eq!(harness::result_word(&machine.bus, 6), 0xA2AB);
     assert_eq!(harness::result_word(&machine.bus, 8), 0x0000);
@@ -1000,16 +1012,23 @@ fn mscdex_drive_check_wrong_drive() {
         0xB9, 0x02, 0x00,                   // MOV CX, 2 (C: -- not CD-ROM)
         0xCD, 0x2F,                         // INT 2Fh
         0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
+        0x89, 0x1E, 0x02, 0x01,             // MOV [0x0102], BX
         0xFA,                               // CLI
         0xF4,                               // HLT
     ];
     harness::inject_and_run_generic_with_budget(&mut machine, code, harness::INJECT_BUDGET);
 
-    let al = harness::result_byte(&machine.bus, 0);
+    let ax = harness::result_word(&machine.bus, 0);
+    let bx = harness::result_word(&machine.bus, 2);
     assert_eq!(
-        al, 0x00,
-        "MSCDEX drive check for C: should return AL=0 (not CD-ROM), got {:#04X}",
-        al
+        ax, 0x0000,
+        "MSCDEX drive check for C: should return AX=0 (not CD-ROM), got {:#06X}",
+        ax
+    );
+    assert_eq!(
+        bx, 0xADAD,
+        "MSCDEX drive check: BX should be ADADh for any drive, got {:#06X}",
+        bx
     );
 }
 
@@ -1372,7 +1391,7 @@ fn mscdex_get_drive_device_list() {
     );
     assert_eq!(
         header_seg,
-        tables::CDROM_MIRROR_HEADER_SEGMENT,
+        harness::dos_data_segment() + tables::CDROM_MIRROR_HEADER_PARAGRAPHS,
         "Device header segment should point at the mirror header, got {header_seg:#06X}"
     );
 }

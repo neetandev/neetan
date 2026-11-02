@@ -156,13 +156,7 @@ impl<T: TraceSink> AtBus<T> {
         // The assembly stub pushes AX and DX before clobbering them with the
         // trap port address and vector number. Restore the caller's original
         // values and adjust SP so the IRET frame sits at SS:SP+0.
-        let sp = cpu.sp();
-        let ss_base = cpu.segment_base(SegmentRegister::SS);
-        let saved_dx = self.read_mem_word(ss_base.wrapping_add(u32::from(sp)));
-        let saved_ax = self.read_mem_word(ss_base.wrapping_add(u32::from(sp.wrapping_add(2))));
-        cpu.set_dx(saved_dx);
-        cpu.set_ax(saved_ax);
-        cpu.set_sp(sp.wrapping_add(4));
+        device::bios::restore_trap_registers(cpu, |address| self.read_mem_word(address));
 
         let function = cpu.ah();
         let subfunction = cpu.al();

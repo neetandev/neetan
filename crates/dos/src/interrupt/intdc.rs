@@ -6,7 +6,7 @@
 
 use common::warn;
 
-use crate::{CpuAccess, MemoryAccess, NeetanDos, SegmentRegister, tables};
+use crate::{CpuAccess, MemoryAccess, NeetanDos, SegmentRegister, drive_map, tables};
 
 impl NeetanDos {
     /// Dispatches an INT DCh call based on the CL register.
@@ -21,7 +21,7 @@ impl NeetanDos {
             0x12 => self.intdch_12h_system_identification(cpu, memory),
             0x13 => self.intdch_13h_daua_mapping_buffer(cpu, memory),
             0x15 => self.intdch_15h_internal_revision(cpu, memory),
-            0x80 => self.intdch_80h_disk_partition_info(cpu, memory),
+            0x80 => self.intdch_80h_disk_partition_info(cpu),
             0x81 => self.intdch_81h_extended_memory_query(cpu, memory),
             _ => warn!("INT DCh CL={cl:#04X} is unimplemented"),
         }
@@ -143,22 +143,22 @@ impl NeetanDos {
         let buffer_addr = cpu.linear_address(SegmentRegister::DS, cpu.dx());
         let base = tables::IOSYS_BASE;
 
-        // +00h-0Fh: 16 bytes from legacy DA/UA table (0060:006Ch).
-        for i in 0..16u32 {
-            let byte = memory.read_byte(base + tables::IOSYS_OFF_DAUA_TABLE + i);
-            memory.write_byte(buffer_addr + i, byte);
-        }
+        // +00h-0Fh: the DA/UA table of the drives A: to P:.
+        memory.write_block(
+            buffer_addr,
+            &drive_map::pc98::daua_table(&self.state.drive_map),
+        );
 
         // +10h-19h: 10 bytes reserved (zero).
         for i in 0x10..0x1Au32 {
             memory.write_byte(buffer_addr + i, 0x00);
         }
 
-        // +1Ah-4Dh: 52 bytes from extended DA/UA table (0060:2C86h).
-        for i in 0..tables::IOSYS_EXT_DAUA_TABLE_SIZE {
-            let byte = memory.read_byte(base + tables::IOSYS_OFF_EXT_DAUA_TABLE + i);
-            memory.write_byte(buffer_addr + 0x1A + i, byte);
-        }
+        // +1Ah-4Dh: the extended DA/UA table of all drive letters.
+        memory.write_block(
+            buffer_addr + 0x1A,
+            &drive_map::pc98::extended_daua_table(&self.state.drive_map),
+        );
 
         // +4Eh: FD logical drive duplicate flag (0060:0038h).
         let fd_dup = memory.read_byte(base + tables::IOSYS_OFF_FD_DUPLICATE);
@@ -187,25 +187,28 @@ impl NeetanDos {
 
     /// CL=80h: Disk/partition information.
     /// AL = drive number (0=A, 1=B, ...). Returns basic partition info.
-    fn intdch_80h_disk_partition_info(&self, cpu: &mut dyn CpuAccess, memory: &dyn MemoryAccess) {
+    fn intdch_80h_disk_partition_info(&self, cpu: &mut dyn CpuAccess) {
         let drive = (cpu.ax() & 0xFF) as u8;
-        let daua = if (drive as u32) < 16 {
-            memory.read_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_DAUA_TABLE + drive as u32)
-        } else {
-            0x00
-        };
-
-        if daua == 0x00 {
-            cpu.set_ax(0x0002); // invalid drive
-            cpu.set_bx(0x0000);
-        } else if daua & 0xF0 == 0x80 {
-            // HDD: one partition per unit in HLE mode.
-            cpu.set_ax(0x0000);
-            cpu.set_bx(0x0001);
-        } else {
-            // FDD or other non-partitioned device.
-            cpu.set_ax(0x0000);
-            cpu.set_bx(0x0000);
+        let device = self.state.drive_map.entry(drive).map(|entry| entry.device);
+        match device {
+            Some(drive_map::DriveDevice::FixedDisk { .. }) => {
+                // One partition per unit in HLE mode.
+                cpu.set_ax(0x0000);
+                cpu.set_bx(0x0001);
+            }
+            Some(drive_map::DriveDevice::Floppy { .. })
+            | Some(drive_map::DriveDevice::MemoryImage { .. }) => {
+                cpu.set_ax(0x0000);
+                cpu.set_bx(0x0000);
+            }
+            Some(drive_map::DriveDevice::Cdrom)
+            | Some(drive_map::DriveDevice::GuestCdrom(_))
+            | Some(drive_map::DriveDevice::GuestDriver(_))
+            | Some(drive_map::DriveDevice::Virtual)
+            | None => {
+                cpu.set_ax(0x0002); // invalid drive
+                cpu.set_bx(0x0000);
+            }
         }
     }
 

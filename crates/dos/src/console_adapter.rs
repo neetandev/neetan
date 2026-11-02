@@ -1,15 +1,30 @@
 use common::{ConsoleIo, JisChar};
 
-use crate::{MemoryAccess, console::Console, tables};
+use crate::{MemoryAccess, console::TextVramConsole, console_device::KeyboardInput};
 
+/// `ConsoleIo` of the built-in commands over the text VRAM console and the
+/// keyboard backend.
 pub(crate) struct ConsoleAdapter<'a> {
-    console: &'a mut Console,
+    /// Text VRAM console.
+    console: &'a mut TextVramConsole,
+    /// Keyboard backend.
+    keyboard: &'a mut dyn KeyboardInput,
+    /// Guest memory.
     memory: &'a mut dyn MemoryAccess,
 }
 
 impl<'a> ConsoleAdapter<'a> {
-    pub(crate) fn new(console: &'a mut Console, memory: &'a mut dyn MemoryAccess) -> Self {
-        Self { console, memory }
+    /// Bundles the console, the keyboard and the memory.
+    pub(crate) fn new(
+        console: &'a mut TextVramConsole,
+        keyboard: &'a mut dyn KeyboardInput,
+        memory: &'a mut dyn MemoryAccess,
+    ) -> Self {
+        Self {
+            console,
+            keyboard,
+            memory,
+        }
     }
 }
 
@@ -76,20 +91,19 @@ impl ConsoleIo for ConsoleAdapter<'_> {
     }
 
     fn read_char(&mut self) -> u8 {
-        if tables::key_available(self.memory) {
-            let (_, ch) = tables::read_key(self.memory);
-            ch
-        } else {
-            0
-        }
+        self.keyboard
+            .read_key(self.memory)
+            .map_or(0, |key| key.character)
     }
 
-    fn char_available(&self) -> bool {
-        tables::key_available(self.memory)
+    fn char_available(&mut self) -> bool {
+        self.keyboard.key_available(self.memory)
     }
 
     fn read_key(&mut self) -> (u8, u8) {
-        tables::read_key(self.memory)
+        self.keyboard
+            .read_key(self.memory)
+            .map_or((0, 0), |key| (key.scan_code_or_zero(), key.character))
     }
 
     fn cursor_position(&self) -> (u8, u8) {

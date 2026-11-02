@@ -224,8 +224,29 @@ const TOWNS_TRACE_CATALOG: common::TraceCatalog = common::TraceCatalog {
             actions: &[common::trace_action(common::trace_id::action::READ)],
         },
     ],
-    providers: &[],
+    providers: &[common::TraceProviderCatalog {
+        provider: common::trace_id::provider::TOWNS_BIOS,
+        named_interfaces: &[],
+        call_fields: TOWNS_BIOS_CALL_FIELDS,
+    }],
 };
+
+/// Field schema for the `towns.bios` call provider. Enter events carry
+/// `function` and `subfunction`; exit events add `result`.
+const TOWNS_BIOS_CALL_FIELDS: &[common::TraceFieldDescriptor] = &[
+    common::trace_field_range(
+        common::trace_id::field::FUNCTION,
+        common::TraceFieldType::Integer,
+    ),
+    common::trace_field_range(
+        common::trace_id::field::SUBFUNCTION,
+        common::TraceFieldType::Integer,
+    ),
+    common::trace_field_range(
+        common::trace_id::field::RESULT,
+        common::TraceFieldType::Integer,
+    ),
+];
 
 impl<const CPU_MODEL: u8> common::MachineInspector
     for TownsMachine<CPU_MODEL, common::tracing::ApplicationTraceSink>
@@ -433,6 +454,14 @@ impl<const CPU_MODEL: u8, T: TraceSink> TownsMachine<CPU_MODEL, T> {
             };
 
             let ran_cycles = self.cpu.run_for(slice_end - current_cycle, &mut self.bus);
+
+            // A pending BIOS HLE trap runs before a presentation yield. The trap
+            // OUT leaves the CPU behind the OUT with the handler not yet run.
+            if common::unlikely(self.bus.bios_hle_pending()) {
+                self.bus.execute_bios_hle(&mut self.cpu);
+                continue;
+            }
+
             if T::ENABLED && self.bus.tracer().yield_requested() {
                 break;
             }
@@ -813,9 +842,11 @@ mod tests {
 
     fn empty_roms() -> crate::LoadedRoms {
         crate::LoadedRoms {
-            dos: Vec::new(),
+            firmware: crate::TownsFirmware::Rom {
+                system: Vec::new(),
+                os: Vec::new(),
+            },
             font: Vec::new(),
-            system: Vec::new(),
             f20: Vec::new(),
             dictionary: Vec::new(),
             serial: Vec::new(),

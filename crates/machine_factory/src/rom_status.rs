@@ -131,7 +131,9 @@ fn system_status(lacking: usize, models: usize, required: bool) -> RomStatus {
 /// Returns the models of the family `target` that lack their ROM set in `path`.
 ///
 /// A family whose models share one ROM set loads it once. A PC-98 model needs
-/// its font ROM and, when it boots a real BIOS, its BIOS chips.
+/// its font ROM and, when it boots a real BIOS, its BIOS chips. An FM Towns
+/// model needs the real ROM set of its `bios = on` mode. Its HLE firmware runs
+/// with the built-in images.
 fn models_without_set(target: Target, models: &[ResolvedModel], path: &Path) -> Vec<&'static str> {
     match target {
         #[cfg(feature = "pc98")]

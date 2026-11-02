@@ -39,8 +39,8 @@ impl RunningCommand for RunningVer {
             return StepResult::Done(0);
         }
 
-        let (major, minor) = state.version;
-        let msg = format!("Neetan DOS {}.{}\r\n\r\n", major, minor);
+        let version = state.platform.version;
+        let msg = format!("\r\nNeetan DOS {}.{}\r\n", version.major, version.minor);
         for &byte in msg.as_bytes() {
             io.output_byte(byte);
         }

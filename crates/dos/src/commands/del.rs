@@ -104,8 +104,6 @@ pub(crate) struct RunningDel {
 
 state_struct_codec!(RunningDel { args, phase });
 
-const KB_BUF_COUNT: u32 = 0x0528;
-
 impl RunningDel {
     fn step_init(
         &mut self,
@@ -163,11 +161,11 @@ impl RunningDel {
     }
 
     fn step_confirm_all(&mut self, del_state: DelState, io: &mut IoAccess) -> StepResult {
-        if io.memory.read_byte(KB_BUF_COUNT) == 0 {
+        if !io.key_available() {
             self.phase = DelPhase::ConfirmAll(del_state);
             return StepResult::Continue;
         }
-        let key = consume_key(io);
+        let key = io.take_key_character();
         io.output_byte(b'\r');
         io.output_byte(b'\n');
         if key == b'Y' || key == b'y' {
@@ -260,11 +258,11 @@ impl RunningDel {
         io: &mut IoAccess,
         drive: &mut dyn DriveIo,
     ) -> StepResult {
-        if io.memory.read_byte(KB_BUF_COUNT) == 0 {
+        if !io.key_available() {
             self.phase = DelPhase::PromptFile(del_state, entry);
             return StepResult::Continue;
         }
-        let key = consume_key(io);
+        let key = io.take_key_character();
         io.output_byte(b'\r');
         io.output_byte(b'\n');
 
@@ -335,19 +333,4 @@ fn parse_switches(args: &[u8]) -> (&[u8], bool) {
         i += 1;
     }
     (args, false)
-}
-
-fn consume_key(io: &mut IoAccess) -> u8 {
-    let head = io.memory.read_word(0x0524) as u32;
-    let ch = io.memory.read_byte(head);
-    let mut new_head = head + 2;
-    if new_head >= 0x0522 {
-        new_head = 0x0502;
-    }
-    io.memory.write_word(0x0524, new_head as u16);
-    let count = io.memory.read_byte(KB_BUF_COUNT);
-    if count > 0 {
-        io.memory.write_byte(KB_BUF_COUNT, count - 1);
-    }
-    ch
 }

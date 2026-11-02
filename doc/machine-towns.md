@@ -22,17 +22,18 @@ sound source. All three targets have a built-in CD-ROM drive, a SCSI interface, 
 drive, and support the 2-button and 6-button Towns game pads. MIDI sound modules can
 be used as well; see [MIDI sound modules](#midi-sound-modules).
 
-Like the PC-8801MC, the FM Towns targets have no HLE firmware and require a real ROM
-set (see [ROM set](#rom-set)).
+The FM Towns targets run on a built-in HLE firmware and a built-in font by default and
+need no ROM files (see [ROM set](#rom-set)).
 
 ## Platform options
 
-| Option                     | Description                                         | Default |
-|----------------------------|-----------------------------------------------------|---------|
-| `--towns-roms <PATH>`      | Directory with the FM Towns ROM set (required)      | -       |
-| `--towns-pad <2\|6>`       | Game pad type: `2` (2-button) or `6` (6-button)     | `6`     |
-| `--cdrom-compat [on\|off]` | Slow/compatible CD-ROM drive timing                 | `off`   |
-| `--boot-device <DEVICE>`   | Boot device: `auto`, `fdd1`, `fdd2`, `hdd1`, `hdd2` | `auto`  |
+| Option                     | Description                                         | Default  |
+|----------------------------|-----------------------------------------------------|----------|
+| `--towns-roms <PATH>`      | Directory with the FM Towns ROM set (optional)      | -        |
+| `--bios [on\|off]`         | Boot the real system and OS ROMs of the ROM set     | HLE BIOS |
+| `--towns-pad <2\|6>`       | Game pad type: `2` (2-button) or `6` (6-button)     | `6`      |
+| `--cdrom-compat [on\|off]` | Slow/compatible CD-ROM drive timing                 | `off`    |
+| `--boot-device <DEVICE>`   | Boot device: `auto`, `fdd1`, `fdd2`, `hdd1`, `hdd2` | `auto`   |
 
 `--boot-device fdd1` and `fdd2` boot from the floppy drive, `hdd1` and `hdd2` from
 the SCSI hard disk. `auto` boots from the CD-ROM when a disc is inserted and from
@@ -43,10 +44,14 @@ floppy images with `--fdd1` / `--fdd2`.
 
 ## ROM set
 
-The FM Towns targets need a real ROM set, pointed to by `--towns-roms`. All three
-targets use the FM Towns II MX ROM dump. Two layouts are accepted: a merged set (the packed
-2 MiB MAME BIOS image plus the 32-byte serial ROM) or a split set (the five
-individual images plus the serial ROM).
+The FM Towns targets run without a ROM set. With `bios = off` (the default) the machine
+runs a built-in HLE system ROM, a built-in HLE OS ROM, the HLE DOS and a built-in font ROM.
+The built-in fonts reproduce the original Fujitsu typeface. This mode reads no ROM file.
+Pass `--bios` to boot the real ROM set from the folder of `--towns-roms`. This mode needs
+every ROM of the FM Towns II MX dump, which all three targets use.
+
+Two layouts are accepted: a merged set (the packed 2 MiB MAME BIOS image plus the 32-byte
+serial ROM) or a split set (the five individual images plus the serial ROM).
 
 See the [FM Towns ROMs](roms.md#fm-towns) section for the exact files and hashes.
 

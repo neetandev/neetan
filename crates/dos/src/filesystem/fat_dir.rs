@@ -282,6 +282,10 @@ pub(crate) fn find_matching(
         if entry.attribute & ATTR_VOLUME_ID != 0 && attr_mask & ATTR_VOLUME_ID == 0 {
             return IterAction::Continue;
         }
+        // A search for volume labels alone finds nothing else
+        if attr_mask == ATTR_VOLUME_ID && entry.attribute & ATTR_VOLUME_ID == 0 {
+            return IterAction::Continue;
+        }
 
         // Hidden/system/directory entries only shown if attr_mask includes them
         if entry.attribute & ATTR_HIDDEN != 0 && attr_mask & ATTR_HIDDEN == 0 {

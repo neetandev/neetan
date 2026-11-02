@@ -34,7 +34,6 @@ impl Command for Copy {
     }
 }
 
-const KB_BUF_COUNT: u32 = 0x0528;
 const HOST_CHUNK_BYTES: usize = 4096;
 
 #[derive(Clone)]
@@ -953,11 +952,11 @@ impl RunningCopy {
         job: FileJob,
         io: &mut IoAccess,
     ) -> StepResult {
-        if io.memory.read_byte(KB_BUF_COUNT) == 0 {
+        if !io.key_available() {
             self.phase = CopyPhase::ConfirmOverwrite(cs, job);
             return StepResult::Continue;
         }
-        let key = consume_key(io);
+        let key = io.take_key_character();
         io.output_byte(b'\r');
         io.output_byte(b'\n');
 
@@ -1266,8 +1265,10 @@ fn read_source(
                 if *position >= entry.file_size {
                     return Ok(None);
                 }
-                let chunk = iso9660::read_file_chunk(entry, *position, chunk_hint.min(2048), drive)
-                    .map_err(|_| ())?;
+                let cdrom = state.drive_cdrom(*src_drive, drive);
+                let chunk =
+                    iso9660::read_file_chunk(entry, *position, chunk_hint.min(2048), &cdrom)
+                        .map_err(|_| ())?;
                 *position += chunk.len() as u32;
                 Ok(Some(chunk))
             }
@@ -2002,19 +2003,4 @@ fn print_help(io: &mut IoAccess) {
     io.println(b"");
     io.println(b"The source may be prefixed with 'host:' to read from the host filesystem.");
     io.println(b"The destination is always a DOS path. Directories are copied recursively.");
-}
-
-fn consume_key(io: &mut IoAccess) -> u8 {
-    let head = io.memory.read_word(0x0524) as u32;
-    let ch = io.memory.read_byte(head);
-    let mut new_head = head + 2;
-    if new_head >= 0x0522 {
-        new_head = 0x0502;
-    }
-    io.memory.write_word(0x0524, new_head as u16);
-    let count = io.memory.read_byte(KB_BUF_COUNT);
-    if count > 0 {
-        io.memory.write_byte(KB_BUF_COUNT, count - 1);
-    }
-    ch
 }

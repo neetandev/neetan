@@ -365,7 +365,8 @@ impl RunningB3sum {
                 if *position >= entry.file_size {
                     Vec::new()
                 } else {
-                    match iso9660::read_file_chunk(entry, *position, ISO_CHUNK_SIZE, drive) {
+                    let cdrom = state.drive_cdrom(file_hash_state.drive_index, drive);
+                    match iso9660::read_file_chunk(entry, *position, ISO_CHUNK_SIZE, &cdrom) {
                         Ok(data) => {
                             *position += data.len() as u32;
                             data

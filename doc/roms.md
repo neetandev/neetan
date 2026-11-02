@@ -47,7 +47,7 @@ by file name (see that section).
 | PC-8001 / PC-8801  | `--pc88-roms`    | `roms/pc88`    | Required                         |
 | PC-88VA2           | `--pc88va-roms`  | `roms/pc88va`  | Required                         |
 | PC-6001 / PC-6601  | `--pc6000-roms`  | `roms/pc6000`  | Required                         |
-| FM Towns           | `--towns-roms`   | `roms/towns`   | Required                         |
+| FM Towns           | `--towns-roms`   | `roms/towns`   | Optional (HLE BIOS by default)   |
 | Sharp X68000       | `--x68k-roms`    | `roms/x68k`    | Required                         |
 | MSX                | `--msx-roms`     | `roms/msx`     | Required                         |
 | Sharp X1           | `--x1-roms`      | `roms/x1`      | Required                         |
@@ -56,9 +56,9 @@ by file name (see that section).
 | Roland MT-32       | `--mt32-roms`    | `roms/mt32`    | Required for `--midi mt32`       |
 | Roland SC-55       | `--sc55-roms`    | `roms/sc55`    | Required for `--midi sc55`       |
 
-The derived folders of the PC-98, the PC/AT, the MT-32 and the SC-55 apply only when
-they exist. A missing derived folder of another system ends with an error at the start
-of the machine.
+The derived folders of the PC-98, the FM Towns, the PC/AT, the MT-32 and the SC-55
+apply only when they exist. A missing derived folder of another system ends with an
+error at the start of the machine.
 
 ## Which MAME ROM set do I need?
 
@@ -122,7 +122,7 @@ roms/
 |   `-- (sub-CPU ROM: not in the MAME set, source separately)
 |-- pc6000/        --pc6000-roms   pc6001 ... pc6601sr
 |   `-- basicrom.60, systemrom1.64, cgrom*.*, kanjirom.*, voicerom.*, ...
-|-- towns/         --towns-roms    fmtownsmx
+|-- towns/         --towns-roms    fmtownsmx (optional)
 |   |-- fmtownsiimxbios.m79
 |   `-- mytownsmx.rom
 |-- x68k/          --x68k-roms                     one selected X68000 model set
@@ -182,7 +182,7 @@ pc88-roms   = roms/pc88
 pc88va-roms = roms/pc88va
 pc6000-roms = roms/pc6000
 
-; FM Towns.
+; FM Towns. The HLE firmware and the built-in font are used unless bios=on.
 towns-roms = roms/towns
 
 ; Sharp X68000.
@@ -515,9 +515,11 @@ dumps are bit-identical across models, so a single file can satisfy more than on
 
 ## FM Towns
 
-The FM Towns targets need a real ROM set, pointed to by `--towns-roms`. The base
-FM Towns, the FM Towns II CX, and the MX all use the FM Towns II MX ROM dump (MAME
-set `fmtownsmx`). Two layouts are accepted.
+The FM Towns targets run on a built-in HLE firmware and a built-in font by default, so a
+ROM set is optional. Point `--towns-roms` at the FM Towns II MX ROM dump (MAME set
+`fmtownsmx`) and pass `--bios` to boot the real ROM set. The base FM Towns, the FM Towns II
+CX, and the MX all use this dump. With `--bios` every ROM of the set is required. Without
+`--bios` the machines read no ROM file. Two layouts are accepted.
 
 The merged set is the packed 2 MiB MAME BIOS image plus the 32-byte serial ROM (this
 is what the `fmtownsmx` set contains):
@@ -537,6 +539,9 @@ The split set provides the five images individually plus the serial ROM:
 | `FMT_F20.ROM`   | 512 KiB  | `1dde131510456c9660c2217774853822674459412d8e6f98312fff0ee83ca9a7` |
 | `FMT_DIC.ROM`   | 512 KiB  | `0fbcbecb5b62c8fa4e9a60885f887b0a2cafd680a1174b0f7ddf57f49c65ab60` |
 | `mytownsmx.rom` | 32 bytes | `d5dc70e34d072889c28bed51ef3ccaac7f6f3fdd9e448d89297847247a901538` |
+
+The built-in font ROM (`utils/bios_towns/fonts/font.rom`) and the 12-dot font of the HLE
+system ROM are built from `.bit` files that reproduce the original Fujitsu typeface.
 
 ## Sharp X68000
 

@@ -5,7 +5,7 @@
 
 use common::warn;
 
-use crate::{CdromIo, CpuAccess, MemoryAccess, NeetanDos, SegmentRegister, set_iret_carry, tables};
+use crate::{CdromIo, CpuAccess, MemoryAccess, NeetanDos, SegmentRegister, tables};
 
 impl NeetanDos {
     /// Dispatches an INT 2Fh call based on the AH register.
@@ -27,7 +27,7 @@ impl NeetanDos {
             0x48 => self.int2fh_48h_doskey_check(cpu),
             0x4A => self.int2fh_4ah_hma_query(cpu),
             0x4D => self.int2fh_4dh_kkcfunc(),
-            0x4F => set_iret_carry(cpu, memory, true), // Keyboard intercept: no translation.
+            0x4F => self.state.set_iret_carry(cpu, memory, true), // Keyboard intercept: no translation.
             0xD2 => self.int2fh_d2h_quarterdeck_rpci(cpu),
             0xFE => self.int2fh_feh_user_multiplex(),
             _ => warn!("INT 2Fh AH={ah:#04X} is unimplemented"),
@@ -53,7 +53,7 @@ impl NeetanDos {
             0x00 => cpu.set_ax(cpu.ax() & 0xFF00),
             _ => {
                 cpu.set_ax(0x0001);
-                set_iret_carry(cpu, memory, true);
+                self.state.set_iret_carry(cpu, memory, true);
             }
         }
     }
@@ -62,7 +62,7 @@ impl NeetanDos {
     fn int2fh_12h_dos_internal(&self, cpu: &mut dyn CpuAccess, memory: &dyn MemoryAccess) {
         let al = cpu.ax() as u8;
         match al {
-            0x03 => cpu.set_ds(tables::DOS_DATA_SEGMENT),
+            0x03 => cpu.set_ds(self.state.dos_data_segment()),
             0x13 => {
                 // Real DOS 6.20 reads the caller's pushed stack word into AX
                 // (so AH = high byte of the original PUSH), then uppercases
@@ -99,8 +99,8 @@ impl NeetanDos {
                 cpu.set_di(0);
             }
             0x08 => {
-                cpu.set_es(tables::DOS_DATA_SEGMENT);
-                cpu.set_di(tables::ERROR_RETRIEVER_STUB_OFFSET);
+                cpu.set_es(self.state.dos_data_segment());
+                cpu.set_di(self.state.structures().private_area.error_retriever_stub);
             }
             // DL=01h/03h/05h/07h/09h set the tables; DOS 5+ ignores them.
             0x01 | 0x03 | 0x05 | 0x07 | 0x09 => {}
@@ -126,155 +126,16 @@ impl NeetanDos {
     ) {
         let message = error_table_message(cpu.di(), cpu.ax());
         let len = message.len().min(tables::ERROR_MESSAGE_BUFFER_SIZE - 1);
-        memory.write_byte(tables::ERROR_MESSAGE_BUFFER_ADDR, len as u8);
-        memory.write_block(tables::ERROR_MESSAGE_BUFFER_ADDR + 1, &message[..len]);
+        let buffer = self
+            .state
+            .dos_data_address(self.state.structures().private_area.error_message_buffer);
+        memory.write_byte(buffer, len as u8);
+        memory.write_block(buffer + 1, &message[..len]);
         if len + 1 < tables::ERROR_MESSAGE_BUFFER_SIZE {
-            memory.write_byte(tables::ERROR_MESSAGE_BUFFER_ADDR + 1 + len as u32, 0);
+            memory.write_byte(buffer + 1 + len as u32, 0);
         }
-        cpu.set_es(tables::DOS_DATA_SEGMENT);
-        cpu.set_di(tables::ERROR_MESSAGE_BUFFER_OFFSET);
-    }
-
-    /// AH=15h: MSCDEX CD-ROM interface.
-    fn int2fh_15h_mscdex(
-        &mut self,
-        cpu: &mut dyn CpuAccess,
-        memory: &mut dyn MemoryAccess,
-        cdrom: &mut dyn CdromIo,
-    ) {
-        let al = cpu.ax() as u8;
-        match al {
-            0x00 => {
-                // Installation check.
-                if cdrom.cdrom_present() {
-                    cpu.set_bx(1); // 1 CD-ROM drive.
-                    cpu.set_cx(u16::from(self.state.mscdex.drive_letter));
-                } else {
-                    cpu.set_bx(0);
-                }
-            }
-            0x01 => {
-                // Get CD-ROM drive device list.
-                if cdrom.cdrom_present() {
-                    let buffer_addr = cpu.linear_address(SegmentRegister::ES, cpu.bx());
-                    memory.write_byte(buffer_addr, 0); // Subunit 0.
-                    memory.write_word(buffer_addr + 1, 0);
-                    memory.write_word(buffer_addr + 3, tables::CDROM_MIRROR_HEADER_SEGMENT);
-                }
-            }
-            0x02 => {
-                // Get copyright file name from PVD.
-                self.mscdex_read_pvd_field(cpu, memory, cdrom, 702);
-            }
-            0x03 => {
-                // Get abstract file name from PVD.
-                self.mscdex_read_pvd_field(cpu, memory, cdrom, 739);
-            }
-            0x04 => {
-                // Get bibliographic doc file name from PVD.
-                self.mscdex_read_pvd_field(cpu, memory, cdrom, 776);
-            }
-            0x05 => {
-                // Read VTOC (Volume Descriptor).
-                let drive = cpu.cx() as u8;
-                if drive != self.state.mscdex.drive_letter {
-                    cpu.set_ax(15);
-                    set_iret_carry(cpu, memory, true);
-                    return;
-                }
-                if !cdrom.cdrom_media_loaded() {
-                    cpu.set_ax(21);
-                    set_iret_carry(cpu, memory, true);
-                    return;
-                }
-                let sector_index = cpu.dx() as u32;
-                let lba = 16 + sector_index;
-                let buffer_addr = cpu.linear_address(SegmentRegister::ES, cpu.bx());
-                let mut sector_buf = [0u8; 2048];
-                match cdrom.read_sector_cooked(lba, &mut sector_buf) {
-                    Some(n) => {
-                        memory.write_block(buffer_addr, &sector_buf[..n]);
-                        let vd_type = sector_buf[0];
-                        let result = match vd_type {
-                            1 => 1,
-                            0xFF => 0xFF,
-                            _ => 0,
-                        };
-                        cpu.set_ax(result);
-                        set_iret_carry(cpu, memory, false);
-                    }
-                    None => {
-                        cpu.set_ax(21);
-                        set_iret_carry(cpu, memory, true);
-                    }
-                }
-            }
-            0x06 | 0x07 | 0x09 | 0x0A => {
-                // Debugging on/off, absolute disk write, reserved: no-op.
-            }
-            0x08 => {
-                // Absolute disk read.
-                let drive = cpu.cx() as u8;
-                if drive != self.state.mscdex.drive_letter {
-                    cpu.set_ax(15);
-                    set_iret_carry(cpu, memory, true);
-                    return;
-                }
-                if !cdrom.cdrom_media_loaded() {
-                    cpu.set_ax(21);
-                    set_iret_carry(cpu, memory, true);
-                    return;
-                }
-                let sector_count = cpu.dx() as u32;
-                let start_lba = ((cpu.si() as u32) << 16) | cpu.di() as u32;
-                let buffer_addr = cpu.linear_address(SegmentRegister::ES, cpu.bx());
-                let mut sector_buf = [0u8; 2048];
-                for i in 0..sector_count {
-                    match cdrom.read_sector_cooked(start_lba + i, &mut sector_buf) {
-                        Some(n) => {
-                            memory.write_block(buffer_addr + i * 2048, &sector_buf[..n]);
-                        }
-                        None => {
-                            cpu.set_ax(21);
-                            set_iret_carry(cpu, memory, true);
-                            return;
-                        }
-                    }
-                }
-                set_iret_carry(cpu, memory, false);
-            }
-            0x0B => {
-                // CD-ROM drive check.
-                let drive = cpu.cx() as u8;
-                if cdrom.cdrom_present() && drive == self.state.mscdex.drive_letter {
-                    cpu.set_ax(cpu.ax() | 0x00FF); // Non-zero AL = is CD-ROM.
-                    cpu.set_bx(0xADAD);
-                } else {
-                    cpu.set_ax(cpu.ax() & 0xFF00); // AL=0 = not CD-ROM.
-                }
-            }
-            0x0C => {
-                // MSCDEX version: 2.10.
-                cpu.set_bx(0x020A);
-            }
-            0x0D => {
-                // Get CD-ROM drive letters.
-                if cdrom.cdrom_present() {
-                    let buffer_addr = cpu.linear_address(SegmentRegister::ES, cpu.bx());
-                    memory.write_byte(buffer_addr, self.state.mscdex.drive_letter);
-                }
-            }
-            0x10 => {
-                // Send device driver request.
-                let request_addr = cpu.linear_address(SegmentRegister::ES, cpu.bx());
-                if cdrom.cdrom_present() {
-                    self.handle_device_request(memory, cdrom, request_addr);
-                }
-            }
-            _ => {
-                warn!("INT 2Fh AX=15{al:02X}h is unimplemented");
-            }
-        }
+        cpu.set_es(self.state.dos_data_segment());
+        cpu.set_di(self.state.structures().private_area.error_message_buffer);
     }
 
     /// AH=16h: Windows enhanced mode broadcasts and DOSMGR API.
@@ -303,13 +164,11 @@ impl NeetanDos {
     fn int2fh_1607h_dosmgr_api(&self, cpu: &mut dyn CpuAccess, memory: &mut dyn MemoryAccess) {
         match cpu.cx() {
             0x0000 if cpu.dx() == 0x0000 => {
-                let (segment, offset) =
-                    tables::dos_data_far(tables::WINDOWS_DOSMGR_PATCH_TABLE_OFFSET);
                 cpu.set_cx(0x0001);
                 cpu.set_dx(0x0000);
-                cpu.set_es(segment);
-                cpu.set_bx(offset);
-                set_iret_carry(cpu, memory, false);
+                cpu.set_es(self.state.dos_data_segment());
+                cpu.set_bx(tables::WINDOWS_DOSMGR_PATCH_TABLE_OFFSET);
+                self.state.set_iret_carry(cpu, memory, false);
             }
             0x0001 => {
                 let value = cpu.dx();
@@ -317,11 +176,11 @@ impl NeetanDos {
                 cpu.set_bx(value);
                 cpu.set_cx(0x0000);
                 cpu.set_dx(0xA2AB);
-                set_iret_carry(cpu, memory, false);
+                self.state.set_iret_carry(cpu, memory, false);
             }
             0x0002 => {
                 cpu.set_cx(0x0000);
-                set_iret_carry(cpu, memory, false);
+                self.state.set_iret_carry(cpu, memory, false);
             }
             0x0003 => {
                 if cpu.dx() == 0x0001 {
@@ -329,22 +188,28 @@ impl NeetanDos {
                     cpu.set_cx(0x0058);
                     cpu.set_dx(0xA2AB);
                 }
-                set_iret_carry(cpu, memory, false);
+                self.state.set_iret_carry(cpu, memory, false);
             }
             0x0004 => {
                 cpu.set_cx(0x0000);
                 cpu.set_dx(0x0000);
-                set_iret_carry(cpu, memory, false);
+                self.state.set_iret_carry(cpu, memory, false);
             }
             0x0005 => {
                 // Device driver size probe. Inputs: ES:DI points at a device
                 // header inside the DOS data segment. We report the HLE
                 // device-driver region by responding only when ES:DI is in
-                // our reserved area below FIRST_MCB_OFFSET.
-                if cpu.es() == tables::DOS_DATA_SEGMENT && cpu.di() < tables::FIRST_MCB_OFFSET {
+                // the DOS data area below the first MCB.
+                let dos_data_size = self
+                    .state
+                    .platform
+                    .placement
+                    .dos_data_size()
+                    .min(u32::from(u16::MAX)) as u16;
+                if cpu.es() == self.state.dos_data_segment() && cpu.di() < dos_data_size {
                     cpu.set_ax(0xB97C);
                     cpu.set_bx(0x0000);
-                    cpu.set_cx(tables::FIRST_MCB_OFFSET);
+                    cpu.set_cx(dos_data_size);
                     cpu.set_dx(0xA2AB);
                 } else {
                     cpu.set_ax(0x0000);
@@ -352,7 +217,7 @@ impl NeetanDos {
                     cpu.set_cx(0x0000);
                     cpu.set_dx(0x0000);
                 }
-                set_iret_carry(cpu, memory, false);
+                self.state.set_iret_carry(cpu, memory, false);
             }
             _ => {}
         }
@@ -388,7 +253,7 @@ impl NeetanDos {
                 }
             }
             0x10 if xms_active => {
-                cpu.set_es(tables::XMS_ENTRY_STUB_SEGMENT);
+                cpu.set_es(self.state.dos_data_segment());
                 cpu.set_bx(tables::XMS_ENTRY_STUB_OFFSET);
             }
             _ => {}
@@ -426,39 +291,6 @@ impl NeetanDos {
         } else {
             cpu.set_bx(0x0000);
         }
-    }
-
-    /// Reads a 37-byte identifier field from the ISO 9660 Primary Volume
-    /// Descriptor and writes it (null-terminated) to the caller's buffer.
-    /// Used by subfunctions 02h (copyright), 03h (abstract), 04h (bibliographic).
-    fn mscdex_read_pvd_field(
-        &self,
-        cpu: &mut dyn CpuAccess,
-        memory: &mut dyn MemoryAccess,
-        cdrom: &dyn CdromIo,
-        pvd_offset: usize,
-    ) {
-        let drive = cpu.cx() as u8;
-        if drive != self.state.mscdex.drive_letter {
-            cpu.set_ax(15);
-            set_iret_carry(cpu, memory, true);
-            return;
-        }
-        if !cdrom.cdrom_media_loaded() {
-            cpu.set_ax(21);
-            set_iret_carry(cpu, memory, true);
-            return;
-        }
-        let mut sector_buf = [0u8; 2048];
-        if cdrom.read_sector_cooked(16, &mut sector_buf).is_none() {
-            cpu.set_ax(21);
-            set_iret_carry(cpu, memory, true);
-            return;
-        }
-        let buffer_addr = cpu.linear_address(SegmentRegister::ES, cpu.bx());
-        memory.write_block(buffer_addr, &sector_buf[pvd_offset..pvd_offset + 37]);
-        memory.write_byte(buffer_addr + 37, 0);
-        set_iret_carry(cpu, memory, false);
     }
 }
 
