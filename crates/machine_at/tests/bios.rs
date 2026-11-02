@@ -294,6 +294,8 @@ mod fdd_boot;
 mod hdd_boot;
 #[path = "bios/hdd_interrupt.rs"]
 mod hdd_interrupt;
+#[path = "bios/int10h_fonts.rs"]
+mod int10h_fonts;
 #[path = "bios/int10h_graphics.rs"]
 mod int10h_graphics;
 #[path = "bios/int10h_modes.rs"]

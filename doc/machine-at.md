@@ -103,7 +103,8 @@ are optional build features; see [Building](building.md#midi-features-and-binary
 The PC/AT target runs without any ROM files: the built-in HLE system BIOS and HLE
 VGA BIOS cover the POST, the boot sequence, INT 10h/13h/14h/15h/16h/17h/1Ah and
 the VGA services, including the video parameter table published through
-SAVE_PTR (BDA 40:A8).
+SAVE_PTR (BDA 40:A8). The built-in fonts reproduce the original Tseng and AMI
+typefaces.
 
 A real ROM set is optional and selected with `--bios` plus `--at-roms`: the AMI
 CS4031 system BIOS (`chips_1.ami`) and the Tseng ET4000AX VGA BIOS

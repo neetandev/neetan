@@ -8,7 +8,9 @@
 ;
 ; INT 10h itself is dispatched from the F-segment system BIOS stub. This
 ; image exists to satisfy probes and to carry the CP437 fonts that the HLE
-; mode set uploads to plane 2 and that INT 1Fh/43h point at.
+; mode set uploads to plane 2 and that INT 1Fh/43h point at. It also carries
+; the 9x14 and 9x16 alternate tables of AX=1130h BH=05h/07h. A 9 dot text
+; mode set loads the 9x16 table.
 ;
 ; Build: nasm -f bin -o vgabios.rom vgabios.asm (then Makefile checksum patch)
 
@@ -25,12 +27,11 @@ init_entry:
 
     times 0x0010 - ($ - $$) db 0x00
 
-; ===========================================================================
 ; Metadata header at ROM offset 0x0010
-; ===========================================================================
-; The Rust side reads these words to find the font data. All offsets are
-; relative to segment 0xC000, which equals the ROM offset because the
-; segment covers the entire 32 KB image.
+; The Rust side reads these words to locate the fonts, the alternate tables
+; and the other ROM tables listed below. All offsets are relative to segment
+; 0xC000, which equals the ROM offset because the segment covers the entire
+; 32 KB image.
 
 metadata:
     dw font_8x8                     ; +0: 8x8 font (2048 bytes)
@@ -41,6 +42,8 @@ metadata:
     dw video_parameter_table        ; +10: video parameter table
     dw VIDEO_PARAMETER_ENTRIES      ; +12: video parameter table entry count
     dw video_save_pointer_table     ; +14: video save pointer table (28 bytes)
+    dw font_9x14_alternate          ; +16: 9x14 alternate glyphs (code byte and 14 rows, end 00h)
+    dw font_9x16_alternate          ; +18: 9x16 alternate glyphs (code byte and 16 rows, end 00h)
 
 id_string:
     db "Neetan HLE VGA BIOS stub", 0x00
@@ -58,22 +61,24 @@ functionality_table:
     db 0x3F                         ; save pointer function flags
     db 0x00                         ; reserved
 
-; ===========================================================================
-; CP437 fonts (see fonts/README.md for provenance and license)
-; ===========================================================================
+; CP437 fonts (see fonts/README.md)
 
 font_8x8:
-    incbin "fonts/font_8x8.bin"
+    incbin "vga_8x8.bin"
 
 font_8x14:
-    incbin "fonts/font_8x14.bin"
+    incbin "vga_8x14.bin"
 
 font_8x16:
-    incbin "fonts/font_8x16.bin"
+    incbin "vga_8x16.bin"
 
-; ===========================================================================
+font_9x14_alternate:
+    incbin "vga_9x14_alt.bin"
+
+font_9x16_alternate:
+    incbin "vga_9x16_alt.bin"
+
 ; Video parameter table and video save pointer table
-; ===========================================================================
 ; Both blocks are reserved here and filled from the Rust mode tables when the
 ; HLE ROM set is built, so the register values have a single source of truth.
 ; The save pointer table is the block BDA 40:A8 points at. Its first far

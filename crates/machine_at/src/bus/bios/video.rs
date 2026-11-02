@@ -21,8 +21,9 @@ use super::{
     super::AtBus,
     video_modes::{
         EXTENDED_CRTC, ModeFamily, ModeFont, VGA_BIOS_SEGMENT, VGA_METADATA_FONT_8X8_UPPER,
-        VGA_METADATA_FONT_8X16, VGA_METADATA_FUNCTIONALITY, VGA_METADATA_SAVE_POINTER_TABLE,
-        VgaModeRegisters, VideoModeEntry, mode_entry,
+        VGA_METADATA_FONT_8X16, VGA_METADATA_FONT_9X14_ALTERNATE, VGA_METADATA_FONT_9X16_ALTERNATE,
+        VGA_METADATA_FUNCTIONALITY, VGA_METADATA_SAVE_POINTER_TABLE, VgaModeRegisters,
+        VideoModeEntry, mode_entry,
     },
     video_palette::DAC_ENTRIES,
 };
@@ -80,6 +81,8 @@ const DCC_INDEX_DEFAULT: u8 = 0x0B;
 const TEXT_CURSOR_SHAPE: u16 = 0x0D0E;
 /// Blank text cell (space, gray on black) used for the regen clear.
 const TEXT_FILL: u16 = 0x0720;
+/// Sequencer clocking mode bit 0: 8 dot characters when set, 9 dot when clear.
+const SEQ_CLOCKING_8_DOT: u8 = 0x01;
 /// Display combination code of the active display: VGA with color monitor.
 const DCC_VGA_COLOR: u8 = 0x08;
 /// AH=1Bh video memory size code: 256 KiB or more.
@@ -326,34 +329,40 @@ impl<T: TraceSink> AtBus<T> {
         if offset == 0 {
             return;
         }
-        self.write_mem_dword(
-            BDA_SAVE_POINTER,
-            (u32::from(VGA_BIOS_SEGMENT) << 16) | u32::from(offset),
-        );
+        self.write_mem_dword(BDA_SAVE_POINTER, vga_segment_pointer(offset));
     }
 
     /// Points IVT 43h at the given ROM font and IVT 1Fh at the 8x8 upper
     /// half, both in the VGA BIOS segment.
     fn install_font_vectors(&mut self, font: ModeFont) {
-        let font_offset = self.vga_rom_metadata_word(font.metadata_offset());
-        self.write_mem_dword(
-            0x43 * 4,
-            (u32::from(VGA_BIOS_SEGMENT) << 16) | u32::from(font_offset),
-        );
-        let upper_offset = self.vga_rom_metadata_word(VGA_METADATA_FONT_8X8_UPPER);
-        self.write_mem_dword(
-            0x1F * 4,
-            (u32::from(VGA_BIOS_SEGMENT) << 16) | u32::from(upper_offset),
-        );
+        let font_pointer = self.rom_font_pointer(font);
+        self.write_mem_dword(0x43 * 4, font_pointer);
+        let upper_pointer = self.vga_rom_pointer(VGA_METADATA_FONT_8X8_UPPER);
+        self.write_mem_dword(0x1F * 4, upper_pointer);
     }
 
     /// Uploads the ROM 8x16 font into plane 2, the character generator the
-    /// text modes scan glyphs from.
+    /// text modes scan glyphs from. A mode with 9 dot characters (SEQ 01h
+    /// bit 0 clear) also gets the 9x16 alternate glyphs, as the ET4000 BIOS
+    /// does.
     fn upload_rom_font_to_plane_2(&mut self, registers: &VgaModeRegisters) {
         let font_offset = self.vga_rom_metadata_word(VGA_METADATA_FONT_8X16) as usize;
         let mut glyphs = vec![0u8; 256 * 16];
         for (index, byte) in glyphs.iter_mut().enumerate() {
             *byte = self.memory.vga_bios_byte(font_offset + index);
+        }
+        if registers.seq[1] & SEQ_CLOCKING_8_DOT == 0 {
+            let mut entry = self.vga_rom_metadata_word(VGA_METADATA_FONT_9X16_ALTERNATE) as usize;
+            loop {
+                let code = usize::from(self.memory.vga_bios_byte(entry));
+                if code == 0 {
+                    break;
+                }
+                for row in 0..16 {
+                    glyphs[code * 16 + row] = self.memory.vga_bios_byte(entry + 1 + row);
+                }
+                entry += 1 + 16;
+            }
         }
         self.write_plane_2_glyphs(0, 256, 16, &glyphs, registers);
     }
@@ -678,11 +687,8 @@ impl<T: TraceSink> AtBus<T> {
     /// AH=11h AL=22h/23h/24h: points IVT 43h at a ROM font and updates the
     /// BDA rows and height.
     fn int10h_set_int43h_rom_font(&mut self, cpu: &mut impl Cpu, font: ModeFont) {
-        let font_offset = self.vga_rom_metadata_word(font.metadata_offset());
-        self.write_mem_dword(
-            0x43 * 4,
-            (u32::from(VGA_BIOS_SEGMENT) << 16) | u32::from(font_offset),
-        );
+        let font_pointer = self.rom_font_pointer(font);
+        self.write_mem_dword(0x43 * 4, font_pointer);
         self.apply_graphics_font_rows(cpu, font.height() as u16);
     }
 
@@ -711,13 +717,12 @@ impl<T: TraceSink> AtBus<T> {
         let pointer = match cpu.bh() {
             0x00 => self.read_mem_dword(0x1F * 4),
             0x01 => self.read_mem_dword(0x43 * 4),
-            0x02 | 0x05 => self.rom_font_pointer(ModeFont::Font8x14),
+            0x02 => self.rom_font_pointer(ModeFont::Font8x14),
             0x03 => self.rom_font_pointer(ModeFont::Font8x8),
-            0x04 => {
-                let offset = self.vga_rom_metadata_word(VGA_METADATA_FONT_8X8_UPPER);
-                (u32::from(VGA_BIOS_SEGMENT) << 16) | u32::from(offset)
-            }
-            0x06 | 0x07 => self.rom_font_pointer(ModeFont::Font8x16),
+            0x04 => self.vga_rom_pointer(VGA_METADATA_FONT_8X8_UPPER),
+            0x05 => self.vga_rom_pointer(VGA_METADATA_FONT_9X14_ALTERNATE),
+            0x06 => self.rom_font_pointer(ModeFont::Font8x16),
+            0x07 => self.vga_rom_pointer(VGA_METADATA_FONT_9X16_ALTERNATE),
             _ => {
                 self.set_iret_cf(cpu, true);
                 return;
@@ -733,8 +738,13 @@ impl<T: TraceSink> AtBus<T> {
 
     /// Far pointer to a ROM font in the VGA BIOS segment.
     fn rom_font_pointer(&mut self, font: ModeFont) -> u32 {
-        let offset = self.vga_rom_metadata_word(font.metadata_offset());
-        (u32::from(VGA_BIOS_SEGMENT) << 16) | u32::from(offset)
+        self.vga_rom_pointer(font.metadata_offset())
+    }
+
+    /// Far pointer to the VGA BIOS table that a metadata word holds.
+    fn vga_rom_pointer(&mut self, metadata_offset: usize) -> u32 {
+        let offset = self.vga_rom_metadata_word(metadata_offset);
+        vga_segment_pointer(offset)
     }
 
     /// AH=12h: alternate select services, dispatched on BL.
@@ -973,4 +983,9 @@ impl<T: TraceSink> AtBus<T> {
 /// resolves to in real mode.
 fn far_pointer_address(pointer: u32) -> u32 {
     ((pointer >> 16) << 4).wrapping_add(pointer & 0xFFFF)
+}
+
+/// Far pointer (segment high, offset low) to an offset in the VGA BIOS segment.
+fn vga_segment_pointer(offset: u16) -> u32 {
+    (u32::from(VGA_BIOS_SEGMENT) << 16) | u32::from(offset)
 }

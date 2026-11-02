@@ -1,6 +1,11 @@
 target/
 .idea/
-utils/bios_at/fonts/*.bin
+utils/bios_at/vga_8x8.bin
+utils/bios_at/vga_8x14.bin
+utils/bios_at/vga_8x16.bin
+utils/bios_at/vga_9x14_alt.bin
+utils/bios_at/vga_9x16_alt.bin
+utils/bios_at/system_8x8.bin
 utils/bios_towns/icons.bin
 utils/bios_towns/font12.bin
 utils/dos_towns/msdos.sys
