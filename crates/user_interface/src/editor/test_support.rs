@@ -282,6 +282,7 @@ impl EditorRoot {
             executable_directory: None,
             resource_folder: None,
             pref_path: None,
+            default_root: self.root.clone(),
         }
     }
 }
@@ -329,6 +330,7 @@ impl SettingsRoot {
             executable_directory: None,
             resource_folder: None,
             pref_path: None,
+            default_root: self.root().to_path_buf(),
         };
         HostLayers::read(&request, &locations).expect("the host reads")
     }

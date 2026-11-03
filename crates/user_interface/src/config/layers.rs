@@ -1093,21 +1093,21 @@ mod tests {
         );
     }
 
-    /// Verifies that the relative paths of the pref path settings file and the default folders resolve against the current directory.
+    /// Verifies that the relative paths of the pref path settings file and the default folders resolve against the default root.
     #[test]
-    fn the_pref_path_settings_file_resolves_against_the_current_directory() {
+    fn the_pref_path_settings_file_resolves_against_the_default_root() {
         let test = TestLocations::new("pref_root");
-        let current = test.current().to_path_buf();
+        let root = test.locations.default_root.clone();
         write_file(
             &test.pref().join(SETTINGS_FILE_NAME),
             "gui-font = fonts/ui.ttf\n",
         );
         let host =
             HostLayers::read(&LaunchRequest::default(), &test.locations).expect("settings read");
-        assert_eq!(host.root(), current);
-        assert_eq!(host.config_folder(), current.join("config"));
-        assert_eq!(host.roms_folder(), current.join("roms"));
-        assert_eq!(host.gui_font(), current.join("fonts").join("ui.ttf"));
+        assert_eq!(host.root(), root);
+        assert_eq!(host.config_folder(), root.join("config"));
+        assert_eq!(host.roms_folder(), root.join("roms"));
+        assert_eq!(host.gui_font(), root.join("fonts").join("ui.ttf"));
     }
 
     /// Returns the default GUI font below the root and below the resource

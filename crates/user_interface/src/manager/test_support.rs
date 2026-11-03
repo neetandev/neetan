@@ -46,6 +46,7 @@ impl TestRoot {
             executable_directory: None,
             resource_folder: None,
             pref_path: None,
+            default_root: self.root.path().to_path_buf(),
         };
         Manager::new(ManagerStart {
             request: LaunchRequest::default(),

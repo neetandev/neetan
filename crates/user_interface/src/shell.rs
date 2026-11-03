@@ -539,6 +539,7 @@ mod tests {
             executable_directory: None,
             resource_folder: None,
             pref_path: None,
+            default_root: root.clone(),
         };
         let host = HostLayers::read(&LaunchRequest::default(), &locations).expect("settings read");
         drop(folder);

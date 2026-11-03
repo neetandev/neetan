@@ -425,6 +425,7 @@ mod tests {
             executable_directory: None,
             resource_folder: None,
             pref_path: None,
+            default_root: root.path().to_path_buf(),
         };
         let host = HostLayers::read(&LaunchRequest::default(), &locations).expect("host layers");
         let statuses = check_all_folders(&host);

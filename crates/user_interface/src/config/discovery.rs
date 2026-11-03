@@ -12,6 +12,10 @@ use machine_factory::config::settings::{Setting, ValueKind};
 use super::launch_error::LaunchError;
 use crate::texts::ENGLISH_TAG;
 
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+mod translocation;
+
 /// File name of the settings file.
 pub const SETTINGS_FILE_NAME: &str = "neetan.conf";
 
@@ -22,7 +26,8 @@ pub struct Locations {
     pub current_directory: PathBuf,
     /// The folder of the executable after following symbolic links to the
     /// executable file, when it is known. For an AppImage it is the folder
-    /// of the AppImage file.
+    /// of the AppImage file. For an application bundle it is the folder that
+    /// holds the bundle at the place where the user put it.
     pub executable_directory: Option<PathBuf>,
     /// The resource folder of the installation, when the folder of the
     /// running executable is known.
@@ -30,6 +35,9 @@ pub struct Locations {
     /// The SDL pref path, when SDL provides one. It holds the global
     /// settings file.
     pub pref_path: Option<PathBuf>,
+    /// The root folder of a launch whose settings file is neither in the
+    /// current directory nor beside the executable.
+    pub default_root: PathBuf,
 }
 
 impl Locations {
@@ -42,14 +50,28 @@ impl Locations {
             .ok()
             .and_then(|executable| executable.parent().map(Path::to_path_buf));
         let appimage = std::env::var_os(APPIMAGE_VARIABLE).map(PathBuf::from);
-        let executable_directory = launch_directory(appimage.as_deref(), running_directory.clone());
+        #[cfg(target_os = "macos")]
+        let original_bundle = translocation::original_location;
+        #[cfg(not(target_os = "macos"))]
+        let original_bundle = |_: &Path| None;
+        let executable_directory = launch_directory(
+            appimage.as_deref(),
+            running_directory.clone(),
+            original_bundle,
+        );
         let resource_folder = running_directory.as_deref().map(resource_folder);
         let pref_path = sdl3::filesystem::get_pref_path(crate::COMPANY_NAME, crate::GAME_NAME);
+        let default_root = default_root(
+            running_directory.as_deref(),
+            &current_directory,
+            pref_path.as_deref(),
+        );
         Ok(Self {
             current_directory,
             executable_directory,
             resource_folder,
             pref_path,
+            default_root,
         })
     }
 }
@@ -58,16 +80,69 @@ impl Locations {
 const APPIMAGE_VARIABLE: &str = "APPIMAGE";
 
 /// Returns the folder of the file that the user started: the folder of the
-/// AppImage file `appimage` when it names a file, else `running_directory`.
+/// AppImage file `appimage` when it names a file, the folder that holds the
+/// application bundle of `running_directory` when it runs from one, else
+/// `running_directory`.
+///
+/// `original_bundle` returns the place where the user put a bundle that macOS
+/// runs from a translocated copy.
 fn launch_directory(
     appimage: Option<&Path>,
     running_directory: Option<PathBuf>,
+    original_bundle: impl FnOnce(&Path) -> Option<PathBuf>,
 ) -> Option<PathBuf> {
-    appimage
+    if let Some(folder) = appimage
         .filter(|file| file.is_file())
         .and_then(|file| std::fs::canonicalize(file).ok())
         .and_then(|file| file.parent().map(Path::to_path_buf))
-        .or(running_directory)
+    {
+        return Some(folder);
+    }
+    let running_directory = running_directory?;
+    let Some(bundle) = application_bundle(&running_directory) else {
+        return Some(running_directory);
+    };
+    let bundle = original_bundle(bundle).unwrap_or_else(|| bundle.to_path_buf());
+    bundle
+        .parent()
+        .map(Path::to_path_buf)
+        .or(Some(running_directory))
+}
+
+/// The file extension of an application bundle.
+const BUNDLE_EXTENSION: &str = "app";
+
+/// Returns the application bundle whose `Contents/MacOS` folder is
+/// `running_directory`.
+fn application_bundle(running_directory: &Path) -> Option<&Path> {
+    if running_directory.file_name()? != "MacOS" {
+        return None;
+    }
+    let contents = running_directory.parent()?;
+    if contents.file_name()? != "Contents" {
+        return None;
+    }
+    let bundle = contents.parent()?;
+    bundle
+        .extension()?
+        .eq_ignore_ascii_case(BUNDLE_EXTENSION)
+        .then_some(bundle)
+}
+
+/// Returns the default root folder: the SDL pref path `pref_path` for an
+/// executable that runs from an application bundle, else
+/// `current_directory`. The Finder starts a bundle with the root of the file
+/// system as its current directory.
+fn default_root(
+    running_directory: Option<&Path>,
+    current_directory: &Path,
+    pref_path: Option<&Path>,
+) -> PathBuf {
+    running_directory
+        .and_then(application_bundle)
+        .and(pref_path)
+        .unwrap_or(current_directory)
+        .to_path_buf()
 }
 
 /// The step of the settings discovery that found the settings file.
@@ -92,7 +167,8 @@ pub struct SettingsLocation {
     pub file: Option<PathBuf>,
     /// The root folder. It is the folder of a settings file from `--settings`,
     /// the current directory or the folder of the executable. For the settings
-    /// file of the SDL pref path and without a file it is the current directory.
+    /// file of the SDL pref path and without a file it is the default root of
+    /// the locations.
     pub root: PathBuf,
     /// The step of the discovery that found the file.
     pub source: SettingsSource,
@@ -115,7 +191,7 @@ impl SettingsLocation {
 /// the current directory, `neetan.conf` beside the executable and `neetan.conf`
 /// in the SDL pref path. An explicit file must exist. The root is the folder of
 /// the settings file. For the settings file of the SDL pref path and without a
-/// match the root is the current directory.
+/// match the root is the default root of the locations.
 pub fn discover_settings(
     explicit: Option<&Path>,
     locations: &Locations,
@@ -166,7 +242,7 @@ pub fn discover_settings(
     };
     Ok(SettingsLocation {
         file,
-        root: locations.current_directory.clone(),
+        root: locations.default_root.clone(),
         source,
     })
 }
@@ -347,14 +423,88 @@ mod tests {
         std::fs::write(&appimage, "").expect("file is written");
         let running = Some(base.join("mount").join("usr").join("bin"));
         assert_eq!(
-            launch_directory(Some(&appimage), running.clone()),
+            launch_directory(Some(&appimage), running.clone(), |_| None),
             Some(portable.clone())
         );
         assert_eq!(
-            launch_directory(Some(&portable.join("missing.AppImage")), running.clone()),
+            launch_directory(
+                Some(&portable.join("missing.AppImage")),
+                running.clone(),
+                |_| None
+            ),
             running
         );
-        assert_eq!(launch_directory(None, running.clone()), running);
+        assert_eq!(launch_directory(None, running.clone(), |_| None), running);
+    }
+
+    /// Verifies that the executable folder of an application bundle is the folder that holds the bundle.
+    #[test]
+    fn the_executable_folder_of_an_application_bundle_is_the_folder_of_the_bundle() {
+        let portable = PathBuf::from("/games/neetan");
+        let running = portable.join("Neetan.app").join("Contents").join("MacOS");
+        assert_eq!(
+            launch_directory(None, Some(running), |_| None),
+            Some(portable)
+        );
+
+        for running in [
+            PathBuf::from("/games/Neetan.app/MacOS"),
+            PathBuf::from("/games/Neetan/Contents/MacOS"),
+            PathBuf::from("/games/Neetan.app/Contents/Resources"),
+            PathBuf::from("/Contents/MacOS"),
+        ] {
+            assert_eq!(
+                launch_directory(None, Some(running.clone()), |_| None),
+                Some(running)
+            );
+        }
+    }
+
+    /// Verifies that a translocated application bundle gives the folder of its original location.
+    #[test]
+    fn a_translocated_bundle_gives_the_folder_of_its_original_location() {
+        let translocated = PathBuf::from("/private/var/folders/AppTranslocation/1234/d/Neetan.app");
+        let original = PathBuf::from("/Users/user/Downloads/neetan/Neetan.app");
+        let running = translocated.join("Contents").join("MacOS");
+        let found = launch_directory(None, Some(running), |bundle| {
+            assert_eq!(bundle, translocated);
+            Some(original.clone())
+        });
+        assert_eq!(found, Some(PathBuf::from("/Users/user/Downloads/neetan")));
+    }
+
+    /// Verifies that the default root of an application bundle is the pref path and the current directory otherwise.
+    #[test]
+    fn an_application_bundle_takes_the_pref_path_as_the_default_root() {
+        let current = Path::new("/");
+        let pref = Path::new("/Users/user/Library/Application Support/Neetan");
+        let bundle = Path::new("/Applications/Neetan.app/Contents/MacOS");
+        let plain = Path::new("/usr/local/bin");
+        assert_eq!(default_root(Some(bundle), current, Some(pref)), pref);
+        assert_eq!(default_root(Some(bundle), current, None), current);
+        assert_eq!(default_root(Some(plain), current, Some(pref)), current);
+        assert_eq!(default_root(None, current, Some(pref)), current);
+    }
+
+    /// Verifies that the settings file of the pref path and a missing settings file take the default root.
+    #[test]
+    fn the_pref_path_and_a_missing_settings_file_take_the_default_root() {
+        let test = TestLocations::new("discovery_default_root_test");
+        let pref = test.pref().to_path_buf();
+        let locations = Locations {
+            default_root: pref.clone(),
+            ..test.locations.clone()
+        };
+
+        let found = discover_settings(None, &locations).expect("discovery succeeds");
+        assert_eq!(found.source, SettingsSource::NotFound);
+        assert_eq!(found.root, pref);
+        assert_eq!(found.writable_file(), pref.join(SETTINGS_FILE_NAME));
+
+        std::fs::write(pref.join(SETTINGS_FILE_NAME), "").expect("file is written");
+        let found = discover_settings(None, &locations).expect("discovery succeeds");
+        assert_eq!(found.source, SettingsSource::PrefPath);
+        assert_eq!(found.root, pref);
     }
 
     /// Verifies that the resource folder follows a symbolic link to the folder of the executable.
@@ -388,18 +538,18 @@ mod tests {
         assert_eq!(folder, PathBuf::from("/nonexistent/neetan/usr/bin"));
     }
 
-    /// Verifies that the root is the current directory without a settings file.
+    /// Verifies that the root is the default root without a settings file.
     #[test]
-    fn a_missing_settings_file_gives_the_current_directory_as_the_root() {
+    fn a_missing_settings_file_gives_the_default_root_as_the_root() {
         let test = TestLocations::new("discovery_missing_test");
         let locations = &test.locations;
         let found = discover_settings(None, locations).expect("discovery succeeds");
         assert_eq!(found.file, None);
-        assert_eq!(found.root, locations.current_directory);
+        assert_eq!(found.root, locations.default_root);
         assert_eq!(found.source, SettingsSource::NotFound);
         assert_eq!(
             found.writable_file(),
-            locations.current_directory.join(SETTINGS_FILE_NAME)
+            locations.default_root.join(SETTINGS_FILE_NAME)
         );
 
         let without_pref = Locations {
@@ -408,12 +558,12 @@ mod tests {
         };
         let found = discover_settings(None, &without_pref).expect("discovery succeeds");
         assert_eq!(found.file, None);
-        assert_eq!(found.root, locations.current_directory);
+        assert_eq!(found.root, locations.default_root);
     }
 
-    /// Verifies that the settings file of the pref path gives the current directory as the root.
+    /// Verifies that the settings file of the pref path gives the default root as the root.
     #[test]
-    fn the_pref_path_settings_file_gives_the_current_directory_as_the_root() {
+    fn the_pref_path_settings_file_gives_the_default_root_as_the_root() {
         let test = TestLocations::new("discovery_pref_test");
         let locations = &test.locations;
         let pref = locations
@@ -423,7 +573,7 @@ mod tests {
         std::fs::write(pref.join(SETTINGS_FILE_NAME), "").expect("file is written");
         let found = discover_settings(None, locations).expect("discovery succeeds");
         assert_eq!(found.file, Some(pref.join(SETTINGS_FILE_NAME)));
-        assert_eq!(found.root, locations.current_directory);
+        assert_eq!(found.root, locations.default_root);
         assert_eq!(found.source, SettingsSource::PrefPath);
         assert_eq!(found.writable_file(), pref.join(SETTINGS_FILE_NAME));
     }

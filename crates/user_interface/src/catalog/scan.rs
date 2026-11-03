@@ -327,6 +327,7 @@ mod tests {
                 executable_directory: None,
                 resource_folder: None,
                 pref_path: None,
+                default_root: self.0.path().to_path_buf(),
             };
             let request = LaunchRequest {
                 settings: Some(file),
@@ -720,6 +721,7 @@ mod tests {
             executable_directory: None,
             resource_folder: None,
             pref_path: None,
+            default_root: folder.0.path().to_path_buf(),
         };
         let request = LaunchRequest {
             settings: Some(folder.0.path().join(SETTINGS_FILE_NAME)),
