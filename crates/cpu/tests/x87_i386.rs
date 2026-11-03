@@ -2948,3 +2948,591 @@ fn fprem1_snan() {
     assert!(r.st(0).is_nan());
     assert!(r.ie());
 }
+
+/// Runs `steps` instructions of `code` at 1000:0000 with the x87 `stack` and the bytes
+/// `memory` at DS:0000 (linear 20000h), after `configure` adjusted the initial state.
+fn run_x87_program(
+    code: &[u8],
+    stack: &[Fp80],
+    memory: &[u8],
+    steps: usize,
+    configure: impl FnOnce(&mut I386State, &mut TestBus),
+) -> (I386<{ CPU_MODEL_486_DX }>, TestBus) {
+    let mut cpu = I386::<{ CPU_MODEL_486_DX }>::new();
+    let mut bus = TestBus::new();
+    place_code(&mut bus, 0x1000, 0x0000, code);
+    bus.ram[0x20000..0x20000 + memory.len()].copy_from_slice(memory);
+    let mut state = build_state(stack, CW_NEAREST_EXT);
+    configure(&mut state, &mut bus);
+    cpu.load_state(&state);
+    for _ in 0..steps {
+        cpu.step(&mut bus);
+    }
+    (cpu, bus)
+}
+
+fn read_mem_u16(bus: &TestBus, offset: usize) -> u16 {
+    read_mem_i16(bus, offset) as u16
+}
+
+/// Points the real mode interrupt vector `vector` at `segment:0000`.
+fn set_interrupt_vector(bus: &mut TestBus, vector: usize, segment: u16) {
+    bus.ram[vector * 4..vector * 4 + 4].copy_from_slice(&[
+        0,
+        0,
+        segment as u8,
+        (segment >> 8) as u8,
+    ]);
+}
+
+const THREE_F64: [u8; 8] = 3.0f64.to_le_bytes();
+
+#[test]
+fn fdiv_records_the_data_pointer_as_offset_and_selector() {
+    let mut memory = [0u8; 0x20];
+    memory[0x10..0x18].copy_from_slice(&THREE_F64);
+    let (cpu, _) = run_x87_program(
+        &[0xDC, 0x36, 0x10, 0x00],
+        &[Fp80::ONE],
+        &memory,
+        1,
+        |_, _| {},
+    );
+    assert_eq!(cpu.state.fpu.fip_offset, 0x0000);
+    assert_eq!(cpu.state.fpu.fip_selector, 0x1000);
+    assert_eq!(cpu.state.fpu.fdp_offset, 0x0010);
+    assert_eq!(cpu.state.fpu.fdp_selector, 0x2000);
+    assert_eq!(cpu.state.fpu.fpu_opcode, 0x0436);
+}
+
+#[test]
+fn fdiv_sets_c1_when_the_quotient_rounds_up() {
+    let mut memory = [0u8; 0x20];
+    memory[0x10..0x18].copy_from_slice(&THREE_F64);
+    let (cpu, _) = run_x87_program(
+        &[0xDC, 0x36, 0x10, 0x00],
+        &[Fp80::ONE],
+        &memory,
+        1,
+        |_, _| {},
+    );
+    let result = extract_result(&cpu);
+    assert_eq!(result.st(0), Fp80::from_bits(0x3FFD, 0xAAAA_AAAA_AAAA_AAAB));
+    assert!(result.pe());
+    assert!(result.c1());
+}
+
+#[test]
+fn fnstenv_real_mode_16bit_stores_linear_pointers() {
+    let mut memory = [0u8; 0x60];
+    memory[0x10..0x18].copy_from_slice(&THREE_F64);
+    let code = [0xDC, 0x36, 0x10, 0x00, 0xD9, 0x36, 0x40, 0x00];
+    let (_, bus) = run_x87_program(&code, &[Fp80::ONE], &memory, 2, |_, _| {});
+    assert_eq!(read_mem_u16(&bus, 0x40), 0x037F);
+    assert_eq!(read_mem_u16(&bus, 0x42), 0x3A20);
+    assert_eq!(read_mem_u16(&bus, 0x44), 0x3FFF);
+    assert_eq!(read_mem_u16(&bus, 0x46), 0x0000);
+    assert_eq!(read_mem_u16(&bus, 0x48), 0x1436);
+    assert_eq!(read_mem_u16(&bus, 0x4A), 0x0010);
+    assert_eq!(read_mem_u16(&bus, 0x4C), 0x2000);
+}
+
+#[test]
+fn fnstenv_real_mode_32bit_stores_linear_pointers() {
+    let mut memory = [0u8; 0x60];
+    memory[0x10..0x18].copy_from_slice(&THREE_F64);
+    let code = [0xDC, 0x36, 0x10, 0x00, 0x66, 0xD9, 0x36, 0x40, 0x00];
+    let (_, bus) = run_x87_program(&code, &[Fp80::ONE], &memory, 2, |_, _| {});
+    assert_eq!(read_mem_u32(&bus, 0x40), 0xFFFF_037F);
+    assert_eq!(read_mem_u32(&bus, 0x44), 0xFFFF_3A20);
+    assert_eq!(read_mem_u32(&bus, 0x48), 0xFFFF_3FFF);
+    assert_eq!(read_mem_u32(&bus, 0x4C), 0xFFFF_0000);
+    assert_eq!(read_mem_u32(&bus, 0x50), 0x0000_1436);
+    assert_eq!(read_mem_u32(&bus, 0x54), 0xFFFF_0010);
+    assert_eq!(read_mem_u32(&bus, 0x58), 0x0000_2000);
+}
+
+#[test]
+fn fldenv_real_mode_loads_linear_pointers() {
+    let mut memory = [0u8; 0x20];
+    let image: [u16; 7] = [0x027F, 0x3000, 0x0FFF, 0x2345, 0x1123, 0x6789, 0x5000];
+    for (index, word) in image.iter().enumerate() {
+        memory[index * 2..index * 2 + 2].copy_from_slice(&word.to_le_bytes());
+    }
+    let (cpu, _) = run_x87_program(&[0xD9, 0x26, 0x00, 0x00], &[], &memory, 1, |_, _| {});
+    assert_eq!(cpu.state.fpu.control_word, 0x027F);
+    assert_eq!(cpu.state.fpu.status_word, 0x3000);
+    assert_eq!(cpu.state.fpu.tag_word, 0x0FFF);
+    assert_eq!(cpu.state.fpu.fip_offset, 0x0001_2345);
+    assert_eq!(cpu.state.fpu.fip_selector, 0);
+    assert_eq!(cpu.state.fpu.fpu_opcode, 0x0123);
+    assert_eq!(cpu.state.fpu.fdp_offset, 0x0005_6789);
+    assert_eq!(cpu.state.fpu.fdp_selector, 0);
+}
+
+#[test]
+fn fnsave_stores_registers_in_stack_order() {
+    let (_, bus) = run_x87_program(&[0xDD, 0x36, 0x40, 0x00], &[TWO, THREE], &[], 1, |_, _| {});
+    assert_eq!(read_mem_u16(&bus, 0x42), 0x3000);
+    assert_eq!(read_mem_tbyte(&bus, 0x40 + 14), TWO.to_le_bytes());
+    assert_eq!(read_mem_tbyte(&bus, 0x40 + 24), THREE.to_le_bytes());
+}
+
+#[test]
+fn frstor_loads_registers_in_stack_order_of_the_loaded_top() {
+    let mut memory = [0u8; 94];
+    let environment: [u16; 7] = [0x037F, 0x3000, 0x0FFF, 0, 0, 0, 0];
+    for (index, word) in environment.iter().enumerate() {
+        memory[index * 2..index * 2 + 2].copy_from_slice(&word.to_le_bytes());
+    }
+    memory[14..24].copy_from_slice(&FIVE.to_le_bytes());
+    memory[24..34].copy_from_slice(&SIX.to_le_bytes());
+    let (cpu, _) = run_x87_program(&[0xDD, 0x26, 0x00, 0x00], &[], &memory, 1, |_, _| {});
+    assert_eq!(cpu.state.fpu.registers[6], FIVE);
+    assert_eq!(cpu.state.fpu.registers[7], SIX);
+}
+
+/// Sets a pending unmasked invalid operation exception with CR0.NE=1.
+fn pend_invalid_operation(state: &mut I386State, bus: &mut TestBus) {
+    state.cr0 |= 0x20;
+    state.fpu.control_word = 0x037E;
+    state.fpu.status_word |= 0x8081;
+    set_interrupt_vector(bus, 13, 0x6000);
+    set_interrupt_vector(bus, 16, 0x5000);
+}
+
+#[test]
+fn fnclex_runs_with_a_pending_unmasked_exception() {
+    let (cpu, _) = run_x87_program(
+        &[0xDB, 0xE2],
+        &[ONE_AND_HALF],
+        &[],
+        1,
+        pend_invalid_operation,
+    );
+    assert_eq!(cpu.state.fpu.status_word & 0x80FF, 0);
+    assert_eq!(common::Cpu::cs(&cpu), 0x1000);
+    assert_eq!(common::Cpu::ip(&cpu), 0x0002);
+}
+
+#[test]
+fn fnstsw_ax_runs_with_a_pending_unmasked_exception() {
+    let (cpu, _) = run_x87_program(
+        &[0xDF, 0xE0],
+        &[ONE_AND_HALF],
+        &[],
+        1,
+        pend_invalid_operation,
+    );
+    assert_eq!(cpu.state.eax() as u16, 0xB881);
+    assert_eq!(common::Cpu::cs(&cpu), 0x1000);
+    assert_eq!(common::Cpu::ip(&cpu), 0x0002);
+}
+
+#[test]
+fn fadd_with_a_pending_unmasked_exception_raises_math_fault() {
+    let (cpu, _) = run_x87_program(
+        &[0xD8, 0xC1],
+        &[ONE_AND_HALF, TWO],
+        &[],
+        1,
+        pend_invalid_operation,
+    );
+    assert_eq!(common::Cpu::cs(&cpu), 0x5000);
+}
+
+#[test]
+fn code_fetch_fault_of_the_displacement_precedes_the_pending_x87_exception() {
+    let (cpu, _) = run_x87_program(&[], &[ONE_AND_HALF], &[], 1, |state, bus| {
+        pend_invalid_operation(state, bus);
+        state.set_eip(0xFFFD);
+        place_code(bus, 0x1000, 0xFFFD, &[0xD8, 0x06, 0x10]);
+    });
+    assert_eq!(common::Cpu::cs(&cpu), 0x6000);
+}
+
+/// Runs `steps` instructions of `code` at linear 4000h with flat protected mode segments,
+/// a 32-bit code segment when `code_32` is set, CS 0008h and data selectors 0010h.
+fn run_x87_protected_program(
+    code: &[u8],
+    regions: &[(usize, &[u8])],
+    steps: usize,
+    code_32: bool,
+) -> (I386<{ CPU_MODEL_486_DX }>, TestBus) {
+    let mut cpu = I386::<{ CPU_MODEL_486_DX }>::new();
+    let mut bus = TestBus::new();
+    bus.ram[0x4000..0x4000 + code.len()].copy_from_slice(code);
+    for (start, bytes) in regions {
+        bus.ram[*start..*start + bytes.len()].copy_from_slice(bytes);
+    }
+    let mut state = I386State {
+        cr0: 0x0000_0031,
+        ..I386State::default()
+    };
+    for segment in 0..6 {
+        let is_code = segment == 1;
+        state.sregs[segment] = if is_code { 0x08 } else { 0x10 };
+        state.seg_bases[segment] = 0;
+        state.seg_limits[segment] = 0xFFFF_FFFF;
+        state.seg_rights[segment] = if is_code { 0x9B } else { 0x93 };
+        state.seg_granularity[segment] = if !is_code || code_32 { 0xCF } else { 0x8F };
+        state.seg_valid[segment] = true;
+    }
+    state.set_esp(0x8000);
+    state.set_eip(0x4000);
+    state.set_eflags(0x0000_0002);
+    cpu.load_state(&state);
+    for _ in 0..steps {
+        cpu.step(&mut bus);
+    }
+    (cpu, bus)
+}
+
+fn read_linear_u16(bus: &TestBus, address: usize) -> u16 {
+    u16::from_le_bytes([bus.ram[address], bus.ram[address + 1]])
+}
+
+fn read_linear_u32(bus: &TestBus, address: usize) -> u32 {
+    u32::from_le_bytes(bus.ram[address..address + 4].try_into().unwrap())
+}
+
+fn read_linear_tbyte(bus: &TestBus, address: usize) -> [u8; 10] {
+    bus.ram[address..address + 10].try_into().unwrap()
+}
+
+/// FNINIT, FLD1, FDIV qword [5008h] in a 32-bit code segment.
+const PROTECTED_FDIV_32: [u8; 10] = [0xDB, 0xE3, 0xD9, 0xE8, 0xDC, 0x35, 0x08, 0x50, 0x00, 0x00];
+
+#[test]
+fn fnstenv_protected_mode_32bit_image() {
+    let mut code = PROTECTED_FDIV_32.to_vec();
+    code.extend_from_slice(&[0xD9, 0x35, 0x00, 0x51, 0x00, 0x00]);
+    let (_, bus) = run_x87_protected_program(&code, &[(0x5008, &THREE_F64)], 4, true);
+    let image: Vec<u32> = (0..7)
+        .map(|index| read_linear_u32(&bus, 0x5100 + index * 4))
+        .collect();
+    assert_eq!(
+        image,
+        [
+            0xFFFF_037F,
+            0xFFFF_3A20,
+            0xFFFF_3FFF,
+            0x0000_4004,
+            0x0435_0008,
+            0x0000_5008,
+            0xFFFF_0010
+        ]
+    );
+}
+
+#[test]
+fn fnstenv_protected_mode_16bit_image_in_a_32bit_code_segment() {
+    let mut code = PROTECTED_FDIV_32.to_vec();
+    code.extend_from_slice(&[0x66, 0xD9, 0x35, 0x20, 0x51, 0x00, 0x00]);
+    let (_, bus) = run_x87_protected_program(&code, &[(0x5008, &THREE_F64)], 4, true);
+    let image: Vec<u16> = (0..7)
+        .map(|index| read_linear_u16(&bus, 0x5120 + index * 2))
+        .collect();
+    assert_eq!(
+        image,
+        [0x037F, 0x3A20, 0x3FFF, 0x4004, 0x0008, 0x5008, 0x0010]
+    );
+}
+
+#[test]
+fn fnstenv_protected_mode_16bit_image_in_a_16bit_code_segment() {
+    let code = [
+        0xDB, 0xE3, 0xD9, 0xE8, 0xDC, 0x36, 0x08, 0x50, 0xD9, 0x36, 0x20, 0x51,
+    ];
+    let (_, bus) = run_x87_protected_program(&code, &[(0x5008, &THREE_F64)], 4, false);
+    let image: Vec<u16> = (0..7)
+        .map(|index| read_linear_u16(&bus, 0x5120 + index * 2))
+        .collect();
+    assert_eq!(
+        image,
+        [0x037F, 0x3A20, 0x3FFF, 0x4004, 0x0008, 0x5008, 0x0010]
+    );
+}
+
+#[test]
+fn fnsave_in_a_32bit_code_segment_stores_the_108_byte_image() {
+    let mut code = PROTECTED_FDIV_32.to_vec();
+    code.extend_from_slice(&[0xDD, 0x35, 0x00, 0x53, 0x00, 0x00]);
+    let (cpu, bus) = run_x87_protected_program(&code, &[(0x5008, &THREE_F64)], 4, true);
+    assert_eq!(read_linear_u32(&bus, 0x5300 + 12), 0x0000_4004);
+    assert_eq!(read_linear_u32(&bus, 0x5300 + 24), 0xFFFF_0010);
+    assert_eq!(
+        read_linear_tbyte(&bus, 0x5300 + 28),
+        Fp80::from_bits(0x3FFD, 0xAAAA_AAAA_AAAA_AAAB).to_le_bytes()
+    );
+    assert_eq!(cpu.state.fpu.tag_word, 0xFFFF);
+}
+
+#[test]
+fn fldenv_protected_mode_32bit_image() {
+    let image: Vec<u8> = [
+        0xFFFF_037Fu32,
+        0xFFFF_0000,
+        0xFFFF_FFFF,
+        0x0040_1234,
+        0x0123_0008,
+        0x0040_5678,
+        0xFFFF_0010,
+    ]
+    .iter()
+    .flat_map(|dword| dword.to_le_bytes())
+    .collect();
+    let code = [0xD9, 0x25, 0x00, 0x52, 0x00, 0x00];
+    let (cpu, _) = run_x87_protected_program(&code, &[(0x5200, &image)], 1, true);
+    assert_eq!(cpu.state.fpu.fip_offset, 0x0040_1234);
+    assert_eq!(cpu.state.fpu.fip_selector, 0x0008);
+    assert_eq!(cpu.state.fpu.fpu_opcode, 0x0123);
+    assert_eq!(cpu.state.fpu.fdp_offset, 0x0040_5678);
+    assert_eq!(cpu.state.fpu.fdp_selector, 0x0010);
+}
+
+#[test]
+fn fldenv_protected_mode_16bit_image() {
+    let image: Vec<u8> = [0x037Fu16, 0x0000, 0xFFFF, 0x1234, 0x0008, 0x5678, 0x0010]
+        .iter()
+        .flat_map(|word| word.to_le_bytes())
+        .collect();
+    let code = [0x66, 0xD9, 0x25, 0x40, 0x52, 0x00, 0x00];
+    let (cpu, _) = run_x87_protected_program(&code, &[(0x5240, &image)], 1, true);
+    assert_eq!(cpu.state.fpu.fip_offset, 0x1234);
+    assert_eq!(cpu.state.fpu.fip_selector, 0x0008);
+    assert_eq!(cpu.state.fpu.fpu_opcode, 0);
+    assert_eq!(cpu.state.fpu.fdp_offset, 0x5678);
+    assert_eq!(cpu.state.fpu.fdp_selector, 0x0010);
+}
+
+#[test]
+fn fnstenv_in_virtual_8086_mode_stores_the_real_mode_image() {
+    let mut cpu = I386::<{ CPU_MODEL_486_DX }>::new();
+    let mut bus = TestBus::new();
+    let code = [
+        0xDB, 0xE3, 0xD9, 0xE8, 0xDC, 0x36, 0x08, 0x04, 0xD9, 0x36, 0x20, 0x04,
+    ];
+    bus.ram[0x0100..0x0100 + code.len()].copy_from_slice(&code);
+    bus.ram[0x0608..0x0610].copy_from_slice(&THREE_F64);
+    let mut state = I386State {
+        cr0: 0x0000_0031,
+        ..I386State::default()
+    };
+    let selectors = [0x0020u16, 0x0010, 0x0030, 0x0020, 0x0020, 0x0020];
+    for (segment, selector) in selectors.into_iter().enumerate() {
+        state.sregs[segment] = selector;
+        state.seg_bases[segment] = u32::from(selector) << 4;
+        state.seg_limits[segment] = 0xFFFF;
+        state.seg_rights[segment] = 0xF3;
+        state.seg_granularity[segment] = 0;
+        state.seg_valid[segment] = true;
+    }
+    state.stored_cpl = 3;
+    state.set_esp(0x0800);
+    state.set_eip(0);
+    state.set_eflags(0x0002_3002);
+    cpu.load_state(&state);
+    for _ in 0..4 {
+        cpu.step(&mut bus);
+    }
+    let image: Vec<u16> = (0..7)
+        .map(|index| read_linear_u16(&bus, 0x620 + index * 2))
+        .collect();
+    assert_eq!(
+        image,
+        [0x037F, 0x3A20, 0x3FFF, 0x0104, 0x0436, 0x0608, 0x0000]
+    );
+}
+
+#[test]
+fn fnstenv_derives_the_tags_of_nonempty_registers_from_their_contents() {
+    let (_, bus) = run_x87_program(
+        &[0xD9, 0x36, 0x40, 0x00],
+        &[Fp80::ZERO],
+        &[],
+        1,
+        |state, _| {
+            state.fpu.tag_word = 0x3FFF;
+        },
+    );
+    assert_eq!(read_mem_u16(&bus, 0x44), 0x7FFF);
+}
+
+#[test]
+fn legacy_no_op_forms_run_with_a_pending_unmasked_exception() {
+    for modrm in [0xE0, 0xE1, 0xE4] {
+        let (cpu, _) = run_x87_program(
+            &[0xDB, modrm],
+            &[ONE_AND_HALF],
+            &[],
+            1,
+            pend_invalid_operation,
+        );
+        assert_eq!(common::Cpu::cs(&cpu), 0x1000, "DB {modrm:02X}");
+        assert_eq!(common::Cpu::ip(&cpu), 0x0002, "DB {modrm:02X}");
+        assert_eq!(cpu.state.fpu.status_word & 0x8081, 0x8081, "DB {modrm:02X}");
+    }
+}
+
+#[test]
+fn control_stores_and_fninit_run_with_a_pending_unmasked_exception() {
+    let programs: [&[u8]; 4] = [
+        &[0xD9, 0x36, 0x40, 0x00],
+        &[0xDD, 0x36, 0x40, 0x00],
+        &[0xD9, 0x3E, 0x40, 0x00],
+        &[0xDB, 0xE3],
+    ];
+    for program in programs {
+        let (cpu, bus) = run_x87_program(program, &[ONE_AND_HALF], &[], 1, pend_invalid_operation);
+        assert_eq!(common::Cpu::cs(&cpu), 0x1000, "{program:02X?}");
+        assert_eq!(
+            common::Cpu::ip(&cpu),
+            program.len() as u16,
+            "{program:02X?}"
+        );
+        if program[0] != 0xDB {
+            assert_eq!(read_mem_u16(&bus, 0x40), 0x037E, "{program:02X?}");
+        }
+    }
+}
+
+/// FDIV qword [0010h] with 3.0 there, which rounds up and sets C1.
+const FDIV_THREE: [u8; 4] = [0xDC, 0x36, 0x10, 0x00];
+
+/// Runs FDIV with a rounded-up quotient followed by `next` and returns the final state.
+fn run_after_rounded_up_fdiv(next: &[u8], extra_stack: &[Fp80]) -> X87Result {
+    let mut memory = [0u8; 0x20];
+    memory[0x10..0x18].copy_from_slice(&THREE_F64);
+    memory[0x18..0x1A].copy_from_slice(&7u16.to_le_bytes());
+    let mut code = FDIV_THREE.to_vec();
+    code.extend_from_slice(next);
+    let mut stack = vec![Fp80::ONE];
+    stack.extend_from_slice(extra_stack);
+    let (cpu, _) = run_x87_program(&code, &stack, &memory, 2, |_, _| {});
+    extract_result(&cpu)
+}
+
+#[test]
+fn loads_and_register_stores_clear_c1() {
+    let programs: [&[u8]; 8] = [
+        &[0xD9, 0xE8],
+        &[0xD9, 0xEB],
+        &[0xDF, 0x06, 0x18, 0x00],
+        &[0xD9, 0xC0],
+        &[0xDD, 0xD1],
+        &[0xDB, 0x3E, 0x00, 0x01],
+        &[0xDB, 0x2E, 0x00, 0x01],
+        &[0xD9, 0xEE],
+    ];
+    for program in programs {
+        let result = run_after_rounded_up_fdiv(program, &[TWO]);
+        assert!(!result.c1(), "{program:02X?}");
+    }
+    let result = run_after_rounded_up_fdiv(&[], &[]);
+    assert!(result.c1());
+}
+
+#[test]
+fn exact_tiny_result_raises_unmasked_underflow() {
+    let half = 0.5f64.to_le_bytes();
+    let (cpu, _) = run_x87_program(
+        &[0xDC, 0x0E, 0x00, 0x00],
+        &[Fp80::from_bits(0x0001, 0x8000_0000_0000_0000)],
+        &half,
+        1,
+        |state, _| state.fpu.control_word = 0x036F,
+    );
+    let result = extract_result(&cpu);
+    assert!(result.ue());
+    assert!(!result.pe());
+    assert_eq!(result.status_word & 0x8080, 0x8080);
+}
+
+#[test]
+fn exact_tiny_result_raises_no_masked_underflow() {
+    let half = 0.5f64.to_le_bytes();
+    let (cpu, _) = run_x87_program(
+        &[0xDC, 0x0E, 0x00, 0x00],
+        &[Fp80::from_bits(0x0001, 0x8000_0000_0000_0000)],
+        &half,
+        1,
+        |_, _| {},
+    );
+    let result = extract_result(&cpu);
+    assert!(!result.ue());
+    assert_eq!(result.st(0), Fp80::from_bits(0x0000, 0x4000_0000_0000_0000));
+}
+
+#[test]
+fn faulting_fild_keeps_c1() {
+    let mut memory = [0u8; 0x20];
+    memory[0x10..0x18].copy_from_slice(&THREE_F64);
+    let mut code = FDIV_THREE.to_vec();
+    code.extend_from_slice(&[0xDF, 0x06, 0xFF, 0xFF]);
+    let (cpu, _) = run_x87_program(&code, &[Fp80::ONE], &memory, 2, |_, bus| {
+        set_interrupt_vector(bus, 13, 0x6000);
+    });
+    let result = extract_result(&cpu);
+    assert_eq!(common::Cpu::cs(&cpu), 0x6000);
+    assert!(result.c1());
+    assert_eq!(result.top, 7);
+}
+
+#[test]
+fn faulting_fstp_m80_keeps_c1_and_the_stack() {
+    let mut cpu = I386::<{ CPU_MODEL_486_DX }>::new();
+    let mut bus = TestBus::new();
+    let mut code = PROTECTED_FDIV_32.to_vec();
+    code.extend_from_slice(&[0xDB, 0x3D, 0x00, 0x90, 0x00, 0x00]);
+    bus.ram[0x4000..0x4000 + code.len()].copy_from_slice(&code);
+    bus.ram[0x5008..0x5010].copy_from_slice(&THREE_F64);
+    let page_directory = 0x10000;
+    let page_table = 0x11000;
+    bus.ram[page_directory..page_directory + 4]
+        .copy_from_slice(&(page_table as u32 | 0x3).to_le_bytes());
+    for page in 0..0x100usize {
+        let entry = if page == 0x9 {
+            0
+        } else {
+            (page as u32) << 12 | 0x3
+        };
+        bus.ram[page_table + page * 4..page_table + page * 4 + 4]
+            .copy_from_slice(&entry.to_le_bytes());
+    }
+    let gdt = 0x6800;
+    bus.ram[gdt + 8..gdt + 16].copy_from_slice(&[0xFF, 0xFF, 0, 0, 0, 0x9B, 0xCF, 0]);
+    let idt = 0x6000;
+    bus.ram[idt + 14 * 8..idt + 15 * 8]
+        .copy_from_slice(&[0x00, 0x70, 0x08, 0x00, 0x00, 0x8E, 0x00, 0x00]);
+    bus.ram[0x7000] = 0xF4;
+    let mut state = I386State {
+        cr0: 0x8000_0031,
+        cr3: page_directory as u32,
+        gdt_base: gdt as u32,
+        gdt_limit: 0x0F,
+        idt_base: idt as u32,
+        idt_limit: 0x07FF,
+        ..I386State::default()
+    };
+    for segment in 0..6 {
+        let is_code = segment == 1;
+        state.sregs[segment] = if is_code { 0x08 } else { 0x10 };
+        state.seg_limits[segment] = 0xFFFF_FFFF;
+        state.seg_rights[segment] = if is_code { 0x9B } else { 0x93 };
+        state.seg_granularity[segment] = 0xCF;
+        state.seg_valid[segment] = true;
+    }
+    state.set_esp(0x8000);
+    state.set_eip(0x4000);
+    state.set_eflags(0x0000_0002);
+    cpu.load_state(&state);
+    for _ in 0..4 {
+        cpu.step(&mut bus);
+    }
+    let result = extract_result(&cpu);
+    assert_eq!(cpu.state.cr2, 0x9000);
+    assert_eq!(cpu.state.eip(), 0x7000);
+    assert!(result.c1());
+    assert_eq!(result.top, 7);
+}

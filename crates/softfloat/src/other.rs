@@ -65,6 +65,7 @@ impl Fp80 {
         }
 
         if new_exponent < -(BIAS as i64) - 63 {
+            ef.tiny = true;
             ef.underflow = true;
             ef.precision = true;
             return if sign { Fp80::NEG_ZERO } else { Fp80::ZERO };
@@ -72,6 +73,7 @@ impl Fp80 {
 
         let biased = new_exponent + BIAS as i64;
         if biased <= 0 {
+            ef.tiny = true;
             let shift_right = (1 - biased) as u32;
             if shift_right >= 64 {
                 ef.underflow = true;

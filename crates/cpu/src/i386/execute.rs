@@ -1150,8 +1150,8 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         } else {
             self.regs.word(WordReg::SP) as u32
         };
-        // A 32-bit POP of a segment register reads only the selector word and then advances
-        // the stack pointer by four.
+        // Observed behaviour: a 32-bit POP of a segment register reads only the
+        // selector word and advances the stack pointer by four.
         self.check_segment_access(SegReg32::SS, sp, 2, false, bus)?;
 
         let base = self.seg_base(SegReg32::SS);
@@ -2578,8 +2578,9 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         }
         let penalty = self.sp_penalty();
         if self.operand_size_override {
-            // PUSHFD stores RF (bit 16) and VM (bit 17) as zero (80386 PRM 3.8.2
-            // and 80486 PRM 3.8.2). AC (bit 18, 486+) is included.
+            // PUSHFD stores RF (bit 16) as zero (80486 PRM 3.8.2: RF reads as clear) and
+            // VM (bit 17) as zero (80386 PRM 3.8.2: the VM and RF flags are not moved).
+            // AC (bit 18, 486+) is included.
             let upper_mask =
                 Self::eflags_upper_writable() & !(EFLAGS_RESUME_FLAG | EFLAGS_VIRTUAL_8086_FLAG);
             let flags_val = (self.eflags_upper & upper_mask) | self.flags.compress() as u32;

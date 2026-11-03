@@ -53,6 +53,8 @@ pub const ADDRESS_WIDTH_32: u8 = 32;
 const EFLAGS_RESUME_FLAG: u32 = 0x0001_0000;
 const EFLAGS_VIRTUAL_8086_FLAG: u32 = 0x0002_0000;
 const EFLAGS_ALIGNMENT_CHECK_FLAG: u32 = 0x0004_0000;
+/// The access rights byte of a present, readable, accessed code segment with DPL 0.
+const REAL_MODE_CODE_RIGHTS: u8 = 0x9B;
 
 /// EDX after RESET holds the component identifier and revision (386 PRM 10.1):
 /// DH = 3 for the 386DX, DL = revision. 0x0308 is the D-step.
@@ -725,18 +727,21 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         }
     }
 
-    /// Updates the cache of `seg` for a real mode segment load, CS included. 80486 PRM 22.5
-    /// steps 2 and 3 and 80386 PRM 14.5: the load sets the base to `selector << 4` and keeps
-    /// the cached limit, granularity, type and D/B bit of an earlier protected mode load.
-    /// The cache becomes a present code or data segment, as in Bochs
-    /// (`bochs/cpu/segment_ctrl_pro.cc`, `load_seg_reg` real mode branch).
+    /// Applies a real mode load of `selector` to the cache of `seg`. The base becomes
+    /// `selector << 4` (80486 PRM 22.1, 80386 PRM 14.1) and every selector value names a
+    /// usable segment. The limit, the granularity and the D/B bit stay as an earlier
+    /// protected mode load left them (80486 PRM 22.5 steps 2 and 3). A CS load gives CS the
+    /// access rights of a present, readable code segment at privilege level 0 (22.5 step 6,
+    /// and real-address mode is equivalent to privilege level 0).
     fn set_real_mode_segment_base(&mut self, seg: SegReg32, selector: u16) {
-        self.seg_bases[seg as usize] = (selector as u32) << 4;
-        self.seg_rights[seg as usize] |= 0x90;
-        self.seg_valid[seg as usize] = true;
-        if seg == SegReg32::CS {
-            self.stored_cpl = 0;
+        let index = seg as usize;
+        self.seg_bases[index] = (selector as u32) << 4;
+        self.seg_valid[index] = true;
+        if seg != SegReg32::CS {
+            return;
         }
+        self.seg_rights[index] = REAL_MODE_CODE_RIGHTS;
+        self.stored_cpl = 0;
     }
 
     /// Loads `selector` into `seg` without a descriptor. Real mode updates only the selector

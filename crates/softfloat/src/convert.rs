@@ -1,6 +1,6 @@
 //! Conversions between Fp80 and integer/float/BCD formats.
 
-use crate::{ExceptionFlags, Fp80, RoundingMode};
+use crate::{ExceptionFlags, Fp80, Rounded, RoundingMode, round_to_format};
 
 impl Fp80 {
     /// Convert a signed 16-bit integer to Fp80. Exact, no rounding needed.
@@ -79,10 +79,7 @@ impl Fp80 {
         let true_exp = self.true_exponent();
         let sig = self.significand();
 
-        if true_exp >= max_bit as i32 {
-            if true_exp == max_bit as i32 && sign && sig == 0x8000_0000_0000_0000 {
-                return indefinite;
-            }
+        if true_exp > max_bit as i32 {
             ef.invalid = true;
             return indefinite;
         }
@@ -101,11 +98,11 @@ impl Fp80 {
                 RoundingMode::Down => sign,
                 RoundingMode::Zero => false,
             };
-            return if round_up {
-                if sign { -1 } else { 1 }
-            } else {
-                0
-            };
+            if round_up {
+                ef.rounded_up = true;
+                return if sign { -1 } else { 1 };
+            }
+            return 0;
         }
 
         let shift_right = 63 - true_exp as u32;
@@ -119,7 +116,6 @@ impl Fp80 {
         let has_fraction = fraction != 0;
 
         let round_up = if has_fraction {
-            ef.precision = true;
             let halfway = 1u64 << (shift_right - 1);
             match rc {
                 RoundingMode::NearestEven => {
@@ -148,17 +144,18 @@ impl Fp80 {
         let positive_limit = (1u64 << max_bit) - 1;
         let negative_limit = 1u64 << max_bit;
 
+        let limit = if sign { negative_limit } else { positive_limit };
+        if magnitude > limit {
+            ef.invalid = true;
+            return indefinite;
+        }
+        if has_fraction {
+            ef.precision = true;
+            ef.rounded_up |= round_up;
+        }
         if sign {
-            if magnitude > negative_limit {
-                ef.invalid = true;
-                return indefinite;
-            }
-            -(magnitude as i64)
+            (magnitude as i64).wrapping_neg()
         } else {
-            if magnitude > positive_limit {
-                ef.invalid = true;
-                return indefinite;
-            }
             magnitude as i64
         }
     }
@@ -267,163 +264,8 @@ impl Fp80 {
             return f32::from_bits(sign_bit);
         }
 
-        let true_exp = self.true_exponent();
-        let sig = self.significand();
-
-        let new_exp = true_exp + 127;
-
-        if new_exp > 254 {
-            ef.overflow = true;
-            ef.precision = true;
-            let overflow_result = match rc {
-                RoundingMode::NearestEven => sign_bit | 0x7F80_0000,
-                RoundingMode::Up => {
-                    if sign {
-                        sign_bit | 0x7F7F_FFFF
-                    } else {
-                        sign_bit | 0x7F80_0000
-                    }
-                }
-                RoundingMode::Down => {
-                    if sign {
-                        sign_bit | 0x7F80_0000
-                    } else {
-                        0x7F7F_FFFF
-                    }
-                }
-                RoundingMode::Zero => sign_bit | 0x7F7F_FFFF,
-            };
-            return f32::from_bits(overflow_result);
-        }
-
-        if new_exp < -149 {
-            ef.underflow = true;
-            ef.precision = true;
-            let underflow_result = match rc {
-                RoundingMode::Up => {
-                    if !sign {
-                        sign_bit | 0x0000_0001
-                    } else {
-                        sign_bit
-                    }
-                }
-                RoundingMode::Down => {
-                    if sign {
-                        sign_bit | 0x0000_0001
-                    } else {
-                        sign_bit
-                    }
-                }
-                RoundingMode::NearestEven | RoundingMode::Zero => sign_bit,
-            };
-            return f32::from_bits(underflow_result);
-        }
-
-        if new_exp < 1 {
-            let denorm_shift = (1 - new_exp) as u32;
-            let total_shift = 40 + denorm_shift;
-            if total_shift >= 64 {
-                let has_bits = sig != 0;
-                ef.underflow = true;
-                if has_bits {
-                    ef.precision = true;
-                }
-                let round_up = has_bits
-                    && match rc {
-                        RoundingMode::Up => !sign,
-                        RoundingMode::Down => sign,
-                        RoundingMode::NearestEven | RoundingMode::Zero => false,
-                    };
-                let result_bits = if round_up {
-                    sign_bit | 0x0000_0001
-                } else {
-                    sign_bit
-                };
-                return f32::from_bits(result_bits);
-            }
-            let shifted = sig >> total_shift;
-            let lost_mask = if total_shift < 64 {
-                (1u64 << total_shift) - 1
-            } else {
-                u64::MAX
-            };
-            let lost = sig & lost_mask;
-            let halfway = 1u64 << (total_shift - 1);
-            let inexact = lost != 0;
-            if inexact {
-                ef.underflow = true;
-                ef.precision = true;
-            } else if shifted == 0 {
-                ef.underflow = true;
-            }
-            let round_up = inexact
-                && match rc {
-                    RoundingMode::NearestEven => {
-                        if lost > halfway {
-                            true
-                        } else if lost == halfway {
-                            shifted & 1 != 0
-                        } else {
-                            false
-                        }
-                    }
-                    RoundingMode::Up => !sign,
-                    RoundingMode::Down => sign,
-                    RoundingMode::Zero => false,
-                };
-            let f32_fraction = if round_up {
-                shifted as u32 + 1
-            } else {
-                shifted as u32
-            };
-            let result_bits = sign_bit | f32_fraction;
-            return f32::from_bits(result_bits);
-        }
-
-        let sig_no_jbit = sig & 0x7FFF_FFFF_FFFF_FFFF;
-        let f32_fraction_raw = sig_no_jbit >> 40;
-        let lost = sig_no_jbit & 0x000000FF_FFFFFFFF;
-        let halfway = 1u64 << 39;
-
-        let inexact = lost != 0;
-        if inexact {
-            ef.precision = true;
-        }
-
-        let round_up = inexact
-            && match rc {
-                RoundingMode::NearestEven => {
-                    if lost > halfway {
-                        true
-                    } else if lost == halfway {
-                        f32_fraction_raw & 1 != 0
-                    } else {
-                        false
-                    }
-                }
-                RoundingMode::Up => !sign,
-                RoundingMode::Down => sign,
-                RoundingMode::Zero => false,
-            };
-
-        let f32_fraction = if round_up {
-            f32_fraction_raw as u32 + 1
-        } else {
-            f32_fraction_raw as u32
-        };
-
-        if f32_fraction >= 0x0080_0000 {
-            let carry_exp = new_exp + 1;
-            if carry_exp > 254 {
-                ef.overflow = true;
-                return f32::from_bits(sign_bit | 0x7F80_0000);
-            }
-            let result_bits = sign_bit | ((carry_exp as u32) << 23);
-            return f32::from_bits(result_bits);
-        }
-
-        let result_bits = sign_bit | ((new_exp as u32) << 23) | f32_fraction;
-        f32::from_bits(result_bits)
+        let bits = self.round_to_binary(F32, rc, ef);
+        f32::from_bits(bits as u32)
     }
 
     /// Narrowing conversion to f64. May raise OE, UE, PE, or IE (for SNaN).
@@ -450,161 +292,70 @@ impl Fp80 {
             return f64::from_bits(sign_bit);
         }
 
-        let true_exp = self.true_exponent();
-        let sig = self.significand();
+        let bits = self.round_to_binary(F64, rc, ef);
+        f64::from_bits(bits)
+    }
 
-        let new_exp = true_exp + 1023;
-
-        if new_exp > 2046 {
-            ef.overflow = true;
-            ef.precision = true;
-            let overflow_result = match rc {
-                RoundingMode::NearestEven => sign_bit | 0x7FF0_0000_0000_0000,
-                RoundingMode::Up => {
-                    if sign {
-                        sign_bit | 0x7FEF_FFFF_FFFF_FFFF
-                    } else {
-                        sign_bit | 0x7FF0_0000_0000_0000
-                    }
-                }
-                RoundingMode::Down => {
-                    if sign {
-                        sign_bit | 0x7FF0_0000_0000_0000
-                    } else {
-                        0x7FEF_FFFF_FFFF_FFFF
-                    }
-                }
-                RoundingMode::Zero => sign_bit | 0x7FEF_FFFF_FFFF_FFFF,
-            };
-            return f64::from_bits(overflow_result);
-        }
-
-        if new_exp < -1074 {
-            ef.underflow = true;
-            ef.precision = true;
-            let underflow_result = match rc {
-                RoundingMode::Up => {
-                    if !sign {
-                        sign_bit | 0x0000_0000_0000_0001
-                    } else {
-                        sign_bit
-                    }
-                }
-                RoundingMode::Down => {
-                    if sign {
-                        sign_bit | 0x0000_0000_0000_0001
-                    } else {
-                        sign_bit
-                    }
-                }
-                RoundingMode::NearestEven | RoundingMode::Zero => sign_bit,
-            };
-            return f64::from_bits(underflow_result);
-        }
-
-        if new_exp < 1 {
-            let denorm_shift = (1 - new_exp) as u32;
-            let total_shift = 11 + denorm_shift;
-            if total_shift >= 64 {
-                let has_bits = sig != 0;
-                ef.underflow = true;
-                if has_bits {
-                    ef.precision = true;
-                }
-                let round_up = has_bits
-                    && match rc {
-                        RoundingMode::Up => !sign,
-                        RoundingMode::Down => sign,
-                        RoundingMode::NearestEven | RoundingMode::Zero => false,
-                    };
-                let result_bits = if round_up {
-                    sign_bit | 0x0000_0000_0000_0001
-                } else {
-                    sign_bit
-                };
-                return f64::from_bits(result_bits);
+    /// Rounds the nonzero finite value to `format` and returns its encoding.
+    fn round_to_binary(
+        self,
+        format: BinaryFormat,
+        rc: RoundingMode,
+        ef: &mut ExceptionFlags,
+    ) -> u64 {
+        let sign = self.sign();
+        let (significand, shift) = Fp80::normalize_significand(self.significand());
+        let biased = self.true_exponent() - shift as i32 + format.bias;
+        let all_ones = (1i32 << format.exponent_bits) - 1;
+        let sign_bit = (sign as u64) << (format.exponent_bits + format.fraction_bits);
+        let fraction_mask = (1u64 << format.fraction_bits) - 1;
+        match round_to_format(
+            sign,
+            biased,
+            (significand as u128) << 64,
+            format.fraction_bits + 1,
+            all_ones,
+            rc,
+            ef,
+        ) {
+            Rounded::Finite {
+                biased,
+                significand,
+            } => {
+                sign_bit | ((biased as u64) << format.fraction_bits) | (significand & fraction_mask)
             }
-            let shifted = sig >> total_shift;
-            let lost_mask = if total_shift < 64 {
-                (1u64 << total_shift) - 1
-            } else {
-                u64::MAX
-            };
-            let lost = sig & lost_mask;
-            let halfway = 1u64 << (total_shift - 1);
-            let inexact = lost != 0;
-            if inexact {
-                ef.underflow = true;
-                ef.precision = true;
-            } else if shifted == 0 {
-                ef.underflow = true;
+            Rounded::Infinity => sign_bit | ((all_ones as u64) << format.fraction_bits),
+            Rounded::LargestFinite => {
+                sign_bit | (((all_ones - 1) as u64) << format.fraction_bits) | fraction_mask
             }
-            let round_up = inexact
-                && match rc {
-                    RoundingMode::NearestEven => {
-                        if lost > halfway {
-                            true
-                        } else if lost == halfway {
-                            shifted & 1 != 0
-                        } else {
-                            false
-                        }
-                    }
-                    RoundingMode::Up => !sign,
-                    RoundingMode::Down => sign,
-                    RoundingMode::Zero => false,
-                };
-            let f64_fraction = if round_up { shifted + 1 } else { shifted };
-            let result_bits = sign_bit | f64_fraction;
-            return f64::from_bits(result_bits);
         }
-
-        let sig_no_jbit = sig & 0x7FFF_FFFF_FFFF_FFFF;
-        let f64_fraction_raw = sig_no_jbit >> 11;
-        let lost = sig_no_jbit & 0x7FF;
-        let halfway = 1u64 << 10;
-
-        let inexact = lost != 0;
-        if inexact {
-            ef.precision = true;
-        }
-
-        let round_up = inexact
-            && match rc {
-                RoundingMode::NearestEven => {
-                    if lost > halfway {
-                        true
-                    } else if lost == halfway {
-                        f64_fraction_raw & 1 != 0
-                    } else {
-                        false
-                    }
-                }
-                RoundingMode::Up => !sign,
-                RoundingMode::Down => sign,
-                RoundingMode::Zero => false,
-            };
-
-        let f64_fraction = if round_up {
-            f64_fraction_raw + 1
-        } else {
-            f64_fraction_raw
-        };
-
-        if f64_fraction >= 0x0010_0000_0000_0000 {
-            let carry_exp = new_exp + 1;
-            if carry_exp > 2046 {
-                ef.overflow = true;
-                return f64::from_bits(sign_bit | 0x7FF0_0000_0000_0000);
-            }
-            let result_bits = sign_bit | ((carry_exp as u64) << 52);
-            return f64::from_bits(result_bits);
-        }
-
-        let result_bits = sign_bit | ((new_exp as u64) << 52) | f64_fraction;
-        f64::from_bits(result_bits)
     }
 }
+
+/// The layout of an IEEE binary interchange format.
+#[derive(Clone, Copy)]
+struct BinaryFormat {
+    /// The number of stored fraction bits.
+    fraction_bits: u32,
+    /// The width of the exponent field.
+    exponent_bits: u32,
+    /// The exponent bias.
+    bias: i32,
+}
+
+/// The single precision format.
+const F32: BinaryFormat = BinaryFormat {
+    fraction_bits: 23,
+    exponent_bits: 8,
+    bias: 127,
+};
+
+/// The double precision format.
+const F64: BinaryFormat = BinaryFormat {
+    fraction_bits: 52,
+    exponent_bits: 11,
+    bias: 1023,
+};
 
 impl Fp80 {
     /// Load from 10-byte packed BCD (18 digits + sign).
@@ -658,6 +409,7 @@ impl Fp80 {
         }
 
         let has_fraction: bool;
+        let rounded_up: bool;
 
         let magnitude: u64 = if true_exp < 0 {
             has_fraction = true;
@@ -673,6 +425,7 @@ impl Fp80 {
                 RoundingMode::Down => sign,
                 RoundingMode::Zero => false,
             };
+            rounded_up = round_up;
             if round_up { 1 } else { 0 }
         } else {
             let shift_right = 63 - true_exp as u32;
@@ -703,6 +456,7 @@ impl Fp80 {
             } else {
                 false
             };
+            rounded_up = round_up;
             if round_up {
                 integer_part + 1
             } else {
@@ -710,13 +464,14 @@ impl Fp80 {
             }
         };
 
-        if has_fraction {
-            ef.precision = true;
-        }
-
         if magnitude > MAX_BCD {
             ef.invalid = true;
             return INDEFINITE_BCD;
+        }
+
+        if has_fraction {
+            ef.precision = true;
+            ef.rounded_up |= rounded_up;
         }
 
         if magnitude == 0 {
@@ -1506,5 +1261,92 @@ mod tests {
         let mut ef = no_exceptions();
         let result = Fp80::from_bcd(bcd, &mut ef);
         assert!(result.is_zero());
+    }
+
+    #[test]
+    fn test_to_f64_round_up_indication() {
+        let value = Fp80::from_bits(0x3FFF, 0x8000_0000_0000_0401);
+        let mut ef = no_exceptions();
+        let result = value.to_f64(RoundingMode::NearestEven, &mut ef);
+        assert_eq!(result.to_bits(), 0x3FF0_0000_0000_0001);
+        assert!(ef.precision);
+        assert!(ef.rounded_up);
+
+        let mut ef = no_exceptions();
+        let result = value.to_f64(RoundingMode::Zero, &mut ef);
+        assert_eq!(result.to_bits(), 0x3FF0_0000_0000_0000);
+        assert!(ef.precision);
+        assert!(!ef.rounded_up);
+    }
+
+    #[test]
+    fn test_to_f32_rounding_overflow() {
+        let value = Fp80::from_bits(0x3FFF + 127, 0xFFFF_FF80_0000_0000);
+        let mut ef = no_exceptions();
+        let result = value.to_f32(RoundingMode::NearestEven, &mut ef);
+        assert_eq!(result.to_bits(), 0x7F80_0000);
+        assert!(ef.overflow);
+        assert!(ef.precision);
+        assert!(ef.rounded_up);
+
+        let mut ef = no_exceptions();
+        let result = value.to_f32(RoundingMode::Zero, &mut ef);
+        assert_eq!(result.to_bits(), 0x7F7F_FFFF);
+        assert!(!ef.overflow);
+        assert!(ef.precision);
+        assert!(!ef.rounded_up);
+    }
+
+    #[test]
+    fn test_to_f32_exact_denormal_raises_no_underflow() {
+        let value = Fp80::from_bits(0x3FFF - 140, 0x8000_0000_0000_0000);
+        let mut ef = no_exceptions();
+        let result = value.to_f32(RoundingMode::NearestEven, &mut ef);
+        assert_eq!(result.to_bits(), 0x0000_0200);
+        assert!(!ef.underflow);
+        assert!(!ef.precision);
+    }
+
+    #[test]
+    fn test_to_i32_round_up_indication() {
+        let mut ef = no_exceptions();
+        let result = Fp80::from_bits(0xBFFF, 0xC000_0000_0000_0000)
+            .to_i32(RoundingMode::NearestEven, &mut ef);
+        assert_eq!(result, -2);
+        assert!(ef.precision);
+        assert!(ef.rounded_up);
+    }
+
+    #[test]
+    fn test_to_integer_negative_limit_after_rounding() {
+        let value = Fp80::from_bits(0xC00E, 0x8000_8000_0000_0000);
+        let mut ef = no_exceptions();
+        assert_eq!(value.to_i16(RoundingMode::Zero, &mut ef), i16::MIN);
+        assert!(!ef.invalid);
+        assert!(ef.precision);
+
+        let mut ef = no_exceptions();
+        assert_eq!(value.to_i16(RoundingMode::NearestEven, &mut ef), i16::MIN);
+        assert!(!ef.invalid);
+
+        let mut ef = no_exceptions();
+        assert_eq!(value.to_i16(RoundingMode::Down, &mut ef), i16::MIN);
+        assert!(ef.invalid);
+
+        let value = Fp80::from_bits(0xC01E, 0x8000_0000_8000_0000);
+        let mut ef = no_exceptions();
+        assert_eq!(value.to_i32(RoundingMode::Zero, &mut ef), i32::MIN);
+        assert!(!ef.invalid);
+
+        let value = Fp80::from_bits(0xC03E, 0x8000_0000_0000_0000);
+        let mut ef = no_exceptions();
+        assert_eq!(value.to_i64(RoundingMode::Zero, &mut ef), i64::MIN);
+        assert!(!ef.invalid);
+        assert!(!ef.precision);
+
+        let value = Fp80::from_bits(0x400E, 0x8000_0000_0000_0000);
+        let mut ef = no_exceptions();
+        assert_eq!(value.to_i16(RoundingMode::Zero, &mut ef), i16::MIN);
+        assert!(ef.invalid);
     }
 }

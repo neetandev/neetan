@@ -187,8 +187,15 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         }
     }
 
+    /// Accumulates the exception flags of an operation into the status word and sets C1 to
+    /// the round-up indication of the result (80486 PRM 15.1.2, table 15-1). UE reports a
+    /// tiny and inexact result while underflow is masked and every tiny result while it is
+    /// unmasked (80486 PRM 16.2.5).
     pub(super) fn fpu_check_result(&mut self, ef: &ExceptionFlags) {
-        let mut sw = self.state.fpu.status_word;
+        let mut sw = self.state.fpu.status_word & !0x0200;
+        if ef.rounded_up {
+            sw |= 0x0200;
+        }
         if ef.invalid {
             sw |= 0x01;
         }
@@ -201,7 +208,8 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         if ef.overflow {
             sw |= 0x08;
         }
-        if ef.underflow {
+        let underflow_masked = self.state.fpu.control_word & 0x10 != 0;
+        if ef.underflow || (ef.tiny && !underflow_masked) {
             sw |= 0x10;
         }
         if ef.precision {
@@ -222,13 +230,15 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         Ok(())
     }
 
+    /// Records the instruction pointer and, for a memory operand, the data pointer of the
+    /// current escape instruction as offsets with their selectors (80486 PRM 15.1.5).
     pub(super) fn fpu_update_pointers(&mut self, esc_bits: u8, modrm: u8, has_memory: bool) {
         self.state.fpu.fip_offset = self.prev_ip_upper | self.prev_ip as u32;
         self.state.fpu.fip_selector = self.sregs[crate::SegReg32::CS as usize];
         self.state.fpu.fpu_opcode = ((esc_bits as u16 & 7) << 8) | modrm as u16;
 
         if has_memory {
-            self.state.fpu.fdp_offset = self.ea;
+            self.state.fpu.fdp_offset = self.eo32;
             self.state.fpu.fdp_selector = self.sregs[self.ea_seg as usize];
         }
     }
@@ -330,6 +340,12 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         self.state.fpu.fdp_offset = 0;
         self.state.fpu.fdp_selector = 0;
         self.state.fpu.fpu_opcode = 0;
+    }
+
+    /// Clears C1 for an instruction whose C1 reports only a stack overflow (80486 PRM
+    /// 15.1.2, table 15-1, "Zero or O/U#").
+    pub(super) fn fpu_clear_c1(&mut self) {
+        self.state.fpu.status_word &= !0x0200;
     }
 
     pub(super) fn fpu_set_cc(&mut self, c3: bool, c2: bool, c1: bool, c0: bool) {

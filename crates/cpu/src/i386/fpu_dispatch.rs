@@ -15,13 +15,12 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         let modrm = self.fetch(bus)?;
         let has_memory = modrm < 0xC0;
 
-        // ES=1 -> deliver pending exception before executing
-        if self.fpu_es_pending() {
-            return self.fpu_raise_exception(bus);
-        }
-
         if has_memory {
             self.calc_ea(modrm, bus)?;
+        }
+
+        if self.fpu_es_pending() && !Self::fpu_is_no_wait(opcode, modrm) {
+            return self.fpu_raise_exception(bus);
         }
 
         let esc_bits = opcode & 7;
@@ -37,6 +36,21 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             _ => unreachable!(),
         }
         Ok(())
+    }
+
+    /// Returns whether the escape instruction runs without a check for a pending unmasked
+    /// exception. The no-wait control instructions FNSTENV, FNSTCW, FNSAVE, FNSTSW, FNCLEX
+    /// and FNINIT skip the check (80486 PRM 17.7, table 17-8). Observed behaviour: the
+    /// no-op forms FENI, FDISI and FSETPM (DB E0, E1 and E4) skip it as well.
+    fn fpu_is_no_wait(opcode: u8, modrm: u8) -> bool {
+        let reg = (modrm >> 3) & 7;
+        match opcode {
+            0xD9 => modrm < 0xC0 && (reg == 6 || reg == 7),
+            0xDD => modrm < 0xC0 && (reg == 6 || reg == 7),
+            0xDB => matches!(modrm, 0xE0..=0xE4),
+            0xDF => modrm == 0xE0,
+            _ => false,
+        }
     }
 
     pub(super) fn fpu_wait(&mut self, bus: &mut impl common::Bus) -> Step {

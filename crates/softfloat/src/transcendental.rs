@@ -340,6 +340,8 @@ impl Fp80 {
         ef.precision |= ef_sin.precision || ef_cos.precision;
         ef.overflow |= ef_sin.overflow || ef_cos.overflow;
         ef.underflow |= ef_sin.underflow || ef_cos.underflow;
+        ef.tiny |= ef_sin.tiny || ef_cos.tiny;
+        ef.rounded_up |= ef_sin.rounded_up || ef_cos.rounded_up;
         (sin_fp80, cos_fp80, false)
     }
 

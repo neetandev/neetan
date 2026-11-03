@@ -351,7 +351,7 @@ fn real_mode_segment_load_keeps_the_cached_limit() {
 }
 
 #[test]
-fn real_mode_far_jump_keeps_the_cs_cache_attributes() {
+fn real_mode_far_jump_sets_code_rights_and_keeps_the_cs_limit() {
     let mut cpu = make_cpu_486();
     let mut bus = TestBus::new();
 
@@ -359,12 +359,13 @@ fn real_mode_far_jump_keeps_the_cs_cache_attributes() {
     let mut state = make_real_mode_state_for_addressing_tests();
     state.seg_limits[cpu::SegReg32::CS as usize] = 0x0001_FFFF;
     state.seg_rights[cpu::SegReg32::CS as usize] = 0x13;
-    state.seg_granularity[cpu::SegReg32::CS as usize] = 0x01;
+    state.seg_granularity[cpu::SegReg32::CS as usize] = 0x41;
     cpu.load_state(&state);
 
-    // JMP FAR 0x3000:0x0010. The load sets the base and keeps the limit,
-    // the type and the granularity byte (22.5 steps 2 and 3). The cache
-    // becomes present.
+    // JMP FAR 0x3000:0x0010. The base becomes 0x30000 (22.1). The limit and the
+    // granularity byte stay as protected mode left them (22.5 steps 2 and 3). The far
+    // jump gives CS the access rights of a present, readable code segment at privilege
+    // level 0 (22.5 step 6).
     place_in_test_code(&mut bus, 0x0000, &[0xEA, 0x10, 0x00, 0x00, 0x30]);
     bus.ram[0x0003_0010] = HLT_OPCODE;
 
@@ -377,8 +378,8 @@ fn real_mode_far_jump_keeps_the_cs_cache_attributes() {
         cpu.state.seg_limits[cpu::SegReg32::CS as usize],
         0x0001_FFFF
     );
-    assert_eq!(cpu.state.seg_rights[cpu::SegReg32::CS as usize], 0x93);
-    assert_eq!(cpu.state.seg_granularity[cpu::SegReg32::CS as usize], 0x01);
+    assert_eq!(cpu.state.seg_rights[cpu::SegReg32::CS as usize], 0x9B);
+    assert_eq!(cpu.state.seg_granularity[cpu::SegReg32::CS as usize], 0x41);
 }
 
 #[test]

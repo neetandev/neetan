@@ -1,6 +1,6 @@
 //! Core arithmetic operations: add, sub, mul, div, sqrt, round_to_int.
 
-use crate::{ExceptionFlags, Fp80, Precision, RoundingMode};
+use crate::{ExceptionFlags, Fp80, Precision, RoundingMode, shift_right_sticky};
 
 impl Fp80 {
     /// Compute `self + other`. Respects precision control and rounding mode.
@@ -332,28 +332,18 @@ impl Fp80 {
             b_exp -= shift as i32;
         }
 
-        // (sig_a << 64) / sig_b -> quotient at ~bit 64
-        let dividend = (a_sig as u128) << 64;
         let divisor = b_sig as u128;
-        let quotient = dividend / divisor;
-        let remainder = dividend % divisor;
-
-        if quotient == 0 {
-            return if result_sign {
-                Fp80::NEG_ZERO
-            } else {
-                Fp80::ZERO
-            };
-        }
+        let dividend_high = (a_sig as u128) << 62;
+        let quotient_high = dividend_high / divisor;
+        let remainder_high = dividend_high % divisor;
+        let dividend_low = remainder_high << 64;
+        let quotient_low = dividend_low / divisor;
+        let remainder = dividend_low % divisor;
+        let quotient = (quotient_high << 64) | quotient_low;
 
         let leading = quotient.leading_zeros();
-        // Set sticky AFTER normalization so it lands in the discarded bits
-        let normalized_sig = if remainder != 0 {
-            (quotient << leading) | 1
-        } else {
-            quotient << leading
-        };
-        let rp_exp = a_exp - b_exp + 63 - leading as i32;
+        let normalized_sig = (quotient << leading) | (remainder != 0) as u128;
+        let rp_exp = a_exp - b_exp + 1 - leading as i32;
 
         Fp80::round_and_pack(result_sign, rp_exp, normalized_sig, rc, pc, ef)
     }
@@ -407,20 +397,18 @@ impl Fp80 {
             ((sig as u128) << 63, 63i32) // K=63, P-K even
         };
 
-        let (root, exact) = sqrt_u128_with_remainder(sig_wide);
-
-        if root == 0 {
-            return Fp80::ZERO;
-        }
-
-        let leading = root.leading_zeros();
-        let normalized_sig = if exact {
-            root << leading
+        let (root, remainder) = sqrt_u128_with_remainder(sig_wide);
+        let guard = remainder > root;
+        let sticky = if guard {
+            (remainder << 2) - (root << 2) - 1 != 0
         } else {
-            (root << leading) | 1
+            remainder != 0
         };
-        // rp_exp = (P - K)/2 - leading + 127
-        let rp_exp = (p - k) / 2 - leading as i32 + 127;
+        let extended_root = (root << 1) | guard as u128;
+
+        let leading = extended_root.leading_zeros();
+        let normalized_sig = (extended_root << leading) | sticky as u128;
+        let rp_exp = (p - k) / 2 - 1 - leading as i32 + 127;
 
         Fp80::round_and_pack(false, rp_exp, normalized_sig, rc, pc, ef)
     }
@@ -440,6 +428,10 @@ impl Fp80 {
         // Infinity and zero returned unchanged
         if self.is_infinity() || self.is_zero() {
             return self;
+        }
+
+        if self.is_denormal() || self.is_pseudo_denormal() {
+            ef.denormal = true;
         }
 
         let sign = self.sign();
@@ -472,6 +464,7 @@ impl Fp80 {
                 RoundingMode::Down => sign,
                 RoundingMode::Zero => false,
             };
+            ef.rounded_up |= round_up;
             return if round_up {
                 if sign {
                     Fp80::from_bits(0xBFFF, 0x8000_0000_0000_0000) // -1.0
@@ -515,6 +508,7 @@ impl Fp80 {
             RoundingMode::Zero => false,
         };
 
+        ef.rounded_up |= round_up;
         let result_sig = if round_up {
             let increment = 1u64 << fraction_bits;
             let new_sig = integer_part.wrapping_add(increment);
@@ -535,31 +529,16 @@ impl Fp80 {
     }
 }
 
-/// Integer square root of a u128 value, returning (root, exact).
-/// The root is such that root^2 <= val < (root+1)^2.
-/// `exact` is true if root^2 == val.
-fn shift_right_sticky(val: u128, shift: u32) -> u128 {
-    if shift == 0 {
-        return val;
-    }
-    if shift >= 128 {
-        return if val != 0 { 1 } else { 0 };
-    }
-    let lost = val & ((1u128 << shift) - 1);
-    let shifted = val >> shift;
-    if lost != 0 { shifted | 1 } else { shifted }
-}
-
-fn sqrt_u128_with_remainder(val: u128) -> (u128, bool) {
+/// Integer square root of a u128 value, returning (root, remainder) with
+/// root^2 + remainder == val and root^2 <= val < (root+1)^2.
+fn sqrt_u128_with_remainder(val: u128) -> (u128, u128) {
     if val == 0 {
-        return (0, true);
+        return (0, 0);
     }
 
-    // Start with a good initial estimate using leading zeros
     let bits = 128 - val.leading_zeros();
     let mut root = 1u128 << bits.div_ceil(2);
 
-    // Newton's method
     loop {
         let next = (root + val / root) >> 1;
         if next >= root {
@@ -568,17 +547,10 @@ fn sqrt_u128_with_remainder(val: u128) -> (u128, bool) {
         root = next;
     }
 
-    // Verify and adjust
-    let sq = root.checked_mul(root);
-    match sq {
-        Some(sq) if sq == val => (root, true),
-        Some(sq) if sq > val => {
-            root -= 1;
-            let sq = root * root;
-            (root, sq == val)
-        }
-        _ => (root, false),
+    while root.checked_mul(root).is_none_or(|square| square > val) {
+        root -= 1;
     }
+    (root, val - root * root)
 }
 
 #[cfg(test)]
@@ -1377,5 +1349,100 @@ mod tests {
         let _result =
             POSITIVE_DENORMAL.sqrt(RoundingMode::NearestEven, Precision::Extended, &mut ef);
         assert!(ef.denormal);
+    }
+
+    /// Returns the next value of a 64-bit linear congruential sequence.
+    fn next_random(state: &mut u64) -> u64 {
+        *state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        *state
+    }
+
+    #[test]
+    fn test_div_rounds_to_nearest_with_round_up_indication() {
+        let dividend = Fp80::from_bits(0x4015, 0x800B_F600_0000_0000);
+        let divisor = Fp80::from_bits(0x4014, 0xBFFF_FC00_0000_0000);
+        let mut ef = no_exceptions();
+        let result = dividend.div(
+            divisor,
+            RoundingMode::NearestEven,
+            Precision::Extended,
+            &mut ef,
+        );
+        assert_eq!(result, Fp80::from_bits(0x3FFF, 0xAABA_A0E3_E35A_14BD));
+        assert!(ef.precision);
+        assert!(ef.rounded_up);
+
+        let mut ef = no_exceptions();
+        let result = dividend.div(divisor, RoundingMode::Zero, Precision::Extended, &mut ef);
+        assert_eq!(result, Fp80::from_bits(0x3FFF, 0xAABA_A0E3_E35A_14BC));
+        assert!(ef.precision);
+        assert!(!ef.rounded_up);
+
+        let mut ef = no_exceptions();
+        let result = dividend.div(divisor, RoundingMode::Up, Precision::Extended, &mut ef);
+        assert_eq!(result, Fp80::from_bits(0x3FFF, 0xAABA_A0E3_E35A_14BD));
+        assert!(ef.rounded_up);
+    }
+
+    #[test]
+    fn test_mul_sets_round_up_indication() {
+        let quotient = Fp80::from_bits(0x3FFF, 0xAABA_A0E3_E35A_14BC);
+        let factor = Fp80::from_bits(0x4014, 0xBFFF_FC00_0000_0000);
+        let mut ef = no_exceptions();
+        let result = quotient.mul(
+            factor,
+            RoundingMode::NearestEven,
+            Precision::Extended,
+            &mut ef,
+        );
+        assert_eq!(result, Fp80::from_bits(0x4015, 0x800B_F600_0000_0000));
+        assert!(ef.precision);
+        assert!(ef.rounded_up);
+    }
+
+    #[test]
+    fn test_div_is_correctly_rounded_to_nearest() {
+        let mut state = 0x1234_5678_9ABC_DEF0u64;
+        for _ in 0..10_000 {
+            let a = next_random(&mut state) | 0x8000_0000_0000_0000;
+            let b = next_random(&mut state) | 0x8000_0000_0000_0000;
+            let mut ef = no_exceptions();
+            let result = Fp80::from_bits(0x3FFF, a).div(
+                Fp80::from_bits(0x3FFF, b),
+                RoundingMode::NearestEven,
+                Precision::Extended,
+                &mut ef,
+            );
+            let shift = if a >= b { 63 } else { 64 };
+            assert_eq!(result.exponent(), if a >= b { 0x3FFF } else { 0x3FFE });
+            let scaled_dividend = (a as u128) << shift;
+            let product = result.significand() as u128 * b as u128;
+            let remainder = scaled_dividend.abs_diff(product);
+            assert!(2 * remainder <= b as u128, "{a:X} / {b:X}");
+            assert_eq!(ef.rounded_up, product > scaled_dividend, "{a:X} / {b:X}");
+        }
+    }
+
+    #[test]
+    fn test_sqrt_is_correctly_rounded_to_nearest() {
+        let mut state = 0x0FED_CBA9_8765_4321u64;
+        for _ in 0..10_000 {
+            let a = next_random(&mut state) | 0x8000_0000_0000_0000;
+            let mut ef = no_exceptions();
+            let result = Fp80::from_bits(0x3FFF, a).sqrt(
+                RoundingMode::NearestEven,
+                Precision::Extended,
+                &mut ef,
+            );
+            let root = result.significand() as u128;
+            let scaled = (a as u128) << 63;
+            assert!(
+                root * root - root < scaled && scaled <= root * root + root,
+                "sqrt {a:X}"
+            );
+            assert_eq!(ef.rounded_up, root * root > (a as u128) << 63, "sqrt {a:X}");
+        }
     }
 }
