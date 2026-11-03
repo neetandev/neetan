@@ -23,19 +23,49 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             return self.fpu_raise_exception(bus);
         }
 
+        let pointers = (
+            self.state.fpu.fip_offset,
+            self.state.fpu.fip_selector,
+            self.state.fpu.fdp_offset,
+            self.state.fpu.fdp_selector,
+            self.state.fpu.fpu_opcode,
+        );
         let esc_bits = opcode & 7;
-        match esc_bits {
-            0 => self.fpu_esc_d8(modrm, has_memory, bus)?,
-            1 => self.fpu_esc_d9(modrm, has_memory, bus)?,
-            2 => self.fpu_esc_da(modrm, has_memory, bus)?,
-            3 => self.fpu_esc_db(modrm, has_memory, bus)?,
-            4 => self.fpu_esc_dc(modrm, has_memory, bus)?,
-            5 => self.fpu_esc_dd(modrm, has_memory, bus)?,
-            6 => self.fpu_esc_de(modrm, has_memory, bus)?,
-            7 => self.fpu_esc_df(modrm, has_memory, bus)?,
+        let outcome = match esc_bits {
+            0 => self.fpu_esc_d8(modrm, has_memory, bus),
+            1 => self.fpu_esc_d9(modrm, has_memory, bus),
+            2 => self.fpu_esc_da(modrm, has_memory, bus),
+            3 => self.fpu_esc_db(modrm, has_memory, bus),
+            4 => self.fpu_esc_dc(modrm, has_memory, bus),
+            5 => self.fpu_esc_dd(modrm, has_memory, bus),
+            6 => self.fpu_esc_de(modrm, has_memory, bus),
+            7 => self.fpu_esc_df(modrm, has_memory, bus),
             _ => unreachable!(),
+        };
+        if outcome.is_err() && has_memory && Self::fpu_reads_operand(opcode, modrm) {
+            (
+                self.state.fpu.fip_offset,
+                self.state.fpu.fip_selector,
+                self.state.fpu.fdp_offset,
+                self.state.fpu.fdp_selector,
+                self.state.fpu.fpu_opcode,
+            ) = pointers;
         }
-        Ok(())
+        outcome
+    }
+
+    /// Returns whether the memory form of the escape instruction reads a numeric operand:
+    /// the arithmetic, compare and load instructions. Observed behaviour: a fault on this
+    /// read keeps the instruction and data pointers of the previous instruction.
+    fn fpu_reads_operand(opcode: u8, modrm: u8) -> bool {
+        let reg = (modrm >> 3) & 7;
+        match opcode {
+            0xD8 | 0xDA | 0xDC | 0xDE => true,
+            0xD9 | 0xDD => reg == 0,
+            0xDB => reg == 0 || reg == 5,
+            0xDF => reg == 0 || reg == 4 || reg == 5,
+            _ => false,
+        }
     }
 
     /// Returns whether the escape instruction runs without a check for a pending unmasked
@@ -77,7 +107,9 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             match reg {
                 0 => self.fpu_fadd_m32(bus)?,
                 1 => self.fpu_fmul_m32(bus)?,
-                2 => self.fpu_fcom_m32(bus)?,
+                2 => {
+                    self.fpu_fcom_m32(bus)?;
+                }
                 3 => self.fpu_fcomp_m32(bus)?,
                 4 => self.fpu_fsub_m32(bus)?,
                 5 => self.fpu_fsubr_m32(bus)?,
@@ -90,7 +122,9 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             match reg {
                 0 => self.fpu_fadd_st0_sti(i),
                 1 => self.fpu_fmul_st0_sti(i),
-                2 => self.fpu_fcom_sti(i),
+                2 => {
+                    self.fpu_fcom_sti(i);
+                }
                 3 => self.fpu_fcomp_sti(i),
                 4 => self.fpu_fsub_st0_sti(i),
                 5 => self.fpu_fsubr_st0_sti(i),
@@ -113,7 +147,9 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             match reg {
                 0 => self.fpu_fld_m32(bus)?,
                 1 => self.clk(Self::timing(2, 2)), // reserved
-                2 => self.fpu_fst_m32(bus)?,
+                2 => {
+                    self.fpu_fst_m32(bus)?;
+                }
                 3 => self.fpu_fstp_m32(bus)?,
                 4 => self.fpu_fldenv(bus),
                 5 => self.fpu_fldcw(bus)?,
@@ -265,7 +301,9 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             match reg {
                 0 => self.fpu_fiadd_m32(bus)?,
                 1 => self.fpu_fimul_m32(bus)?,
-                2 => self.fpu_ficom_m32(bus)?,
+                2 => {
+                    self.fpu_ficom_m32(bus)?;
+                }
                 3 => self.fpu_ficomp_m32(bus)?,
                 4 => self.fpu_fisub_m32(bus)?,
                 5 => self.fpu_fisubr_m32(bus)?,
@@ -290,7 +328,9 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             match reg {
                 0 => self.fpu_fild_m32(bus)?,
                 1 => self.clk(Self::timing(2, 2)), // reserved
-                2 => self.fpu_fist_m32(bus)?,
+                2 => {
+                    self.fpu_fist_m32(bus)?;
+                }
                 3 => self.fpu_fistp_m32(bus)?,
                 4 => self.clk(Self::timing(2, 2)), // reserved
                 5 => self.fpu_fld_m80(bus)?,
@@ -321,7 +361,9 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             match reg {
                 0 => self.fpu_fadd_m64(bus)?,
                 1 => self.fpu_fmul_m64(bus)?,
-                2 => self.fpu_fcom_m64(bus)?,
+                2 => {
+                    self.fpu_fcom_m64(bus)?;
+                }
                 3 => self.fpu_fcomp_m64(bus)?,
                 4 => self.fpu_fsub_m64(bus)?,
                 5 => self.fpu_fsubr_m64(bus)?,
@@ -357,7 +399,9 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             match reg {
                 0 => self.fpu_fld_m64(bus)?,
                 1 => self.clk(Self::timing(2, 2)), // reserved
-                2 => self.fpu_fst_m64(bus)?,
+                2 => {
+                    self.fpu_fst_m64(bus)?;
+                }
                 3 => self.fpu_fstp_m64(bus)?,
                 4 => self.fpu_frstor(bus)?,
                 5 => self.clk(Self::timing(2, 2)), // reserved
@@ -407,7 +451,9 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             match reg {
                 0 => self.fpu_fiadd_m16(bus)?,
                 1 => self.fpu_fimul_m16(bus)?,
-                2 => self.fpu_ficom_m16(bus)?,
+                2 => {
+                    self.fpu_ficom_m16(bus)?;
+                }
                 3 => self.fpu_ficomp_m16(bus)?,
                 4 => self.fpu_fisub_m16(bus)?,
                 5 => self.fpu_fisubr_m16(bus)?,
@@ -447,7 +493,9 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             match reg {
                 0 => self.fpu_fild_m16(bus)?,
                 1 => self.clk(Self::timing(2, 2)), // reserved
-                2 => self.fpu_fist_m16(bus)?,
+                2 => {
+                    self.fpu_fist_m16(bus)?;
+                }
                 3 => self.fpu_fistp_m16(bus)?,
                 4 => self.fpu_fbld(bus)?,
                 5 => self.fpu_fild_m64(bus)?,

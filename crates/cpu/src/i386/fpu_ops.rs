@@ -77,24 +77,33 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
 
     pub(super) fn fpu_fld_m32(&mut self, bus: &mut impl common::Bus) -> Step {
         let raw = self.fpu_read_u32(bus)?;
-        let val = f32::from_bits(raw);
         let mut ef = ExceptionFlags::default();
-        let fp = Fp80::from_f32(val, &mut ef);
-        self.fpu_check_result(&ef);
-        self.fpu_push(fp);
+        let fp = Fp80::from_f32(f32::from_bits(raw), &mut ef);
+        self.fpu_push_converted(fp, &ef);
         self.clk(Self::timing(20, 3));
         Ok(())
     }
 
     pub(super) fn fpu_fld_m64(&mut self, bus: &mut impl common::Bus) -> Step {
         let raw = self.fpu_read_u64(bus)?;
-        let val = f64::from_bits(raw);
         let mut ef = ExceptionFlags::default();
-        let fp = Fp80::from_f64(val, &mut ef);
-        self.fpu_check_result(&ef);
-        self.fpu_push(fp);
+        let fp = Fp80::from_f64(f64::from_bits(raw), &mut ef);
+        self.fpu_push_converted(fp, &ef);
         self.clk(Self::timing(25, 3));
         Ok(())
+    }
+
+    /// Pushes `value`, converted from a memory operand with the exceptions `ef`. An
+    /// unmasked invalid operation leaves the stack unchanged (80486 PRM 16.2.2.2).
+    /// Observed behaviour: an unmasked denormal operand exception still pushes the
+    /// normalized value.
+    fn fpu_push_converted(&mut self, value: Fp80, ef: &ExceptionFlags) {
+        if self.fpu_is_empty(7) && ef.invalid && !self.fpu_invalid_masked() {
+            self.fpu_record_suppressed(ef);
+            return;
+        }
+        self.fpu_check_result(ef);
+        self.fpu_push(value);
     }
 
     pub(super) fn fpu_fld_m80(&mut self, bus: &mut impl common::Bus) -> Step {
@@ -109,8 +118,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     pub(super) fn fpu_fld_sti(&mut self, i: u8) {
         self.fpu_clear_c1();
         if self.fpu_check_underflow(i) {
-            let masked = self.state.fpu.control_word & 1 != 0;
-            if masked {
+            if self.fpu_invalid_masked() {
                 self.fpu_push(Fp80::INDEFINITE);
             }
             self.clk(Self::timing(14, 4));
@@ -121,9 +129,11 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         self.clk(Self::timing(14, 4));
     }
 
-    pub(super) fn fpu_fst_m32(&mut self, bus: &mut impl common::Bus) -> Step {
+    /// Stores ST(0) as a single real. Returns whether the store completed: an empty ST(0)
+    /// or an unmasked exception with no stored result returns false.
+    pub(super) fn fpu_fst_m32(&mut self, bus: &mut impl common::Bus) -> Step<bool> {
         if self.fpu_is_empty(0) {
-            let masked = self.state.fpu.control_word & 1 != 0;
+            let masked = self.fpu_invalid_masked();
             if masked {
                 let bits = Fp80::INDEFINITE
                     .to_f32(self.fpu_rounding_mode(), &mut ExceptionFlags::default());
@@ -131,20 +141,27 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             }
             self.fpu_check_underflow(0);
             self.clk(Self::timing(44, 7));
-            return Ok(());
+            return Ok(masked);
         }
         let val = self.fpu_st(0);
         let mut ef = ExceptionFlags::default();
         let f = val.to_f32(self.fpu_rounding_mode(), &mut ef);
+        if self.fpu_store_suppressed(&ef) {
+            self.fpu_record_store_suppressed(&ef);
+            self.clk(Self::timing(44, 7));
+            return Ok(false);
+        }
         self.fpu_write_u32(bus, f.to_bits())?;
         self.fpu_check_result(&ef);
         self.clk(Self::timing(44, 7));
-        Ok(())
+        Ok(true)
     }
 
-    pub(super) fn fpu_fst_m64(&mut self, bus: &mut impl common::Bus) -> Step {
+    /// Stores ST(0) as a double real. Returns whether the store completed: an empty ST(0)
+    /// or an unmasked exception with no stored result returns false.
+    pub(super) fn fpu_fst_m64(&mut self, bus: &mut impl common::Bus) -> Step<bool> {
         if self.fpu_is_empty(0) {
-            let masked = self.state.fpu.control_word & 1 != 0;
+            let masked = self.fpu_invalid_masked();
             if masked {
                 let bits = Fp80::INDEFINITE
                     .to_f64(self.fpu_rounding_mode(), &mut ExceptionFlags::default());
@@ -152,47 +169,56 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             }
             self.fpu_check_underflow(0);
             self.clk(Self::timing(45, 8));
-            return Ok(());
+            return Ok(masked);
         }
         let val = self.fpu_st(0);
         let mut ef = ExceptionFlags::default();
         let f = val.to_f64(self.fpu_rounding_mode(), &mut ef);
+        if self.fpu_store_suppressed(&ef) {
+            self.fpu_record_store_suppressed(&ef);
+            self.clk(Self::timing(45, 8));
+            return Ok(false);
+        }
         self.fpu_write_u64(bus, f.to_bits())?;
         self.fpu_check_result(&ef);
         self.clk(Self::timing(45, 8));
-        Ok(())
+        Ok(true)
     }
 
-    pub(super) fn fpu_fst_sti(&mut self, i: u8) {
+    /// Copies ST(0) to ST(i). Returns false for an empty ST(0) with the invalid operation
+    /// exception unmasked.
+    pub(super) fn fpu_fst_sti(&mut self, i: u8) -> bool {
         self.fpu_clear_c1();
+        self.clk(Self::timing(11, 3));
         if self.fpu_check_underflow(0) {
-            let masked = self.state.fpu.control_word & 1 != 0;
+            let masked = self.fpu_invalid_masked();
             if masked {
                 self.fpu_write_st(i, Fp80::INDEFINITE);
             }
-            self.clk(Self::timing(11, 3));
-            return;
+            return masked;
         }
         let val = self.fpu_st(0);
         self.fpu_write_st(i, val);
-        self.clk(Self::timing(11, 3));
+        true
     }
 
     pub(super) fn fpu_fstp_m32(&mut self, bus: &mut impl common::Bus) -> Step {
-        self.fpu_fst_m32(bus)?;
-        self.fpu_pop();
+        if self.fpu_fst_m32(bus)? {
+            self.fpu_pop();
+        }
         Ok(())
     }
 
     pub(super) fn fpu_fstp_m64(&mut self, bus: &mut impl common::Bus) -> Step {
-        self.fpu_fst_m64(bus)?;
-        self.fpu_pop();
+        if self.fpu_fst_m64(bus)? {
+            self.fpu_pop();
+        }
         Ok(())
     }
 
     pub(super) fn fpu_fstp_m80(&mut self, bus: &mut impl common::Bus) {
         if self.fpu_is_empty(0) {
-            let masked = self.state.fpu.control_word & 1 != 0;
+            let masked = self.fpu_invalid_masked();
             if masked
                 && self
                     .fpu_write_tbyte(bus, &Fp80::INDEFINITE.to_le_bytes())
@@ -201,7 +227,9 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                 return;
             }
             self.fpu_check_underflow(0);
-            self.fpu_pop();
+            if masked {
+                self.fpu_pop();
+            }
             self.clk(Self::timing(53, 6));
             return;
         }
@@ -215,8 +243,9 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     pub(super) fn fpu_fstp_sti(&mut self, i: u8) {
-        self.fpu_fst_sti(i);
-        self.fpu_pop();
+        if self.fpu_fst_sti(i) {
+            self.fpu_pop();
+        }
     }
 
     pub(super) fn fpu_fild_m16(&mut self, bus: &mut impl common::Bus) -> Step {
@@ -246,70 +275,93 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         Ok(())
     }
 
-    pub(super) fn fpu_fist_m16(&mut self, bus: &mut impl common::Bus) -> Step {
+    /// Stores ST(0) as a word integer. Returns whether the store completed: an empty ST(0)
+    /// or an unmasked invalid operation with no stored result returns false.
+    pub(super) fn fpu_fist_m16(&mut self, bus: &mut impl common::Bus) -> Step<bool> {
         if self.fpu_is_empty(0) {
-            let masked = self.state.fpu.control_word & 1 != 0;
+            let masked = self.fpu_invalid_masked();
             if masked {
                 self.fpu_write_u16(bus, 0x8000u16)?;
             }
             self.fpu_check_underflow(0);
             self.clk(Self::timing(82, 29));
-            return Ok(());
+            return Ok(masked);
         }
         let val = self.fpu_st(0);
         let mut ef = ExceptionFlags::default();
         let i = val.to_i16(self.fpu_rounding_mode(), &mut ef);
+        if self.fpu_store_suppressed(&ef) {
+            self.fpu_record_store_suppressed(&ef);
+            self.clk(Self::timing(82, 29));
+            return Ok(false);
+        }
         self.fpu_write_u16(bus, i as u16)?;
         self.fpu_check_result(&ef);
         self.clk(Self::timing(82, 29));
-        Ok(())
+        Ok(true)
     }
 
-    pub(super) fn fpu_fist_m32(&mut self, bus: &mut impl common::Bus) -> Step {
+    /// Stores ST(0) as a short integer. Returns whether the store completed: an empty
+    /// ST(0) or an unmasked invalid operation with no stored result returns false.
+    pub(super) fn fpu_fist_m32(&mut self, bus: &mut impl common::Bus) -> Step<bool> {
         if self.fpu_is_empty(0) {
-            let masked = self.state.fpu.control_word & 1 != 0;
+            let masked = self.fpu_invalid_masked();
             if masked {
                 self.fpu_write_u32(bus, 0x8000_0000u32)?;
             }
             self.fpu_check_underflow(0);
             self.clk(Self::timing(79, 28));
-            return Ok(());
+            return Ok(masked);
         }
         let val = self.fpu_st(0);
         let mut ef = ExceptionFlags::default();
         let i = val.to_i32(self.fpu_rounding_mode(), &mut ef);
+        if self.fpu_store_suppressed(&ef) {
+            self.fpu_record_store_suppressed(&ef);
+            self.clk(Self::timing(79, 28));
+            return Ok(false);
+        }
         self.fpu_write_u32(bus, i as u32)?;
         self.fpu_check_result(&ef);
         self.clk(Self::timing(79, 28));
-        Ok(())
+        Ok(true)
     }
 
     pub(super) fn fpu_fistp_m16(&mut self, bus: &mut impl common::Bus) -> Step {
-        self.fpu_fist_m16(bus)?;
-        self.fpu_pop();
+        if self.fpu_fist_m16(bus)? {
+            self.fpu_pop();
+        }
         Ok(())
     }
 
     pub(super) fn fpu_fistp_m32(&mut self, bus: &mut impl common::Bus) -> Step {
-        self.fpu_fist_m32(bus)?;
-        self.fpu_pop();
+        if self.fpu_fist_m32(bus)? {
+            self.fpu_pop();
+        }
         Ok(())
     }
 
     pub(super) fn fpu_fistp_m64(&mut self, bus: &mut impl common::Bus) {
         if self.fpu_is_empty(0) {
-            let masked = self.state.fpu.control_word & 1 != 0;
+            let masked = self.fpu_invalid_masked();
             if masked && self.fpu_write_u64(bus, 0x8000_0000_0000_0000u64).is_err() {
                 return;
             }
             self.fpu_check_underflow(0);
-            self.fpu_pop();
+            if masked {
+                self.fpu_pop();
+            }
             self.clk(Self::timing(80, 28));
             return;
         }
         let val = self.fpu_st(0);
         let mut ef = ExceptionFlags::default();
         let i = val.to_i64(self.fpu_rounding_mode(), &mut ef);
+        if self.fpu_store_suppressed(&ef) {
+            self.fpu_record_store_suppressed(&ef);
+            self.clk(Self::timing(80, 28));
+            return;
+        }
         if self.fpu_write_u64(bus, i as u64).is_err() {
             return;
         }
@@ -330,7 +382,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
 
     pub(super) fn fpu_fbstp(&mut self, bus: &mut impl common::Bus) {
         if self.fpu_is_empty(0) {
-            let masked = self.state.fpu.control_word & 1 != 0;
+            let masked = self.fpu_invalid_masked();
             if masked
                 && self
                     .fpu_write_tbyte(
@@ -342,13 +394,20 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                 return;
             }
             self.fpu_check_underflow(0);
-            self.fpu_pop();
+            if masked {
+                self.fpu_pop();
+            }
             self.clk(Self::timing(512, 172));
             return;
         }
         let val = self.fpu_st(0);
         let mut ef = ExceptionFlags::default();
         let bcd = val.to_bcd(self.fpu_rounding_mode(), &mut ef);
+        if self.fpu_store_suppressed(&ef) {
+            self.fpu_record_store_suppressed(&ef);
+            self.clk(Self::timing(512, 172));
+            return;
+        }
         if self.fpu_write_tbyte(bus, &bcd).is_err() {
             return;
         }
@@ -451,6 +510,8 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         self.clk(Self::timing(41, 8));
     }
 
+    /// Computes ST(dest) = op(ST(dest), ST(src)). Returns whether a result was delivered:
+    /// a stack underflow or an unmasked exception without a result returns false.
     fn fpu_arith_reg_reg(
         &mut self,
         dest: u8,
@@ -458,14 +519,14 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         op: fn(Fp80, Fp80, RoundingMode, Precision, &mut ExceptionFlags) -> Fp80,
         t387: i32,
         t486: i32,
-    ) {
+    ) -> bool {
+        self.clk(Self::timing(t387, t486));
         if self.fpu_check_underflow(dest) || self.fpu_check_underflow(src) {
-            let masked = self.state.fpu.control_word & 1 != 0;
+            let masked = self.fpu_invalid_masked();
             if masked {
                 self.fpu_write_st(dest, Fp80::INDEFINITE);
             }
-            self.clk(Self::timing(t387, t486));
-            return;
+            return masked;
         }
         let a = self.fpu_st(dest);
         let b = self.fpu_st(src);
@@ -473,9 +534,63 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         let pc = self.fpu_precision();
         let mut ef = ExceptionFlags::default();
         let result = op(a, b, rc, pc, &mut ef);
-        self.fpu_check_result(&ef);
-        self.fpu_write_st(dest, result);
+        self.fpu_deliver(dest, &ef, result)
+    }
+
+    /// Writes `result` with the exceptions `ef` to ST(dest) through `fpu_register_result`.
+    /// Returns whether the result was delivered.
+    fn fpu_deliver(&mut self, dest: u8, ef: &ExceptionFlags, result: Fp80) -> bool {
+        match self.fpu_register_result(ef, result) {
+            Some(value) => {
+                self.fpu_write_st(dest, value);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Computes ST(0) = op(ST(0), operand) for the memory operand `operand`, converted with
+    /// the exceptions `conversion`. Observed behaviour: the operand read comes before the
+    /// stack underflow check, so a faulting operand raises its fault with an empty ST(0).
+    fn fpu_arith_memory(
+        &mut self,
+        operand: Fp80,
+        conversion: ExceptionFlags,
+        op: fn(Fp80, Fp80, RoundingMode, Precision, &mut ExceptionFlags) -> Fp80,
+        t387: i32,
+        t486: i32,
+    ) {
         self.clk(Self::timing(t387, t486));
+        if self.fpu_check_underflow(0) {
+            if self.fpu_invalid_masked() {
+                self.fpu_write_st(0, Fp80::INDEFINITE);
+            }
+            return;
+        }
+        let a = self.fpu_st(0);
+        let rc = self.fpu_rounding_mode();
+        let pc = self.fpu_precision();
+        let mut ef = ExceptionFlags::default();
+        let result = op(a, operand, rc, pc, &mut ef);
+        Self::fpu_merge_conversion(&mut ef, &conversion, a, operand);
+        self.fpu_deliver(0, &ef, result);
+    }
+
+    /// Adds the exceptions `conversion` of a memory operand conversion to the exceptions
+    /// `ef` of the operation on `a` and the converted `b`. The denormal operand exception
+    /// of the conversion is not reported when a NaN operand, an invalid operation or a zero
+    /// divide takes priority (80486 PRM 16.2.7).
+    fn fpu_merge_conversion(
+        ef: &mut ExceptionFlags,
+        conversion: &ExceptionFlags,
+        a: Fp80,
+        b: Fp80,
+    ) {
+        ef.invalid |= conversion.invalid;
+        let higher_priority = a.is_nan() || b.is_nan() || ef.invalid || ef.zero_divide;
+        if conversion.denormal && !higher_priority {
+            ef.denormal = true;
+        }
     }
 
     fn fpu_arith_m32(
@@ -485,25 +600,10 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         t486: i32,
         bus: &mut impl common::Bus,
     ) -> Step {
-        if self.fpu_check_underflow(0) {
-            let masked = self.state.fpu.control_word & 1 != 0;
-            if masked {
-                self.fpu_write_st(0, Fp80::INDEFINITE);
-            }
-            self.clk(Self::timing(t387, t486));
-            return Ok(());
-        }
         let raw = self.fpu_read_u32(bus)?;
-        let val = f32::from_bits(raw);
         let mut ef = ExceptionFlags::default();
-        let b = Fp80::from_f32(val, &mut ef);
-        let a = self.fpu_st(0);
-        let rc = self.fpu_rounding_mode();
-        let pc = self.fpu_precision();
-        let result = op(a, b, rc, pc, &mut ef);
-        self.fpu_check_result(&ef);
-        self.fpu_write_st(0, result);
-        self.clk(Self::timing(t387, t486));
+        let operand = Fp80::from_f32(f32::from_bits(raw), &mut ef);
+        self.fpu_arith_memory(operand, ef, op, t387, t486);
         Ok(())
     }
 
@@ -514,25 +614,10 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         t486: i32,
         bus: &mut impl common::Bus,
     ) -> Step {
-        if self.fpu_check_underflow(0) {
-            let masked = self.state.fpu.control_word & 1 != 0;
-            if masked {
-                self.fpu_write_st(0, Fp80::INDEFINITE);
-            }
-            self.clk(Self::timing(t387, t486));
-            return Ok(());
-        }
         let raw = self.fpu_read_u64(bus)?;
-        let val = f64::from_bits(raw);
         let mut ef = ExceptionFlags::default();
-        let b = Fp80::from_f64(val, &mut ef);
-        let a = self.fpu_st(0);
-        let rc = self.fpu_rounding_mode();
-        let pc = self.fpu_precision();
-        let result = op(a, b, rc, pc, &mut ef);
-        self.fpu_check_result(&ef);
-        self.fpu_write_st(0, result);
-        self.clk(Self::timing(t387, t486));
+        let operand = Fp80::from_f64(f64::from_bits(raw), &mut ef);
+        self.fpu_arith_memory(operand, ef, op, t387, t486);
         Ok(())
     }
 
@@ -543,24 +628,9 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         t486: i32,
         bus: &mut impl common::Bus,
     ) -> Step {
-        if self.fpu_check_underflow(0) {
-            let masked = self.state.fpu.control_word & 1 != 0;
-            if masked {
-                self.fpu_write_st(0, Fp80::INDEFINITE);
-            }
-            self.clk(Self::timing(t387, t486));
-            return Ok(());
-        }
         let raw = self.fpu_read_u32(bus)?;
-        let b = Fp80::from_i32(raw as i32);
-        let a = self.fpu_st(0);
-        let rc = self.fpu_rounding_mode();
-        let pc = self.fpu_precision();
-        let mut ef = ExceptionFlags::default();
-        let result = op(a, b, rc, pc, &mut ef);
-        self.fpu_check_result(&ef);
-        self.fpu_write_st(0, result);
-        self.clk(Self::timing(t387, t486));
+        let operand = Fp80::from_i32(raw as i32);
+        self.fpu_arith_memory(operand, ExceptionFlags::default(), op, t387, t486);
         Ok(())
     }
 
@@ -571,24 +641,9 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         t486: i32,
         bus: &mut impl common::Bus,
     ) -> Step {
-        if self.fpu_check_underflow(0) {
-            let masked = self.state.fpu.control_word & 1 != 0;
-            if masked {
-                self.fpu_write_st(0, Fp80::INDEFINITE);
-            }
-            self.clk(Self::timing(t387, t486));
-            return Ok(());
-        }
         let raw = self.fpu_read_u16(bus)?;
-        let b = Fp80::from_i16(raw as i16);
-        let a = self.fpu_st(0);
-        let rc = self.fpu_rounding_mode();
-        let pc = self.fpu_precision();
-        let mut ef = ExceptionFlags::default();
-        let result = op(a, b, rc, pc, &mut ef);
-        self.fpu_check_result(&ef);
-        self.fpu_write_st(0, result);
-        self.clk(Self::timing(t387, t486));
+        let operand = Fp80::from_i16(raw as i16);
+        self.fpu_arith_memory(operand, ExceptionFlags::default(), op, t387, t486);
         Ok(())
     }
 
@@ -611,8 +666,9 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     pub(super) fn fpu_faddp_sti_st0(&mut self, i: u8) {
-        self.fpu_arith_reg_reg(i, 0, Fp80::add, 23, 8);
-        self.fpu_pop();
+        if self.fpu_arith_reg_reg(i, 0, Fp80::add, 23, 8) {
+            self.fpu_pop();
+        }
     }
 
     pub(super) fn fpu_fiadd_m32(&mut self, bus: &mut impl common::Bus) -> Step {
@@ -644,8 +700,9 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     pub(super) fn fpu_fsubp_sti_st0(&mut self, i: u8) {
-        self.fpu_arith_reg_reg(i, 0, Fp80::sub, 26, 8);
-        self.fpu_pop();
+        if self.fpu_arith_reg_reg(i, 0, Fp80::sub, 26, 8) {
+            self.fpu_pop();
+        }
     }
 
     pub(super) fn fpu_fisub_m32(&mut self, bus: &mut impl common::Bus) -> Step {
@@ -689,8 +746,9 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     pub(super) fn fpu_fsubrp_sti_st0(&mut self, i: u8) {
-        self.fpu_arith_reg_reg(i, 0, Self::fpu_subr, 26, 8);
-        self.fpu_pop();
+        if self.fpu_arith_reg_reg(i, 0, Self::fpu_subr, 26, 8) {
+            self.fpu_pop();
+        }
     }
 
     pub(super) fn fpu_fisubr_m32(&mut self, bus: &mut impl common::Bus) -> Step {
@@ -722,8 +780,9 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     pub(super) fn fpu_fmulp_sti_st0(&mut self, i: u8) {
-        self.fpu_arith_reg_reg(i, 0, Fp80::mul, 29, 16);
-        self.fpu_pop();
+        if self.fpu_arith_reg_reg(i, 0, Fp80::mul, 29, 16) {
+            self.fpu_pop();
+        }
     }
 
     pub(super) fn fpu_fimul_m32(&mut self, bus: &mut impl common::Bus) -> Step {
@@ -755,8 +814,9 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     pub(super) fn fpu_fdivp_sti_st0(&mut self, i: u8) {
-        self.fpu_arith_reg_reg(i, 0, Fp80::div, 91, 73);
-        self.fpu_pop();
+        if self.fpu_arith_reg_reg(i, 0, Fp80::div, 91, 73) {
+            self.fpu_pop();
+        }
     }
 
     pub(super) fn fpu_fidiv_m32(&mut self, bus: &mut impl common::Bus) -> Step {
@@ -798,8 +858,9 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     pub(super) fn fpu_fdivrp_sti_st0(&mut self, i: u8) {
-        self.fpu_arith_reg_reg(i, 0, Self::fpu_divr, 91, 73);
-        self.fpu_pop();
+        if self.fpu_arith_reg_reg(i, 0, Self::fpu_divr, 91, 73) {
+            self.fpu_pop();
+        }
     }
 
     pub(super) fn fpu_fidivr_m32(&mut self, bus: &mut impl common::Bus) -> Step {
@@ -812,30 +873,34 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         Ok(())
     }
 
-    // Unary arithmetic
-    pub(super) fn fpu_fsqrt(&mut self) {
+    /// Applies the unary operation `op` to ST(0) with the stack underflow check.
+    fn fpu_unary(
+        &mut self,
+        op: impl FnOnce(Fp80, &mut ExceptionFlags) -> Fp80,
+        t387: i32,
+        t486: i32,
+    ) {
+        self.clk(Self::timing(t387, t486));
         if self.fpu_check_underflow(0) {
-            let masked = self.state.fpu.control_word & 1 != 0;
-            if masked {
+            if self.fpu_invalid_masked() {
                 self.fpu_write_st(0, Fp80::INDEFINITE);
             }
-            self.clk(Self::timing(122, 83));
             return;
         }
-        let a = self.fpu_st(0);
+        let mut ef = ExceptionFlags::default();
+        let result = op(self.fpu_st(0), &mut ef);
+        self.fpu_deliver(0, &ef, result);
+    }
+
+    pub(super) fn fpu_fsqrt(&mut self) {
         let rc = self.fpu_rounding_mode();
         let pc = self.fpu_precision();
-        let mut ef = ExceptionFlags::default();
-        let result = a.sqrt(rc, pc, &mut ef);
-        self.fpu_check_result(&ef);
-        self.fpu_write_st(0, result);
-        self.clk(Self::timing(122, 83));
+        self.fpu_unary(|value, ef| value.sqrt(rc, pc, ef), 122, 83);
     }
 
     pub(super) fn fpu_fabs(&mut self) {
         if self.fpu_check_underflow(0) {
-            let masked = self.state.fpu.control_word & 1 != 0;
-            if masked {
+            if self.fpu_invalid_masked() {
                 self.fpu_write_st(0, Fp80::INDEFINITE);
             }
             self.clk(Self::timing(22, 3));
@@ -849,8 +914,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
 
     pub(super) fn fpu_fchs(&mut self) {
         if self.fpu_check_underflow(0) {
-            let masked = self.state.fpu.control_word & 1 != 0;
-            if masked {
+            if self.fpu_invalid_masked() {
                 self.fpu_write_st(0, Fp80::INDEFINITE);
             }
             self.clk(Self::timing(24, 6));
@@ -863,105 +927,103 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     pub(super) fn fpu_frndint(&mut self) {
-        if self.fpu_check_underflow(0) {
-            let masked = self.state.fpu.control_word & 1 != 0;
-            if masked {
-                self.fpu_write_st(0, Fp80::INDEFINITE);
-            }
-            self.clk(Self::timing(66, 21));
-            return;
-        }
-        let a = self.fpu_st(0);
         let rc = self.fpu_rounding_mode();
-        let mut ef = ExceptionFlags::default();
-        let result = a.round_to_int(rc, &mut ef);
-        self.fpu_check_result(&ef);
-        self.fpu_write_st(0, result);
-        self.clk(Self::timing(66, 21));
+        self.fpu_unary(|value, ef| value.round_to_int(rc, ef), 66, 21);
+    }
+
+    /// Checks ST(0) and ST(1) for a stack underflow. Returns true when both hold a value.
+    /// An underflow with the invalid operation exception masked writes the QNaN indefinite
+    /// to ST(`dest`).
+    fn fpu_check_two_operands(&mut self, dest: u8) -> bool {
+        if self.fpu_check_underflow(0) || self.fpu_check_underflow(1) {
+            if self.fpu_invalid_masked() {
+                self.fpu_write_st(dest, Fp80::INDEFINITE);
+            }
+            return false;
+        }
+        true
     }
 
     pub(super) fn fpu_fscale(&mut self) {
-        if self.fpu_check_underflow(0) || self.fpu_check_underflow(1) {
-            let masked = self.state.fpu.control_word & 1 != 0;
-            if masked {
-                self.fpu_write_st(0, Fp80::INDEFINITE);
-            }
-            self.clk(Self::timing(67, 30));
+        self.clk(Self::timing(67, 30));
+        if !self.fpu_check_two_operands(0) {
             return;
         }
         let a = self.fpu_st(0);
         let b = self.fpu_st(1);
         let mut ef = ExceptionFlags::default();
-        let result = a.scale(b, &mut ef);
-        self.fpu_check_result(&ef);
-        self.fpu_write_st(0, result);
-        self.clk(Self::timing(67, 30));
+        let result = a.scale(b, self.fpu_rounding_mode(), &mut ef);
+        self.fpu_deliver(0, &ef, result);
     }
 
     pub(super) fn fpu_fxtract(&mut self) {
+        self.clk(Self::timing(70, 16));
         if self.fpu_check_underflow(0) {
-            let masked = self.state.fpu.control_word & 1 != 0;
-            if masked {
+            if self.fpu_invalid_masked() {
                 self.fpu_write_st(0, Fp80::INDEFINITE);
                 self.fpu_push(Fp80::INDEFINITE);
             }
-            self.clk(Self::timing(70, 16));
+            return;
+        }
+        if !self.fpu_check_unmasked_overflow() {
             return;
         }
         let a = self.fpu_st(0);
         let mut ef = ExceptionFlags::default();
         let (significand, exponent) = a.extract(&mut ef);
+        if self.fpu_operation_suppressed(&ef) {
+            self.fpu_record_suppressed(&ef);
+            return;
+        }
         self.fpu_check_result(&ef);
         self.fpu_write_st(0, exponent);
         self.fpu_push(significand);
-        self.clk(Self::timing(70, 16));
     }
 
     pub(super) fn fpu_fprem(&mut self) {
-        if self.fpu_check_underflow(0) || self.fpu_check_underflow(1) {
-            let masked = self.state.fpu.control_word & 1 != 0;
-            if masked {
-                self.fpu_write_st(0, Fp80::INDEFINITE);
-            }
-            self.clk(Self::timing(74, 70));
+        self.clk(Self::timing(74, 70));
+        if !self.fpu_check_two_operands(0) {
             return;
         }
         let a = self.fpu_st(0);
         let b = self.fpu_st(1);
         let mut ef = ExceptionFlags::default();
         let (result, quotient_bits, complete) = a.partial_remainder(b, &mut ef);
-        self.fpu_check_result(&ef);
-        self.fpu_write_st(0, result);
-        // Set condition codes: C2=!complete, C0=Q2, C3=Q1, C1=Q0
-        let c2 = !complete;
-        let c0 = quotient_bits & 4 != 0;
-        let c3 = quotient_bits & 2 != 0;
-        let c1 = quotient_bits & 1 != 0;
-        self.fpu_set_cc(c3, c2, c1, c0);
-        self.clk(Self::timing(74, 70));
+        self.fpu_deliver_remainder(&ef, result, quotient_bits, complete);
     }
 
     pub(super) fn fpu_fprem1(&mut self) {
-        if self.fpu_check_underflow(0) || self.fpu_check_underflow(1) {
-            let masked = self.state.fpu.control_word & 1 != 0;
-            if masked {
-                self.fpu_write_st(0, Fp80::INDEFINITE);
-            }
-            self.clk(Self::timing(95, 72));
+        self.clk(Self::timing(95, 72));
+        if !self.fpu_check_two_operands(0) {
             return;
         }
         let a = self.fpu_st(0);
         let b = self.fpu_st(1);
         let mut ef = ExceptionFlags::default();
         let (result, quotient_bits, complete) = a.ieee_remainder(b, &mut ef);
-        self.fpu_check_result(&ef);
-        self.fpu_write_st(0, result);
+        self.fpu_deliver_remainder(&ef, result, quotient_bits, complete);
+    }
+
+    /// Writes the partial remainder `result` to ST(0) and sets the condition codes: C2 for
+    /// an incomplete reduction and C0, C3 and C1 to the quotient bits Q2, Q1 and Q0 (80486
+    /// PRM, FPREM). Observed behaviour: an unmasked exception without a result clears C2
+    /// and keeps C0 and C3.
+    fn fpu_deliver_remainder(
+        &mut self,
+        ef: &ExceptionFlags,
+        result: Fp80,
+        quotient_bits: u8,
+        complete: bool,
+    ) {
+        if !self.fpu_deliver(0, ef, result) {
+            self.fpu_clear_c2();
+            return;
+        }
         let c2 = !complete;
         let c0 = quotient_bits & 4 != 0;
         let c3 = quotient_bits & 2 != 0;
         let c1 = quotient_bits & 1 != 0;
         self.fpu_set_cc(c3, c2, c1, c0);
-        self.clk(Self::timing(95, 72));
     }
 
     fn fpu_compare_and_set_cc(&mut self, ordering: FpOrdering) {
@@ -974,190 +1036,152 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         self.fpu_set_cc(c3, c2, false, c0);
     }
 
-    pub(super) fn fpu_fcom_m32(&mut self, bus: &mut impl common::Bus) -> Step {
+    /// Compares ST(0) with `operand`, converted with the exceptions `conversion`, and sets
+    /// the condition codes. `quiet` selects the unordered compare. Returns whether the
+    /// compare completed: a stack underflow or an unmasked exception returns false, and the
+    /// popping forms then leave TOP unchanged (80486 PRM 16.2.2). Observed behaviour: the
+    /// condition codes are set in every case, also when an unmasked invalid operation or
+    /// denormal operand exception stops the compare.
+    fn fpu_compare_st0(&mut self, operand: Option<(Fp80, ExceptionFlags)>, quiet: bool) -> bool {
         if self.fpu_check_underflow(0) {
             self.fpu_compare_and_set_cc(FpOrdering::Unordered);
-            self.clk(Self::timing(26, 4));
-            return Ok(());
+            return self.fpu_invalid_masked();
         }
-        let raw = self.fpu_read_u32(bus)?;
-        let val = f32::from_bits(raw);
-        let mut ef = ExceptionFlags::default();
-        let b = Fp80::from_f32(val, &mut ef);
-        let a = self.fpu_st(0);
-        let ordering = a.compare(b, &mut ef);
-        self.fpu_check_result(&ef);
-        self.fpu_compare_and_set_cc(ordering);
-        self.clk(Self::timing(26, 4));
-        Ok(())
-    }
-
-    pub(super) fn fpu_fcom_m64(&mut self, bus: &mut impl common::Bus) -> Step {
-        if self.fpu_check_underflow(0) {
+        let Some((b, conversion)) = operand else {
             self.fpu_compare_and_set_cc(FpOrdering::Unordered);
-            self.clk(Self::timing(31, 4));
-            return Ok(());
-        }
-        let raw = self.fpu_read_u64(bus)?;
-        let val = f64::from_bits(raw);
-        let mut ef = ExceptionFlags::default();
-        let b = Fp80::from_f64(val, &mut ef);
+            return self.fpu_invalid_masked();
+        };
         let a = self.fpu_st(0);
-        let ordering = a.compare(b, &mut ef);
-        self.fpu_check_result(&ef);
+        let mut ef = ExceptionFlags::default();
+        let ordering = if quiet {
+            a.compare_quiet(b, &mut ef)
+        } else {
+            a.compare(b, &mut ef)
+        };
+        Self::fpu_merge_conversion(&mut ef, &conversion, a, b);
+        let completed = if self.fpu_operation_suppressed(&ef) {
+            self.fpu_record_suppressed(&ef);
+            false
+        } else {
+            self.fpu_check_result(&ef);
+            true
+        };
         self.fpu_compare_and_set_cc(ordering);
-        self.clk(Self::timing(31, 4));
-        Ok(())
+        completed
     }
 
-    pub(super) fn fpu_fcom_sti(&mut self, i: u8) {
+    /// Returns ST(i) for a register compare, or `None` after a stack underflow of ST(0) or
+    /// ST(i).
+    fn fpu_compare_register(&mut self, i: u8) -> Option<(Fp80, ExceptionFlags)> {
         if self.fpu_check_underflow(0) || self.fpu_check_underflow(i) {
-            self.fpu_compare_and_set_cc(FpOrdering::Unordered);
-            self.clk(Self::timing(24, 4));
-            return;
+            return None;
         }
-        let a = self.fpu_st(0);
-        let b = self.fpu_st(i);
+        Some((self.fpu_st(i), ExceptionFlags::default()))
+    }
+
+    pub(super) fn fpu_fcom_m32(&mut self, bus: &mut impl common::Bus) -> Step<bool> {
+        let raw = self.fpu_read_u32(bus)?;
         let mut ef = ExceptionFlags::default();
-        let ordering = a.compare(b, &mut ef);
-        self.fpu_check_result(&ef);
-        self.fpu_compare_and_set_cc(ordering);
+        let b = Fp80::from_f32(f32::from_bits(raw), &mut ef);
+        self.clk(Self::timing(26, 4));
+        Ok(self.fpu_compare_st0(Some((b, ef)), false))
+    }
+
+    pub(super) fn fpu_fcom_m64(&mut self, bus: &mut impl common::Bus) -> Step<bool> {
+        let raw = self.fpu_read_u64(bus)?;
+        let mut ef = ExceptionFlags::default();
+        let b = Fp80::from_f64(f64::from_bits(raw), &mut ef);
+        self.clk(Self::timing(31, 4));
+        Ok(self.fpu_compare_st0(Some((b, ef)), false))
+    }
+
+    pub(super) fn fpu_fcom_sti(&mut self, i: u8) -> bool {
         self.clk(Self::timing(24, 4));
+        let operand = self.fpu_compare_register(i);
+        self.fpu_compare_st0(operand, false)
     }
 
     pub(super) fn fpu_fcomp_m32(&mut self, bus: &mut impl common::Bus) -> Step {
-        self.fpu_fcom_m32(bus)?;
-        self.fpu_pop();
+        if self.fpu_fcom_m32(bus)? {
+            self.fpu_pop();
+        }
         Ok(())
     }
 
     pub(super) fn fpu_fcomp_m64(&mut self, bus: &mut impl common::Bus) -> Step {
-        self.fpu_fcom_m64(bus)?;
-        self.fpu_pop();
+        if self.fpu_fcom_m64(bus)? {
+            self.fpu_pop();
+        }
         Ok(())
     }
 
     pub(super) fn fpu_fcomp_sti(&mut self, i: u8) {
-        self.fpu_fcom_sti(i);
-        self.fpu_pop();
+        if self.fpu_fcom_sti(i) {
+            self.fpu_pop();
+        }
     }
 
     pub(super) fn fpu_fcompp(&mut self) {
-        if self.fpu_check_underflow(0) || self.fpu_check_underflow(1) {
-            self.fpu_compare_and_set_cc(FpOrdering::Unordered);
-            self.fpu_pop();
-            self.fpu_pop();
-            self.clk(Self::timing(26, 5));
-            return;
-        }
-        let a = self.fpu_st(0);
-        let b = self.fpu_st(1);
-        let mut ef = ExceptionFlags::default();
-        let ordering = a.compare(b, &mut ef);
-        self.fpu_check_result(&ef);
-        self.fpu_compare_and_set_cc(ordering);
-        self.fpu_pop();
-        self.fpu_pop();
         self.clk(Self::timing(26, 5));
+        let operand = self.fpu_compare_register(1);
+        if self.fpu_compare_st0(operand, false) {
+            self.fpu_pop();
+            self.fpu_pop();
+        }
     }
 
-    pub(super) fn fpu_fucom_sti(&mut self, i: u8) {
-        if self.fpu_check_underflow(0) || self.fpu_check_underflow(i) {
-            self.fpu_compare_and_set_cc(FpOrdering::Unordered);
-            self.clk(Self::timing(24, 4));
-            return;
-        }
-        let a = self.fpu_st(0);
-        let b = self.fpu_st(i);
-        let mut ef = ExceptionFlags::default();
-        let ordering = a.compare_quiet(b, &mut ef);
-        self.fpu_check_result(&ef);
-        self.fpu_compare_and_set_cc(ordering);
+    pub(super) fn fpu_fucom_sti(&mut self, i: u8) -> bool {
         self.clk(Self::timing(24, 4));
+        let operand = self.fpu_compare_register(i);
+        self.fpu_compare_st0(operand, true)
     }
 
     pub(super) fn fpu_fucomp_sti(&mut self, i: u8) {
-        self.fpu_fucom_sti(i);
-        self.fpu_pop();
+        if self.fpu_fucom_sti(i) {
+            self.fpu_pop();
+        }
     }
 
     pub(super) fn fpu_fucompp(&mut self) {
-        if self.fpu_check_underflow(0) || self.fpu_check_underflow(1) {
-            self.fpu_compare_and_set_cc(FpOrdering::Unordered);
-            self.fpu_pop();
-            self.fpu_pop();
-            self.clk(Self::timing(26, 5));
-            return;
-        }
-        let a = self.fpu_st(0);
-        let b = self.fpu_st(1);
-        let mut ef = ExceptionFlags::default();
-        let ordering = a.compare_quiet(b, &mut ef);
-        self.fpu_check_result(&ef);
-        self.fpu_compare_and_set_cc(ordering);
-        self.fpu_pop();
-        self.fpu_pop();
         self.clk(Self::timing(26, 5));
+        let operand = self.fpu_compare_register(1);
+        if self.fpu_compare_st0(operand, true) {
+            self.fpu_pop();
+            self.fpu_pop();
+        }
     }
 
-    pub(super) fn fpu_ficom_m32(&mut self, bus: &mut impl common::Bus) -> Step {
-        if self.fpu_check_underflow(0) {
-            self.fpu_compare_and_set_cc(FpOrdering::Unordered);
-            self.clk(Self::timing(56, 15));
-            return Ok(());
-        }
+    pub(super) fn fpu_ficom_m32(&mut self, bus: &mut impl common::Bus) -> Step<bool> {
         let raw = self.fpu_read_u32(bus)?;
         let b = Fp80::from_i32(raw as i32);
-        let a = self.fpu_st(0);
-        let mut ef = ExceptionFlags::default();
-        let ordering = a.compare(b, &mut ef);
-        self.fpu_check_result(&ef);
-        self.fpu_compare_and_set_cc(ordering);
         self.clk(Self::timing(56, 15));
-        Ok(())
+        Ok(self.fpu_compare_st0(Some((b, ExceptionFlags::default())), false))
     }
 
-    pub(super) fn fpu_ficom_m16(&mut self, bus: &mut impl common::Bus) -> Step {
-        if self.fpu_check_underflow(0) {
-            self.fpu_compare_and_set_cc(FpOrdering::Unordered);
-            self.clk(Self::timing(71, 16));
-            return Ok(());
-        }
+    pub(super) fn fpu_ficom_m16(&mut self, bus: &mut impl common::Bus) -> Step<bool> {
         let raw = self.fpu_read_u16(bus)?;
         let b = Fp80::from_i16(raw as i16);
-        let a = self.fpu_st(0);
-        let mut ef = ExceptionFlags::default();
-        let ordering = a.compare(b, &mut ef);
-        self.fpu_check_result(&ef);
-        self.fpu_compare_and_set_cc(ordering);
         self.clk(Self::timing(71, 16));
-        Ok(())
+        Ok(self.fpu_compare_st0(Some((b, ExceptionFlags::default())), false))
     }
 
     pub(super) fn fpu_ficomp_m32(&mut self, bus: &mut impl common::Bus) -> Step {
-        self.fpu_ficom_m32(bus)?;
-        self.fpu_pop();
+        if self.fpu_ficom_m32(bus)? {
+            self.fpu_pop();
+        }
         Ok(())
     }
 
     pub(super) fn fpu_ficomp_m16(&mut self, bus: &mut impl common::Bus) -> Step {
-        self.fpu_ficom_m16(bus)?;
-        self.fpu_pop();
+        if self.fpu_ficom_m16(bus)? {
+            self.fpu_pop();
+        }
         Ok(())
     }
 
     pub(super) fn fpu_ftst(&mut self) {
-        if self.fpu_check_underflow(0) {
-            self.fpu_compare_and_set_cc(FpOrdering::Unordered);
-            self.clk(Self::timing(28, 4));
-            return;
-        }
-        let a = self.fpu_st(0);
-        let mut ef = ExceptionFlags::default();
-        let ordering = a.compare(Fp80::ZERO, &mut ef);
-        self.fpu_check_result(&ef);
-        self.fpu_compare_and_set_cc(ordering);
         self.clk(Self::timing(28, 4));
+        self.fpu_compare_st0(Some((Fp80::ZERO, ExceptionFlags::default())), false);
     }
 
     pub(super) fn fpu_fxam(&mut self) {
@@ -1188,176 +1212,128 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     pub(super) fn fpu_f2xm1(&mut self) {
-        if self.fpu_check_underflow(0) {
-            let masked = self.state.fpu.control_word & 1 != 0;
-            if masked {
-                self.fpu_write_st(0, Fp80::INDEFINITE);
+        self.fpu_unary(|value, ef| value.f2xm1(ef), 211, 140);
+    }
+
+    /// Computes ST(1) = op(ST(0), ST(1)) and pops. A stack underflow or an unmasked
+    /// exception without a result leaves TOP unchanged.
+    fn fpu_binary_pop(
+        &mut self,
+        op: impl FnOnce(Fp80, Fp80, &mut ExceptionFlags) -> Fp80,
+        t387: i32,
+        t486: i32,
+    ) {
+        self.clk(Self::timing(t387, t486));
+        if !self.fpu_check_two_operands(1) {
+            if self.fpu_invalid_masked() {
+                self.fpu_pop();
             }
-            self.clk(Self::timing(211, 140));
             return;
         }
-        let a = self.fpu_st(0);
+        let x = self.fpu_st(0);
+        let y = self.fpu_st(1);
         let mut ef = ExceptionFlags::default();
-        let result = a.f2xm1(&mut ef);
-        self.fpu_check_result(&ef);
-        self.fpu_write_st(0, result);
-        self.clk(Self::timing(211, 140));
+        let result = op(x, y, &mut ef);
+        if self.fpu_deliver(1, &ef, result) {
+            self.fpu_pop();
+        }
     }
 
     pub(super) fn fpu_fyl2x(&mut self) {
-        if self.fpu_check_underflow(0) || self.fpu_check_underflow(1) {
-            let masked = self.state.fpu.control_word & 1 != 0;
-            if masked {
-                self.fpu_write_st(1, Fp80::INDEFINITE);
-            }
-            self.fpu_pop();
-            self.clk(Self::timing(120, 196));
-            return;
-        }
-        let x = self.fpu_st(0);
-        let y = self.fpu_st(1);
-        let mut ef = ExceptionFlags::default();
-        let result = x.fyl2x(y, &mut ef);
-        self.fpu_check_result(&ef);
-        self.fpu_write_st(1, result);
-        self.fpu_pop();
-        self.clk(Self::timing(120, 196));
+        self.fpu_binary_pop(|x, y, ef| x.fyl2x(y, ef), 120, 196);
     }
 
     pub(super) fn fpu_fyl2xp1(&mut self) {
-        if self.fpu_check_underflow(0) || self.fpu_check_underflow(1) {
-            let masked = self.state.fpu.control_word & 1 != 0;
-            if masked {
-                self.fpu_write_st(1, Fp80::INDEFINITE);
-            }
-            self.fpu_pop();
-            self.clk(Self::timing(257, 171));
-            return;
-        }
-        let x = self.fpu_st(0);
-        let y = self.fpu_st(1);
-        let mut ef = ExceptionFlags::default();
-        let result = x.fyl2xp1(y, &mut ef);
-        self.fpu_check_result(&ef);
-        self.fpu_write_st(1, result);
-        self.fpu_pop();
-        self.clk(Self::timing(257, 171));
-    }
-
-    pub(super) fn fpu_fptan(&mut self) {
-        if self.fpu_check_underflow(0) {
-            let masked = self.state.fpu.control_word & 1 != 0;
-            if masked {
-                self.fpu_write_st(0, Fp80::INDEFINITE);
-                self.fpu_push(Fp80::ONE);
-            }
-            self.clk(Self::timing(191, 200));
-            return;
-        }
-        let x = self.fpu_st(0);
-        let mut ef = ExceptionFlags::default();
-        let (tan_val, out_of_range) = x.fptan(&mut ef);
-        if out_of_range {
-            self.state.fpu.status_word |= 0x0400; // C2=1
-            self.clk(Self::timing(191, 200));
-            return;
-        }
-        self.fpu_check_result(&ef);
-        self.fpu_write_st(0, tan_val);
-        self.fpu_push(Fp80::ONE);
-        self.state.fpu.status_word &= !0x0400; // C2=0
-        self.clk(Self::timing(191, 200));
+        self.fpu_binary_pop(|x, y, ef| x.fyl2xp1(y, ef), 257, 171);
     }
 
     pub(super) fn fpu_fpatan(&mut self) {
-        if self.fpu_check_underflow(0) || self.fpu_check_underflow(1) {
-            let masked = self.state.fpu.control_word & 1 != 0;
-            if masked {
-                self.fpu_write_st(1, Fp80::INDEFINITE);
+        self.fpu_binary_pop(|x, y, ef| y.fpatan(x, ef), 314, 218);
+    }
+
+    /// Runs the one-result trigonometric operation `op` on ST(0). An operand out of range
+    /// sets C2 and leaves ST(0) unchanged. Otherwise C2 is cleared, also by an unmasked
+    /// exception without a result (observed behaviour).
+    fn fpu_trigonometric(
+        &mut self,
+        op: impl FnOnce(Fp80, &mut ExceptionFlags) -> (Fp80, bool),
+        t387: i32,
+        t486: i32,
+    ) {
+        self.clk(Self::timing(t387, t486));
+        if self.fpu_check_underflow(0) {
+            if self.fpu_invalid_masked() {
+                self.fpu_write_st(0, Fp80::INDEFINITE);
             }
-            self.fpu_pop();
-            self.clk(Self::timing(314, 218));
             return;
         }
-        let x = self.fpu_st(0); // ST(0)
-        let y = self.fpu_st(1); // ST(1)
         let mut ef = ExceptionFlags::default();
-        let result = y.fpatan(x, &mut ef);
-        self.fpu_check_result(&ef);
-        self.fpu_write_st(1, result);
-        self.fpu_pop();
-        self.clk(Self::timing(314, 218));
+        let (result, out_of_range) = op(self.fpu_st(0), &mut ef);
+        if out_of_range {
+            self.state.fpu.status_word |= 0x0400; // C2=1
+            return;
+        }
+        self.fpu_deliver(0, &ef, result);
+        self.fpu_clear_c2();
     }
 
     pub(super) fn fpu_fsin(&mut self) {
-        if self.fpu_check_underflow(0) {
-            let masked = self.state.fpu.control_word & 1 != 0;
-            if masked {
-                self.fpu_write_st(0, Fp80::INDEFINITE);
-            }
-            self.clk(Self::timing(122, 257));
-            return;
-        }
-        let x = self.fpu_st(0);
-        let mut ef = ExceptionFlags::default();
-        let (result, out_of_range) = x.fsin(&mut ef);
-        if out_of_range {
-            self.state.fpu.status_word |= 0x0400; // C2=1
-            self.clk(Self::timing(122, 257));
-            return;
-        }
-        self.fpu_check_result(&ef);
-        self.fpu_write_st(0, result);
-        self.state.fpu.status_word &= !0x0400; // C2=0
-        self.clk(Self::timing(122, 257));
+        self.fpu_trigonometric(|value, ef| value.fsin(ef), 122, 257);
     }
 
     pub(super) fn fpu_fcos(&mut self) {
+        self.fpu_trigonometric(|value, ef| value.fcos(ef), 123, 257);
+    }
+
+    /// Runs the two-result operation `op` on ST(0): ST(0) receives the first result and
+    /// the second result is pushed. An unmasked stack overflow or an unmasked exception
+    /// leaves the stack unchanged. An operand out of range sets C2.
+    fn fpu_two_results(
+        &mut self,
+        op: impl FnOnce(Fp80, &mut ExceptionFlags) -> (Fp80, Fp80, bool),
+        masked_underflow_push: Fp80,
+        t387: i32,
+        t486: i32,
+    ) {
+        self.clk(Self::timing(t387, t486));
         if self.fpu_check_underflow(0) {
-            let masked = self.state.fpu.control_word & 1 != 0;
-            if masked {
+            if self.fpu_invalid_masked() {
                 self.fpu_write_st(0, Fp80::INDEFINITE);
+                self.fpu_push(masked_underflow_push);
             }
-            self.clk(Self::timing(123, 257));
             return;
         }
-        let x = self.fpu_st(0);
+        if !self.fpu_check_unmasked_overflow() {
+            return;
+        }
         let mut ef = ExceptionFlags::default();
-        let (result, out_of_range) = x.fcos(&mut ef);
+        let (first, second, out_of_range) = op(self.fpu_st(0), &mut ef);
         if out_of_range {
             self.state.fpu.status_word |= 0x0400; // C2=1
-            self.clk(Self::timing(123, 257));
             return;
         }
-        self.fpu_check_result(&ef);
-        self.fpu_write_st(0, result);
-        self.state.fpu.status_word &= !0x0400; // C2=0
-        self.clk(Self::timing(123, 257));
+        self.fpu_clear_c2();
+        let Some(first) = self.fpu_register_result(&ef, first) else {
+            return;
+        };
+        self.fpu_write_st(0, first);
+        self.fpu_push(second);
+    }
+
+    pub(super) fn fpu_fptan(&mut self) {
+        self.fpu_two_results(
+            |value, ef| {
+                let (tangent, out_of_range) = value.fptan(ef);
+                (tangent, Fp80::ONE, out_of_range)
+            },
+            Fp80::ONE,
+            191,
+            200,
+        );
     }
 
     pub(super) fn fpu_fsincos(&mut self) {
-        if self.fpu_check_underflow(0) {
-            let masked = self.state.fpu.control_word & 1 != 0;
-            if masked {
-                self.fpu_write_st(0, Fp80::INDEFINITE);
-                self.fpu_push(Fp80::INDEFINITE);
-            }
-            self.clk(Self::timing(194, 292));
-            return;
-        }
-        let x = self.fpu_st(0);
-        let mut ef = ExceptionFlags::default();
-        let (sin_val, cos_val, out_of_range) = x.fsincos(&mut ef);
-        if out_of_range {
-            self.state.fpu.status_word |= 0x0400; // C2=1
-            self.clk(Self::timing(194, 292));
-            return;
-        }
-        self.fpu_check_result(&ef);
-        self.fpu_write_st(0, sin_val);
-        self.fpu_push(cos_val);
-        self.state.fpu.status_word &= !0x0400; // C2=0
-        self.clk(Self::timing(194, 292));
+        self.fpu_two_results(|value, ef| value.fsincos(ef), Fp80::INDEFINITE, 194, 292);
     }
 
     /// Returns whether FSTENV, FLDENV, FSAVE and FRSTOR use the protected mode image. Real

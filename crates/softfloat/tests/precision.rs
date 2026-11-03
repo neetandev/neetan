@@ -209,7 +209,7 @@ fn transcendental_fscale() {
     let mut ef = ExceptionFlags::default();
     let one_point_five = Fp80::from_f64(1.5, &mut ef);
     let two = Fp80::from_f64(2.0, &mut ef);
-    let result = one_point_five.scale(two, &mut ef);
+    let result = one_point_five.scale(two, RoundingMode::NearestEven, &mut ef);
     check("FSCALE(1.5,2)", result, 0x4001, 0xC000000000000000, 0);
 }
 

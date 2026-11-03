@@ -1,6 +1,6 @@
 //! Conversions between Fp80 and integer/float/BCD formats.
 
-use crate::{ExceptionFlags, Fp80, Rounded, RoundingMode, round_to_format};
+use crate::{ExceptionFlags, Fp80, Rounded, RoundingMode, flag_denormal_operands, round_to_format};
 
 impl Fp80 {
     /// Convert a signed 16-bit integer to Fp80. Exact, no rounding needed.
@@ -162,7 +162,8 @@ impl Fp80 {
 }
 
 impl Fp80 {
-    /// Exact widening from f32. Sets IE if source is a signaling NaN (quietened in result).
+    /// Exact widening from f32. Sets IE if source is a signaling NaN (quietened in result)
+    /// and DE if it is a denormal, which the result holds normalized (80486 PRM 16.2.4).
     pub fn from_f32(v: f32, ef: &mut ExceptionFlags) -> Fp80 {
         let bits = v.to_bits();
         let sign = (bits >> 31) != 0;
@@ -188,10 +189,11 @@ impl Fp80 {
             if fraction == 0 {
                 return Fp80::from_bits(sign_bit, 0);
             }
+            ef.denormal = true;
             let raw_sig = fraction as u64;
             let leading_zeros = raw_sig.leading_zeros();
             let normalized_sig = raw_sig << leading_zeros;
-            let new_exp = (1i32 - 127 - 23) + 16383 + 63 - (leading_zeros as i32 - 41);
+            let new_exp = (1i32 - 127 - 23) + 16383 + 63 - leading_zeros as i32;
             return Fp80::from_bits(sign_bit | new_exp as u16, normalized_sig);
         }
 
@@ -200,7 +202,8 @@ impl Fp80 {
         Fp80::from_bits(sign_bit | new_exp, significand)
     }
 
-    /// Exact widening from f64. Sets IE if source is a signaling NaN (quietened in result).
+    /// Exact widening from f64. Sets IE if source is a signaling NaN (quietened in result)
+    /// and DE if it is a denormal, which the result holds normalized (80486 PRM 16.2.4).
     pub fn from_f64(v: f64, ef: &mut ExceptionFlags) -> Fp80 {
         let bits = v.to_bits();
         let sign = (bits >> 63) != 0;
@@ -226,10 +229,11 @@ impl Fp80 {
             if fraction == 0 {
                 return Fp80::from_bits(sign_bit, 0);
             }
+            ef.denormal = true;
             let raw_sig = fraction;
             let leading_zeros = raw_sig.leading_zeros();
             let normalized_sig = raw_sig << leading_zeros;
-            let new_exp = (1i32 - 1023 - 52) + 16383 + 63 - (leading_zeros as i32 - 12);
+            let new_exp = (1i32 - 1023 - 52) + 16383 + 63 - leading_zeros as i32;
             return Fp80::from_bits(sign_bit | new_exp as u16, normalized_sig);
         }
 
@@ -240,7 +244,8 @@ impl Fp80 {
 }
 
 impl Fp80 {
-    /// Narrowing conversion to f32. May raise OE, UE, PE, or IE (for SNaN).
+    /// Narrowing conversion to f32. May raise OE, UE, PE, IE (for SNaN) or DE (for a
+    /// denormal or pseudo-denormal source, 80486 PRM FST).
     pub fn to_f32(self, rc: RoundingMode, ef: &mut ExceptionFlags) -> f32 {
         let sign = self.sign();
         let sign_bit: u32 = if sign { 1u32 << 31 } else { 0 };
@@ -264,11 +269,13 @@ impl Fp80 {
             return f32::from_bits(sign_bit);
         }
 
+        flag_denormal_operands(&[self], ef);
         let bits = self.round_to_binary(F32, rc, ef);
         f32::from_bits(bits as u32)
     }
 
-    /// Narrowing conversion to f64. May raise OE, UE, PE, or IE (for SNaN).
+    /// Narrowing conversion to f64. May raise OE, UE, PE, IE (for SNaN) or DE (for a
+    /// denormal or pseudo-denormal source, 80486 PRM FST).
     pub fn to_f64(self, rc: RoundingMode, ef: &mut ExceptionFlags) -> f64 {
         let sign = self.sign();
         let sign_bit: u64 = if sign { 1u64 << 63 } else { 0 };
@@ -292,6 +299,7 @@ impl Fp80 {
             return f64::from_bits(sign_bit);
         }
 
+        flag_denormal_operands(&[self], ef);
         let bits = self.round_to_binary(F64, rc, ef);
         f64::from_bits(bits)
     }
@@ -857,10 +865,15 @@ mod tests {
         assert!(result.is_quiet_nan());
         assert!(!ef.invalid);
 
-        // f32 denormal: widened exactly.
+        // f32 denormal: widened exactly and normalized, with DE.
         let mut ef = no_exceptions();
         let result = Fp80::from_f32(f32::MIN_POSITIVE / 2.0, &mut ef);
-        assert!(result.is_normal() || result.is_denormal());
+        assert_eq!(result, Fp80::from_bits(0x3F80, 0x8000_0000_0000_0000));
+        assert!(ef.denormal);
+        let mut ef = no_exceptions();
+        let result = Fp80::from_f32(-f32::from_bits(0x0000_0123), &mut ef);
+        assert_eq!(result, Fp80::from_bits(0xBF72, 0x9180_0000_0000_0000));
+        assert!(ef.denormal);
 
         // Negative value.
         let mut ef = no_exceptions();
@@ -901,10 +914,34 @@ mod tests {
         assert!(result.is_quiet_nan());
         assert!(!ef.invalid);
 
-        // f64 denormal widened exactly.
+        // f64 denormal widened exactly and normalized, with DE.
         let mut ef = no_exceptions();
         let result = Fp80::from_f64(f64::MIN_POSITIVE / 2.0, &mut ef);
-        assert!(result.is_normal() || result.is_denormal());
+        assert_eq!(result, Fp80::from_bits(0x3C00, 0x8000_0000_0000_0000));
+        assert!(ef.denormal);
+        let mut ef = no_exceptions();
+        let result = Fp80::from_f64(f64::from_bits(0x0000_0000_0000_0123), &mut ef);
+        assert_eq!(result, Fp80::from_bits(0x3BD5, 0x9180_0000_0000_0000));
+        assert!(ef.denormal);
+    }
+
+    /// Verifies that a narrowing store of a denormal or pseudo-denormal source reports DE
+    /// (80486 PRM FST).
+    #[test]
+    fn test_narrowing_of_a_denormal_reports_de() {
+        let denormal = Fp80::from_bits(0x0000, 0x0000_0000_0000_1234);
+        let pseudo_denormal = Fp80::from_bits(0x8000, 0x8000_0000_0000_0000);
+        for value in [denormal, pseudo_denormal] {
+            let mut ef = no_exceptions();
+            value.to_f32(RoundingMode::NearestEven, &mut ef);
+            assert!(ef.denormal);
+            let mut ef = no_exceptions();
+            value.to_f64(RoundingMode::NearestEven, &mut ef);
+            assert!(ef.denormal);
+        }
+        let mut ef = no_exceptions();
+        Fp80::ONE.to_f32(RoundingMode::NearestEven, &mut ef);
+        assert!(!ef.denormal);
     }
 
     #[test]

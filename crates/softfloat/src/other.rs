@@ -1,13 +1,20 @@
 //! Other FPU operations: scale, extract, partial remainder, IEEE remainder.
 
-use crate::{BIAS, ExceptionFlags, Fp80};
+use crate::{BIAS, ExceptionFlags, Fp80, Precision, RoundingMode, flag_denormal_operands};
+
+/// The magnitude an FSCALE scale factor is clamped to. Every factor of this magnitude or
+/// more gives the same infinity or zero, also after the bias of the unmasked responses.
+const SCALE_LIMIT: i64 = 0x10_0000;
 
 impl Fp80 {
-    /// Compute self * 2^floor(scale) (FSCALE). Truncates `scale` to integer before use.
-    pub fn scale(self, scale: Fp80, ef: &mut ExceptionFlags) -> Fp80 {
+    /// Compute self * 2^trunc(scale) (FSCALE). The result takes the rounding mode `rc` at
+    /// the extended precision for an overflow (80486 PRM table 16-12) and a denormal result.
+    pub fn scale(self, scale: Fp80, rc: RoundingMode, ef: &mut ExceptionFlags) -> Fp80 {
         if self.is_nan() || scale.is_nan() {
             return Fp80::propagate_nan(self, scale, ef);
         }
+
+        flag_denormal_operands(&[self, scale], ef);
 
         if self.is_infinity() {
             if scale.is_infinity() && scale.sign() {
@@ -40,62 +47,16 @@ impl Fp80 {
             };
         }
 
-        let scale_int = truncate_to_integer(scale);
-
-        let sign = self.sign();
-        let mut exponent = self.true_exponent();
-        let mut significand = self.significand();
-
-        if self.exponent() == 0 && significand != 0 {
-            let (norm_sig, shift) = Fp80::normalize_significand(significand);
-            significand = norm_sig;
-            exponent -= shift as i32;
-        }
-
-        let new_exponent = exponent as i64 + scale_int;
-
-        if new_exponent > 0x7FFE_i64 - BIAS as i64 {
-            ef.overflow = true;
-            ef.precision = true;
-            return if sign {
-                Fp80::NEG_INFINITY
-            } else {
-                Fp80::INFINITY
-            };
-        }
-
-        if new_exponent < -(BIAS as i64) - 63 {
-            ef.tiny = true;
-            ef.underflow = true;
-            ef.precision = true;
-            return if sign { Fp80::NEG_ZERO } else { Fp80::ZERO };
-        }
-
-        let biased = new_exponent + BIAS as i64;
-        if biased <= 0 {
-            ef.tiny = true;
-            let shift_right = (1 - biased) as u32;
-            if shift_right >= 64 {
-                ef.underflow = true;
-                ef.precision = true;
-                return if sign { Fp80::NEG_ZERO } else { Fp80::ZERO };
-            }
-            let lost = significand & ((1u64 << shift_right) - 1);
-            significand >>= shift_right;
-            if lost != 0 {
-                ef.underflow = true;
-                ef.precision = true;
-            }
-            let se = if sign { 0x8000u16 } else { 0x0000u16 };
-            return Fp80::from_bits(se, significand);
-        }
-
-        let se = if sign {
-            0x8000 | biased as u16
-        } else {
-            biased as u16
-        };
-        Fp80::from_bits(se, significand)
+        let scale_int = truncate_to_integer(scale).clamp(-SCALE_LIMIT, SCALE_LIMIT);
+        let exponent = self.true_exponent() as i64 + scale_int;
+        Fp80::round_and_pack(
+            self.sign(),
+            exponent as i32,
+            (self.significand() as u128) << 64,
+            rc,
+            Precision::Extended,
+            ef,
+        )
     }
 
     /// Separate exponent and significand (FXTRACT).
@@ -122,6 +83,8 @@ impl Fp80 {
             ef.zero_divide = true;
             return (self, Fp80::NEG_INFINITY);
         }
+
+        flag_denormal_operands(&[self], ef);
 
         let sign = self.sign();
         let mut exponent = self.true_exponent();
@@ -157,6 +120,7 @@ impl Fp80 {
     }
 }
 
+/// Returns `value` truncated toward zero, saturated at a magnitude of 2^62.
 fn truncate_to_integer(value: Fp80) -> i64 {
     if value.is_zero() {
         return 0;
@@ -170,15 +134,8 @@ fn truncate_to_integer(value: Fp80) -> i64 {
         return 0;
     }
 
-    if exp >= 63 {
-        let magnitude = sig as i64;
-        if sign {
-            if sig == 0x8000_0000_0000_0000 {
-                return i64::MIN;
-            }
-            return -(magnitude.wrapping_abs());
-        }
-        return magnitude;
+    if exp >= 62 {
+        return if sign { -(1 << 62) } else { 1 << 62 };
     }
 
     let shift = 63 - exp as u32;
@@ -211,6 +168,8 @@ fn remainder_impl(
         ef.invalid = true;
         return (Fp80::INDEFINITE, 0, true);
     }
+
+    flag_denormal_operands(&[dividend, divisor], ef);
 
     if dividend.is_zero() {
         return (dividend, 0, true);
@@ -385,18 +344,18 @@ mod tests {
     fn test_scale_basic() {
         // 1.0 * 2^1 = 2.0.
         let mut ef = no_exceptions();
-        let result = Fp80::ONE.scale(Fp80::ONE, &mut ef);
+        let result = Fp80::ONE.scale(Fp80::ONE, RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, TWO);
         assert_eq!(ef, no_exceptions());
 
         // 1.0 * 2^0 = 1.0.
         let mut ef = no_exceptions();
-        let result = Fp80::ONE.scale(Fp80::ZERO, &mut ef);
+        let result = Fp80::ONE.scale(Fp80::ZERO, RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, Fp80::ONE);
 
         // 1.0 * 2^2 = 4.0.
         let mut ef = no_exceptions();
-        let result = Fp80::ONE.scale(TWO, &mut ef);
+        let result = Fp80::ONE.scale(TWO, RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, FOUR);
     }
 
@@ -404,41 +363,41 @@ mod tests {
     fn test_scale_edge_cases() {
         // +0 * 2^(+inf) = Indefinite + IE.
         let mut ef = no_exceptions();
-        let result = Fp80::ZERO.scale(Fp80::INFINITY, &mut ef);
+        let result = Fp80::ZERO.scale(Fp80::INFINITY, RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, Fp80::INDEFINITE);
         assert!(ef.invalid);
 
         // +inf * 2^(-inf) = Indefinite + IE.
         let mut ef = no_exceptions();
-        let result = Fp80::INFINITY.scale(Fp80::NEG_INFINITY, &mut ef);
+        let result = Fp80::INFINITY.scale(Fp80::NEG_INFINITY, RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, Fp80::INDEFINITE);
         assert!(ef.invalid);
 
         // +0 * 2^(-inf) = +0.
         let mut ef = no_exceptions();
-        let result = Fp80::ZERO.scale(Fp80::NEG_INFINITY, &mut ef);
+        let result = Fp80::ZERO.scale(Fp80::NEG_INFINITY, RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, Fp80::ZERO);
 
         // +inf * 2^(+inf) = +inf.
         let mut ef = no_exceptions();
-        let result = Fp80::INFINITY.scale(Fp80::INFINITY, &mut ef);
+        let result = Fp80::INFINITY.scale(Fp80::INFINITY, RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, Fp80::INFINITY);
 
         // SNaN propagation.
         let mut ef = no_exceptions();
-        let result = POSITIVE_SNAN.scale(Fp80::ONE, &mut ef);
+        let result = POSITIVE_SNAN.scale(Fp80::ONE, RoundingMode::NearestEven, &mut ef);
         assert!(result.is_quiet_nan());
         assert!(ef.invalid);
 
         // QNaN propagation, no IE.
         let mut ef = no_exceptions();
-        let result = POSITIVE_QNAN.scale(Fp80::ONE, &mut ef);
+        let result = POSITIVE_QNAN.scale(Fp80::ONE, RoundingMode::NearestEven, &mut ef);
         assert!(result.is_quiet_nan());
         assert!(!ef.invalid);
 
         // 0 * 2^(finite) = 0 with sign preserved.
         let mut ef = no_exceptions();
-        let result = Fp80::NEG_ZERO.scale(TWO, &mut ef);
+        let result = Fp80::NEG_ZERO.scale(TWO, RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, Fp80::NEG_ZERO);
     }
 
@@ -593,13 +552,13 @@ mod tests {
     fn test_scale_nan_in_scale_param() {
         // SNaN in scale parameter -> QNaN + IE.
         let mut ef = no_exceptions();
-        let result = Fp80::ONE.scale(POSITIVE_SNAN, &mut ef);
+        let result = Fp80::ONE.scale(POSITIVE_SNAN, RoundingMode::NearestEven, &mut ef);
         assert!(result.is_quiet_nan());
         assert!(ef.invalid);
 
         // QNaN in scale parameter -> QNaN, no IE.
         let mut ef = no_exceptions();
-        let result = Fp80::ONE.scale(POSITIVE_QNAN, &mut ef);
+        let result = Fp80::ONE.scale(POSITIVE_QNAN, RoundingMode::NearestEven, &mut ef);
         assert!(result.is_quiet_nan());
         assert!(!ef.invalid);
     }
@@ -608,7 +567,7 @@ mod tests {
     fn test_scale_non_integer_truncation() {
         // scale(1.0, 1.5) -> 1.0 * 2^floor(1.5) = 1.0 * 2^1 = 2.0.
         let mut ef = no_exceptions();
-        let result = Fp80::ONE.scale(ONE_AND_HALF, &mut ef);
+        let result = Fp80::ONE.scale(ONE_AND_HALF, RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, TWO);
     }
 
@@ -616,7 +575,7 @@ mod tests {
     fn test_scale_negative() {
         // scale(1.0, -1) = 1.0 * 2^(-1) = 0.5.
         let mut ef = no_exceptions();
-        let result = Fp80::ONE.scale(NEGATIVE_ONE, &mut ef);
+        let result = Fp80::ONE.scale(NEGATIVE_ONE, RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, HALF);
     }
 
@@ -624,14 +583,83 @@ mod tests {
     fn test_scale_neg_inf_cases() {
         // -inf * 2^(-inf) = Indefinite + IE.
         let mut ef = no_exceptions();
-        let result = Fp80::NEG_INFINITY.scale(Fp80::NEG_INFINITY, &mut ef);
+        let result =
+            Fp80::NEG_INFINITY.scale(Fp80::NEG_INFINITY, RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, Fp80::INDEFINITE);
         assert!(ef.invalid);
 
         // -inf * 2^(+inf) = -inf.
         let mut ef = no_exceptions();
-        let result = Fp80::NEG_INFINITY.scale(Fp80::INFINITY, &mut ef);
+        let result = Fp80::NEG_INFINITY.scale(Fp80::INFINITY, RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, Fp80::NEG_INFINITY);
+    }
+
+    /// Verifies that an FSCALE overflow takes the masked result of the rounding mode
+    /// (80486 PRM table 16-12) and records the biased unmasked response.
+    #[test]
+    fn test_scale_overflow_follows_rounding_mode() {
+        let large_scale = Fp80::from_i32(100_000);
+        let mut ef = no_exceptions();
+        let result = Fp80::ONE.scale(large_scale, RoundingMode::Zero, &mut ef);
+        assert_eq!(result, Fp80::from_bits(0x7FFE, u64::MAX));
+        assert!(ef.overflow && ef.precision && !ef.rounded_up);
+
+        let mut ef = no_exceptions();
+        let result = Fp80::ONE.scale(large_scale, RoundingMode::Down, &mut ef);
+        assert_eq!(result, Fp80::from_bits(0x7FFE, u64::MAX));
+
+        let mut ef = no_exceptions();
+        let result = NEGATIVE_ONE.scale(large_scale, RoundingMode::Down, &mut ef);
+        assert_eq!(result, Fp80::NEG_INFINITY);
+        assert!(ef.rounded_up);
+        let biased = ef.biased.expect("biased response");
+        assert_eq!(biased.value, Fp80::NEG_INFINITY);
+
+        let mut ef = no_exceptions();
+        let huge = Fp80::from_bits(0x7FFE, 0xC000_0000_0000_0000);
+        let result = huge.scale(Fp80::from_i32(20_000), RoundingMode::NearestEven, &mut ef);
+        assert_eq!(result, Fp80::INFINITY);
+        let biased = ef.biased.expect("biased response");
+        assert_eq!(biased.value, Fp80::from_bits(0x6E1E, 0xC000_0000_0000_0000));
+        assert!(!biased.precision && !biased.rounded_up);
+
+        let mut ef = no_exceptions();
+        let scale = Fp80::from_bits(0x4063, 0x8000_0000_0000_0000);
+        let result = Fp80::ONE.scale(scale, RoundingMode::NearestEven, &mut ef);
+        assert_eq!(result, Fp80::INFINITY);
+    }
+
+    /// Verifies that a denormal FSCALE result rounds with the rounding mode.
+    #[test]
+    fn test_scale_denormal_result_rounds() {
+        let value = Fp80::from_bits(0x3FFF, 0xC000_0000_0000_0001);
+        let scale = Fp80::from_i32(-16400);
+        let mut ef = no_exceptions();
+        let result = value.scale(scale, RoundingMode::Up, &mut ef);
+        assert_eq!(result, Fp80::from_bits(0x0000, 0x0000_3000_0000_0001));
+        assert!(ef.underflow && ef.precision && ef.rounded_up && ef.tiny);
+
+        let mut ef = no_exceptions();
+        let result = value.scale(scale, RoundingMode::NearestEven, &mut ef);
+        assert_eq!(result, Fp80::from_bits(0x0000, 0x0000_3000_0000_0000));
+        assert!(!ef.rounded_up);
+        let biased = ef.biased.expect("biased response");
+        assert_eq!(biased.value, Fp80::from_bits(0x5FEF, 0xC000_0000_0000_0001));
+        assert!(!biased.precision);
+
+        let mut ef = no_exceptions();
+        let result = value.scale(Fp80::from_i32(-16500), RoundingMode::Up, &mut ef);
+        assert_eq!(result, Fp80::from_bits(0x0000, 1));
+    }
+
+    /// Verifies that FSCALE reports a denormal operand.
+    #[test]
+    fn test_scale_denormal_operand() {
+        let mut ef = no_exceptions();
+        let denormal = Fp80::from_bits(0x0000, 0x1234);
+        let result = Fp80::ONE.scale(denormal, RoundingMode::NearestEven, &mut ef);
+        assert_eq!(result, Fp80::ONE);
+        assert!(ef.denormal);
     }
 
     #[test]

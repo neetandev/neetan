@@ -3536,3 +3536,581 @@ fn faulting_fstp_m80_keeps_c1_and_the_stack() {
     assert!(result.c1());
     assert_eq!(result.top, 7);
 }
+
+/// The control word with only the invalid operation exception unmasked.
+const CW_INVALID_UNMASKED: u16 = 0x037E;
+/// The control word with only the denormal operand exception unmasked.
+const CW_DENORMAL_UNMASKED: u16 = 0x037D;
+/// The control word with only the zero divide exception unmasked.
+const CW_ZERO_DIVIDE_UNMASKED: u16 = 0x037B;
+/// The control word with only the overflow exception unmasked.
+const CW_OVERFLOW_UNMASKED: u16 = 0x0377;
+/// The control word with only the underflow exception unmasked.
+const CW_UNDERFLOW_UNMASKED: u16 = 0x036F;
+/// The largest exponent with the significand 1.5: 1.5 * 2^16383.
+const HUGE: Fp80 = Fp80::from_bits(0x7FFE, 0xC000_0000_0000_0000);
+/// The smallest exponent with the significand 1.5: 1.5 * 2^-16382.
+const TINY: Fp80 = Fp80::from_bits(0x0001, 0xC000_0000_0000_0000);
+/// A denormal with a multi-bit significand.
+const DENORMAL: Fp80 = Fp80::from_bits(0x0000, 0x0000_0000_0000_1234);
+/// 1/3 rounded to nearest.
+const ONE_THIRD: Fp80 = Fp80::from_bits(0x3FFD, 0xAAAA_AAAA_AAAA_AAAB);
+/// The fill byte of the memory a suppressed store must leave unchanged.
+const UNTOUCHED: u8 = 0x55;
+
+/// Runs one instruction `code` with `stack`, the control word `control_word` and
+/// `memory` at DS:0000h.
+fn run_with_control(
+    code: &[u8],
+    stack: &[Fp80],
+    control_word: u16,
+    memory: &[u8],
+) -> (I386<{ CPU_MODEL_486_DX }>, TestBus) {
+    run_x87_program(code, stack, memory, 1, |state, _| {
+        state.fpu.control_word = control_word;
+    })
+}
+
+/// Returns 32 bytes of untouched memory with `bytes` at offset 0.
+fn memory_with(bytes: &[u8]) -> [u8; 32] {
+    let mut memory = [UNTOUCHED; 32];
+    memory[..bytes.len()].copy_from_slice(bytes);
+    memory
+}
+
+/// Asserts that the 16 bytes at DS:0010h hold the fill byte.
+fn assert_store_suppressed(bus: &TestBus, program: &[u8]) {
+    assert_eq!(
+        bus.ram[0x20010..0x20020],
+        [UNTOUCHED; 16],
+        "{program:02X?} stored a result"
+    );
+}
+
+#[test]
+fn unmasked_stack_underflow_stores_nothing_and_keeps_top() {
+    let programs: [&[u8]; 8] = [
+        &[0xD9, 0x1E, 0x10, 0x00],
+        &[0xDD, 0x1E, 0x10, 0x00],
+        &[0xDB, 0x3E, 0x10, 0x00],
+        &[0xDF, 0x1E, 0x10, 0x00],
+        &[0xDB, 0x1E, 0x10, 0x00],
+        &[0xDF, 0x3E, 0x10, 0x00],
+        &[0xDF, 0x36, 0x10, 0x00],
+        &[0xDD, 0xD9],
+    ];
+    for program in programs {
+        let (cpu, bus) = run_with_control(program, &[], CW_INVALID_UNMASKED, &memory_with(&[]));
+        let result = extract_result(&cpu);
+        assert_eq!(result.top, 0, "{program:02X?}");
+        assert_eq!(result.status_word & 0x82FF, 0x80C1, "{program:02X?}");
+        assert_eq!(result.tag_word, 0xFFFF, "{program:02X?}");
+        assert_store_suppressed(&bus, program);
+    }
+}
+
+#[test]
+fn unmasked_invalid_store_stores_nothing_and_keeps_the_operand() {
+    let cases: [(&[u8], Fp80); 6] = [
+        (&[0xD9, 0x16, 0x10, 0x00], POSITIVE_SNAN),
+        (&[0xDD, 0x1E, 0x10, 0x00], POSITIVE_SNAN),
+        (&[0xDB, 0x1E, 0x10, 0x00], POSITIVE_SNAN),
+        (&[0xDF, 0x1E, 0x10, 0x00], TWO_POW_100),
+        (&[0xDF, 0x3E, 0x10, 0x00], TWO_POW_100),
+        (&[0xDF, 0x36, 0x10, 0x00], TWO_POW_100),
+    ];
+    for (program, operand) in cases {
+        let (cpu, bus) =
+            run_with_control(program, &[operand], CW_INVALID_UNMASKED, &memory_with(&[]));
+        let result = extract_result(&cpu);
+        assert_eq!(result.top, 7, "{program:02X?}");
+        assert_eq!(result.st(0), operand, "{program:02X?}");
+        assert_eq!(result.status_word & 0x82FF, 0x8081, "{program:02X?}");
+        assert_store_suppressed(&bus, program);
+    }
+}
+
+#[test]
+fn unmasked_invalid_arithmetic_keeps_the_operands_and_top() {
+    let cases: [(&[u8], &[Fp80]); 8] = [
+        (&[0xD9, 0xFA], &[NEGATIVE_ONE]),
+        (&[0xD8, 0x06, 0x00, 0x00], &[Fp80::ONE]),
+        (&[0xDE, 0xC1], &[Fp80::ONE, POSITIVE_SNAN]),
+        (&[0xDE, 0xE9], &[Fp80::INFINITY, Fp80::INFINITY]),
+        (&[0xD9, 0xF8], &[Fp80::ONE, Fp80::ZERO]),
+        (&[0xD9, 0xF4], &[POSITIVE_SNAN]),
+        (&[0xD9, 0xFB], &[Fp80::INFINITY]),
+        (&[0xD9, 0xF1], &[NEGATIVE_ONE, Fp80::ONE]),
+    ];
+    let signaling = 0x7F80_0001u32.to_le_bytes();
+    for (program, stack) in cases {
+        let (cpu, _) = run_with_control(
+            program,
+            stack,
+            CW_INVALID_UNMASKED,
+            &memory_with(&signaling),
+        );
+        let result = extract_result(&cpu);
+        assert_eq!(result.top as usize, 8 - stack.len(), "{program:02X?}");
+        for (index, value) in stack.iter().enumerate() {
+            assert_eq!(result.st(index as u8), *value, "{program:02X?} ST({index})");
+        }
+        assert!(result.ie(), "{program:02X?}");
+        assert_eq!(result.status_word & 0x8080, 0x8080, "{program:02X?}");
+    }
+}
+
+#[test]
+fn unmasked_invalid_compare_sets_the_condition_codes_and_keeps_top() {
+    let cases: [(&[u8], &[Fp80]); 4] = [
+        (&[0xD8, 0xD9], &[Fp80::ONE, POSITIVE_SNAN]),
+        (&[0xDE, 0xD9], &[Fp80::ONE]),
+        (&[0xDA, 0xE9], &[Fp80::ONE, POSITIVE_SNAN]),
+        (&[0xD8, 0x1E, 0x00, 0x00], &[Fp80::ONE]),
+    ];
+    let signaling = 0x7F80_0001u32.to_le_bytes();
+    for (program, stack) in cases {
+        let (cpu, _) = run_with_control(
+            program,
+            stack,
+            CW_INVALID_UNMASKED,
+            &memory_with(&signaling),
+        );
+        let result = extract_result(&cpu);
+        assert_eq!(result.top as usize, 8 - stack.len(), "{program:02X?}");
+        assert!(result.c3() && result.c2() && result.c0(), "{program:02X?}");
+        assert!(result.ie(), "{program:02X?}");
+    }
+}
+
+#[test]
+fn unmasked_stack_overflow_keeps_top_and_the_registers() {
+    let stack = [Fp80::ONE, TWO, THREE, FOUR, FIVE, SIX, SEVEN, HALF];
+    let programs: [&[u8]; 5] = [
+        &[0xD9, 0xE8],
+        &[0xD9, 0xC3],
+        &[0xD9, 0xF2],
+        &[0xD9, 0xF4],
+        &[0xD9, 0xFB],
+    ];
+    for program in programs {
+        let (cpu, _) = run_with_control(program, &stack, CW_INVALID_UNMASKED, &[]);
+        let result = extract_result(&cpu);
+        assert_eq!(result.top, 0, "{program:02X?}");
+        for (index, value) in stack.iter().enumerate() {
+            assert_eq!(result.st(index as u8), *value, "{program:02X?} ST({index})");
+        }
+        assert_eq!(result.status_word & 0x82FF, 0x82C1, "{program:02X?}");
+    }
+}
+
+#[test]
+fn fld_of_a_signaling_nan_with_unmasked_invalid_pushes_nothing() {
+    let programs: [(&[u8], &[u8]); 2] = [
+        (&[0xD9, 0x06, 0x00, 0x00], &0x7F80_0001u32.to_le_bytes()),
+        (
+            &[0xDD, 0x06, 0x00, 0x00],
+            &0x7FF0_0000_0000_0001u64.to_le_bytes(),
+        ),
+    ];
+    for (program, operand) in programs {
+        let (cpu, _) = run_with_control(program, &[], CW_INVALID_UNMASKED, operand);
+        let result = extract_result(&cpu);
+        assert_eq!(result.top, 0, "{program:02X?}");
+        assert_eq!(result.tag_word, 0xFFFF, "{program:02X?}");
+        assert_eq!(result.status_word & 0x80FF, 0x8081, "{program:02X?}");
+    }
+}
+
+#[test]
+fn fld_of_a_denormal_pushes_it_normalized_and_reports_de() {
+    let programs: [(&[u8], &[u8], Fp80); 2] = [
+        (
+            &[0xD9, 0x06, 0x00, 0x00],
+            &0x0000_0123u32.to_le_bytes(),
+            Fp80::from_bits(0x3F72, 0x9180_0000_0000_0000),
+        ),
+        (
+            &[0xDD, 0x06, 0x00, 0x00],
+            &0x0000_0000_0000_0123u64.to_le_bytes(),
+            Fp80::from_bits(0x3BD5, 0x9180_0000_0000_0000),
+        ),
+    ];
+    for (program, operand, expected) in programs {
+        let (cpu, _) = run_with_control(program, &[], CW_DENORMAL_UNMASKED, operand);
+        let result = extract_result(&cpu);
+        assert_eq!(result.top, 7, "{program:02X?}");
+        assert_eq!(result.st(0), expected, "{program:02X?}");
+        assert_eq!(result.status_word & 0x80FF, 0x8082, "{program:02X?}");
+    }
+}
+
+#[test]
+fn unmasked_zero_divide_keeps_the_operands_and_top() {
+    let cases: [(&[u8], &[Fp80]); 4] = [
+        (&[0xDE, 0xF9], &[Fp80::ZERO, Fp80::ONE]),
+        (&[0xD8, 0x36, 0x00, 0x00], &[Fp80::ONE]),
+        (&[0xD9, 0xF4], &[Fp80::ZERO]),
+        (&[0xD9, 0xF1], &[Fp80::ZERO, Fp80::ONE]),
+    ];
+    for (program, stack) in cases {
+        let (cpu, _) = run_with_control(
+            program,
+            stack,
+            CW_ZERO_DIVIDE_UNMASKED,
+            &memory_with(&[0, 0, 0, 0]),
+        );
+        let result = extract_result(&cpu);
+        assert_eq!(result.top as usize, 8 - stack.len(), "{program:02X?}");
+        for (index, value) in stack.iter().enumerate() {
+            assert_eq!(result.st(index as u8), *value, "{program:02X?} ST({index})");
+        }
+        assert_eq!(result.status_word & 0x80FF, 0x8084, "{program:02X?}");
+    }
+}
+
+#[test]
+fn unmasked_denormal_operand_keeps_the_operands_and_reports_only_de() {
+    let cases: [(&[u8], &[Fp80]); 6] = [
+        (&[0xDE, 0xC1], &[ONE_THIRD, DENORMAL]),
+        (&[0xD9, 0xFA], &[DENORMAL]),
+        (&[0xD9, 0xFC], &[DENORMAL]),
+        (&[0xD9, 0xF4], &[DENORMAL]),
+        (&[0xD9, 0xF3], &[Fp80::ONE, DENORMAL]),
+        (&[0xD8, 0xD9], &[Fp80::ONE, DENORMAL]),
+    ];
+    for (program, stack) in cases {
+        let (cpu, _) = run_with_control(program, stack, CW_DENORMAL_UNMASKED, &[]);
+        let result = extract_result(&cpu);
+        assert_eq!(result.top as usize, 8 - stack.len(), "{program:02X?}");
+        for (index, value) in stack.iter().enumerate() {
+            assert_eq!(result.st(index as u8), *value, "{program:02X?} ST({index})");
+        }
+        assert_eq!(result.status_word & 0x80FF, 0x8082, "{program:02X?}");
+    }
+}
+
+#[test]
+fn unmasked_overflow_delivers_the_biased_result() {
+    let (cpu, _) = run_with_control(&[0xD8, 0xC8], &[HUGE], CW_OVERFLOW_UNMASKED, &[]);
+    let result = extract_result(&cpu);
+    assert_eq!(result.st(0), Fp80::from_bits(0x5FFE, 0x9000_0000_0000_0000));
+    assert_eq!(result.status_word & 0x82FF, 0x8088);
+
+    let (cpu, _) = run_with_control(&[0xDE, 0xC1], &[HUGE, HUGE], CW_OVERFLOW_UNMASKED, &[]);
+    let result = extract_result(&cpu);
+    assert_eq!(result.top, 7);
+    assert_eq!(result.st(0), Fp80::from_bits(0x1FFF, 0xC000_0000_0000_0000));
+
+    let one_and_half = 1.5f32.to_le_bytes();
+    let (cpu, _) = run_with_control(
+        &[0xD8, 0x0E, 0x00, 0x00],
+        &[LARGEST_NORMAL],
+        0x0B77,
+        &one_and_half,
+    );
+    let result = extract_result(&cpu);
+    assert_eq!(result.st(0), Fp80::from_bits(0x1FFF, 0xC000_0000_0000_0000));
+    assert_eq!(result.status_word & 0x82FF, 0x82A8);
+}
+
+#[test]
+fn unmasked_underflow_delivers_the_biased_result() {
+    let (cpu, _) = run_with_control(&[0xD8, 0xC8], &[TINY], CW_UNDERFLOW_UNMASKED, &[]);
+    let result = extract_result(&cpu);
+    assert_eq!(result.st(0), Fp80::from_bits(0x2004, 0x9000_0000_0000_0000));
+    assert_eq!(result.status_word & 0x82FF, 0x8090);
+}
+
+#[test]
+fn unmasked_overflow_and_underflow_store_nothing_to_memory() {
+    let large = Fp80::from_bits(0x43E1, 0x8000_0000_0000_0000);
+    let small = Fp80::from_bits(0x3C1C, 0x8000_0000_0000_0000);
+    let cases: [(&[u8], Fp80, u16, u16); 3] = [
+        (
+            &[0xD9, 0x1E, 0x10, 0x00],
+            large,
+            CW_OVERFLOW_UNMASKED,
+            0x8088,
+        ),
+        (
+            &[0xDD, 0x1E, 0x10, 0x00],
+            HUGE,
+            CW_OVERFLOW_UNMASKED,
+            0x8088,
+        ),
+        (
+            &[0xD9, 0x1E, 0x10, 0x00],
+            small,
+            CW_UNDERFLOW_UNMASKED,
+            0x8090,
+        ),
+    ];
+    for (program, operand, control_word, status) in cases {
+        let (cpu, bus) = run_with_control(program, &[operand], control_word, &memory_with(&[]));
+        let result = extract_result(&cpu);
+        assert_eq!(result.top, 7, "{program:02X?}");
+        assert_eq!(result.st(0), operand, "{program:02X?}");
+        assert_eq!(result.status_word & 0x82FF, status, "{program:02X?}");
+        assert_store_suppressed(&bus, program);
+    }
+}
+
+#[test]
+fn fscale_overflow_follows_the_rounding_mode() {
+    let large_scale = Fp80::from_i32(100_000);
+    let cases: [(Fp80, u16, Fp80, bool); 3] = [
+        (
+            Fp80::ONE,
+            CW_ZERO_EXT,
+            Fp80::from_bits(0x7FFE, u64::MAX),
+            false,
+        ),
+        (
+            Fp80::ONE,
+            CW_DOWN_EXT,
+            Fp80::from_bits(0x7FFE, u64::MAX),
+            false,
+        ),
+        (NEGATIVE_ONE, CW_DOWN_EXT, Fp80::NEG_INFINITY, true),
+    ];
+    for (value, control_word, expected, rounded_up) in cases {
+        let (cpu, _) = run_with_control(&[0xD9, 0xFD], &[value, large_scale], control_word, &[]);
+        let result = extract_result(&cpu);
+        assert_eq!(result.st(0), expected, "{control_word:04X}");
+        assert!(result.oe() && result.pe(), "{control_word:04X}");
+        assert_eq!(result.c1(), rounded_up, "{control_word:04X}");
+    }
+}
+
+#[test]
+fn fscale_rounds_a_denormal_result() {
+    let value = Fp80::from_bits(0x3FFF, 0xC000_0000_0000_0001);
+    let (cpu, _) = run_with_control(
+        &[0xD9, 0xFD],
+        &[value, Fp80::from_i32(-16400)],
+        CW_UP_EXT,
+        &[],
+    );
+    let result = extract_result(&cpu);
+    assert_eq!(result.st(0), Fp80::from_bits(0x0000, 0x0000_3000_0000_0001));
+    assert!(result.ue() && result.pe() && result.c1());
+}
+
+#[test]
+fn fscale_beyond_the_unmasked_bias_returns_the_masked_round_to_nearest_result() {
+    let (cpu, _) = run_with_control(
+        &[0xD9, 0xFD],
+        &[Fp80::ONE, Fp80::from_i32(100_000)],
+        CW_OVERFLOW_UNMASKED,
+        &[],
+    );
+    let result = extract_result(&cpu);
+    assert_eq!(result.st(0), Fp80::INFINITY);
+    assert_eq!(result.status_word & 0x82FF, 0x82A8);
+
+    let (cpu, _) = run_with_control(
+        &[0xD9, 0xFD],
+        &[Fp80::ONE, Fp80::from_i32(-100_000)],
+        CW_UNDERFLOW_UNMASKED,
+        &[],
+    );
+    let result = extract_result(&cpu);
+    assert_eq!(result.st(0), Fp80::ZERO);
+    assert_eq!(result.status_word & 0x82FF, 0x80B0);
+}
+
+#[test]
+fn memory_arithmetic_reads_the_operand_before_the_stack_check() {
+    let programs: [&[u8]; 4] = [
+        &[0xD8, 0x06, 0xFE, 0xFF],
+        &[0xDC, 0x16, 0xFC, 0xFF],
+        &[0xDE, 0x1E, 0xFF, 0xFF],
+        &[0xDA, 0x36, 0xFE, 0xFF],
+    ];
+    for program in programs {
+        let (cpu, _) = run_x87_program(program, &[], &[], 1, |state, bus| {
+            state.fpu.control_word = CW_INVALID_UNMASKED;
+            set_interrupt_vector(bus, 13, 0x6000);
+        });
+        let result = extract_result(&cpu);
+        assert_eq!(common::Cpu::cs(&cpu), 0x6000, "{program:02X?}");
+        assert_eq!(result.status_word, 0, "{program:02X?}");
+    }
+}
+
+#[test]
+fn faulting_operand_read_keeps_the_pointers_of_the_previous_instruction() {
+    let mut memory = [0u8; 0x20];
+    memory[0x10..0x18].copy_from_slice(&THREE_F64);
+    let mut code = FDIV_THREE.to_vec();
+    code.extend_from_slice(&[0xD8, 0x06, 0xFE, 0xFF]);
+    let (cpu, _) = run_x87_program(&code, &[Fp80::ONE], &memory, 2, |_, bus| {
+        set_interrupt_vector(bus, 13, 0x6000);
+    });
+    assert_eq!(common::Cpu::cs(&cpu), 0x6000);
+    assert_eq!(cpu.state.fpu.fip_offset, 0x0000);
+    assert_eq!(cpu.state.fpu.fdp_offset, 0x0010);
+    assert_eq!(cpu.state.fpu.fpu_opcode, 0x0436);
+}
+
+#[test]
+fn suppressed_fprem_and_trigonometric_results_clear_c2() {
+    let cases: [(&[u8], &[Fp80]); 4] = [
+        (&[0xD9, 0xF8], &[Fp80::ONE, Fp80::ZERO]),
+        (&[0xD9, 0xF5], &[POSITIVE_SNAN, Fp80::ONE]),
+        (&[0xD9, 0xFE], &[Fp80::INFINITY]),
+        (&[0xD9, 0xF2], &[POSITIVE_SNAN]),
+    ];
+    for (program, stack) in cases {
+        let (cpu, _) = run_x87_program(program, stack, &[], 1, |state, _| {
+            state.fpu.control_word = CW_INVALID_UNMASKED;
+            state.fpu.status_word |= 0x4500;
+        });
+        let result = extract_result(&cpu);
+        assert!(!result.c2(), "{program:02X?}");
+        assert!(result.c3() && result.c0(), "{program:02X?}");
+        assert_eq!(result.st(0), stack[0], "{program:02X?}");
+    }
+}
+
+#[test]
+fn fyl2xp1_of_an_operand_below_minus_one_is_invalid() {
+    let r = run_x87(&[0xD9, 0xF9], &[NEGATIVE_TWO, Fp80::ONE]);
+    assert_eq!(r.top, 7);
+    assert_eq!(r.st(0), Fp80::INDEFINITE);
+    assert!(r.ie());
+}
+
+#[test]
+fn invalid_and_zero_divide_take_priority_over_a_denormal_operand() {
+    let (cpu, _) = run_with_control(
+        &[0xD9, 0xFA],
+        &[DENORMAL.negate()],
+        CW_DENORMAL_UNMASKED,
+        &[],
+    );
+    let result = extract_result(&cpu);
+    assert_eq!(result.st(0), Fp80::INDEFINITE);
+    assert_eq!(result.status_word & 0x80FF, 0x0001);
+
+    let r = run_x87(&[0xDE, 0xF9], &[Fp80::ZERO, DENORMAL]);
+    assert_eq!(r.st(0), Fp80::INFINITY);
+    assert_eq!(r.status_word & 0x00FF, 0x0004);
+}
+
+#[test]
+fn transcendental_and_remainder_instructions_report_a_denormal_operand() {
+    let cases: [(&[u8], &[Fp80]); 6] = [
+        (&[0xD9, 0xF4], &[DENORMAL]),
+        (&[0xD9, 0xF3], &[Fp80::ONE, DENORMAL]),
+        (&[0xD9, 0xF0], &[DENORMAL]),
+        (&[0xD9, 0xFE], &[DENORMAL]),
+        (&[0xD9, 0xF8], &[DENORMAL, Fp80::ONE]),
+        (&[0xD9, 0xFD], &[Fp80::ONE, DENORMAL]),
+    ];
+    for (program, stack) in cases {
+        let r = run_x87(program, stack);
+        assert!(r.de(), "{program:02X?}");
+    }
+}
+
+#[test]
+fn nan_and_zero_divide_take_priority_over_a_denormal_memory_operand() {
+    let denormal_single = 0x0000_0001u32.to_le_bytes();
+    let (cpu, _) = run_with_control(
+        &[0xD8, 0x06, 0x00, 0x00],
+        &[POSITIVE_SNAN],
+        CW_DENORMAL_UNMASKED,
+        &denormal_single,
+    );
+    let result = extract_result(&cpu);
+    assert_eq!(result.st(0), POSITIVE_SNAN.quieten());
+    assert_eq!(result.status_word & 0x80FF, 0x0001);
+
+    let (cpu, _) = run_with_control(
+        &[0xD8, 0x16, 0x00, 0x00],
+        &[POSITIVE_QNAN],
+        CW_DENORMAL_UNMASKED,
+        &denormal_single,
+    );
+    let result = extract_result(&cpu);
+    assert!(result.c3() && result.c2() && result.c0());
+    assert_eq!(result.status_word & 0x80FF, 0x0001);
+
+    let (cpu, _) = run_with_control(
+        &[0xD8, 0x3E, 0x00, 0x00],
+        &[Fp80::ZERO],
+        CW_DENORMAL_UNMASKED,
+        &denormal_single,
+    );
+    let result = extract_result(&cpu);
+    assert_eq!(result.st(0), Fp80::INFINITY);
+    assert_eq!(result.status_word & 0x80FF, 0x0004);
+}
+
+#[test]
+fn fst_of_a_denormal_source_reports_de() {
+    let (cpu, bus) = run_with_control(
+        &[0xD9, 0x16, 0x10, 0x00],
+        &[DENORMAL],
+        CW_NEAREST_EXT,
+        &memory_with(&[]),
+    );
+    let result = extract_result(&cpu);
+    assert_eq!(read_mem_u32(&bus, 0x10), 0);
+    assert!(result.de() && result.ue() && result.pe());
+
+    let cases: [(&[u8], Fp80); 3] = [
+        (&[0xD9, 0x16, 0x10, 0x00], DENORMAL),
+        (&[0xDD, 0x1E, 0x10, 0x00], DENORMAL),
+        (&[0xD9, 0x1E, 0x10, 0x00], POSITIVE_PSEUDO_DENORMAL),
+    ];
+    for (program, operand) in cases {
+        let (cpu, bus) = run_with_control(
+            program,
+            &[operand],
+            CW_DENORMAL_UNMASKED & !0x0010,
+            &memory_with(&[]),
+        );
+        let result = extract_result(&cpu);
+        assert_eq!(result.top, 7, "{program:02X?}");
+        assert_eq!(result.st(0), operand, "{program:02X?}");
+        assert_eq!(result.status_word & 0x82FF, 0x8082, "{program:02X?}");
+        assert_store_suppressed(&bus, program);
+    }
+}
+
+#[test]
+fn suppressed_store_keeps_a_masked_denormal_operand_exception() {
+    let operand = Fp80::from_bits(0x0000, 0x4000_0000_0000_0001);
+    let (cpu, bus) = run_with_control(
+        &[0xD9, 0x1E, 0x10, 0x00],
+        &[operand],
+        CW_UNDERFLOW_UNMASKED,
+        &memory_with(&[]),
+    );
+    let result = extract_result(&cpu);
+    assert_eq!(result.top, 7);
+    assert_eq!(result.status_word & 0x82FF, 0x8092);
+    assert_store_suppressed(&bus, &[0xD9, 0x1E, 0x10, 0x00]);
+}
+
+#[test]
+fn compare_stopped_by_an_unmasked_denormal_sets_the_condition_codes() {
+    let denormal_single = 0x0000_0001u32.to_le_bytes();
+    let (cpu, _) = run_x87_program(
+        &[0xD8, 0x1E, 0x00, 0x00],
+        &[Fp80::ONE],
+        &denormal_single,
+        1,
+        |state, _| {
+            state.fpu.control_word = CW_DENORMAL_UNMASKED;
+            state.fpu.status_word |= 0x4500;
+        },
+    );
+    let result = extract_result(&cpu);
+    assert_eq!(result.top, 7);
+    assert!(!result.c3() && !result.c2() && !result.c0());
+    assert_eq!(result.status_word & 0x80FF, 0x8082);
+}

@@ -7,6 +7,19 @@ const TAG_ZERO: u16 = 0b01;
 const TAG_SPECIAL: u16 = 0b10;
 const TAG_EMPTY: u16 = 0b11;
 
+/// The IE flag of the status word and the IM bit of the control word.
+const INVALID_OPERATION: u16 = 0x0001;
+/// The DE flag of the status word and the DM bit of the control word.
+const DENORMAL_OPERAND: u16 = 0x0002;
+/// The ZE flag of the status word and the ZM bit of the control word.
+const ZERO_DIVIDE: u16 = 0x0004;
+/// The OE flag of the status word and the OM bit of the control word.
+const OVERFLOW: u16 = 0x0008;
+/// The UE flag of the status word and the UM bit of the control word.
+const UNDERFLOW: u16 = 0x0010;
+/// The C1 condition code bit of the status word.
+const CONDITION_C1: u16 = 0x0200;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct X87State {
     pub registers: [Fp80; 8],
@@ -92,6 +105,9 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     pub(super) fn fpu_push(&mut self, value: Fp80) -> bool {
+        if !self.fpu_check_unmasked_overflow() {
+            return false;
+        }
         let top = ((self.state.fpu.status_word >> 11) & 7) as u8;
         let new_top = top.wrapping_sub(1) & 7;
         self.state.fpu.status_word =
@@ -111,6 +127,18 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         self.state.fpu.registers[phys] = value;
         self.fpu_set_tag_from_value(phys, &value);
         true
+    }
+
+    /// Checks that a push finds ST(7) empty. A stack overflow with the invalid operation
+    /// exception unmasked records IE, SF and C1 and returns false: TOP and the registers
+    /// keep their values (80486 PRM 16.2.2.1).
+    pub(super) fn fpu_check_unmasked_overflow(&mut self) -> bool {
+        if self.fpu_is_empty(7) || self.fpu_invalid_masked() {
+            return true;
+        }
+        self.state.fpu.status_word |= 0x0041 | CONDITION_C1;
+        self.fpu_update_es();
+        false
     }
 
     pub(super) fn fpu_pop(&mut self) {
@@ -217,6 +245,110 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         }
         self.state.fpu.status_word = sw;
         self.fpu_update_es();
+    }
+
+    /// Returns whether the invalid operation exception is masked.
+    pub(super) fn fpu_invalid_masked(&self) -> bool {
+        self.state.fpu.control_word & INVALID_OPERATION != 0
+    }
+
+    /// Returns whether the exception with the mask bit `mask` is unmasked.
+    fn fpu_unmasked(&self, mask: u16) -> bool {
+        self.state.fpu.control_word & mask == 0
+    }
+
+    /// ORs the exception flags `flags` into the status word with C1 cleared.
+    fn fpu_record_flags(&mut self, flags: u16) {
+        self.state.fpu.status_word = (self.state.fpu.status_word & !CONDITION_C1) | flags;
+        self.fpu_update_es();
+    }
+
+    /// Returns whether `ef` holds an unmasked invalid operation, zero divide or denormal
+    /// operand exception. Such an exception leaves the operands and TOP unchanged and the
+    /// instruction delivers no result (80486 PRM 16.2.2.1, 16.2.2.2, 16.2.3 and 16.2.4).
+    pub(super) fn fpu_operation_suppressed(&self, ef: &ExceptionFlags) -> bool {
+        (ef.invalid && self.fpu_unmasked(INVALID_OPERATION))
+            || (ef.zero_divide && self.fpu_unmasked(ZERO_DIVIDE))
+            || (ef.denormal && self.fpu_unmasked(DENORMAL_OPERAND))
+    }
+
+    /// Records the exceptions of an operation that `fpu_operation_suppressed` stopped: IE,
+    /// ZE and DE. The lower priority exceptions are not reported (80486 PRM 16.2.7).
+    pub(super) fn fpu_record_suppressed(&mut self, ef: &ExceptionFlags) {
+        let mut flags = 0;
+        if ef.invalid {
+            flags |= INVALID_OPERATION;
+        }
+        if ef.denormal {
+            flags |= DENORMAL_OPERAND;
+        }
+        if ef.zero_divide {
+            flags |= ZERO_DIVIDE;
+        }
+        self.fpu_record_flags(flags);
+    }
+
+    /// Records the exceptions of an operation with a register destination and returns the
+    /// value to write, or `None` when an unmasked exception suppresses the result. An
+    /// unmasked overflow or underflow delivers the biased result with the PE and C1 of its
+    /// rounding (80486 PRM 16.2.5.1 and 16.2.5.2).
+    pub(super) fn fpu_register_result(
+        &mut self,
+        ef: &ExceptionFlags,
+        result: Fp80,
+    ) -> Option<Fp80> {
+        if self.fpu_operation_suppressed(ef) {
+            self.fpu_record_suppressed(ef);
+            return None;
+        }
+        let unmasked_range = (ef.overflow && self.fpu_unmasked(OVERFLOW))
+            || (ef.tiny && self.fpu_unmasked(UNDERFLOW));
+        if unmasked_range && let Some(biased) = ef.biased {
+            let mut flags = *ef;
+            flags.precision = biased.precision;
+            flags.rounded_up = biased.rounded_up;
+            self.fpu_check_result(&flags);
+            return Some(biased.value);
+        }
+        self.fpu_check_result(ef);
+        Some(result)
+    }
+
+    /// Returns whether an unmasked exception of `ef` suppresses a store to memory: an
+    /// invalid operation, a denormal source, an overflow or a tiny result. No result is
+    /// stored and the operand stays on the stack (80486 PRM 16.2.2.2, 16.2.4, 16.2.5.1 and
+    /// 16.2.5.2).
+    pub(super) fn fpu_store_suppressed(&self, ef: &ExceptionFlags) -> bool {
+        (ef.invalid && self.fpu_unmasked(INVALID_OPERATION))
+            || (ef.denormal && self.fpu_unmasked(DENORMAL_OPERAND))
+            || (ef.overflow && self.fpu_unmasked(OVERFLOW))
+            || (ef.tiny && self.fpu_unmasked(UNDERFLOW))
+    }
+
+    /// Records the exceptions of a store that `fpu_store_suppressed` stopped. An unmasked
+    /// denormal source reports DE alone, as the lower priority exceptions are not reported
+    /// (80486 PRM 16.2.7). Otherwise IE, OE and UE are reported together with a masked DE
+    /// (80486 PRM 16.2.7, item 4): no result is stored and the operand stays on the stack
+    /// (80486 PRM 16.2.5.1 and 16.2.5.2). Observed behaviour: PE and C1 stay clear.
+    pub(super) fn fpu_record_store_suppressed(&mut self, ef: &ExceptionFlags) {
+        if ef.denormal && self.fpu_unmasked(DENORMAL_OPERAND) {
+            self.fpu_record_flags(DENORMAL_OPERAND);
+            return;
+        }
+        let mut flags = 0;
+        if ef.invalid {
+            flags |= INVALID_OPERATION;
+        }
+        if ef.denormal {
+            flags |= DENORMAL_OPERAND;
+        }
+        if ef.overflow {
+            flags |= OVERFLOW;
+        }
+        if ef.tiny && self.fpu_unmasked(UNDERFLOW) {
+            flags |= UNDERFLOW;
+        }
+        self.fpu_record_flags(flags);
     }
 
     pub(super) fn fpu_raise_exception(&mut self, bus: &mut impl common::Bus) -> Step {
@@ -346,6 +478,11 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     /// 15.1.2, table 15-1, "Zero or O/U#").
     pub(super) fn fpu_clear_c1(&mut self) {
         self.state.fpu.status_word &= !0x0200;
+    }
+
+    /// Clears the C2 condition code bit.
+    pub(super) fn fpu_clear_c2(&mut self) {
+        self.state.fpu.status_word &= !0x0400;
     }
 
     pub(super) fn fpu_set_cc(&mut self, c3: bool, c2: bool, c1: bool, c0: bool) {
