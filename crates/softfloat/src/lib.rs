@@ -74,6 +74,39 @@ pub struct ExceptionFlags {
     /// every tiny result (80486 PRM 16.2.5). `underflow` holds the masked condition, a
     /// tiny and inexact result.
     pub tiny: bool,
+    /// The unmasked response of the last overflow or tiny result with the extended
+    /// exponent range (80486 PRM 16.2.5.1 and 16.2.5.2).
+    pub biased: Option<BiasedResult>,
+}
+
+/// The unmasked overflow or underflow response for a register destination: the true result
+/// rounded to the precision with an unbounded exponent and its exponent biased by -24576 for
+/// an overflow or +24576 for an underflow (80486 PRM 16.2.5.1 and 16.2.5.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BiasedResult {
+    /// The biased value.
+    pub value: Fp80,
+    /// PE of the biased value.
+    pub precision: bool,
+    /// C1 of the biased value.
+    pub rounded_up: bool,
+}
+
+impl ExceptionFlags {
+    /// ORs the exception flags of `other` into `self` and takes its biased result.
+    pub(crate) fn merge(&mut self, other: &ExceptionFlags) {
+        self.invalid |= other.invalid;
+        self.denormal |= other.denormal;
+        self.zero_divide |= other.zero_divide;
+        self.overflow |= other.overflow;
+        self.underflow |= other.underflow;
+        self.precision |= other.precision;
+        self.rounded_up |= other.rounded_up;
+        self.tiny |= other.tiny;
+        if other.biased.is_some() {
+            self.biased = other.biased;
+        }
+    }
 }
 
 /// Result of floating-point comparison operations.
@@ -479,7 +512,8 @@ impl Fp80 {
     }
 
     /// Round and pack a result into Fp80 with the masked response to overflow and
-    /// underflow.
+    /// underflow. An overflow or a tiny result also records the unmasked response in
+    /// `ef.biased`.
     ///
     /// - `sign`: result sign
     /// - `exponent`: unbiased exponent (maybe out of range)
@@ -506,15 +540,29 @@ impl Fp80 {
         };
         let leading = significand.leading_zeros();
         let biased = exponent - leading as i32 + BIAS;
-        match round_to_format(
+        let normalized = significand << leading;
+        let mut flags = ExceptionFlags::default();
+        let rounded = round_to_format(
             sign,
             biased,
-            significand << leading,
+            normalized,
             precision_bits,
             0x7FFF,
             rc,
-            ef,
-        ) {
+            &mut flags,
+        );
+        if flags.overflow || flags.tiny {
+            flags.biased = Some(biased_response(
+                sign,
+                biased,
+                normalized,
+                precision_bits,
+                rc,
+                flags.overflow,
+            ));
+        }
+        ef.merge(&flags);
+        match rounded {
             Rounded::Finite {
                 biased,
                 significand,
@@ -623,6 +671,68 @@ pub(crate) fn round_to_format(
     Rounded::Finite {
         biased: (kept >> (precision_bits - 1) != 0) as i32,
         significand: kept as u64,
+    }
+}
+
+/// Sets DE when one of `operands` is a denormal or a pseudo-denormal.
+pub(crate) fn flag_denormal_operands(operands: &[Fp80], ef: &mut ExceptionFlags) {
+    if operands
+        .iter()
+        .any(|operand| operand.is_denormal() || operand.is_pseudo_denormal())
+    {
+        ef.denormal = true;
+    }
+}
+
+/// The exponent bias of the unmasked overflow and underflow responses (80486 PRM 16.2.5.1).
+const UNMASKED_RESPONSE_BIAS: i32 = 24576;
+
+/// Returns the unmasked overflow (`overflow`) or underflow response of a value with the
+/// extended exponent range. `biased` is the exponent field of the value and `significand`
+/// holds the J-bit at bit 127. A value that stays out of range after the bias takes the
+/// masked round to nearest response, an infinity or a zero (80486 PRM 16.2.5.1 and
+/// 16.2.5.2).
+fn biased_response(
+    sign: bool,
+    biased: i32,
+    significand: u128,
+    precision_bits: u32,
+    rc: RoundingMode,
+    overflow: bool,
+) -> BiasedResult {
+    let sign_bit = if sign { 0x8000u16 } else { 0 };
+    let (mut kept, inexact, increment) = round_bits(sign, significand, precision_bits, rc);
+    let mut biased = biased;
+    if kept >> precision_bits != 0 {
+        kept >>= 1;
+        biased += 1;
+    }
+    let biased = if overflow {
+        biased - UNMASKED_RESPONSE_BIAS
+    } else {
+        biased + UNMASKED_RESPONSE_BIAS
+    };
+    if biased >= 0x7FFF {
+        return BiasedResult {
+            value: Fp80::from_bits(sign_bit | 0x7FFF, 0x8000_0000_0000_0000),
+            precision: true,
+            rounded_up: true,
+        };
+    }
+    if biased < 1 {
+        return BiasedResult {
+            value: Fp80::from_bits(sign_bit, 0),
+            precision: true,
+            rounded_up: false,
+        };
+    }
+    BiasedResult {
+        value: Fp80::from_bits(
+            sign_bit | biased as u16,
+            (kept as u64) << (64 - precision_bits),
+        ),
+        precision: inexact,
+        rounded_up: increment,
     }
 }
 

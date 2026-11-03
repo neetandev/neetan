@@ -257,11 +257,12 @@ impl Fp80 {
             return Fp80::propagate_nan(self, other, ef);
         }
 
-        // Denormal operand flag
-        if self.is_denormal()
-            || self.is_pseudo_denormal()
-            || other.is_denormal()
-            || other.is_pseudo_denormal()
+        // Denormal operand flag. A zero divide takes precedence (80486 PRM 16.2.7).
+        if !other.is_zero()
+            && (self.is_denormal()
+                || self.is_pseudo_denormal()
+                || other.is_denormal()
+                || other.is_pseudo_denormal())
         {
             ef.denormal = true;
         }
@@ -359,6 +360,12 @@ impl Fp80 {
             return self;
         }
 
+        // sqrt(negative) or sqrt(-inf) = Indefinite + IE, before DE (80486 PRM 16.2.7)
+        if self.sign() && !self.is_zero() {
+            ef.invalid = true;
+            return Fp80::INDEFINITE;
+        }
+
         // Denormal sets DE
         if self.is_denormal() || self.is_pseudo_denormal() {
             ef.denormal = true;
@@ -372,12 +379,6 @@ impl Fp80 {
         // sqrt(+inf) = +inf
         if self.is_infinity() && !self.sign() {
             return Fp80::INFINITY;
-        }
-
-        // sqrt(negative) or sqrt(-inf) = Indefinite + IE
-        if self.sign() {
-            ef.invalid = true;
-            return Fp80::INDEFINITE;
         }
 
         let mut exp = self.true_exponent();
@@ -1444,5 +1445,53 @@ mod tests {
             );
             assert_eq!(ef.rounded_up, root * root > (a as u128) << 63, "sqrt {a:X}");
         }
+    }
+
+    /// Verifies the biased unmasked responses of an overflow and a tiny result (80486 PRM
+    /// 16.2.5.1 and 16.2.5.2).
+    #[test]
+    fn test_mul_records_biased_response() {
+        let huge = Fp80::from_bits(0x7FFE, 0xC000_0000_0000_0000);
+        let mut ef = no_exceptions();
+        let result = huge.mul(
+            huge,
+            RoundingMode::NearestEven,
+            Precision::Extended,
+            &mut ef,
+        );
+        assert_eq!(result, Fp80::INFINITY);
+        let biased = ef.biased.expect("biased response");
+        assert_eq!(biased.value, Fp80::from_bits(0x5FFE, 0x9000_0000_0000_0000));
+        assert!(!biased.precision && !biased.rounded_up);
+
+        let tiny = Fp80::from_bits(0x0001, 0xC000_0000_0000_0000);
+        let mut ef = no_exceptions();
+        let result = tiny.mul(
+            tiny,
+            RoundingMode::NearestEven,
+            Precision::Extended,
+            &mut ef,
+        );
+        assert!(result.is_zero());
+        assert!(ef.tiny);
+        let biased = ef.biased.expect("biased response");
+        assert_eq!(biased.value, Fp80::from_bits(0x2004, 0x9000_0000_0000_0000));
+
+        let odd = Fp80::from_bits(0x7FFE, u64::MAX);
+        let one_and_half = Fp80::from_bits(0x3FFF, 0xC000_0000_0000_0000);
+        let mut ef = no_exceptions();
+        odd.mul(one_and_half, RoundingMode::Up, Precision::Single, &mut ef);
+        let biased = ef.biased.expect("biased response");
+        assert_eq!(biased.value, Fp80::from_bits(0x1FFF, 0xC000_0000_0000_0000));
+        assert!(biased.precision && biased.rounded_up);
+
+        let mut ef = no_exceptions();
+        Fp80::ONE.mul(
+            one_and_half,
+            RoundingMode::NearestEven,
+            Precision::Extended,
+            &mut ef,
+        );
+        assert_eq!(ef.biased, None);
     }
 }

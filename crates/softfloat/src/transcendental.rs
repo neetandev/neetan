@@ -61,6 +61,7 @@ use crate::{
         ATAN_ARR, DD_LN2, DD_LN2INV2, DD_PI, DD_PI2, DD_PI4, DD_PI6, DD_SQRT3, DoubleF64, EXP_ARR,
         LN_ARR, cos_poly, dd_3pi4, eval_poly, odd_poly, sin_poly, trig_reduce,
     },
+    flag_denormal_operands,
 };
 
 fn handle_single_nan(v: Fp80, ef: &mut ExceptionFlags) -> Option<Fp80> {
@@ -126,6 +127,7 @@ impl Fp80 {
         if let Some(nan) = handle_single_nan(self, ef) {
             return nan;
         }
+        flag_denormal_operands(&[self], ef);
         if self.is_zero() {
             return self;
         }
@@ -173,6 +175,8 @@ impl Fp80 {
             };
         }
 
+        flag_denormal_operands(&[x, y], ef);
+
         if x.is_infinity() {
             if y.is_zero() {
                 ef.invalid = true;
@@ -215,11 +219,20 @@ impl Fp80 {
         result.to_fp80(ef)
     }
 
-    /// Compute y × log₂(self + 1) (FYL2XP1). self = x (ST0), y = ST1.
+    /// Compute y × log₂(self + 1) (FYL2XP1). self = x (ST0), y = ST1. An operand more
+    /// negative than -1 is an invalid operation (80486 PRM table 16-11).
     pub fn fyl2xp1(self, y: Fp80, ef: &mut ExceptionFlags) -> Fp80 {
         if let Some(nan) = handle_two_nans(self, y, ef) {
             return nan;
         }
+
+        let mut ignored = ExceptionFlags::default();
+        if self.compare_quiet(Fp80::ONE.negate(), &mut ignored) == crate::FpOrdering::Less {
+            ef.invalid = true;
+            return Fp80::INDEFINITE;
+        }
+
+        flag_denormal_operands(&[self, y], ef);
 
         if self.is_zero() {
             let result_sign = self.sign() ^ y.sign();
@@ -249,6 +262,7 @@ impl Fp80 {
             ef.invalid = true;
             return (Fp80::INDEFINITE, false);
         }
+        flag_denormal_operands(&[self], ef);
         if self.is_zero() {
             return (self, false);
         }
@@ -280,6 +294,7 @@ impl Fp80 {
             ef.invalid = true;
             return (Fp80::INDEFINITE, false);
         }
+        flag_denormal_operands(&[self], ef);
         if self.is_zero() {
             return (Fp80::ONE, false);
         }
@@ -311,6 +326,7 @@ impl Fp80 {
             ef.invalid = true;
             return (Fp80::INDEFINITE, Fp80::INDEFINITE, false);
         }
+        flag_denormal_operands(&[self], ef);
         if self.is_zero() {
             return (self, Fp80::ONE, false);
         }
@@ -337,11 +353,8 @@ impl Fp80 {
         let mut ef_cos = ExceptionFlags::default();
         let sin_fp80 = sin_result.to_fp80(&mut ef_sin);
         let cos_fp80 = cos_result.to_fp80(&mut ef_cos);
-        ef.precision |= ef_sin.precision || ef_cos.precision;
-        ef.overflow |= ef_sin.overflow || ef_cos.overflow;
-        ef.underflow |= ef_sin.underflow || ef_cos.underflow;
-        ef.tiny |= ef_sin.tiny || ef_cos.tiny;
-        ef.rounded_up |= ef_sin.rounded_up || ef_cos.rounded_up;
+        ef.merge(&ef_cos);
+        ef.merge(&ef_sin);
         (sin_fp80, cos_fp80, false)
     }
 
@@ -354,6 +367,7 @@ impl Fp80 {
             ef.invalid = true;
             return (Fp80::INDEFINITE, false);
         }
+        flag_denormal_operands(&[self], ef);
         if self.is_zero() {
             return (self, false);
         }
@@ -387,6 +401,8 @@ impl Fp80 {
         if let Some(nan) = handle_two_nans(y, x, ef) {
             return nan;
         }
+
+        flag_denormal_operands(&[y, x], ef);
 
         let y_sign = y.sign();
         let x_sign = x.sign();
