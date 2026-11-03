@@ -144,6 +144,8 @@ pub struct I386<
     cycles_remaining: i64,
     run_start_cycle: u64,
     run_budget: u64,
+    /// The current instruction delivered a fault. Its single-step trap is not raised.
+    instruction_faulted: bool,
 }
 
 impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> Deref for I386<CPU_MODEL, ADDRESS_WIDTH> {
@@ -173,6 +175,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             cycles_remaining: 0,
             run_start_cycle: 0,
             run_budget: 0,
+            instruction_faulted: false,
         };
         cpu.reset();
         cpu
@@ -451,27 +454,26 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         (HAS_MODRM[idx] >> bit) & 1 != 0
     }
 
+    /// Fetches the next code byte at CS:EIP and advances EIP. A CS limit violation or a
+    /// page fault delivers the exception and returns `Err`, so the instruction ends before
+    /// any architectural write.
     #[inline(always)]
-    fn fetch(&mut self, bus: &mut impl common::Bus) -> u8 {
+    fn fetch(&mut self, bus: &mut impl common::Bus) -> Step<u8> {
         if unlikely(self.fault_pending) {
-            return 0;
+            return Err(Fault);
         }
         let eip = self.effective_eip();
         // 80486 PRM Table 22-2: instruction execution crossing the CS limit
-        // (e.g. continuing past offset 0xFFFF in real mode or V86) raises
-        // #GP. Protected-mode descriptors honor the cached CS limit and
-        // typically have plenty of headroom, so this is essentially free
-        // there. fault_pending is asserted here so the prefix-decode loop
-        // terminates instead of dispatching a stray 0 opcode at the handler.
+        // (e.g. continuing past offset 0xFFFF in real mode or V86) raises #GP.
         if unlikely(eip > self.seg_limits[SegReg32::CS as usize]) {
             let _: Step<()> = self.raise_fault_with_code(13, 0, bus);
             self.fault_pending = true;
-            return 0;
+            return Err(Fault);
         }
         let linear = self.seg_bases[SegReg32::CS as usize].wrapping_add(eip);
         let Ok(addr) = self.fetch_physical_address(linear, bus) else {
             self.prefetch_valid = false;
-            return 0;
+            return Err(Fault);
         };
         let value = if self.prefetch_valid && self.prefetch_addr == addr {
             self.prefetch_valid = false;
@@ -494,7 +496,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         } else {
             self.prefetch_valid = false;
         }
-        value
+        Ok(value)
     }
 
     #[inline(always)]
@@ -521,30 +523,30 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         Ok(addr)
     }
 
+    /// Fetches the next code word at CS:EIP and advances EIP. A fault returns `Err`.
     #[inline(always)]
-    fn fetchword(&mut self, bus: &mut impl common::Bus) -> u16 {
+    fn fetchword(&mut self, bus: &mut impl common::Bus) -> Step<u16> {
         if likely(!self.fault_pending) {
             let eip = self.effective_eip();
             let linear = self.seg_bases[SegReg32::CS as usize].wrapping_add(eip);
             if likely((linear & 0xFFF) <= 0xFFE && eip < self.seg_limits[SegReg32::CS as usize]) {
-                let Ok(addr) = self.fetch_physical_address(linear, bus) else {
-                    return 0;
-                };
+                let addr = self.fetch_physical_address(linear, bus)?;
                 let value = bus.fetch_opcode_word(addr);
                 if CPU_MODEL == CPU_MODEL_386_SX {
                     self.sx_code_fetch_bytes += 2;
                 }
                 self.advance_ip_by(2);
-                return value;
+                return Ok(value);
             }
         }
-        let low = self.fetch(bus) as u16;
-        let high = self.fetch(bus) as u16;
-        low | (high << 8)
+        let low = self.fetch(bus)? as u16;
+        let high = self.fetch(bus)? as u16;
+        Ok(low | (high << 8))
     }
 
+    /// Fetches the next code dword at CS:EIP and advances EIP. A fault returns `Err`.
     #[inline(always)]
-    fn fetchdword(&mut self, bus: &mut impl common::Bus) -> u32 {
+    fn fetchdword(&mut self, bus: &mut impl common::Bus) -> Step<u32> {
         if likely(!self.fault_pending) {
             let eip = self.effective_eip();
             let linear = self.seg_bases[SegReg32::CS as usize].wrapping_add(eip);
@@ -552,22 +554,20 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                 (linear & 0xFFF) <= 0xFFC
                     && u64::from(eip) + 3 <= u64::from(self.seg_limits[SegReg32::CS as usize]),
             ) {
-                let Ok(addr) = self.fetch_physical_address(linear, bus) else {
-                    return 0;
-                };
+                let addr = self.fetch_physical_address(linear, bus)?;
                 let value = bus.fetch_opcode_dword(addr);
                 if CPU_MODEL == CPU_MODEL_386_SX {
                     self.sx_code_fetch_bytes += 4;
                 }
                 self.advance_ip_by(4);
-                return value;
+                return Ok(value);
             }
         }
-        let b0 = self.fetch(bus) as u32;
-        let b1 = self.fetch(bus) as u32;
-        let b2 = self.fetch(bus) as u32;
-        let b3 = self.fetch(bus) as u32;
-        b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
+        let b0 = self.fetch(bus)? as u32;
+        let b1 = self.fetch(bus)? as u32;
+        let b2 = self.fetch(bus)? as u32;
+        let b3 = self.fetch(bus)? as u32;
+        Ok(b0 | (b1 << 8) | (b2 << 16) | (b3 << 24))
     }
 
     #[inline(always)]
@@ -659,17 +659,14 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     /// Reads the next instruction byte from CS:IP without advancing IP.
-    /// Used to inspect a ModR/M byte before deciding how to dispatch.
-    fn peek_byte(&mut self, bus: &mut impl common::Bus) -> u8 {
+    fn peek_byte(&mut self, bus: &mut impl common::Bus) -> Step<u8> {
         let eip = self.effective_eip();
         let linear = self.seg_bases[SegReg32::CS as usize].wrapping_add(eip);
-        let Ok(addr) = self.fetch_physical_address(linear, bus) else {
-            return 0;
-        };
+        let addr = self.fetch_physical_address(linear, bus)?;
         if self.prefetch_valid && self.prefetch_addr == addr {
-            self.prefetch_byte
+            Ok(self.prefetch_byte)
         } else {
-            bus.read_byte(addr)
+            Ok(bus.fetch_opcode_byte(addr))
         }
     }
 
@@ -2775,10 +2772,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         // a 15-byte all-prefix run still requires an opcode byte, so the
         // total length necessarily exceeds the limit.
         let mut prefix_count: u32 = 0;
-        let mut opcode = self.fetch(bus);
-        if self.fault_pending {
-            return Err(Fault);
-        }
+        let mut opcode = self.fetch(bus)?;
         loop {
             match opcode {
                 0x26 | 0x2E | 0x36 | 0x3E | 0x64 | 0x65 | 0x66 | 0x67 | 0xF0 => {
@@ -2794,52 +2788,52 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                     self.seg_prefix = true;
                     self.prefix_seg = SegReg32::ES;
                     self.clk(Self::timing(0, 1));
-                    opcode = self.fetch(bus);
+                    opcode = self.fetch(bus)?;
                 }
                 0x2E => {
                     self.seg_prefix = true;
                     self.prefix_seg = SegReg32::CS;
                     self.clk(Self::timing(0, 1));
-                    opcode = self.fetch(bus);
+                    opcode = self.fetch(bus)?;
                 }
                 0x36 => {
                     self.seg_prefix = true;
                     self.prefix_seg = SegReg32::SS;
                     self.clk(Self::timing(0, 1));
-                    opcode = self.fetch(bus);
+                    opcode = self.fetch(bus)?;
                 }
                 0x3E => {
                     self.seg_prefix = true;
                     self.prefix_seg = SegReg32::DS;
                     self.clk(Self::timing(0, 1));
-                    opcode = self.fetch(bus);
+                    opcode = self.fetch(bus)?;
                 }
                 0x64 => {
                     self.seg_prefix = true;
                     self.prefix_seg = SegReg32::FS;
                     self.clk(Self::timing(0, 1));
-                    opcode = self.fetch(bus);
+                    opcode = self.fetch(bus)?;
                 }
                 0x65 => {
                     self.seg_prefix = true;
                     self.prefix_seg = SegReg32::GS;
                     self.clk(Self::timing(0, 1));
-                    opcode = self.fetch(bus);
+                    opcode = self.fetch(bus)?;
                 }
                 0x66 => {
                     self.operand_size_override = !self.code_segment_32bit();
                     self.clk(Self::timing(0, 1));
-                    opcode = self.fetch(bus);
+                    opcode = self.fetch(bus)?;
                 }
                 0x67 => {
                     self.address_size_override = !self.code_segment_32bit();
                     self.clk(Self::timing(0, 1));
-                    opcode = self.fetch(bus);
+                    opcode = self.fetch(bus)?;
                 }
                 0xF0 => {
                     self.lock_prefix = true;
                     self.clk(Self::timing(0, 1));
-                    opcode = self.fetch(bus);
+                    opcode = self.fetch(bus)?;
                 }
                 _ => {
                     if unlikely(self.lock_prefix && opcode != 0x0F && !Self::is_lockable(opcode)) {
@@ -2848,7 +2842,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                     if unlikely(
                         self.lock_prefix
                             && Self::is_lockable(opcode)
-                            && Self::lockable_modrm_is_register(self.peek_byte(bus)),
+                            && Self::lockable_modrm_is_register(self.peek_byte(bus)?),
                     ) {
                         // 80486 PRM 13.1.1: LOCK with a lockable opcode
                         // is still illegal when the destination operand
@@ -2857,9 +2851,6 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                     }
                     return self.dispatch(opcode, bus);
                 }
-            }
-            if self.fault_pending {
-                return Err(Fault);
             }
         }
     }
@@ -2886,6 +2877,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         }
 
         let tf_was_set = self.flags.tf;
+        self.instruction_faulted = false;
 
         self.seg_prefix = false;
         self.lock_prefix = false;
@@ -2908,7 +2900,9 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             self.eflags_upper &= !EFLAGS_RESUME_FLAG;
         }
 
-        if unlikely(tf_was_set && !self.fault_pending && !inhibit) {
+        // 80486 PRM 9.1 and 11.3.1.4: the trap follows an executed instruction. A
+        // faulting instruction is not executed.
+        if unlikely(tf_was_set && !self.fault_pending && !self.instruction_faulted && !inhibit) {
             let _ = self.raise_trap(1, bus);
         }
 
@@ -3444,13 +3438,13 @@ mod timing_tests {
         let mut cpu = fetch_test_cpu();
         let mut bus = FetchBus::default();
 
-        assert_eq!(cpu.fetchword(&mut bus), 0xABCD);
+        assert_eq!(cpu.fetchword(&mut bus).ok(), Some(0xABCD));
         assert_eq!(bus.word_fetches, 1);
         assert_eq!(bus.data_reads, 0);
 
         cpu.state.ip = 0;
         cpu.fetch_page_valid = false;
-        assert_eq!(cpu.fetchdword(&mut bus), 0x1234_5678);
+        assert_eq!(cpu.fetchdword(&mut bus).ok(), Some(0x1234_5678));
         assert_eq!(bus.dword_fetches, 1);
         assert_eq!(bus.data_reads, 0);
     }
@@ -3461,7 +3455,7 @@ mod timing_tests {
         cpu.state.ip = 0x0FFF;
         let mut bus = FetchBus::default();
 
-        cpu.fetchword(&mut bus);
+        assert!(cpu.fetchword(&mut bus).is_ok());
 
         assert!(bus.byte_fetches >= 2);
         assert_eq!(bus.word_fetches, 0);

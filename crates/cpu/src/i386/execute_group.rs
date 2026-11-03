@@ -45,7 +45,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
 
     /// Group 0x80: ALU r/m8, imm8
     pub(super) fn group_80(&mut self, bus: &mut impl common::Bus) -> Step {
-        let modrm = self.fetch(bus);
+        let modrm = self.fetch(bus)?;
         let extension = (modrm >> 3) & 7;
         if self.lock_prefix && extension == 7 {
             self.raise_fault(6, bus)?;
@@ -56,7 +56,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         } else {
             self.get_rm_byte_for_update(modrm, bus)
         })?;
-        let src = self.fetch(bus);
+        let src = self.fetch(bus)?;
         let result = match extension {
             0 => self.alu_add_byte(dst, src),
             1 => self.alu_or_byte(dst, src),
@@ -87,7 +87,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
 
     /// Group 0x81: ALU r/m16, imm16
     pub(super) fn group_81(&mut self, bus: &mut impl common::Bus) -> Step {
-        let modrm = self.fetch(bus);
+        let modrm = self.fetch(bus)?;
         let extension = (modrm >> 3) & 7;
         if self.lock_prefix && extension == 7 {
             self.raise_fault(6, bus)?;
@@ -99,7 +99,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             } else {
                 self.get_rm_dword_for_update(modrm, bus)
             })?;
-            let src = self.fetchdword(bus);
+            let src = self.fetchdword(bus)?;
             let result = match extension {
                 0 => self.alu_add_dword(dst, src),
                 1 => self.alu_or_dword(dst, src),
@@ -131,7 +131,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             } else {
                 self.get_rm_word_for_update(modrm, bus)
             })?;
-            let src = self.fetchword(bus);
+            let src = self.fetchword(bus)?;
             let result = match extension {
                 0 => self.alu_add_word(dst, src),
                 1 => self.alu_or_word(dst, src),
@@ -169,7 +169,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
 
     /// Group 0x83: ALU r/m16, sign-extended imm8
     pub(super) fn group_83(&mut self, bus: &mut impl common::Bus) -> Step {
-        let modrm = self.fetch(bus);
+        let modrm = self.fetch(bus)?;
         let extension = (modrm >> 3) & 7;
         if self.lock_prefix && extension == 7 {
             self.raise_fault(6, bus)?;
@@ -181,7 +181,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             } else {
                 self.get_rm_dword_for_update(modrm, bus)
             })?;
-            let src = self.fetch(bus) as i8 as i32 as u32;
+            let src = self.fetch(bus)? as i8 as i32 as u32;
             let result = match extension {
                 0 => self.alu_add_dword(dst, src),
                 1 => self.alu_or_dword(dst, src),
@@ -213,7 +213,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             } else {
                 self.get_rm_word_for_update(modrm, bus)
             })?;
-            let src = self.fetch(bus) as i8 as u16;
+            let src = self.fetch(bus)? as i8 as u16;
             let result = match extension {
                 0 => self.alu_add_word(dst, src),
                 1 => self.alu_or_word(dst, src),
@@ -245,9 +245,9 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
 
     /// Group 0xC0: shift/rotate r/m8, imm8
     pub(super) fn group_c0(&mut self, bus: &mut impl common::Bus) -> Step {
-        let modrm = self.fetch(bus);
+        let modrm = self.fetch(bus)?;
         let dst = self.get_rm_byte(modrm, bus)?;
-        let count = self.fetch(bus);
+        let count = self.fetch(bus)?;
         let extension = (modrm >> 3) & 7;
         let result = match extension {
             0 => self.alu_rol_byte(dst, count),
@@ -268,12 +268,12 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
 
     /// Group 0xC1: shift/rotate r/m16, imm8
     pub(super) fn group_c1(&mut self, bus: &mut impl common::Bus) -> Step {
-        let modrm = self.fetch(bus);
+        let modrm = self.fetch(bus)?;
         let extension = (modrm >> 3) & 7;
         let (register_cycles, memory_cycles) = Self::shift_group_timing(extension, 0);
         if self.operand_size_override {
             let dst = self.get_rm_dword(modrm, bus)?;
-            let count = self.fetch(bus);
+            let count = self.fetch(bus)?;
             let result = match extension {
                 0 => self.alu_rol_dword(dst, count),
                 1 => self.alu_ror_dword(dst, count),
@@ -289,7 +289,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             self.clk_modrm_word(modrm, register_cycles, memory_cycles, 4);
         } else {
             let dst = self.get_rm_word(modrm, bus)?;
-            let count = self.fetch(bus);
+            let count = self.fetch(bus)?;
             let result = match extension {
                 0 => self.alu_rol_word(dst, count),
                 1 => self.alu_ror_word(dst, count),
@@ -309,7 +309,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
 
     /// Group 0xD0: shift/rotate r/m8, 1
     pub(super) fn group_d0(&mut self, bus: &mut impl common::Bus) -> Step {
-        let modrm = self.fetch(bus);
+        let modrm = self.fetch(bus)?;
         let dst = self.get_rm_byte(modrm, bus)?;
         let extension = (modrm >> 3) & 7;
         let result = match extension {
@@ -331,7 +331,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
 
     /// Group 0xD1: shift/rotate r/m16, 1
     pub(super) fn group_d1(&mut self, bus: &mut impl common::Bus) -> Step {
-        let modrm = self.fetch(bus);
+        let modrm = self.fetch(bus)?;
         let extension = (modrm >> 3) & 7;
         let (register_cycles, memory_cycles) = Self::shift_group_timing(extension, 1);
         if self.operand_size_override {
@@ -370,7 +370,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
 
     /// Group 0xD2: shift/rotate r/m8, CL
     pub(super) fn group_d2(&mut self, bus: &mut impl common::Bus) -> Step {
-        let modrm = self.fetch(bus);
+        let modrm = self.fetch(bus)?;
         let dst = self.get_rm_byte(modrm, bus)?;
         let count = self.regs.byte(ByteReg::CL);
         let extension = (modrm >> 3) & 7;
@@ -393,7 +393,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
 
     /// Group 0xD3: shift/rotate r/m16, CL
     pub(super) fn group_d3(&mut self, bus: &mut impl common::Bus) -> Step {
-        let modrm = self.fetch(bus);
+        let modrm = self.fetch(bus)?;
         let count = self.regs.byte(ByteReg::CL);
         let extension = (modrm >> 3) & 7;
         let (register_cycles, memory_cycles) = Self::shift_group_timing(extension, 2);
@@ -433,7 +433,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
 
     /// Group 0xF6: various byte operations
     pub(super) fn group_f6(&mut self, bus: &mut impl common::Bus) -> Step {
-        let modrm = self.fetch(bus);
+        let modrm = self.fetch(bus)?;
         let op = (modrm >> 3) & 7;
         if self.lock_prefix && !matches!(op, 2 | 3) {
             self.raise_fault(6, bus)?;
@@ -443,7 +443,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             0 | 1 => {
                 // TEST r/m8, imm8
                 let dst = self.get_rm_byte(modrm, bus)?;
-                let src = self.fetch(bus);
+                let src = self.fetch(bus)?;
                 self.alu_and_byte(dst, src);
                 self.clk_modrm(modrm, Self::timing(2, 1), Self::timing(5, 2));
             }
@@ -539,7 +539,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
 
     /// Group 0xF7: various word operations
     pub(super) fn group_f7(&mut self, bus: &mut impl common::Bus) -> Step {
-        let modrm = self.fetch(bus);
+        let modrm = self.fetch(bus)?;
         let op = (modrm >> 3) & 7;
         if self.lock_prefix && !matches!(op, 2 | 3) {
             self.raise_fault(6, bus)?;
@@ -550,7 +550,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                 0 | 1 => {
                     // TEST r/m32, imm32
                     let dst = self.get_rm_dword(modrm, bus)?;
-                    let src = self.fetchdword(bus);
+                    let src = self.fetchdword(bus)?;
                     self.alu_and_dword(dst, src);
                     self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(5, 2), 2);
                 }
@@ -651,7 +651,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                 0 | 1 => {
                     // TEST r/m16, imm16
                     let dst = self.get_rm_word(modrm, bus)?;
-                    let src = self.fetchword(bus);
+                    let src = self.fetchword(bus)?;
                     self.alu_and_word(dst, src);
                     self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(5, 2), 1);
                 }
@@ -754,7 +754,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
 
     /// Group 0xFE: INC/DEC r/m8
     pub(super) fn group_fe(&mut self, bus: &mut impl common::Bus) -> Step {
-        let modrm = self.fetch(bus);
+        let modrm = self.fetch(bus)?;
         if self.lock_prefix && (modrm >> 3) & 7 >= 2 {
             self.raise_fault(6, bus)?;
             return Ok(());
@@ -783,7 +783,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
 
     /// Group 0xFF: various word operations
     pub(super) fn group_ff(&mut self, bus: &mut impl common::Bus) -> Step {
-        let modrm = self.fetch(bus);
+        let modrm = self.fetch(bus)?;
         if self.lock_prefix && (modrm >> 3) & 7 >= 2 {
             self.raise_fault(6, bus)?;
             return Ok(());
@@ -874,7 +874,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                 if self.operand_size_override {
                     // CALL m16:32 (far indirect)
                     let sp_pen = self.sp_penalty();
-                    self.calc_ea(modrm, bus);
+                    self.calc_ea(modrm, bus)?;
                     let offset = self.seg_read_dword(bus)?;
                     let segment = self.seg_read_word_at(bus, 4)?;
                     let cs = self.sregs[SegReg32::CS as usize];
@@ -908,7 +908,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                 } else {
                     // CALL m16:16 (far indirect)
                     let sp_pen = self.sp_penalty();
-                    self.calc_ea(modrm, bus);
+                    self.calc_ea(modrm, bus)?;
                     let offset = self.seg_read_word(bus)?;
                     let segment = self.seg_read_word_at(bus, 2)?;
                     let cs = self.sregs[SegReg32::CS as usize];
@@ -990,7 +990,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                 }
                 if self.operand_size_override {
                     // JMP m16:32 (far indirect)
-                    self.calc_ea(modrm, bus);
+                    self.calc_ea(modrm, bus)?;
                     let offset = self.seg_read_dword(bus)?;
                     let segment = self.seg_read_word_at(bus, 4)?;
                     if !self.is_protected_mode() || self.is_virtual_mode() {
@@ -1013,7 +1013,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                     }
                 } else {
                     // JMP m16:16 (far indirect)
-                    self.calc_ea(modrm, bus);
+                    self.calc_ea(modrm, bus)?;
                     let offset = self.seg_read_word(bus)?;
                     let segment = self.seg_read_word_at(bus, 2)?;
                     if !self.is_protected_mode() || self.is_virtual_mode() {

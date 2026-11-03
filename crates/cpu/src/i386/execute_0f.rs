@@ -3,7 +3,7 @@ use crate::{ByteReg, DwordReg, SegReg32, WordReg};
 
 impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH> {
     pub(super) fn extended_0f(&mut self, bus: &mut impl common::Bus) -> Step {
-        let sub = self.fetch(bus);
+        let sub = self.fetch(bus)?;
         if self.lock_prefix {
             let lockable = matches!(
                 sub,
@@ -31,7 +31,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             0x22 => self.mov_cr_r32(bus)?,
             0x23 => self.mov_dr_r32(bus)?,
 
-            0x80..=0x8F => self.jcc_near(sub & 0x0F, bus),
+            0x80..=0x8F => self.jcc_near(sub & 0x0F, bus)?,
             0x90..=0x9F => self.setcc(sub & 0x0F, bus)?,
 
             0xA0 => self.push_seg(SegReg32::FS, bus)?,
@@ -103,10 +103,10 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         Ok(())
     }
 
-    fn jcc_near(&mut self, cc: u8, bus: &mut impl common::Bus) {
+    fn jcc_near(&mut self, cc: u8, bus: &mut impl common::Bus) -> Step {
         let condition = self.cond(cc);
         if self.operand_size_override {
-            let disp = self.fetchdword(bus) as i32;
+            let disp = self.fetchdword(bus)? as i32;
             if condition {
                 let eip = (self.ip_upper | self.ip as u32).wrapping_add(disp as u32);
                 self.ip = eip as u16;
@@ -125,7 +125,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                 self.clk(Self::timing(3, 1));
             }
         } else {
-            let disp = self.fetchword(bus) as i16;
+            let disp = self.fetchword(bus)? as i16;
             if condition {
                 self.ip = self.ip.wrapping_add(disp as u16);
                 self.ip_upper = 0;
@@ -143,10 +143,11 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                 self.clk(Self::timing(3, 1));
             }
         }
+        Ok(())
     }
 
     fn setcc(&mut self, cc: u8, bus: &mut impl common::Bus) -> Step {
-        let modrm = self.fetch(bus);
+        let modrm = self.fetch(bus)?;
         let taken = self.cond(cc);
         let value = if taken { 1 } else { 0 };
         self.put_rm_byte(modrm, value, bus)?;
@@ -185,14 +186,14 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     fn bt_reg(&mut self, bus: &mut impl common::Bus) -> Step {
-        let modrm = self.fetch(bus);
+        let modrm = self.fetch(bus)?;
         if self.operand_size_override {
             let bit_offset = self.regs.dword(self.reg_dword(modrm));
             if modrm >= 0xC0 {
                 let value = self.regs.dword(self.rm_dword(modrm));
                 self.flags.carry_val = (value >> (bit_offset & 31)) & 1;
             } else {
-                self.calc_ea(modrm, bus);
+                self.calc_ea(modrm, bus)?;
                 let (offset, bit_index) = self.bit_mem_effective_offset(bit_offset as i32, 32);
                 let value = self.read_dword_seg(bus, self.ea_seg, offset)?;
                 self.flags.carry_val = (value >> bit_index) & 1;
@@ -203,7 +204,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                 let value = self.regs.word(self.rm_word(modrm)) as u32;
                 self.flags.carry_val = (value >> (bit_offset as u32 & 15)) & 1;
             } else {
-                self.calc_ea(modrm, bus);
+                self.calc_ea(modrm, bus)?;
                 let signed_offset = bit_offset as i16 as i32;
                 let (offset, bit_index) = self.bit_mem_effective_offset(signed_offset, 16);
                 let value = self.read_word_seg(bus, self.ea_seg, offset)?;
@@ -261,7 +262,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         register_cycles: i32,
         memory_cycles: i32,
     ) -> Step {
-        let modrm = self.fetch(bus);
+        let modrm = self.fetch(bus)?;
         if self.operand_size_override {
             let bit_offset = self.regs.dword(self.reg_dword(modrm));
             if modrm >= 0xC0 {
@@ -283,7 +284,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                 self.flags.carry_val = cf;
                 self.flags.overflow_val = if cf != 0 { 0x0800 } else { 0 };
             } else {
-                self.calc_ea(modrm, bus);
+                self.calc_ea(modrm, bus)?;
                 let (offset, bit_index) = self.bit_mem_effective_offset(bit_offset as i32, 32);
                 let value_before = self.read_dword_seg_for_update(bus, self.ea_seg, offset)?;
                 let bit = 1u32 << bit_index;
@@ -323,7 +324,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                 self.flags.carry_val = cf;
                 self.flags.overflow_val = if cf != 0 { 0x0800 } else { 0 };
             } else {
-                self.calc_ea(modrm, bus);
+                self.calc_ea(modrm, bus)?;
                 let signed_offset = bit_offset as i16 as i32;
                 let (offset, bit_index) = self.bit_mem_effective_offset(signed_offset, 16);
                 let value_before = self.read_word_seg_for_update(bus, self.ea_seg, offset)?;
@@ -357,12 +358,12 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         register_cycles: i32,
         memory_cycles: i32,
     ) -> Step {
-        let modrm = self.fetch(bus);
+        let modrm = self.fetch(bus)?;
         let write_back = clear || set || toggle;
 
         if self.operand_size_override {
             if modrm >= 0xC0 {
-                let imm = self.fetch(bus) as u32;
+                let imm = self.fetch(bus)? as u32;
                 let value_before = self.regs.dword(self.rm_dword(modrm));
                 let bit = 1u32 << (imm & 31);
                 let mut new_value = value_before;
@@ -383,8 +384,8 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                 self.flags.carry_val = cf;
                 self.flags.overflow_val = if cf != 0 { 0x0800 } else { 0 };
             } else {
-                self.calc_ea(modrm, bus);
-                let imm = self.fetch(bus) as u32;
+                self.calc_ea(modrm, bus)?;
+                let imm = self.fetch(bus)? as u32;
                 let bit_index = imm & 31;
                 if self.address_size_override {
                     let address = self.ea;
@@ -439,7 +440,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                 }
             }
         } else if modrm >= 0xC0 {
-            let imm = self.fetch(bus) as u32;
+            let imm = self.fetch(bus)? as u32;
             let value_before = self.regs.word(self.rm_word(modrm));
             let bit = 1u16 << (imm & 15);
             let mut new_value = value_before;
@@ -460,8 +461,8 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             self.flags.carry_val = cf;
             self.flags.overflow_val = if cf != 0 { 0x0800 } else { 0 };
         } else {
-            self.calc_ea(modrm, bus);
-            let imm = self.fetch(bus) as u32;
+            self.calc_ea(modrm, bus)?;
+            let imm = self.fetch(bus)? as u32;
             let bit_index = imm & 15;
             if self.address_size_override {
                 let address = self.ea;
@@ -521,7 +522,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     fn group_ba(&mut self, bus: &mut impl common::Bus) -> Step {
-        let modrm = self.fetch(bus);
+        let modrm = self.fetch(bus)?;
         if self.lock_prefix && (modrm >> 3) & 7 == 4 {
             self.raise_fault(6, bus)?;
             return Ok(());
@@ -566,11 +567,11 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     fn shld_imm(&mut self, bus: &mut impl common::Bus) -> Step {
-        let modrm = self.fetch(bus);
+        let modrm = self.fetch(bus)?;
         if self.operand_size_override {
             let src = self.regs.dword(self.reg_dword(modrm));
             let dst = self.get_rm_dword(modrm, bus)?;
-            let count = self.fetch(bus) & 0x1F;
+            let count = self.fetch(bus)? & 0x1F;
             if count != 0 {
                 let result = (dst << count) | (src >> (32 - count));
                 self.flags.carry_val = (dst >> (32 - count)) & 1;
@@ -584,7 +585,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             let src = self.regs.word(self.reg_word(modrm)) as u32;
             let dst = self.get_rm_word(modrm, bus)?;
             let dst = dst as u32;
-            let count = self.fetch(bus) & 0x1F;
+            let count = self.fetch(bus)? & 0x1F;
             if count != 0 {
                 let result = if count < 16 {
                     (((dst << 16) | src) << count) >> 16
@@ -609,7 +610,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     fn shld_cl(&mut self, bus: &mut impl common::Bus) -> Step {
-        let modrm = self.fetch(bus);
+        let modrm = self.fetch(bus)?;
         if self.operand_size_override {
             let src = self.regs.dword(self.reg_dword(modrm));
             let dst = self.get_rm_dword(modrm, bus)?;
@@ -652,11 +653,11 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     fn shrd_imm(&mut self, bus: &mut impl common::Bus) -> Step {
-        let modrm = self.fetch(bus);
+        let modrm = self.fetch(bus)?;
         if self.operand_size_override {
             let src = self.regs.dword(self.reg_dword(modrm));
             let dst = self.get_rm_dword(modrm, bus)?;
-            let count = self.fetch(bus) & 0x1F;
+            let count = self.fetch(bus)? & 0x1F;
             if count != 0 {
                 let result = (dst >> count) | (src << (32 - count));
                 self.flags.carry_val = (dst >> (count - 1)) & 1;
@@ -670,7 +671,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             let src = self.regs.word(self.reg_word(modrm)) as u32;
             let dst = self.get_rm_word(modrm, bus)?;
             let dst = dst as u32;
-            let count = self.fetch(bus) & 0x1F;
+            let count = self.fetch(bus)? & 0x1F;
             if count != 0 {
                 let result = if count < 16 {
                     (dst >> count) | (src << (16 - count))
@@ -697,7 +698,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     fn shrd_cl(&mut self, bus: &mut impl common::Bus) -> Step {
-        let modrm = self.fetch(bus);
+        let modrm = self.fetch(bus)?;
         if self.operand_size_override {
             let src = self.regs.dword(self.reg_dword(modrm));
             let dst = self.get_rm_dword(modrm, bus)?;
@@ -742,7 +743,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     fn imul_reg_rm(&mut self, bus: &mut impl common::Bus) -> Step {
-        let modrm = self.fetch(bus);
+        let modrm = self.fetch(bus)?;
         if self.operand_size_override {
             let src = self.get_rm_dword(modrm, bus)?;
             let src = src as i32 as i64;
@@ -768,13 +769,13 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     fn lss(&mut self, bus: &mut impl common::Bus) -> Step {
-        let modrm = self.fetch(bus);
+        let modrm = self.fetch(bus)?;
         if modrm >= 0xC0 {
             self.raise_fault(6, bus)?;
             return Ok(());
         }
 
-        self.calc_ea(modrm, bus);
+        self.calc_ea(modrm, bus)?;
         // Snapshot CS:EIP so a fault inside the pointer fetch aborts the
         // instruction without committing the segment load or destination
         // register update.
@@ -812,13 +813,13 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     fn lfs(&mut self, bus: &mut impl common::Bus) -> Step {
-        let modrm = self.fetch(bus);
+        let modrm = self.fetch(bus)?;
         if modrm >= 0xC0 {
             self.raise_fault(6, bus)?;
             return Ok(());
         }
 
-        self.calc_ea(modrm, bus);
+        self.calc_ea(modrm, bus)?;
         let initial_cs = self.sregs[SegReg32::CS as usize];
         let initial_ip = self.ip;
         let initial_ip_upper = self.ip_upper;
@@ -852,13 +853,13 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     fn lgs(&mut self, bus: &mut impl common::Bus) -> Step {
-        let modrm = self.fetch(bus);
+        let modrm = self.fetch(bus)?;
         if modrm >= 0xC0 {
             self.raise_fault(6, bus)?;
             return Ok(());
         }
 
-        self.calc_ea(modrm, bus);
+        self.calc_ea(modrm, bus)?;
         let initial_cs = self.sregs[SegReg32::CS as usize];
         let initial_ip = self.ip;
         let initial_ip_upper = self.ip_upper;
@@ -892,7 +893,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     fn movzx_rm8(&mut self, bus: &mut impl common::Bus) -> Step {
-        let modrm = self.fetch(bus);
+        let modrm = self.fetch(bus)?;
         let value = self.get_rm_byte(modrm, bus)?;
         let value = value as u32;
         if self.operand_size_override {
@@ -907,7 +908,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     fn movzx_rm16(&mut self, bus: &mut impl common::Bus) -> Step {
-        let modrm = self.fetch(bus);
+        let modrm = self.fetch(bus)?;
         let value = self.get_rm_word(modrm, bus)?;
         let value = value as u32;
         if self.operand_size_override {
@@ -922,7 +923,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     fn movsx_rm8(&mut self, bus: &mut impl common::Bus) -> Step {
-        let modrm = self.fetch(bus);
+        let modrm = self.fetch(bus)?;
         let value = self.get_rm_byte(modrm, bus)?;
         let value = value as i8 as i32;
         if self.operand_size_override {
@@ -937,7 +938,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     fn movsx_rm16(&mut self, bus: &mut impl common::Bus) -> Step {
-        let modrm = self.fetch(bus);
+        let modrm = self.fetch(bus)?;
         let value = self.get_rm_word(modrm, bus)?;
         let value = value as i16 as i32;
         if self.operand_size_override {
@@ -952,7 +953,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     fn bsf(&mut self, bus: &mut impl common::Bus) -> Step {
-        let modrm = self.fetch(bus);
+        let modrm = self.fetch(bus)?;
         let n: u32;
         if self.operand_size_override {
             let value = self.get_rm_dword(modrm, bus)?;
@@ -990,7 +991,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     fn bsr(&mut self, bus: &mut impl common::Bus) -> Step {
-        let modrm = self.fetch(bus);
+        let modrm = self.fetch(bus)?;
         let n: u32;
         if self.operand_size_override {
             let value = self.get_rm_dword(modrm, bus)?;
@@ -1028,7 +1029,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     fn group_0f00(&mut self, bus: &mut impl common::Bus) -> Step {
-        let modrm = self.fetch(bus);
+        let modrm = self.fetch(bus)?;
         if !self.is_protected_mode() || self.is_virtual_mode() {
             self.raise_fault(6, bus)?;
             return Ok(());
@@ -1158,7 +1159,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     fn group_0f01(&mut self, bus: &mut impl common::Bus) -> Step {
-        let modrm = self.fetch(bus);
+        let modrm = self.fetch(bus)?;
         match (modrm >> 3) & 7 {
             0 => {
                 // SGDT - store full 32-bit base on 386
@@ -1166,7 +1167,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                     self.raise_fault(6, bus)?;
                     return Ok(());
                 }
-                self.calc_ea(modrm, bus);
+                self.calc_ea(modrm, bus)?;
                 self.check_segment_access(self.ea_seg, self.eo32, 6, true, bus)?;
                 let gdt_limit = self.gdt_limit;
                 let gdt_base = self.gdt_base;
@@ -1180,7 +1181,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                     self.raise_fault(6, bus)?;
                     return Ok(());
                 }
-                self.calc_ea(modrm, bus);
+                self.calc_ea(modrm, bus)?;
                 self.check_segment_access(self.ea_seg, self.eo32, 6, true, bus)?;
                 let idt_limit = self.idt_limit;
                 let idt_base = self.idt_base;
@@ -1200,7 +1201,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                     self.raise_fault_with_code(13, 0, bus)?;
                     return Ok(());
                 }
-                self.calc_ea(modrm, bus);
+                self.calc_ea(modrm, bus)?;
                 self.check_segment_access(self.ea_seg, self.eo32, 6, false, bus)?;
                 let limit = self.read_word_linear(bus, self.ea)?;
                 let mut base = self.read_dword_linear(bus, self.ea.wrapping_add(2))?;
@@ -1223,7 +1224,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                     self.raise_fault_with_code(13, 0, bus)?;
                     return Ok(());
                 }
-                self.calc_ea(modrm, bus);
+                self.calc_ea(modrm, bus)?;
                 self.check_segment_access(self.ea_seg, self.eo32, 6, false, bus)?;
                 let limit = self.read_word_linear(bus, self.ea)?;
                 let mut base = self.read_dword_linear(bus, self.ea.wrapping_add(2))?;
@@ -1274,7 +1275,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                     self.raise_fault_with_code(13, 0, bus)?;
                     return Ok(());
                 }
-                self.calc_ea(modrm, bus);
+                self.calc_ea(modrm, bus)?;
                 let linear = self.ea;
                 let page = linear >> 12;
                 let slot = (page & 63) as usize;
@@ -1290,7 +1291,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     fn lar(&mut self, bus: &mut impl common::Bus) -> Step {
-        let modrm = self.fetch(bus);
+        let modrm = self.fetch(bus)?;
         if !self.is_protected_mode() || self.is_virtual_mode() {
             self.raise_fault(6, bus)?;
             return Ok(());
@@ -1337,7 +1338,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     fn lsl_instr(&mut self, bus: &mut impl common::Bus) -> Step {
-        let modrm = self.fetch(bus);
+        let modrm = self.fetch(bus)?;
         if !self.is_protected_mode() || self.is_virtual_mode() {
             self.raise_fault(6, bus)?;
             return Ok(());
@@ -1435,7 +1436,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             self.raise_fault_with_code(13, 0, bus)?;
             return Ok(());
         }
-        let modrm = self.fetch(bus);
+        let modrm = self.fetch(bus)?;
         let cr_num = (modrm >> 3) & 7;
         let value = match cr_num {
             0 => self.cr0,
@@ -1458,7 +1459,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             self.raise_fault_with_code(13, 0, bus)?;
             return Ok(());
         }
-        let modrm = self.fetch(bus);
+        let modrm = self.fetch(bus)?;
         let dr_num = (modrm >> 3) & 7;
         let value = match dr_num {
             0 => self.dr0,
@@ -1486,7 +1487,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             self.raise_fault_with_code(13, 0, bus)?;
             return Ok(());
         }
-        let modrm = self.fetch(bus);
+        let modrm = self.fetch(bus)?;
         let cr_num = (modrm >> 3) & 7;
         let value = self.regs.dword(self.rm_dword(modrm));
         match cr_num {
@@ -1526,7 +1527,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             self.raise_fault_with_code(13, 0, bus)?;
             return Ok(());
         }
-        let modrm = self.fetch(bus);
+        let modrm = self.fetch(bus)?;
         let dr_num = (modrm >> 3) & 7;
         let value = self.regs.dword(self.rm_dword(modrm));
         match dr_num {
@@ -1576,7 +1577,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
 
     fn cmpxchg_byte(&mut self, bus: &mut impl common::Bus) -> Step {
         // CMPXCHG r/m8,r8 - compare AL with r/m8; if equal, load r8 into r/m8.
-        let modrm = self.fetch(bus);
+        let modrm = self.fetch(bus)?;
         let src = self.regs.byte(self.reg_byte(modrm));
         let dst = self.get_rm_byte_for_update(modrm, bus)?;
         let al = self.regs.byte(ByteReg::AL);
@@ -1592,7 +1593,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
 
     fn cmpxchg_word(&mut self, bus: &mut impl common::Bus) -> Step {
         // CMPXCHG r/m16,r16 or CMPXCHG r/m32,r32 (with operand-size override).
-        let modrm = self.fetch(bus);
+        let modrm = self.fetch(bus)?;
         if self.operand_size_override {
             let src = self.regs.dword(self.reg_dword(modrm));
             let dst = self.get_rm_dword_for_update(modrm, bus)?;
@@ -1619,7 +1620,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     fn xadd_byte(&mut self, bus: &mut impl common::Bus) -> Step {
-        let modrm = self.fetch(bus);
+        let modrm = self.fetch(bus)?;
         let src_reg = self.reg_byte(modrm);
         let src = self.regs.byte(src_reg);
         let dst = self.get_rm_byte_for_update(modrm, bus)?;
@@ -1637,7 +1638,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
 
     fn xadd_word(&mut self, bus: &mut impl common::Bus) -> Step {
         // XADD r/m16,r16 or XADD r/m32,r32 (with operand-size override).
-        let modrm = self.fetch(bus);
+        let modrm = self.fetch(bus)?;
         if self.operand_size_override {
             let src_reg = self.reg_dword(modrm);
             let src = self.regs.dword(src_reg);

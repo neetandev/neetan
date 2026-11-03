@@ -12,7 +12,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             return self.raise_fault(7, bus);
         }
 
-        let modrm = self.fetch(bus);
+        let modrm = self.fetch(bus)?;
         let has_memory = modrm < 0xC0;
 
         // ES=1 -> deliver pending exception before executing
@@ -21,7 +21,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         }
 
         if has_memory {
-            self.calc_ea(modrm, bus);
+            self.calc_ea(modrm, bus)?;
         }
 
         let esc_bits = opcode & 7;

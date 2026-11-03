@@ -50,7 +50,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         self.clk(Self::timing(0, 1));
         self.rep_restart_ip = self.prev_ip;
         self.rep_restart_ip_upper = self.prev_ip_upper;
-        let mut next = self.fetch(bus);
+        let mut next = self.fetch(bus)?;
 
         // Handle any number of prefixes between REP and opcode.
         loop {
@@ -58,43 +58,43 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                 0x26 => {
                     self.seg_prefix = true;
                     self.prefix_seg = SegReg32::ES;
-                    next = self.fetch(bus);
+                    next = self.fetch(bus)?;
                 }
                 0x2E => {
                     self.seg_prefix = true;
                     self.prefix_seg = SegReg32::CS;
-                    next = self.fetch(bus);
+                    next = self.fetch(bus)?;
                 }
                 0x36 => {
                     self.seg_prefix = true;
                     self.prefix_seg = SegReg32::SS;
-                    next = self.fetch(bus);
+                    next = self.fetch(bus)?;
                 }
                 0x3E => {
                     self.seg_prefix = true;
                     self.prefix_seg = SegReg32::DS;
-                    next = self.fetch(bus);
+                    next = self.fetch(bus)?;
                 }
                 0x64 => {
                     self.seg_prefix = true;
                     self.prefix_seg = SegReg32::FS;
-                    next = self.fetch(bus);
+                    next = self.fetch(bus)?;
                 }
                 0x65 => {
                     self.seg_prefix = true;
                     self.prefix_seg = SegReg32::GS;
-                    next = self.fetch(bus);
+                    next = self.fetch(bus)?;
                 }
                 0x66 => {
                     self.operand_size_override = !self.code_segment_32bit();
-                    next = self.fetch(bus);
+                    next = self.fetch(bus)?;
                 }
                 0x67 => {
                     self.address_size_override = !self.code_segment_32bit();
-                    next = self.fetch(bus);
+                    next = self.fetch(bus)?;
                 }
                 0xF0 => {
-                    next = self.fetch(bus);
+                    next = self.fetch(bus)?;
                 }
                 _ => break,
             }
