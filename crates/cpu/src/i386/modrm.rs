@@ -257,18 +257,29 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         }
     }
 
-    pub(super) fn get_rm_byte(&mut self, modrm: u8, bus: &mut impl common::Bus) -> Step<u8> {
+    /// Computes the effective address of a memory form of `modrm`. The displacement bytes
+    /// follow the ModR/M byte and precede an immediate, so an instruction with an immediate
+    /// calls this, fetches the immediate and then reads the operand with `read_rm_*`.
+    pub(super) fn decode_rm(&mut self, modrm: u8, bus: &mut impl common::Bus) -> Step {
+        if modrm < 0xC0 {
+            self.calc_ea(modrm, bus)?;
+        }
+        Ok(())
+    }
+
+    /// Reads the byte operand of `modrm` after `decode_rm`.
+    pub(super) fn read_rm_byte(&mut self, modrm: u8, bus: &mut impl common::Bus) -> Step<u8> {
         if modrm >= 0xC0 {
             Ok(self.regs.byte(self.rm_byte(modrm)))
         } else {
-            self.calc_ea(modrm, bus)?;
             self.check_segment_access(self.ea_seg, self.eo32, 1, false, bus)?;
             let addr = self.translate_linear(self.ea, false, bus)?;
             Ok(bus.read_byte(addr))
         }
     }
 
-    pub(super) fn get_rm_byte_for_update(
+    /// Reads the byte operand of `modrm` after `decode_rm` with a write access check.
+    pub(super) fn read_rm_byte_for_update(
         &mut self,
         modrm: u8,
         bus: &mut impl common::Bus,
@@ -276,23 +287,23 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         if modrm >= 0xC0 {
             Ok(self.regs.byte(self.rm_byte(modrm)))
         } else {
-            self.calc_ea(modrm, bus)?;
             self.check_segment_access(self.ea_seg, self.eo32, 1, true, bus)?;
             let addr = self.translate_linear(self.ea, true, bus)?;
             Ok(bus.read_byte(addr))
         }
     }
 
-    pub(super) fn get_rm_word(&mut self, modrm: u8, bus: &mut impl common::Bus) -> Step<u16> {
+    /// Reads the word operand of `modrm` after `decode_rm`.
+    pub(super) fn read_rm_word(&mut self, modrm: u8, bus: &mut impl common::Bus) -> Step<u16> {
         if modrm >= 0xC0 {
             Ok(self.regs.word(self.rm_word(modrm)))
         } else {
-            self.calc_ea(modrm, bus)?;
             self.seg_read_word(bus)
         }
     }
 
-    pub(super) fn get_rm_word_for_update(
+    /// Reads the word operand of `modrm` after `decode_rm` with a write access check.
+    pub(super) fn read_rm_word_for_update(
         &mut self,
         modrm: u8,
         bus: &mut impl common::Bus,
@@ -300,21 +311,21 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         if modrm >= 0xC0 {
             Ok(self.regs.word(self.rm_word(modrm)))
         } else {
-            self.calc_ea(modrm, bus)?;
             self.seg_read_word_for_update(bus)
         }
     }
 
-    pub(super) fn get_rm_dword(&mut self, modrm: u8, bus: &mut impl common::Bus) -> Step<u32> {
+    /// Reads the dword operand of `modrm` after `decode_rm`.
+    pub(super) fn read_rm_dword(&mut self, modrm: u8, bus: &mut impl common::Bus) -> Step<u32> {
         if modrm >= 0xC0 {
             Ok(self.regs.dword(self.rm_dword(modrm)))
         } else {
-            self.calc_ea(modrm, bus)?;
             self.seg_read_dword(bus)
         }
     }
 
-    pub(super) fn get_rm_dword_for_update(
+    /// Reads the dword operand of `modrm` after `decode_rm` with a write access check.
+    pub(super) fn read_rm_dword_for_update(
         &mut self,
         modrm: u8,
         bus: &mut impl common::Bus,
@@ -322,9 +333,56 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         if modrm >= 0xC0 {
             Ok(self.regs.dword(self.rm_dword(modrm)))
         } else {
-            self.calc_ea(modrm, bus)?;
             self.seg_read_dword_for_update(bus)
         }
+    }
+
+    /// Decodes the operand of `modrm` and reads it as a byte.
+    pub(super) fn get_rm_byte(&mut self, modrm: u8, bus: &mut impl common::Bus) -> Step<u8> {
+        self.decode_rm(modrm, bus)?;
+        self.read_rm_byte(modrm, bus)
+    }
+
+    /// Decodes the operand of `modrm` and reads it as a byte with a write access check.
+    pub(super) fn get_rm_byte_for_update(
+        &mut self,
+        modrm: u8,
+        bus: &mut impl common::Bus,
+    ) -> Step<u8> {
+        self.decode_rm(modrm, bus)?;
+        self.read_rm_byte_for_update(modrm, bus)
+    }
+
+    /// Decodes the operand of `modrm` and reads it as a word.
+    pub(super) fn get_rm_word(&mut self, modrm: u8, bus: &mut impl common::Bus) -> Step<u16> {
+        self.decode_rm(modrm, bus)?;
+        self.read_rm_word(modrm, bus)
+    }
+
+    /// Decodes the operand of `modrm` and reads it as a word with a write access check.
+    pub(super) fn get_rm_word_for_update(
+        &mut self,
+        modrm: u8,
+        bus: &mut impl common::Bus,
+    ) -> Step<u16> {
+        self.decode_rm(modrm, bus)?;
+        self.read_rm_word_for_update(modrm, bus)
+    }
+
+    /// Decodes the operand of `modrm` and reads it as a dword.
+    pub(super) fn get_rm_dword(&mut self, modrm: u8, bus: &mut impl common::Bus) -> Step<u32> {
+        self.decode_rm(modrm, bus)?;
+        self.read_rm_dword(modrm, bus)
+    }
+
+    /// Decodes the operand of `modrm` and reads it as a dword with a write access check.
+    pub(super) fn get_rm_dword_for_update(
+        &mut self,
+        modrm: u8,
+        bus: &mut impl common::Bus,
+    ) -> Step<u32> {
+        self.decode_rm(modrm, bus)?;
+        self.read_rm_dword_for_update(modrm, bus)
     }
 
     pub(super) fn putback_rm_byte(

@@ -1416,42 +1416,32 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         Ok(())
     }
 
+    /// BOUND. The register form raises #UD, and an index out of range raises the fault
+    /// #BR with the return address at the BOUND instruction (80486 PRM chapter 26, BOUND,
+    /// and 9.9.5).
     fn bound(&mut self, bus: &mut impl common::Bus) -> Step {
         let modrm = self.fetch(bus)?;
         if modrm >= 0xC0 {
-            return Ok(());
+            return self.raise_fault(6, bus);
         }
         self.calc_ea(modrm, bus)?;
-        if self.operand_size_override {
-            let val = self.regs.dword(self.reg_dword(modrm)) as i32;
-            let ea_pen = if self.ea & 3 != 0 { 8 } else { 0 };
-            let low = self.seg_read_dword(bus)?;
-            let high = self.seg_read_dword_at(bus, 4)?;
-            let low = low as i32;
-            let high = high as i32;
-            if val < low || val > high {
-                let sp_pen = self.sp_penalty();
-                self.raise_interrupt(5, bus)?;
-                self.clk(Self::timing(56, 7) + ea_pen + sp_pen);
-            } else {
-                self.clk(Self::timing(10, 7) + ea_pen);
-            }
+        let (in_range, misaligned) = if self.operand_size_override {
+            let value = self.regs.dword(self.reg_dword(modrm)) as i32;
+            let low = self.seg_read_dword(bus)? as i32;
+            let high = self.seg_read_dword_at(bus, 4)? as i32;
+            (value >= low && value <= high, self.ea & 3 != 0)
         } else {
-            let val = self.regs.word(self.reg_word(modrm)) as i16;
-            let ea_pen = if self.ea & 1 == 1 { 8 } else { 0 };
-            let low = self.seg_read_word(bus)?;
-            let high = self.seg_read_word_at(bus, 2)?;
-            let low = low as i16;
-            let high = high as i16;
-            if val < low || val > high {
-                let sp_pen = self.sp_penalty();
-                self.raise_interrupt(5, bus)?;
-                self.clk(Self::timing(56, 7) + ea_pen + sp_pen);
-            } else {
-                self.clk(Self::timing(10, 7) + ea_pen);
-            }
+            let value = self.regs.word(self.reg_word(modrm)) as i16;
+            let low = self.seg_read_word(bus)? as i16;
+            let high = self.seg_read_word_at(bus, 2)? as i16;
+            (value >= low && value <= high, self.ea & 1 != 0)
+        };
+        let ea_penalty = if misaligned { 8 } else { 0 };
+        self.clk(Self::timing(10, 7) + ea_penalty);
+        if in_range {
+            return Ok(());
         }
-        Ok(())
+        self.raise_fault(5, bus)
     }
 
     fn arpl(&mut self, bus: &mut impl common::Bus) -> Step {
@@ -1504,9 +1494,9 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     fn imul_r16w_imm16(&mut self, bus: &mut impl common::Bus) -> Step {
         let modrm = self.fetch(bus)?;
         if self.operand_size_override {
-            let src = self.get_rm_dword(modrm, bus)?;
-            let src = src as i32 as i64;
+            self.decode_rm(modrm, bus)?;
             let imm = self.fetchdword(bus)? as i32 as i64;
+            let src = self.read_rm_dword(modrm, bus)? as i32 as i64;
             let result = src * imm;
             let reg = self.reg_dword(modrm);
             self.regs.set_dword(reg, result as u32);
@@ -1516,9 +1506,9 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                 0
             };
         } else {
-            let src = self.get_rm_word(modrm, bus)?;
-            let src = src as i16 as i32;
+            self.decode_rm(modrm, bus)?;
             let imm = self.fetchword(bus)? as i16 as i32;
+            let src = self.read_rm_word(modrm, bus)? as i16 as i32;
             let result = src * imm;
             let reg = self.reg_word(modrm);
             self.regs.set_word(reg, result as u16);
@@ -1540,9 +1530,9 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     fn imul_r16w_imm8(&mut self, bus: &mut impl common::Bus) -> Step {
         let modrm = self.fetch(bus)?;
         if self.operand_size_override {
-            let src = self.get_rm_dword(modrm, bus)?;
-            let src = src as i32 as i64;
+            self.decode_rm(modrm, bus)?;
             let imm = self.fetch(bus)? as i8 as i64;
+            let src = self.read_rm_dword(modrm, bus)? as i32 as i64;
             let result = src * imm;
             let reg = self.reg_dword(modrm);
             self.regs.set_dword(reg, result as u32);
@@ -1552,9 +1542,9 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                 0
             };
         } else {
-            let src = self.get_rm_word(modrm, bus)?;
-            let src = src as i16 as i32;
+            self.decode_rm(modrm, bus)?;
             let imm = self.fetch(bus)? as i8 as i32;
+            let src = self.read_rm_word(modrm, bus)? as i16 as i32;
             let result = src * imm;
             let reg = self.reg_word(modrm);
             self.regs.set_word(reg, result as u16);
@@ -3167,7 +3157,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         if self.flags.nt {
             // Task return via back-link in current TSS.
             let backlink = self.read_word_linear(bus, self.tr_base)?;
-            self.switch_task(backlink, super::TaskType::Iret, bus)?;
+            self.switch_task(backlink, super::TaskType::Iret, 0, false, bus)?;
             let flags_val = self.flags.compress();
             let cpl = self.cpl();
             self.flags.load_flags(flags_val, cpl, true);

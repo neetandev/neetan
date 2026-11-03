@@ -34,6 +34,7 @@ use core::ops::{Deref, DerefMut};
 
 use common::{Cpu as _, likely, unlikely};
 pub use flags::I386Flags;
+use interrupt::InterruptStackProbe;
 pub use state::I386State;
 
 use crate::{SegReg32, WordReg};
@@ -55,6 +56,10 @@ const EFLAGS_VIRTUAL_8086_FLAG: u32 = 0x0002_0000;
 const EFLAGS_ALIGNMENT_CHECK_FLAG: u32 = 0x0004_0000;
 /// The access rights byte of a present, readable, accessed code segment with DPL 0.
 const REAL_MODE_CODE_RIGHTS: u8 = 0x9B;
+/// DR6.BS: the debug exception is a single-step trap (80486 PRM 11.2.3).
+const DR6_SINGLE_STEP: u32 = 0x4000;
+/// DR6.BT: the debug exception is a task switch trap (80486 PRM 11.2.3).
+const DR6_TASK_SWITCH: u32 = 0x8000;
 
 /// EDX after RESET holds the component identifier and revision (386 PRM 10.1):
 /// DH = 3 for the 386DX, DL = revision. 0x0308 is the D-step.
@@ -347,14 +352,12 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         }
     }
 
+    /// Returns the D bit of the CS cache. It also applies in real mode, where a CS cache
+    /// from protected mode keeps its default size until a load of CS (80486 PRM 22.5
+    /// step 3, observed behaviour for CS). VM86 code is 16-bit (80486 PRM 23.1).
     #[inline(always)]
     fn code_segment_32bit(&self) -> bool {
-        if self.is_virtual_mode() {
-            return false;
-        }
-        self.is_protected_mode()
-            && self.seg_valid[SegReg32::CS as usize]
-            && (self.seg_granularity[SegReg32::CS as usize] & 0x40) != 0
+        !self.is_virtual_mode() && (self.seg_granularity[SegReg32::CS as usize] & 0x40) != 0
     }
 
     #[inline(always)]
@@ -660,9 +663,15 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         Ok(())
     }
 
-    /// Reads the next instruction byte from CS:IP without advancing IP.
+    /// Returns the next instruction byte without consuming it. A byte beyond the CS limit
+    /// raises #GP(0) like `fetch` (80486 PRM Table 22-2).
     fn peek_byte(&mut self, bus: &mut impl common::Bus) -> Step<u8> {
         let eip = self.effective_eip();
+        if unlikely(eip > self.seg_limits[SegReg32::CS as usize]) {
+            let _: Step<()> = self.raise_fault_with_code(13, 0, bus);
+            self.fault_pending = true;
+            return Err(Fault);
+        }
         let linear = self.seg_bases[SegReg32::CS as usize].wrapping_add(eip);
         let addr = self.fetch_physical_address(linear, bus)?;
         if self.prefetch_valid && self.prefetch_addr == addr {
@@ -1783,10 +1792,22 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         Ok(())
     }
 
-    fn switch_task(&mut self, ntask: u16, task_type: TaskType, bus: &mut impl common::Bus) -> Step {
+    /// Switches to the task `ntask`. `ext` is the EXT bit of the error codes the switch
+    /// raises: 1 when an exception or external interrupt delivery switches through a task
+    /// gate (80486 PRM 9.8 and 9.9.10). `saved_resume_flag` sets RF in the EFLAGS image
+    /// saved in the old TSS, as for a fault delivered through a task gate (80486 PRM
+    /// 11.3.1.1).
+    fn switch_task(
+        &mut self,
+        ntask: u16,
+        task_type: TaskType,
+        ext: u16,
+        saved_resume_flag: bool,
+        bus: &mut impl common::Bus,
+    ) -> Step {
         let saved_supervisor_override = self.supervisor_override;
         self.supervisor_override = true;
-        let result = self.switch_task_inner(ntask, task_type, bus);
+        let result = self.switch_task_inner(ntask, task_type, ext, saved_resume_flag, bus);
         self.supervisor_override = saved_supervisor_override;
         result
     }
@@ -1819,14 +1840,16 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         &mut self,
         ntask: u16,
         task_type: TaskType,
+        ext: u16,
+        saved_resume_flag: bool,
         bus: &mut impl common::Bus,
     ) -> Step {
         if ntask & 0x0004 != 0 {
-            return self.raise_fault_with_code(10, Self::segment_error_code(ntask), bus);
+            return self.raise_fault_with_code(10, Self::segment_error_code(ntask) + ext, bus);
         }
 
         let Some(naddr) = self.descriptor_addr_checked(ntask) else {
-            return self.raise_fault_with_code(10, Self::segment_error_code(ntask), bus);
+            return self.raise_fault_with_code(10, Self::segment_error_code(ntask) + ext, bus);
         };
 
         let ndesc = self.decode_descriptor_at(naddr, bus)?;
@@ -1837,24 +1860,24 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         let r = ndesc_rights;
         let tss_type = r & 0x0F;
         if Self::descriptor_is_segment(r) || !matches!(tss_type, 1 | 3 | 9 | 11) {
-            return self.raise_fault_with_code(13, Self::segment_error_code(ntask), bus);
+            return self.raise_fault_with_code(13, Self::segment_error_code(ntask) + ext, bus);
         }
         if task_type == TaskType::Iret {
             if r & 0x02 == 0 {
-                return self.raise_fault_with_code(13, Self::segment_error_code(ntask), bus);
+                return self.raise_fault_with_code(13, Self::segment_error_code(ntask) + ext, bus);
             }
         } else if r & 0x02 != 0 {
-            return self.raise_fault_with_code(13, Self::segment_error_code(ntask), bus);
+            return self.raise_fault_with_code(13, Self::segment_error_code(ntask) + ext, bus);
         }
 
         if !Self::descriptor_present(r) {
-            return self.raise_fault_with_code(11, Self::segment_error_code(ntask), bus);
+            return self.raise_fault_with_code(11, Self::segment_error_code(ntask) + ext, bus);
         }
 
         let is_386_tss = matches!(tss_type, 9 | 11);
         let min_limit: u32 = if is_386_tss { 103 } else { 43 };
         if ndesc_limit < min_limit {
-            return self.raise_fault_with_code(10, Self::segment_error_code(ntask), bus);
+            return self.raise_fault_with_code(10, Self::segment_error_code(ntask) + ext, bus);
         }
 
         let old_base = self.tr_base;
@@ -1927,10 +1950,16 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             bus.write_byte(ophys, old_rights & !0x02);
         }
 
-        // Save current state to old TSS.
+        // Save current state to old TSS. The selector slots receive the selector word and
+        // keep their reserved upper word (observed behaviour).
         if old_is_386 {
             let eip = self.ip_upper | self.ip as u32;
-            let eflags = self.eflags_upper | flags as u32;
+            let resume_flag = if saved_resume_flag {
+                EFLAGS_RESUME_FLAG
+            } else {
+                0
+            };
+            let eflags = self.eflags_upper | flags as u32 | resume_flag;
             self.write_dword_linear(bus, old_base.wrapping_add(32), eip)?;
             self.write_dword_linear(bus, old_base.wrapping_add(36), eflags)?;
             self.write_dword_linear(
@@ -1973,35 +2002,35 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                 old_base.wrapping_add(68),
                 self.regs.dword(crate::DwordReg::EDI),
             )?;
-            self.write_dword_linear(
+            self.write_word_linear(
                 bus,
                 old_base.wrapping_add(72),
-                self.sregs[SegReg32::ES as usize] as u32,
+                self.sregs[SegReg32::ES as usize],
             )?;
-            self.write_dword_linear(
+            self.write_word_linear(
                 bus,
                 old_base.wrapping_add(76),
-                self.sregs[SegReg32::CS as usize] as u32,
+                self.sregs[SegReg32::CS as usize],
             )?;
-            self.write_dword_linear(
+            self.write_word_linear(
                 bus,
                 old_base.wrapping_add(80),
-                self.sregs[SegReg32::SS as usize] as u32,
+                self.sregs[SegReg32::SS as usize],
             )?;
-            self.write_dword_linear(
+            self.write_word_linear(
                 bus,
                 old_base.wrapping_add(84),
-                self.sregs[SegReg32::DS as usize] as u32,
+                self.sregs[SegReg32::DS as usize],
             )?;
-            self.write_dword_linear(
+            self.write_word_linear(
                 bus,
                 old_base.wrapping_add(88),
-                self.sregs[SegReg32::FS as usize] as u32,
+                self.sregs[SegReg32::FS as usize],
             )?;
-            self.write_dword_linear(
+            self.write_word_linear(
                 bus,
                 old_base.wrapping_add(92),
-                self.sregs[SegReg32::GS as usize] as u32,
+                self.sregs[SegReg32::GS as usize],
             )?;
         } else {
             self.write_word_linear(bus, old_base.wrapping_add(14), self.ip)?;
@@ -2120,6 +2149,13 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             self.flush_tlb();
         }
 
+        // 80486 PRM 7.5 step 5: errors from here on occur in the context of the new task,
+        // and to their handler the first instruction of the new task has not executed.
+        self.ip = ntss_eip as u16;
+        self.ip_upper = ntss_eip & 0xFFFF_0000;
+        self.prev_ip = self.ip;
+        self.prev_ip_upper = self.ip_upper;
+
         // Load registers from new TSS.
         self.flags.expand(ntss_eflags as u16);
         self.eflags_upper = ntss_eflags & Self::eflags_upper_writable();
@@ -2133,49 +2169,19 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         self.regs.set_dword(crate::DwordReg::ESI, ntss_esi);
         self.regs.set_dword(crate::DwordReg::EDI, ntss_edi);
 
-        // Load LDT from new TSS.
-        if ntss_ldt & 0x0004 != 0 {
-            return self.raise_fault_with_code(10, Self::segment_error_code(ntss_ldt), bus);
-        }
-        if ntss_ldt & 0xFFFC != 0 {
-            let Some(ldtaddr) = self.descriptor_addr_checked(ntss_ldt) else {
-                return self.raise_fault_with_code(10, Self::segment_error_code(ntss_ldt), bus);
-            };
-            let ldt_desc = self.decode_descriptor_at(ldtaddr, bus)?;
-            let lr = ldt_desc.rights;
-            if Self::descriptor_is_segment(lr) || (lr & 0x0F) != 0x02 {
-                return self.raise_fault_with_code(10, Self::segment_error_code(ntss_ldt), bus);
-            }
-            if !Self::descriptor_present(lr) {
-                return self.raise_fault_with_code(10, Self::segment_error_code(ntss_ldt), bus);
-            }
-            let ldt_base = ldt_desc.base;
-            let ldt_limit = ldt_desc.limit;
-            self.ldtr = ntss_ldt;
-            self.ldtr_base = ldt_base;
-            self.ldtr_limit = ldt_limit;
-        } else {
-            self.ldtr = 0;
-            self.ldtr_base = 0;
-            self.ldtr_limit = 0;
-        }
-
         if task_type == TaskType::Call {
             self.flags.nt = true;
         }
 
         self.cr0 |= 8;
 
-        // TSS T-bit (offset 100, bit 0): schedule a debug trap (#DB) after the
-        // first instruction of the new task. Sets DR6.BT (bit 15).
-        if is_386_tss {
-            let debug_trap_word = self.read_word_linear(bus, new_base.wrapping_add(100))?;
-            if debug_trap_word & 1 != 0 {
-                self.debug_trap_pending = true;
-            }
-        }
+        // The T bit (offset 100, bit 0) raises the debug trap after the switch completes,
+        // before the first instruction of the new task (80486 PRM 11.3.1.5).
+        let debug_trap =
+            is_386_tss && self.read_word_linear(bus, new_base.wrapping_add(100))? & 1 != 0;
 
-        if is_386_tss && (ntss_eflags & 0x0002_0000) != 0 {
+        let virtual_8086_task = is_386_tss && (ntss_eflags & 0x0002_0000) != 0;
+        if virtual_8086_task {
             // VM86 task: segment selectors are interpreted with real-mode
             // bases/limits, not protected-mode descriptors.
             self.sregs[SegReg32::ES as usize] = ntss_es;
@@ -2192,19 +2198,75 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             self.set_fixed_real_segment_cache(SegReg32::GS, ntss_gs);
             self.ip = ntss_eip as u16;
             self.ip_upper = 0;
+        } else {
+            // 80486 PRM 7.5 step 5, Table 7-1 step 4 and 9.9.12: the segment selectors are
+            // loaded with the other registers before the LDT and the descriptors are
+            // checked, and the new task runs at the RPL of its CS selector. A data segment
+            // stays unusable until its descriptor passes the checks.
+            self.sregs[SegReg32::CS as usize] = ntss_cs;
+            self.sregs[SegReg32::SS as usize] = ntss_ss;
+            self.set_null_segment(SegReg32::ES, ntss_es);
+            self.set_null_segment(SegReg32::DS, ntss_ds);
+            self.set_null_segment(SegReg32::FS, ntss_fs);
+            self.set_null_segment(SegReg32::GS, ntss_gs);
+            self.stored_cpl = ntss_cs & 3;
+        }
+
+        // Load LDT from new TSS.
+        if ntss_ldt & 0x0004 != 0 {
+            return self.raise_fault_with_code(10, Self::segment_error_code(ntss_ldt) + ext, bus);
+        }
+        if ntss_ldt & 0xFFFC != 0 {
+            let Some(ldtaddr) = self.descriptor_addr_checked(ntss_ldt) else {
+                return self.raise_fault_with_code(
+                    10,
+                    Self::segment_error_code(ntss_ldt) + ext,
+                    bus,
+                );
+            };
+            let ldt_desc = self.decode_descriptor_at(ldtaddr, bus)?;
+            let lr = ldt_desc.rights;
+            if Self::descriptor_is_segment(lr) || (lr & 0x0F) != 0x02 {
+                return self.raise_fault_with_code(
+                    10,
+                    Self::segment_error_code(ntss_ldt) + ext,
+                    bus,
+                );
+            }
+            if !Self::descriptor_present(lr) {
+                return self.raise_fault_with_code(
+                    10,
+                    Self::segment_error_code(ntss_ldt) + ext,
+                    bus,
+                );
+            }
+            let ldt_base = ldt_desc.base;
+            let ldt_limit = ldt_desc.limit;
+            self.ldtr = ntss_ldt;
+            self.ldtr_base = ldt_base;
+            self.ldtr_limit = ldt_limit;
+        } else {
+            self.ldtr = 0;
+            self.ldtr_base = 0;
+            self.ldtr_limit = 0;
+        }
+
+        if virtual_8086_task {
+            self.debug_trap_pending |= debug_trap;
             return Ok(());
         }
 
         // Load segment registers from new TSS. SS first (uses new CS RPL as CPL).
         let new_cpl = ntss_cs & 3;
-        self.load_task_data_segment(SegReg32::SS, ntss_ss, new_cpl, bus)?;
-        self.load_task_code_segment(ntss_cs, ntss_eip, bus)?;
+        self.load_task_data_segment(SegReg32::SS, ntss_ss, new_cpl, ext, bus)?;
+        self.load_task_code_segment(ntss_cs, ntss_eip, ext, bus)?;
         let cpl = self.cpl();
-        self.load_task_data_segment(SegReg32::ES, ntss_es, cpl, bus)?;
-        self.load_task_data_segment(SegReg32::DS, ntss_ds, cpl, bus)?;
-        self.load_task_data_segment(SegReg32::FS, ntss_fs, cpl, bus)?;
-        self.load_task_data_segment(SegReg32::GS, ntss_gs, cpl, bus)?;
+        self.load_task_data_segment(SegReg32::ES, ntss_es, cpl, ext, bus)?;
+        self.load_task_data_segment(SegReg32::DS, ntss_ds, cpl, ext, bus)?;
+        self.load_task_data_segment(SegReg32::FS, ntss_fs, cpl, ext, bus)?;
+        self.load_task_data_segment(SegReg32::GS, ntss_gs, cpl, ext, bus)?;
 
+        self.debug_trap_pending |= debug_trap;
         Ok(())
     }
 
@@ -2213,6 +2275,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         seg: SegReg32,
         selector: u16,
         required_cpl: u16,
+        ext: u16,
         bus: &mut impl common::Bus,
     ) -> Step {
         if selector & 0xFFFC == 0 {
@@ -2220,32 +2283,48 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             return Ok(());
         }
         let Some(descriptor) = self.decode_descriptor(selector, bus)? else {
-            return self.raise_fault_with_code(10, Self::segment_error_code(selector), bus);
+            return self.raise_fault_with_code(10, Self::segment_error_code(selector) + ext, bus);
         };
         let rights = descriptor.rights;
         if seg == SegReg32::SS {
             if !Self::descriptor_is_segment(rights) || !Self::descriptor_is_writable(rights) {
-                return self.raise_fault_with_code(10, Self::segment_error_code(selector), bus);
+                return self.raise_fault_with_code(
+                    10,
+                    Self::segment_error_code(selector) + ext,
+                    bus,
+                );
             }
             let dpl = Self::descriptor_dpl(rights);
             let rpl = selector & 3;
             if dpl != required_cpl || rpl != required_cpl {
-                return self.raise_fault_with_code(10, Self::segment_error_code(selector), bus);
+                return self.raise_fault_with_code(
+                    10,
+                    Self::segment_error_code(selector) + ext,
+                    bus,
+                );
             }
         } else {
             if !Self::descriptor_is_segment(rights) || !Self::descriptor_is_readable(rights) {
-                return self.raise_fault_with_code(10, Self::segment_error_code(selector), bus);
+                return self.raise_fault_with_code(
+                    10,
+                    Self::segment_error_code(selector) + ext,
+                    bus,
+                );
             }
             if !Self::descriptor_is_conforming_code(rights) {
                 let dpl = Self::descriptor_dpl(rights);
                 let rpl = selector & 3;
                 if dpl < required_cpl.max(rpl) {
-                    return self.raise_fault_with_code(10, Self::segment_error_code(selector), bus);
+                    return self.raise_fault_with_code(
+                        10,
+                        Self::segment_error_code(selector) + ext,
+                        bus,
+                    );
                 }
             }
         }
         if !Self::descriptor_present(rights) {
-            return self.raise_fault_with_code(10, Self::segment_error_code(selector), bus);
+            return self.raise_fault_with_code(10, Self::segment_error_code(selector) + ext, bus);
         }
         self.set_accessed_bit(selector, bus)?;
         self.set_loaded_segment_cache(seg, selector, descriptor);
@@ -2256,32 +2335,37 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         &mut self,
         selector: u16,
         offset: u32,
+        ext: u16,
         bus: &mut impl common::Bus,
     ) -> Step {
         if selector & 0xFFFC == 0 {
-            return self.raise_fault_with_code(10, Self::segment_error_code(selector), bus);
+            return self.raise_fault_with_code(10, Self::segment_error_code(selector) + ext, bus);
         }
         let Some(descriptor) = self.decode_descriptor(selector, bus)? else {
-            return self.raise_fault_with_code(10, Self::segment_error_code(selector), bus);
+            return self.raise_fault_with_code(10, Self::segment_error_code(selector) + ext, bus);
         };
         let rights = descriptor.rights;
         if !Self::descriptor_is_segment(rights) || !Self::descriptor_is_code(rights) {
-            return self.raise_fault_with_code(10, Self::segment_error_code(selector), bus);
+            return self.raise_fault_with_code(10, Self::segment_error_code(selector) + ext, bus);
         }
         let dpl = Self::descriptor_dpl(rights);
         let rpl = selector & 3;
         if Self::descriptor_is_conforming_code(rights) {
             if dpl > rpl {
-                return self.raise_fault_with_code(10, Self::segment_error_code(selector), bus);
+                return self.raise_fault_with_code(
+                    10,
+                    Self::segment_error_code(selector) + ext,
+                    bus,
+                );
             }
         } else if dpl != rpl {
-            return self.raise_fault_with_code(10, Self::segment_error_code(selector), bus);
+            return self.raise_fault_with_code(10, Self::segment_error_code(selector) + ext, bus);
         }
         if !Self::descriptor_present(rights) {
-            return self.raise_fault_with_code(11, Self::segment_error_code(selector), bus);
+            return self.raise_fault_with_code(11, Self::segment_error_code(selector) + ext, bus);
         }
         if offset > descriptor.limit {
-            return self.raise_fault_with_code(10, 0, bus);
+            return self.raise_fault_with_code(10, ext, bus);
         }
         self.set_accessed_bit(selector, bus)?;
         let adjusted = (selector & !3) | rpl;
@@ -2443,7 +2527,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             5 => {
                 // Task gate.
                 let task_selector = self.read_word_linear(bus, addr.wrapping_add(2))?;
-                self.switch_task(task_selector, gate, bus)?;
+                self.switch_task(task_selector, gate, 0, false, bus)?;
                 let flags_val = self.flags.compress();
                 let cpl = self.cpl();
                 self.flags.load_flags(flags_val, cpl, true);
@@ -2451,7 +2535,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             }
             1 | 9 => {
                 // Available TSS descriptor.
-                self.switch_task(selector, gate, bus)?;
+                self.switch_task(selector, gate, 0, false, bus)?;
                 let flags_val = self.flags.compress();
                 let cpl = self.cpl();
                 self.flags.load_flags(flags_val, cpl, true);
@@ -2525,57 +2609,25 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             return self.raise_fault_with_code(10, Self::segment_error_code(tss_ss), bus);
         }
         if !Self::descriptor_present(new_ss_rights) {
-            return self.raise_fault_with_code(10, Self::segment_error_code(tss_ss), bus);
+            return self.raise_fault_with_code(12, Self::segment_error_code(tss_ss), bus);
         }
 
-        // Stack-space pre-check: verify the new stack has room for the
-        // parameters plus the return frame (SS, ESP, CS, EIP) before any
-        // state is mutated.
+        // 80486 PRM chapter 26, CALL, MORE-PRIVILEGE: the new stack must have room for the
+        // parameters and the return frame within its limit, else #SS(SS selector). Every
+        // push slot is checked and pre-translated before any state is committed.
         let bytes_per_push: u32 = if is_386_gate { 4 } else { 2 };
-        let total_push_bytes = bytes_per_push * (4 + gate_count as u32);
-        let new_ss_d_bit = new_ss_desc.granularity & 0x40 != 0;
-        let stack_top = if new_ss_d_bit {
-            tss_esp
-        } else {
-            tss_esp & 0xFFFF
-        };
-        let stack_space_ok = if Self::descriptor_is_expand_down(new_ss_rights) {
-            stack_top
-                .checked_sub(total_push_bytes)
-                .is_some_and(|new_esp| new_esp > new_ss_desc.limit)
-        } else {
-            stack_top >= total_push_bytes
-        };
-        if !stack_space_ok {
-            return self.raise_fault_with_code(12, 0, bus);
-        }
-
-        // Pre-translate every new-stack push slot (saved_ss, saved_esp,
-        // gate_count parameters, and the outer CS:EIP push) before any
-        // commits.
-        let new_ss_base = new_ss_desc.base;
         let total_pushes: u32 = 4 + gate_count as u32;
-        for i in 1..=total_pushes {
-            let raw_off = tss_esp.wrapping_sub(i * bytes_per_push);
-            let off_lo = if new_ss_d_bit {
-                raw_off
-            } else {
-                raw_off as u16 as u32
-            };
-            let linear_lo = new_ss_base.wrapping_add(off_lo);
-            self.translate_linear(linear_lo, true, bus)?;
-            if bytes_per_push > 1 {
-                let raw_hi = raw_off.wrapping_add(bytes_per_push - 1);
-                let off_hi = if new_ss_d_bit {
-                    raw_hi
-                } else {
-                    raw_hi as u16 as u32
-                };
-                let linear_hi = new_ss_base.wrapping_add(off_hi);
-                if (linear_hi & !0xFFF) != (linear_lo & !0xFFF) {
-                    self.translate_linear(linear_hi, true, bus)?;
-                }
-            }
+        let stack_probe = InterruptStackProbe {
+            base: new_ss_desc.base,
+            limit: new_ss_desc.limit,
+            is_expand_down: Self::descriptor_is_expand_down(new_ss_rights),
+            is_32bit: new_ss_desc.granularity & 0x40 != 0,
+            initial_stack_pointer: tss_esp,
+            slot_size: bytes_per_push,
+            limit_error_code: Self::segment_error_code(tss_ss),
+        };
+        for slot_index in 1..=total_pushes {
+            self.probe_interrupt_stack_slot(stack_probe, slot_index, bytes_per_push, bus)?;
         }
 
         // Read all parameters from the caller's stack now, before any
@@ -2872,12 +2924,14 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         if unlikely(self.pending_irq != 0) {
             self.check_interrupts(bus);
             self.preserve_resume_flag = false;
+            if unlikely(self.debug_trap_pending) {
+                self.raise_task_switch_trap(bus);
+            }
         }
         if unlikely(self.no_interrupt > 0) {
             self.no_interrupt -= 1;
         }
-        let inhibit = self.inhibit_all > 0;
-        if unlikely(inhibit) {
+        if unlikely(self.inhibit_all > 0) {
             self.inhibit_all -= 1;
         }
 
@@ -2906,16 +2960,34 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         }
 
         // 80486 PRM 9.1 and 11.3.1.4: the trap follows an executed instruction. A
-        // faulting instruction is not executed.
-        if unlikely(tf_was_set && !self.fault_pending && !self.instruction_faulted && !inhibit) {
+        // faulting instruction is not executed. MOV SS and POP SS hold the trap until the
+        // boundary after the next instruction (80486 PRM 9.3.4).
+        let single_step =
+            tf_was_set && !self.fault_pending && !self.instruction_faulted && self.inhibit_all == 0;
+        // A task switch that a fault delivery made leaves `fault_pending` set. Its debug
+        // trap still precedes the first instruction of the new task (80486 PRM 11.3.1.5).
+        let task_switch_trap = self.debug_trap_pending && !self.shutdown;
+        if unlikely(single_step || task_switch_trap) {
+            if single_step {
+                self.dr6 |= DR6_SINGLE_STEP;
+            }
+            if task_switch_trap {
+                self.debug_trap_pending = false;
+                self.dr6 |= DR6_TASK_SWITCH;
+            }
+            self.fault_pending = false;
             let _ = self.raise_trap(1, bus);
         }
+    }
 
-        if unlikely(self.debug_trap_pending && !self.fault_pending) {
-            self.debug_trap_pending = false;
-            self.dr6 |= 0x8000; // BT (bit 15) - task switch debug trap
-            let _ = self.raise_trap(1, bus);
-        }
+    /// Delivers the debug trap of a task switch that an interrupt or exception delivery
+    /// made at the start of the step, before the first instruction of the new task
+    /// (80486 PRM 11.3.1.5).
+    #[cold]
+    fn raise_task_switch_trap(&mut self, bus: &mut impl common::Bus) {
+        self.debug_trap_pending = false;
+        self.dr6 |= DR6_TASK_SWITCH;
+        let _ = self.raise_trap(1, bus);
     }
 
     /// Executes exactly one logical instruction (should only be used in tests).

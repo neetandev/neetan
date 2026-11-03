@@ -12,12 +12,13 @@ use super::setup::{
     ACCESS_DESCRIPTOR_CODE_OR_DATA, ACCESS_DESCRIPTOR_SYSTEM, ACCESS_DPL_RING0, ACCESS_DPL_RING3,
     ACCESS_PRESENT, ACCESS_TYPE_CODE, ACCESS_TYPE_CODE_CONFORMING, ACCESS_TYPE_CODE_READABLE,
     ACCESS_TYPE_DATA_WRITABLE, GLOBAL_DESCRIPTOR_TABLE_BASE, HANDLER_GENERAL_PROTECTION_IP,
-    HANDLER_SEGMENT_NOT_PRESENT_IP, HANDLER_STACK_FAULT_IP, RING0_CODE_BASE, RING0_STACK_BASE,
-    RING3_CODE_BASE, SELECTOR_PRIMARY_TSS, SELECTOR_RING0_CODE, SHARED_DATA_BASE, SYSTEM_TYPE_LDT,
-    SYSTEM_TYPE_TSS_286_BUSY, TASK_STATE_SEGMENT_BASE, TASK_STATE_SEGMENT_SECONDARY_BASE,
-    TSS_MINIMUM_LIMIT, TSS_OFFSET_ESP0, TestBus, make_cpu_486, place_at, promote_to_ring3,
-    read_dword_at, read_word_at, setup_protected_mode_with_handlers, write_call_gate_286,
-    write_call_gate_386, write_dword_at, write_segment_descriptor_16bit, write_word_at,
+    HANDLER_SEGMENT_NOT_PRESENT_IP, RING0_CODE_BASE, RING0_STACK_BASE, RING3_CODE_BASE,
+    SELECTOR_PRIMARY_TSS, SELECTOR_RING0_CODE, SELECTOR_RING0_STACK, SHARED_DATA_BASE,
+    SYSTEM_TYPE_LDT, SYSTEM_TYPE_TSS_286_BUSY, TASK_STATE_SEGMENT_BASE,
+    TASK_STATE_SEGMENT_SECONDARY_BASE, TSS_MINIMUM_LIMIT, TSS_OFFSET_ESP0, TestBus, make_cpu_486,
+    place_at, promote_to_ring3, read_dword_at, read_word_at, setup_protected_mode_with_handlers,
+    write_call_gate_286, write_call_gate_386, write_dword_at, write_segment_descriptor_16bit,
+    write_word_at,
 };
 
 const TEST_SLOT_CALL_GATE_286_DPL3: u16 = 10;
@@ -588,13 +589,11 @@ fn call_gate_parameter_count_max_31_286_copies_31_words() {
 }
 
 #[test]
-fn call_through_286_gate_ring3_with_tiny_inner_esp_raises_stack_fault() {
+fn call_through_286_gate_ring3_with_tiny_inner_esp_wraps_within_the_stack_limit() {
     let mut cpu = make_cpu_486();
     let mut bus = TestBus::new();
 
     let mut state = standard_protected_mode_at_ring3(&mut bus);
-    // Override the TSS ESP0 to a tiny non-zero value so the new stack
-    // cannot fit even the four-word return frame.
     write_dword_at(&mut bus, TASK_STATE_SEGMENT_BASE + TSS_OFFSET_ESP0, 0x0004);
     write_call_gate_286(
         &mut bus,
@@ -613,12 +612,16 @@ fn call_through_286_gate_ring3_with_tiny_inner_esp_raises_stack_fault() {
     cpu.step(&mut bus);
     cpu.step(&mut bus);
 
+    // 80486 PRM chapter 26, CALL: the 16-bit stack offsets wrap within the 64 KiB limit,
+    // so the new stack has room and the call reaches the gate target.
     assert!(cpu.halted());
-    assert_eq!(cpu.ip(), HANDLER_STACK_FAULT_IP as u32 + 1);
+    assert_eq!(cpu.ip(), GATE_TARGET_IP as u32 + 1);
+    assert_eq!(cpu.ss(), SELECTOR_RING0_STACK);
+    assert_eq!(cpu.esp(), 0xFFFC);
 }
 
 #[test]
-fn call_through_386_gate_ring3_with_tiny_inner_esp_raises_stack_fault() {
+fn call_through_386_gate_ring3_with_tiny_inner_esp_wraps_within_the_stack_limit() {
     let mut cpu = make_cpu_486();
     let mut bus = TestBus::new();
 
@@ -641,18 +644,20 @@ fn call_through_386_gate_ring3_with_tiny_inner_esp_raises_stack_fault() {
     cpu.step(&mut bus);
     cpu.step(&mut bus);
 
+    // 80486 PRM chapter 26, CALL: the 16-bit stack offsets wrap within the 64 KiB limit,
+    // so the new stack has room and the call reaches the gate target.
     assert!(cpu.halted());
-    assert_eq!(cpu.ip(), HANDLER_STACK_FAULT_IP as u32 + 1);
+    assert_eq!(cpu.ip(), GATE_TARGET_IP as u32 + 1);
+    assert_eq!(cpu.ss(), SELECTOR_RING0_STACK);
+    assert_eq!(cpu.esp(), 0xFFF8);
 }
 
 #[test]
-fn call_through_286_gate_with_31_parameters_overflows_stack_at_param_boundary() {
+fn call_through_286_gate_with_31_parameters_wraps_within_the_stack_limit() {
     let mut cpu = make_cpu_486();
     let mut bus = TestBus::new();
 
     let mut state = standard_protected_mode_at_ring3(&mut bus);
-    // ESP0 = 0x10 = 16 bytes. Return frame is 8 bytes, leaving 8 bytes for
-    // params; we ask for 31 parameter words = 62 bytes -> overflow.
     write_dword_at(&mut bus, TASK_STATE_SEGMENT_BASE + TSS_OFFSET_ESP0, 0x0010);
     write_call_gate_286(
         &mut bus,
@@ -671,8 +676,12 @@ fn call_through_286_gate_with_31_parameters_overflows_stack_at_param_boundary() 
     cpu.step(&mut bus);
     cpu.step(&mut bus);
 
+    // 80486 PRM chapter 26, CALL: the 16-bit stack offsets wrap within the 64 KiB limit,
+    // so the new stack has room and the call reaches the gate target.
     assert!(cpu.halted());
-    assert_eq!(cpu.ip(), HANDLER_STACK_FAULT_IP as u32 + 1);
+    assert_eq!(cpu.ip(), GATE_TARGET_IP as u32 + 1);
+    assert_eq!(cpu.ss(), SELECTOR_RING0_STACK);
+    assert_eq!(cpu.esp(), 0xFFCA);
 }
 
 #[test]

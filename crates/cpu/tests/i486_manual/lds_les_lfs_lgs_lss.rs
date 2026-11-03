@@ -478,7 +478,7 @@ fn lgs_protected_mode_valid_loads_gs_and_offset() {
 }
 
 #[test]
-fn lss_protected_mode_valid_loads_ss_and_inhibits_next_irq() {
+fn lss_protected_mode_valid_loads_ss_and_takes_the_next_irq() {
     let mut cpu = make_cpu_386();
     let mut bus = TestBus::new();
 
@@ -515,17 +515,9 @@ fn lss_protected_mode_valid_loads_ss_and_inhibits_next_irq() {
     bus.irq_vector = IRQ_TEST_VECTOR;
     cpu.signal_irq();
 
+    // 80486 PRM 3.10.3: LSS does not inhibit interrupts after it.
     cpu.step(&mut bus);
-    assert!(
-        !cpu.halted(),
-        "LSS suppresses interrupts for one instruction"
-    );
-
-    cpu.step(&mut bus);
-    assert!(
-        cpu.halted(),
-        "IRQ delivered after LSS inhibit window expires"
-    );
+    assert!(cpu.halted(), "the IRQ is delivered right after LSS");
     assert_eq!(cpu.ip(), IRQ_HANDLER_IP as u32 + 1);
 }
 
@@ -1047,7 +1039,7 @@ fn lds_486_protected_mode_matches_386_semantics() {
 }
 
 #[test]
-fn lss_486_protected_mode_inhibits_one_following_irq() {
+fn lss_486_protected_mode_takes_the_following_irq() {
     let mut cpu = make_cpu_486();
     let mut bus = TestBus::new();
 
@@ -1082,9 +1074,7 @@ fn lss_486_protected_mode_inhibits_one_following_irq() {
     bus.irq_vector = IRQ_TEST_VECTOR;
     cpu.signal_irq();
 
-    cpu.step(&mut bus);
-    assert!(!cpu.halted());
-
+    // 80486 PRM 3.10.3 and 9.3.4: only MOV SS and POP SS inhibit interrupts.
     cpu.step(&mut bus);
     assert!(cpu.halted());
     assert_eq!(cpu.ip(), IRQ_HANDLER_IP as u32 + 1);
@@ -1115,7 +1105,7 @@ fn lds_protected_mode_pointer_at_segment_limit_boundary_succeeds() {
 }
 
 #[test]
-fn lss_real_mode_inhibits_irq_one_instruction() {
+fn lss_real_mode_takes_the_next_irq() {
     let mut cpu = make_cpu_386();
     let mut bus = TestBus::new();
 
@@ -1153,10 +1143,8 @@ fn lss_real_mode_inhibits_irq_one_instruction() {
     bus.irq_vector = IRQ_TEST_VECTOR;
     cpu.signal_irq();
 
+    // 80486 PRM 3.10.3: LSS does not inhibit interrupts in real mode either.
     cpu.step(&mut bus);
-    assert!(!cpu.halted(), "Real-mode LSS suppresses interrupts as well");
-
-    cpu.step(&mut bus);
-    assert!(cpu.halted());
+    assert!(cpu.halted(), "the IRQ is delivered right after LSS");
     assert_eq!(cpu.cs(), 0xA000);
 }

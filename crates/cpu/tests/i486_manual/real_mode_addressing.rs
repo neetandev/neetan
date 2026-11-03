@@ -362,11 +362,16 @@ fn real_mode_far_jump_sets_code_rights_and_keeps_the_cs_limit() {
     state.seg_granularity[cpu::SegReg32::CS as usize] = 0x41;
     cpu.load_state(&state);
 
-    // JMP FAR 0x3000:0x0010. The base becomes 0x30000 (22.1). The limit and the
+    // JMP FAR 0x3000:0x00000010. The D bit of the cache makes the code 32-bit, so the
+    // pointer is ptr16:32. The base becomes 0x30000 (22.1). The limit and the
     // granularity byte stay as protected mode left them (22.5 steps 2 and 3). The far
     // jump gives CS the access rights of a present, readable code segment at privilege
     // level 0 (22.5 step 6).
-    place_in_test_code(&mut bus, 0x0000, &[0xEA, 0x10, 0x00, 0x00, 0x30]);
+    place_in_test_code(
+        &mut bus,
+        0x0000,
+        &[0xEA, 0x10, 0x00, 0x00, 0x00, 0x00, 0x30],
+    );
     bus.ram[0x0003_0010] = HLT_OPCODE;
 
     step_until_halted(&mut cpu, &mut bus, 3);
@@ -541,6 +546,43 @@ fn real_mode_faulting_instruction_raises_no_single_step_trap() {
 
     assert_general_protection_dispatched(&cpu);
     assert_eq!(saved_ip(&cpu, &bus), 0x0040);
+}
+
+#[test]
+fn real_mode_single_step_traps_after_each_rep_iteration() {
+    let mut cpu = make_cpu_486();
+    let mut bus = TestBus::new();
+
+    let _ = setup_real_mode_with_ivt_handlers(&mut bus);
+    install_real_mode_ivt_entry(&mut bus, 1, REAL_MODE_HANDLER_SEGMENT, DEBUG_HANDLER_OFFSET);
+    place_at(
+        &mut bus,
+        REAL_MODE_HANDLER_BASE + DEBUG_HANDLER_OFFSET as u32,
+        &[HLT_OPCODE],
+    );
+    let mut state = make_real_mode_state_for_addressing_tests();
+    state.ip = 0x0040;
+    state.flags.tf = true;
+    state.set_ecx(3);
+    state.set_edi(0x0200);
+    state.sregs[cpu::SegReg32::ES as usize] = TEST_DS_SELECTOR;
+    state.seg_bases[cpu::SegReg32::ES as usize] = TEST_DS_BASE;
+    cpu.load_state(&state);
+
+    // REP STOSB with CX=3. 80486 PRM 9.2 and 11.3.1.4: the single-step trap follows the
+    // first iteration with CX and DI updated and the return address at the REP prefix.
+    place_in_test_code(&mut bus, 0x0040, &[0xF3, 0xAA, HLT_OPCODE]);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted(), "expected #DB handler HLT");
+    assert_eq!(cpu.cs(), REAL_MODE_HANDLER_SEGMENT);
+    assert_eq!(cpu.ip() as u16, DEBUG_HANDLER_OFFSET + 1);
+    assert_eq!(cpu.state.ecx(), 2);
+    assert_eq!(cpu.state.edi(), 0x0201);
+    assert_eq!(saved_ip(&cpu, &bus), 0x0040);
+    assert_eq!(cpu.state.dr6 & 0x4000, 0x4000, "DR6.BS (80486 PRM 11.2.3)");
 }
 
 #[test]

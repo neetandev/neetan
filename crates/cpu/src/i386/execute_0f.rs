@@ -570,8 +570,9 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         let modrm = self.fetch(bus)?;
         if self.operand_size_override {
             let src = self.regs.dword(self.reg_dword(modrm));
-            let dst = self.get_rm_dword(modrm, bus)?;
+            self.decode_rm(modrm, bus)?;
             let count = self.fetch(bus)? & 0x1F;
+            let dst = self.read_rm_dword(modrm, bus)?;
             if count != 0 {
                 let result = (dst << count) | (src >> (32 - count));
                 self.flags.carry_val = (dst >> (32 - count)) & 1;
@@ -583,9 +584,9 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             self.clk_modrm_word(modrm, Self::timing(3, 2), Self::timing(7, 3), 4);
         } else {
             let src = self.regs.word(self.reg_word(modrm)) as u32;
-            let dst = self.get_rm_word(modrm, bus)?;
-            let dst = dst as u32;
+            self.decode_rm(modrm, bus)?;
             let count = self.fetch(bus)? & 0x1F;
+            let dst = self.read_rm_word(modrm, bus)? as u32;
             if count != 0 {
                 let result = if count < 16 {
                     (((dst << 16) | src) << count) >> 16
@@ -656,8 +657,9 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         let modrm = self.fetch(bus)?;
         if self.operand_size_override {
             let src = self.regs.dword(self.reg_dword(modrm));
-            let dst = self.get_rm_dword(modrm, bus)?;
+            self.decode_rm(modrm, bus)?;
             let count = self.fetch(bus)? & 0x1F;
+            let dst = self.read_rm_dword(modrm, bus)?;
             if count != 0 {
                 let result = (dst >> count) | (src << (32 - count));
                 self.flags.carry_val = (dst >> (count - 1)) & 1;
@@ -669,9 +671,9 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             self.clk_modrm_word(modrm, Self::timing(3, 2), Self::timing(7, 3), 4);
         } else {
             let src = self.regs.word(self.reg_word(modrm)) as u32;
-            let dst = self.get_rm_word(modrm, bus)?;
-            let dst = dst as u32;
+            self.decode_rm(modrm, bus)?;
             let count = self.fetch(bus)? & 0x1F;
+            let dst = self.read_rm_word(modrm, bus)? as u32;
             if count != 0 {
                 let result = if count < 16 {
                     (dst >> count) | (src << (16 - count))
@@ -768,6 +770,8 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         Ok(())
     }
 
+    /// LSS. It loads SS:ESP in one operation and inhibits no interrupt or trap after it
+    /// (80486 PRM 3.10.3 and 9.3.4).
     fn lss(&mut self, bus: &mut impl common::Bus) -> Step {
         let modrm = self.fetch(bus)?;
         if modrm >= 0xC0 {
@@ -807,7 +811,6 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             let reg = self.reg_word(modrm);
             self.regs.set_word(reg, offset);
         }
-        self.inhibit_all = 1;
         self.clk(Self::timing(7, 6));
         Ok(())
     }
