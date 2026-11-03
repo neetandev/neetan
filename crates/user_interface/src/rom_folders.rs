@@ -206,6 +206,7 @@ mod tests {
             executable_directory: None,
             resource_folder: None,
             pref_path: None,
+            default_root: root.clone(),
         };
         let request = LaunchRequest {
             settings: Some(file),

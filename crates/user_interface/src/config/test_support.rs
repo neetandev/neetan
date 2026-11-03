@@ -62,6 +62,7 @@ impl TestLocations {
             std::fs::create_dir_all(folder).expect("temporary folder is created");
         }
         let locations = Locations {
+            default_root: current_directory.clone(),
             current_directory,
             resource_folder: Some(resource_folder(&executable_directory)),
             executable_directory: Some(executable_directory),
