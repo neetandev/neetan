@@ -15,10 +15,11 @@ use common::Cpu as _;
 use cpu::I386State;
 
 use super::setup::{
-    REAL_MODE_HANDLER_DOUBLE_FAULT_OFFSET, REAL_MODE_HANDLER_GENERAL_PROTECTION_OFFSET,
-    REAL_MODE_HANDLER_SEGMENT, REAL_MODE_HANDLER_STACK_FAULT_OFFSET,
-    RIGHTS_RING0_CODE_READABLE_ACCESSED, RIGHTS_RING0_DATA_WRITABLE_ACCESSED, TestBus,
-    install_real_mode_ivt_entry, make_cpu_486, place_at, setup_real_mode_with_ivt_handlers,
+    REAL_MODE_HANDLER_BASE, REAL_MODE_HANDLER_DOUBLE_FAULT_OFFSET,
+    REAL_MODE_HANDLER_GENERAL_PROTECTION_OFFSET, REAL_MODE_HANDLER_SEGMENT,
+    REAL_MODE_HANDLER_STACK_FAULT_OFFSET, RIGHTS_RING0_CODE_READABLE_ACCESSED,
+    RIGHTS_RING0_DATA_WRITABLE_ACCESSED, TestBus, install_real_mode_ivt_entry, make_cpu_486,
+    place_at, setup_real_mode_with_ivt_handlers,
 };
 
 const HLT_OPCODE: u8 = 0xF4;
@@ -493,6 +494,7 @@ fn real_mode_immediate_crossing_the_cs_limit_raises_general_protection() {
     let _ = setup_real_mode_with_ivt_handlers(&mut bus);
     let mut state = make_real_mode_state_for_addressing_tests();
     state.ip = 0xFFFE;
+    state.set_eax(0xAAAA_5555);
     cpu.load_state(&state);
 
     // MOV AX, imm16 at 0xFFFE: the second immediate byte lies at offset
@@ -503,6 +505,41 @@ fn real_mode_immediate_crossing_the_cs_limit_raises_general_protection() {
 
     assert_general_protection_dispatched(&cpu);
     assert_eq!(saved_ip(&cpu, &bus), 0xFFFE);
+    assert_eq!(
+        cpu.eax(),
+        0xAAAA_5555,
+        "a faulting instruction writes no register"
+    );
+}
+
+/// Offset of the #DB handler HLT in the handler segment of the single-step test.
+const DEBUG_HANDLER_OFFSET: u16 = 0x0700;
+
+#[test]
+fn real_mode_faulting_instruction_raises_no_single_step_trap() {
+    let mut cpu = make_cpu_486();
+    let mut bus = TestBus::new();
+
+    let _ = setup_real_mode_with_ivt_handlers(&mut bus);
+    install_real_mode_ivt_entry(&mut bus, 1, REAL_MODE_HANDLER_SEGMENT, DEBUG_HANDLER_OFFSET);
+    place_at(
+        &mut bus,
+        REAL_MODE_HANDLER_BASE + DEBUG_HANDLER_OFFSET as u32,
+        &[HLT_OPCODE],
+    );
+    let mut state = make_real_mode_state_for_addressing_tests();
+    state.ip = 0x0040;
+    state.flags.tf = true;
+    cpu.load_state(&state);
+
+    // MOV AX, [0xFFFF]: the word crosses the DS limit (item 7). 80486 PRM 9.1 and
+    // 11.3.1.4: the faulting instruction is not executed and raises no single-step trap.
+    place_in_test_code(&mut bus, 0x0040, &[0x8B, 0x06, 0xFF, 0xFF]);
+
+    step_until_halted(&mut cpu, &mut bus, 3);
+
+    assert_general_protection_dispatched(&cpu);
+    assert_eq!(saved_ip(&cpu, &bus), 0x0040);
 }
 
 #[test]

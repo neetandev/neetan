@@ -15,10 +15,14 @@ use common::Cpu as _;
 use cpu::I386State;
 
 use super::setup::{
-    HANDLER_GENERAL_PROTECTION_IP, HANDLER_SEGMENT_NOT_PRESENT_IP, INTERRUPT_DESCRIPTOR_TABLE_BASE,
-    RING0_CODE_BASE, SELECTOR_RING0_CODE, TestBus, make_cpu_386, place_at, place_code,
-    promote_to_ring3, setup_protected_mode_with_handlers, setup_vm86, setup_vm86_with_iopl,
-    write_interrupt_gate_286, write_interrupt_gate_386, write_trap_gate_386,
+    GLOBAL_DESCRIPTOR_TABLE_BASE, HANDLER_GENERAL_PROTECTION_IP, HANDLER_SEGMENT_NOT_PRESENT_IP,
+    HANDLER_STACK_FAULT_IP, INTERRUPT_DESCRIPTOR_TABLE_BASE, RIGHTS_RING0_DATA_WRITABLE_ACCESSED,
+    RING0_CODE_BASE, RING0_STACK_BASE, RING3_CODE_BASE, SELECTOR_RING0_CODE, SELECTOR_RING0_STACK,
+    SELECTOR_RING3_CODE, SELECTOR_RING3_STACK, TASK_STATE_SEGMENT_BASE, TSS_OFFSET_ESP0, TestBus,
+    make_cpu_386, make_cpu_486, place_at, place_code, promote_to_ring3, read_word_at,
+    setup_protected_mode_with_handlers, setup_vm86, setup_vm86_with_iopl, write_dword_at,
+    write_interrupt_gate_286, write_interrupt_gate_386, write_segment_descriptor_16bit,
+    write_trap_gate_386,
 };
 
 const TEST_VECTOR: u8 = 0x42;
@@ -971,4 +975,71 @@ fn int_n_vm86_dispatch_pushes_full_segment_frame_on_pl0_stack() {
         "VM86 dispatch through 386 gate pushes 9-dword frame"
     );
     assert_eq!(cpu.ss() & 0xFFF8, 0x0018);
+}
+
+/// Limit of the ring 0 stack segment in the new stack overflow test.
+const SMALL_RING0_STACK_LIMIT: u16 = 0x0FFF;
+/// TSS ESP0 of the new stack overflow test. The fifth slot of a 386 frame wraps to
+/// offset 0xFFFC, beyond the limit. A 286 frame with an error code fits.
+const SMALL_RING0_STACK_POINTER: u32 = 0x0010;
+
+#[test]
+fn int_n_pm_inter_priv_new_stack_overflow_raises_stack_fault_with_new_ss_selector() {
+    let mut cpu = make_cpu_486();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_protected_mode_with_handlers(&mut bus);
+    write_interrupt_gate_386(
+        &mut bus,
+        INTERRUPT_DESCRIPTOR_TABLE_BASE,
+        TEST_VECTOR,
+        TEST_VECTOR_HANDLER_IP as u32,
+        SELECTOR_RING0_CODE,
+        3,
+    );
+    install_int_handler_at(&mut bus, TEST_VECTOR_HANDLER_IP);
+    write_interrupt_gate_286(
+        &mut bus,
+        INTERRUPT_DESCRIPTOR_TABLE_BASE,
+        12,
+        HANDLER_STACK_FAULT_IP as u32,
+        SELECTOR_RING0_CODE,
+        0,
+    );
+    write_segment_descriptor_16bit(
+        &mut bus,
+        GLOBAL_DESCRIPTOR_TABLE_BASE,
+        SELECTOR_RING0_STACK >> 3,
+        RING0_STACK_BASE,
+        SMALL_RING0_STACK_LIMIT,
+        RIGHTS_RING0_DATA_WRITABLE_ACCESSED,
+    );
+    write_dword_at(
+        &mut bus,
+        TASK_STATE_SEGMENT_BASE + TSS_OFFSET_ESP0,
+        SMALL_RING0_STACK_POINTER,
+    );
+    promote_to_ring3(&mut state);
+    state.set_esp(0xFFE0);
+    cpu.load_state(&state);
+
+    place_at(&mut bus, RING3_CODE_BASE, &[0xCD, TEST_VECTOR]);
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    // 80486 PRM 9.9.12: an overflow of the new stack pushes the selector of the new
+    // stack segment. The check comes before SS:ESP is committed, so the #SS frame holds
+    // the ring 3 stack and the address of INT n.
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), HANDLER_STACK_FAULT_IP as u32 + 1);
+    let frame = RING0_STACK_BASE + cpu.esp();
+    assert_eq!(read_word_at(&bus, frame), SELECTOR_RING0_STACK & 0xFFFC);
+    assert_eq!(
+        read_word_at(&bus, frame + 2),
+        0,
+        "the frame points at INT n"
+    );
+    assert_eq!(read_word_at(&bus, frame + 4), SELECTOR_RING3_CODE);
+    assert_eq!(read_word_at(&bus, frame + 8), 0xFFE0);
+    assert_eq!(read_word_at(&bus, frame + 10), SELECTOR_RING3_STACK);
 }

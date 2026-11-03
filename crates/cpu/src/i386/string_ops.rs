@@ -108,10 +108,8 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         base: u32,
         offset: u32,
         value: u16,
-    ) -> bool {
-        let Ok((a0, cross)) = self.string_probe_write_word(bus, base, offset) else {
-            return false;
-        };
+    ) -> Step {
+        let (a0, cross) = self.string_probe_write_word(bus, base, offset)?;
         match cross {
             None => bus.write_word(a0, value),
             Some(a1) => {
@@ -119,7 +117,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                 bus.write_byte(a1, (value >> 8) as u8);
             }
         }
-        true
+        Ok(())
     }
 
     /// Translates a word-sized destination for a string write without
@@ -189,10 +187,8 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         base: u32,
         offset: u32,
         value: u32,
-    ) -> bool {
-        let Ok((a0, cross)) = self.string_probe_write_dword(bus, base, offset) else {
-            return false;
-        };
+    ) -> Step {
+        let (a0, cross) = self.string_probe_write_dword(bus, base, offset)?;
         match cross {
             None => bus.write_dword(a0, value),
             Some((a1, a2, a3)) => {
@@ -202,7 +198,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                 bus.write_byte(a3, (value >> 24) as u8);
             }
         }
-        true
+        Ok(())
     }
 
     /// Translates a dword-sized destination for a string write without
@@ -264,16 +260,12 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         let dst_base = self.seg_base(SegReg32::ES);
         if self.operand_size_override {
             let val = self.string_read_dword(bus, src_base, si)?;
-            if !self.string_write_dword(bus, dst_base, di, val) {
-                return Ok(());
-            }
+            self.string_write_dword(bus, dst_base, di, val)?;
             self.string_advance_si(4);
             self.string_advance_di(4);
         } else {
             let val = self.string_read_word(bus, src_base, si)?;
-            if !self.string_write_word(bus, dst_base, di, val) {
-                return Ok(());
-            }
+            self.string_write_word(bus, dst_base, di, val)?;
             self.string_advance_si(2);
             self.string_advance_di(2);
         }
@@ -368,14 +360,10 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         self.check_segment_access(SegReg32::ES, di, access_size, true, bus)?;
         let base = self.seg_base(SegReg32::ES);
         if self.operand_size_override {
-            if !self.string_write_dword(bus, base, di, self.regs.dword(DwordReg::EAX)) {
-                return Ok(());
-            }
+            self.string_write_dword(bus, base, di, self.regs.dword(DwordReg::EAX))?;
             self.string_advance_di(4);
         } else {
-            if !self.string_write_word(bus, base, di, self.regs.word(WordReg::AX)) {
-                return Ok(());
-            }
+            self.string_write_word(bus, base, di, self.regs.word(WordReg::AX))?;
             self.string_advance_di(2);
         }
         let misaligned = if self.operand_size_override {
@@ -505,9 +493,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         self.check_segment_access(SegReg32::ES, di, size as u32, true, bus)?;
         let base = self.seg_base(SegReg32::ES);
         if self.operand_size_override {
-            let Ok((a0, cross)) = self.string_probe_write_dword(bus, base, di) else {
-                return Ok(());
-            };
+            let (a0, cross) = self.string_probe_write_dword(bus, base, di)?;
             let low = bus.io_read_word(port) as u32;
             let high = bus.io_read_word(port.wrapping_add(2)) as u32;
             self.clk_sx_io_dword();
@@ -523,9 +509,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             }
             self.string_advance_di(4);
         } else {
-            let Ok((a0, cross)) = self.string_probe_write_word(bus, base, di) else {
-                return Ok(());
-            };
+            let (a0, cross) = self.string_probe_write_word(bus, base, di)?;
             let val = bus.io_read_word(port);
             match cross {
                 None => bus.write_word(a0, val),

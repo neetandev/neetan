@@ -36,9 +36,13 @@ enum DoubleFaultResult {
 #[derive(Clone, Copy)]
 struct InterruptStackProbe {
     base: u32,
+    limit: u32,
+    is_expand_down: bool,
     is_32bit: bool,
     initial_stack_pointer: u32,
     slot_size: u32,
+    /// The #SS error code of a limit violation on the new stack.
+    limit_error_code: u16,
 }
 
 /// Exception classification per Intel 386 Programmer's Reference Manual,
@@ -86,6 +90,19 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         } else {
             raw_offset as u16 as u32
         };
+        // 80486 PRM 9.9.12: an overflow of the new stack reports the selector of the new
+        // stack segment. The check covers the whole slot, the padding of a selector included,
+        // and precedes the commit of SS:ESP.
+        let end = offset.checked_add(probe.slot_size - 1);
+        let within_limit = if probe.is_expand_down {
+            let upper = if probe.is_32bit { u32::MAX } else { 0xFFFF };
+            offset > probe.limit && end.is_some_and(|end| end <= upper)
+        } else {
+            end.is_some_and(|end| end <= probe.limit)
+        };
+        if !within_limit {
+            return self.raise_fault_with_code(12, probe.limit_error_code, bus);
+        }
         let first_linear = probe.base.wrapping_add(offset);
         self.translate_linear(first_linear, true, bus)?;
 
@@ -447,9 +464,12 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                 if from_vm86 { 4 } else { 0 } + 5 + if error_code.is_some() { 1 } else { 0 };
             let stack_probe = InterruptStackProbe {
                 base: new_ss_base,
+                limit: ss_descriptor.limit,
+                is_expand_down: Self::descriptor_is_expand_down(ss_rights),
                 is_32bit: new_b_bit,
                 initial_stack_pointer: new_esp,
                 slot_size: push_size,
+                limit_error_code: ss_error_code,
             };
 
             if is_386_gate {
@@ -647,6 +667,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         let _ = self.deliver_charged(vector, return_eip, None, false, true, bus);
         self.trap_level = 0;
         self.fault_pending = saved_fault_pending || self.fault_pending;
+        self.instruction_faulted = true;
         Err(Fault)
     }
 
@@ -677,6 +698,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         let _ = self.deliver_charged(vector, return_eip, Some(error_code), false, true, bus);
         self.trap_level = 0;
         self.fault_pending = saved_fault_pending || self.fault_pending;
+        self.instruction_faulted = true;
         Err(Fault)
     }
 

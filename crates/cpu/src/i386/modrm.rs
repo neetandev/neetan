@@ -35,15 +35,17 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         ByteReg::from_index(MODRM_RM[modrm as usize])
     }
 
-    pub(super) fn calc_ea(&mut self, modrm: u8, bus: &mut impl common::Bus) {
+    /// Decodes the effective address of `modrm` and fetches its SIB byte and
+    /// displacement. A code fetch fault returns `Err`.
+    pub(super) fn calc_ea(&mut self, modrm: u8, bus: &mut impl common::Bus) -> Step {
         if self.address_size_override {
-            self.calc_ea32(modrm, bus);
+            self.calc_ea32(modrm, bus)
         } else {
-            self.calc_ea16(modrm, bus);
+            self.calc_ea16(modrm, bus)
         }
     }
 
-    fn calc_ea16(&mut self, modrm: u8, bus: &mut impl common::Bus) {
+    fn calc_ea16(&mut self, modrm: u8, bus: &mut impl common::Bus) -> Step {
         let mode = modrm >> 6;
         let rm = modrm & 7;
 
@@ -98,7 +100,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                     self.ea = self.seg_base(self.ea_seg).wrapping_add(self.eo32);
                 }
                 6 => {
-                    self.eo = self.fetchword(bus);
+                    self.eo = self.fetchword(bus)?;
                     self.eo32 = self.eo as u32;
                     self.ea_seg = self.default_seg(SegReg32::DS);
                     self.ea = self.seg_base(self.ea_seg).wrapping_add(self.eo32);
@@ -112,7 +114,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                 _ => unreachable!(),
             },
             1 => {
-                let disp = self.fetch(bus) as i8 as u16;
+                let disp = self.fetch(bus)? as i8 as u16;
                 let seg = if rm == 2 || rm == 3 || rm == 6 {
                     SegReg32::SS
                 } else {
@@ -124,7 +126,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                 self.ea = self.seg_base(self.ea_seg).wrapping_add(self.eo32);
             }
             2 => {
-                let disp = self.fetchword(bus);
+                let disp = self.fetchword(bus)?;
                 let seg = if rm == 2 || rm == 3 || rm == 6 {
                     SegReg32::SS
                 } else {
@@ -138,9 +140,10 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             3 => {}
             _ => unreachable!(),
         }
+        Ok(())
     }
 
-    fn calc_ea32(&mut self, modrm: u8, bus: &mut impl common::Bus) {
+    fn calc_ea32(&mut self, modrm: u8, bus: &mut impl common::Bus) -> Step {
         let mode = modrm >> 6;
         let rm = modrm & 7;
 
@@ -148,7 +151,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         let default_seg;
 
         if rm == 4 {
-            let sib = self.fetch(bus);
+            let sib = self.fetch(bus)?;
             let scale = (sib >> 6) & 0x3;
             let index = (sib >> 3) & 0x7;
             let base = sib & 0x7;
@@ -163,7 +166,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             }
 
             if mode == 0 && base == 5 {
-                offset = offset.wrapping_add(self.fetchdword(bus));
+                offset = offset.wrapping_add(self.fetchdword(bus)?);
                 default_seg = SegReg32::DS;
             } else if scaled_base_no_index {
                 default_seg = if base == 4 || base == 5 {
@@ -180,7 +183,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                 };
             }
         } else if mode == 0 && rm == 5 {
-            offset = self.fetchdword(bus);
+            offset = self.fetchdword(bus)?;
             default_seg = SegReg32::DS;
         } else {
             offset = self.addr32_reg(rm);
@@ -194,14 +197,14 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         match mode {
             0 => {}
             1 => {
-                let disp = self.fetch(bus) as i8 as i32 as u32;
+                let disp = self.fetch(bus)? as i8 as i32 as u32;
                 offset = offset.wrapping_add(disp);
             }
             2 => {
-                let disp = self.fetchdword(bus);
+                let disp = self.fetchdword(bus)?;
                 offset = offset.wrapping_add(disp);
             }
-            3 => return,
+            3 => return Ok(()),
             _ => unreachable!(),
         }
 
@@ -209,6 +212,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         self.eo32 = offset;
         self.ea_seg = self.default_seg(default_seg);
         self.ea = self.seg_base(self.ea_seg).wrapping_add(self.eo32);
+        Ok(())
     }
 
     #[inline(always)]
@@ -257,7 +261,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         if modrm >= 0xC0 {
             Ok(self.regs.byte(self.rm_byte(modrm)))
         } else {
-            self.calc_ea(modrm, bus);
+            self.calc_ea(modrm, bus)?;
             self.check_segment_access(self.ea_seg, self.eo32, 1, false, bus)?;
             let addr = self.translate_linear(self.ea, false, bus)?;
             Ok(bus.read_byte(addr))
@@ -272,7 +276,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         if modrm >= 0xC0 {
             Ok(self.regs.byte(self.rm_byte(modrm)))
         } else {
-            self.calc_ea(modrm, bus);
+            self.calc_ea(modrm, bus)?;
             self.check_segment_access(self.ea_seg, self.eo32, 1, true, bus)?;
             let addr = self.translate_linear(self.ea, true, bus)?;
             Ok(bus.read_byte(addr))
@@ -283,7 +287,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         if modrm >= 0xC0 {
             Ok(self.regs.word(self.rm_word(modrm)))
         } else {
-            self.calc_ea(modrm, bus);
+            self.calc_ea(modrm, bus)?;
             self.seg_read_word(bus)
         }
     }
@@ -296,7 +300,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         if modrm >= 0xC0 {
             Ok(self.regs.word(self.rm_word(modrm)))
         } else {
-            self.calc_ea(modrm, bus);
+            self.calc_ea(modrm, bus)?;
             self.seg_read_word_for_update(bus)
         }
     }
@@ -305,7 +309,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         if modrm >= 0xC0 {
             Ok(self.regs.dword(self.rm_dword(modrm)))
         } else {
-            self.calc_ea(modrm, bus);
+            self.calc_ea(modrm, bus)?;
             self.seg_read_dword(bus)
         }
     }
@@ -318,7 +322,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         if modrm >= 0xC0 {
             Ok(self.regs.dword(self.rm_dword(modrm)))
         } else {
-            self.calc_ea(modrm, bus);
+            self.calc_ea(modrm, bus)?;
             self.seg_read_dword_for_update(bus)
         }
     }
@@ -374,7 +378,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             let reg = self.rm_byte(modrm);
             self.regs.set_byte(reg, value);
         } else {
-            self.calc_ea(modrm, bus);
+            self.calc_ea(modrm, bus)?;
             self.check_segment_access(self.ea_seg, self.eo32, 1, true, bus)?;
             let addr = self.translate_linear(self.ea, true, bus)?;
             bus.write_byte(addr, value);
@@ -393,7 +397,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             self.regs.set_word(reg, value);
             Ok(())
         } else {
-            self.calc_ea(modrm, bus);
+            self.calc_ea(modrm, bus)?;
             self.seg_write_word(bus, value)
         }
     }
@@ -409,7 +413,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             self.regs.set_dword(reg, value);
             Ok(())
         } else {
-            self.calc_ea(modrm, bus);
+            self.calc_ea(modrm, bus)?;
             self.seg_write_dword(bus, value)
         }
     }

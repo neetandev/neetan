@@ -1170,6 +1170,137 @@ fn paging_code_fetch_through_page_tables() {
     assert!(cpu.halted());
 }
 
+/// Places `code` so that it ends on the first byte of the page after the code page and
+/// marks that page not present. Returns the offset of the first instruction byte.
+fn place_code_across_not_present_page(bus: &mut TestBus, code: &[u8]) -> u16 {
+    let offset = 0x1000 - (code.len() as u16 - 1);
+    place_at(bus, PG_CODE_BASE + offset as u32, code);
+    let next_page_index = (PG_CODE_BASE + 0x1000) >> 12;
+    write_dword_at(bus, PG_PAGE_TABLE_0 + next_page_index * 4, 0);
+    offset
+}
+
+/// Checks the #PF frame of a code fetch from the not-present page after the code page.
+fn assert_code_fetch_page_fault(cpu: &I386, bus: &TestBus, instruction_offset: u16) {
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), PG_PF_HANDLER_IP as u32 + 1);
+    assert_eq!(cpu.cr2, PG_CODE_BASE + 0x1000);
+    let sp = cpu.esp();
+    assert_eq!(
+        read_dword_at(bus, PG_STACK_BASE + sp),
+        0,
+        "error code: not present, read, supervisor"
+    );
+    assert_eq!(
+        read_dword_at(bus, PG_STACK_BASE + sp + 4),
+        instruction_offset as u32,
+        "the fault points at the first byte of the instruction"
+    );
+}
+
+/// 80486 PRM 9.2 and 9.9.14: a #PF on the second page of an instruction is a fault, and
+/// the registers keep the values they held before the instruction.
+/// MOV AX, imm16 with its high immediate byte on a not-present page leaves AX unchanged.
+#[test]
+fn paging_fault_on_second_instruction_page_leaves_register_unchanged() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_paged_protected_mode(&mut bus);
+    let offset = place_code_across_not_present_page(&mut bus, &[0xB8, 0x34, 0x12]);
+    state.ip = offset;
+    state.set_eax(0xAAAA_5555);
+    cpu.load_state(&state);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert_code_fetch_page_fault(&cpu, &bus, offset);
+    assert_eq!(cpu.eax(), 0xAAAA_5555);
+}
+
+/// 80486 PRM 9.2 and 9.9.14: JMP rel16 with its high displacement byte on a
+/// not-present page enters the #PF handler at its gate offset.
+#[test]
+fn paging_fault_on_second_instruction_page_keeps_handler_entry() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_paged_protected_mode(&mut bus);
+    let offset = place_code_across_not_present_page(&mut bus, &[0xE9, 0x34, 0x12]);
+    state.ip = offset;
+    cpu.load_state(&state);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert_code_fetch_page_fault(&cpu, &bus, offset);
+}
+
+/// 80486 PRM 9.2 and 9.9.14: MOV r/m16, imm16 with its high immediate byte on a
+/// not-present page writes no memory.
+#[test]
+fn paging_fault_on_second_instruction_page_writes_no_memory() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_paged_protected_mode(&mut bus);
+    let offset =
+        place_code_across_not_present_page(&mut bus, &[0xC7, 0x06, 0x40, 0x00, 0x34, 0x12]);
+    state.ip = offset;
+    write_word_at(&mut bus, PG_DATA_BASE + 0x40, 0x5A5A);
+    cpu.load_state(&state);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert_code_fetch_page_fault(&cpu, &bus, offset);
+    assert_eq!(read_word_at(&bus, PG_DATA_BASE + 0x40), 0x5A5A);
+}
+
+/// 80486 PRM 9.2 and 9.9.14: POP r/m16 with its high displacement byte on a not-present
+/// page restores SP for the restart. The #PF frame lies directly below the old SP.
+#[test]
+fn paging_fault_on_second_instruction_page_restores_pop_stack_pointer() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_paged_protected_mode(&mut bus);
+    let offset = place_code_across_not_present_page(&mut bus, &[0x8F, 0x06, 0x40, 0x00]);
+    state.ip = offset;
+    state.set_esp(0x0100);
+    cpu.load_state(&state);
+
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+
+    assert_code_fetch_page_fault(&cpu, &bus, offset);
+    assert_eq!(cpu.esp(), 0x0100 - 16, "four dwords below the old SP");
+}
+
+/// 80486 PRM chapter 26, POP: a memory operand with an ESP base uses the incremented ESP.
+#[test]
+fn pop_memory_with_esp_base_addresses_the_incremented_stack_pointer() {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_paged_protected_mode(&mut bus);
+    // POP WORD [ESP+4]; HLT
+    place_at(
+        &mut bus,
+        PG_CODE_BASE,
+        &[0x67, 0x8F, 0x44, 0x24, 0x04, 0xF4],
+    );
+    state.set_esp(0x0100);
+    write_word_at(&mut bus, PG_STACK_BASE + 0x0100, 0xBEEF);
+    cpu.load_state(&state);
+
+    cpu.step(&mut bus);
+
+    assert_eq!(cpu.esp(), 0x0102);
+    assert_eq!(read_word_at(&bus, PG_STACK_BASE + 0x0106), 0xBEEF);
+}
+
 /// PUSH/POP go through paging with a remapped stack page.
 #[test]
 fn paging_push_pop_through_page_tables() {
