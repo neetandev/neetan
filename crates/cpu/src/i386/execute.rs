@@ -1309,12 +1309,15 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             self.regs.set_dword(DwordReg::EDI, edi);
             self.regs.set_dword(DwordReg::ESI, esi);
             self.regs.set_dword(DwordReg::EBP, ebp);
-            if !self.use_esp() {
-                // i386-specific POPAD quirk: with a 16-bit stack address size
-                // the ESP slot is popped into ESP in full, and only then is SP
-                // overwritten with its actual post-pop value. The popped
-                // dword's upper half survives in ESP's upper 16 bits.
-                // The Pentium dropped this and just does SP += 4.
+            let loads_popped_esp_upper = match CPU_MODEL {
+                CPU_MODEL_386_DX | CPU_MODEL_386_SX => true,
+                CPU_MODEL_486_DX => false,
+                _ => unreachable!("Unhandled CPU_MODEL"),
+            };
+            if loads_popped_esp_upper && !self.use_esp() {
+                // The i386 loads the popped ESP slot into ESP and then writes the
+                // post-pop SP into the low word. The popped upper half stays in
+                // ESP. The i486 discards the slot (80486 PRM POPA/POPAD).
                 let sp_after = self.regs.word(WordReg::SP);
                 let new_esp = (popped_esp & 0xFFFF_0000) | sp_after as u32;
                 self.regs.set_dword(DwordReg::ESP, new_esp);
@@ -2521,9 +2524,10 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         }
         let penalty = self.sp_penalty();
         if self.operand_size_override {
-            // PUSHFD: RF (bit 16) is masked. VM (bit 17) is always included.
-            // AC (bit 18, 486+) is included; remaining bits 19-31 push as 0.
-            let upper_mask = Self::eflags_upper_writable() & !EFLAGS_RESUME_FLAG;
+            // PUSHFD stores RF (bit 16) and VM (bit 17) as zero (80386 PRM 3.8.2
+            // and 80486 PRM 3.8.2). AC (bit 18, 486+) is included.
+            let upper_mask =
+                Self::eflags_upper_writable() & !(EFLAGS_RESUME_FLAG | EFLAGS_VIRTUAL_8086_FLAG);
             let flags_val = (self.eflags_upper & upper_mask) | self.flags.compress() as u32;
             self.push_dword(bus, flags_val)?;
         } else {

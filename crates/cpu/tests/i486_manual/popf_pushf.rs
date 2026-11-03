@@ -11,7 +11,7 @@
 //! - VM86 IOPL=3: PUSHF/POPF behave as the protected-mode CPL=3 forms; IF
 //!   writable, IOPL preserved.
 //! - VM86 IOPL<3: PUSHF and POPF (and PUSHFD/POPFD) raise #GP(0).
-//! - PUSHFD: bit 16 (RF) is cleared in the pushed image; POPF/POPFD do not
+//! - PUSHFD: bit 16 (RF) and bit 17 (VM) are cleared in the pushed image; POPF/POPFD do not
 //!   modify RF and do not perform the normal post-instruction RF clear.
 //!   VM (bit 17) is not modifiable via POPFD - only IRET at CPL=0 sets it.
 
@@ -280,7 +280,7 @@ fn pushf_vm86_iopl0_raises_gp() {
 }
 
 #[test]
-fn pushfd_vm86_iopl3_pushes_vm_bit_set() {
+fn pushfd_vm86_iopl3_stores_vm_bit_clear() {
     let mut cpu = make_cpu_386();
     let mut bus = TestBus::new();
 
@@ -297,7 +297,7 @@ fn pushfd_vm86_iopl3_pushes_vm_bit_set() {
 
     let sp = cpu.esp();
     let pushed = read_dword_at(&bus, state.seg_bases[cpu::SegReg32::SS as usize] + sp);
-    assert_ne!(pushed & 0x0002_0000, 0, "VM bit set in pushed eflags");
+    assert_eq!(pushed & 0x0002_0000, 0, "VM bit clear in pushed eflags");
 }
 
 #[test]
