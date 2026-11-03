@@ -388,6 +388,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                 let bit_index = imm & 31;
                 if self.address_size_override {
                     let address = self.ea;
+                    self.check_segment_access(self.ea_seg, self.eo32, 4, write_back, bus)?;
                     let read_result = if write_back {
                         self.read_dword_linear_for_update(bus, address)
                     } else {
@@ -464,6 +465,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             let bit_index = imm & 15;
             if self.address_size_override {
                 let address = self.ea;
+                self.check_segment_access(self.ea_seg, self.eo32, 2, write_back, bus)?;
                 let read_result = if write_back {
                     self.read_word_linear_for_update(bus, address)
                 } else {
@@ -1165,10 +1167,11 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                     return Ok(());
                 }
                 self.calc_ea(modrm, bus);
+                self.check_segment_access(self.ea_seg, self.eo32, 6, true, bus)?;
                 let gdt_limit = self.gdt_limit;
                 let gdt_base = self.gdt_base;
-                self.write_word_linear(bus, self.seg_addr(0), gdt_limit)?;
-                self.write_dword_linear(bus, self.seg_addr(2), gdt_base)?;
+                self.write_word_linear(bus, self.ea, gdt_limit)?;
+                self.write_dword_linear(bus, self.ea.wrapping_add(2), gdt_base)?;
                 self.clk(Self::timing(11, 10));
             }
             1 => {
@@ -1178,10 +1181,11 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                     return Ok(());
                 }
                 self.calc_ea(modrm, bus);
+                self.check_segment_access(self.ea_seg, self.eo32, 6, true, bus)?;
                 let idt_limit = self.idt_limit;
                 let idt_base = self.idt_base;
-                self.write_word_linear(bus, self.seg_addr(0), idt_limit)?;
-                self.write_dword_linear(bus, self.seg_addr(2), idt_base)?;
+                self.write_word_linear(bus, self.ea, idt_limit)?;
+                self.write_dword_linear(bus, self.ea.wrapping_add(2), idt_base)?;
                 self.clk(Self::timing(12, 10));
             }
             2 => {
@@ -1197,8 +1201,9 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                     return Ok(());
                 }
                 self.calc_ea(modrm, bus);
-                let limit = self.read_word_linear(bus, self.seg_addr(0))?;
-                let mut base = self.read_dword_linear(bus, self.seg_addr(2))?;
+                self.check_segment_access(self.ea_seg, self.eo32, 6, false, bus)?;
+                let limit = self.read_word_linear(bus, self.ea)?;
+                let mut base = self.read_dword_linear(bus, self.ea.wrapping_add(2))?;
                 if !self.operand_size_override {
                     base &= 0x00FF_FFFF;
                 }
@@ -1219,8 +1224,9 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                     return Ok(());
                 }
                 self.calc_ea(modrm, bus);
-                let limit = self.read_word_linear(bus, self.seg_addr(0))?;
-                let mut base = self.read_dword_linear(bus, self.seg_addr(2))?;
+                self.check_segment_access(self.ea_seg, self.eo32, 6, false, bus)?;
+                let limit = self.read_word_linear(bus, self.ea)?;
+                let mut base = self.read_dword_linear(bus, self.ea.wrapping_add(2))?;
                 if !self.operand_size_override {
                     base &= 0x00FF_FFFF;
                 }

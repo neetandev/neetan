@@ -375,6 +375,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             self.regs.set_byte(reg, value);
         } else {
             self.calc_ea(modrm, bus);
+            self.check_segment_access(self.ea_seg, self.eo32, 1, true, bus)?;
             let addr = self.translate_linear(self.ea, true, bus)?;
             bus.write_byte(addr, value);
         }

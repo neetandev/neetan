@@ -233,11 +233,24 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         }
     }
 
+    /// Checks the x87 memory operand of `size` bytes at the effective address against the
+    /// segment limit and, in protected mode, the access rights.
+    pub(super) fn fpu_check_operand(
+        &mut self,
+        size: u32,
+        write: bool,
+        bus: &mut impl common::Bus,
+    ) -> Step {
+        self.check_segment_access(self.ea_seg, self.eo32, size, write, bus)
+    }
+
     pub(super) fn fpu_read_u16(&mut self, bus: &mut impl common::Bus) -> Step<u16> {
+        self.fpu_check_operand(2, false, bus)?;
         self.read_word_linear(bus, self.ea)
     }
 
     pub(super) fn fpu_read_u32(&mut self, bus: &mut impl common::Bus) -> Step<u32> {
+        self.fpu_check_operand(4, false, bus)?;
         let ea = self.ea;
         let lo = self.read_word_linear(bus, ea)? as u32;
         let hi = self.read_word_linear(bus, ea.wrapping_add(2))? as u32;
@@ -245,6 +258,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     pub(super) fn fpu_read_u64(&mut self, bus: &mut impl common::Bus) -> Step<u64> {
+        self.fpu_check_operand(8, false, bus)?;
         let ea = self.ea;
         let w0 = self.read_word_linear(bus, ea)? as u64;
         let w1 = self.read_word_linear(bus, ea.wrapping_add(2))? as u64;
@@ -254,6 +268,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     pub(super) fn fpu_read_tbyte(&mut self, bus: &mut impl common::Bus) -> Step<[u8; 10]> {
+        self.fpu_check_operand(10, false, bus)?;
         let ea = self.ea;
         // Translate every byte first so a partial fault doesn't mutate the
         // FPU stack via fpu_push later.
@@ -269,17 +284,20 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     pub(super) fn fpu_write_u16(&mut self, bus: &mut impl common::Bus, value: u16) -> Step {
+        self.fpu_check_operand(2, true, bus)?;
         let ea = self.ea;
         self.write_word_linear(bus, ea, value)
     }
 
     pub(super) fn fpu_write_u32(&mut self, bus: &mut impl common::Bus, value: u32) -> Step {
+        self.fpu_check_operand(4, true, bus)?;
         let ea = self.ea;
         self.write_word_linear(bus, ea, value as u16)?;
         self.write_word_linear(bus, ea.wrapping_add(2), (value >> 16) as u16)
     }
 
     pub(super) fn fpu_write_u64(&mut self, bus: &mut impl common::Bus, value: u64) -> Step {
+        self.fpu_check_operand(8, true, bus)?;
         let ea = self.ea;
         self.write_word_linear(bus, ea, value as u16)?;
         self.write_word_linear(bus, ea.wrapping_add(2), (value >> 16) as u16)?;
@@ -288,6 +306,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     pub(super) fn fpu_write_tbyte(&mut self, bus: &mut impl common::Bus, bytes: &[u8; 10]) -> Step {
+        self.fpu_check_operand(10, true, bus)?;
         let ea = self.ea;
         // Translate every byte first; only commit writes once all
         // translations succeed so a fault leaves the destination

@@ -1100,22 +1100,21 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             // the upper 2 bytes of the stack slot are left untouched. Pentium
             // and later CPUs zero-extend. We match the 386/486 manuals here.
             let sp_new = if self.use_esp() {
-                let esp = self.regs.dword(DwordReg::ESP).wrapping_sub(4);
-                self.regs.set_dword(DwordReg::ESP, esp);
-                esp
+                self.regs.dword(DwordReg::ESP).wrapping_sub(4)
             } else {
-                let sp = self.regs.word(WordReg::SP).wrapping_sub(4);
-                self.regs.set_word(WordReg::SP, sp);
-                sp as u32
+                self.regs.word(WordReg::SP).wrapping_sub(4) as u32
             };
+            self.check_segment_access(SegReg32::SS, sp_new, 4, true, bus)?;
             let base = self.seg_base(SegReg32::SS);
             let l0 = base.wrapping_add(sp_new);
             if l0 & 0xFFF <= 0xFFE {
                 let a0 = self.translate_linear(l0, true, bus)?;
+                self.commit_sp(sp_new);
                 bus.write_word(a0, val);
             } else {
                 let a0 = self.translate_linear(l0, true, bus)?;
                 let a1 = self.translate_linear(l0.wrapping_add(1), true, bus)?;
+                self.commit_sp(sp_new);
                 bus.write_byte(a0, val as u8);
                 bus.write_byte(a1, (val >> 8) as u8);
             }
@@ -1135,7 +1134,9 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         } else {
             self.regs.word(WordReg::SP) as u32
         };
-        self.check_segment_access(SegReg32::SS, sp, slot_size, false, bus)?;
+        // A 32-bit POP of a segment register reads only the selector word and then advances
+        // the stack pointer by four.
+        self.check_segment_access(SegReg32::SS, sp, 2, false, bus)?;
 
         let base = self.seg_base(SegReg32::SS);
         let l0 = base.wrapping_add(sp);
@@ -2221,18 +2222,16 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                     (sp as u16).wrapping_add(delta as u16) as u32
                 }
             };
-            let ss_base = self.seg_base(SegReg32::SS);
             if self.operand_size_override {
-                let new_eip = self.read_dword_linear(bus, ss_base.wrapping_add(stack_offset(0)))?;
-                let new_cs_dword =
-                    self.read_dword_linear(bus, ss_base.wrapping_add(stack_offset(4)))?;
+                let new_eip = self.read_stack_dword(bus, stack_offset(0))?;
+                let new_cs_dword = self.read_stack_dword(bus, stack_offset(4))?;
                 self.load_segment(SegReg32::CS, new_cs_dword as u16, bus)?;
                 self.commit_sp(stack_offset(8));
                 self.ip = new_eip as u16;
                 self.ip_upper = new_eip & 0xFFFF_0000;
             } else {
-                let new_ip = self.read_word_linear(bus, ss_base.wrapping_add(stack_offset(0)))?;
-                let new_cs = self.read_word_linear(bus, ss_base.wrapping_add(stack_offset(2)))?;
+                let new_ip = self.read_stack_word(bus, stack_offset(0))?;
+                let new_cs = self.read_stack_word(bus, stack_offset(2))?;
                 self.load_segment(SegReg32::CS, new_cs, bus)?;
                 self.commit_sp(stack_offset(4));
                 self.ip = new_ip;
@@ -2257,22 +2256,18 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         } else {
             self.regs.word(WordReg::SP) as u32
         };
-        let ss_base = self.seg_base(SegReg32::SS);
 
         if self.operand_size_override {
-            let new_eip = self.read_dword_linear(bus, ss_base.wrapping_add(sp))?;
-            let new_cs_dword =
-                self.read_dword_linear(bus, ss_base.wrapping_add(sp.wrapping_add(4)))?;
+            let new_eip = self.read_stack_dword(bus, sp)?;
+            let new_cs_dword = self.read_stack_dword(bus, sp.wrapping_add(4))?;
             let new_cs = new_cs_dword as u16;
 
             let new_rpl = new_cs & 3;
             let old_cpl = self.cpl();
 
             if new_rpl > old_cpl {
-                let new_esp =
-                    self.read_dword_linear(bus, ss_base.wrapping_add(sp.wrapping_add(8)))?;
-                let new_ss_dword =
-                    self.read_dword_linear(bus, ss_base.wrapping_add(sp.wrapping_add(12)))?;
+                let new_esp = self.read_stack_dword(bus, sp.wrapping_add(8))?;
+                let new_ss_dword = self.read_stack_dword(bus, sp.wrapping_add(12))?;
                 let new_ss = new_ss_dword as u16;
 
                 self.commit_retf_inter_priv(new_cs, new_eip, new_ss, new_esp, new_rpl, bus)?;
@@ -2280,17 +2275,15 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                 self.commit_retf_intra_priv(new_cs, new_eip, sp.wrapping_add(8), bus)?;
             }
         } else {
-            let new_ip = self.read_word_linear(bus, ss_base.wrapping_add(sp))?;
-            let new_cs = self.read_word_linear(bus, ss_base.wrapping_add(sp.wrapping_add(2)))?;
+            let new_ip = self.read_stack_word(bus, sp)?;
+            let new_cs = self.read_stack_word(bus, sp.wrapping_add(2))?;
 
             let new_rpl = new_cs & 3;
             let old_cpl = self.cpl();
 
             if new_rpl > old_cpl {
-                let new_sp =
-                    self.read_word_linear(bus, ss_base.wrapping_add(sp.wrapping_add(4)))?;
-                let new_ss =
-                    self.read_word_linear(bus, ss_base.wrapping_add(sp.wrapping_add(6)))?;
+                let new_sp = self.read_stack_word(bus, sp.wrapping_add(4))?;
+                let new_ss = self.read_stack_word(bus, sp.wrapping_add(6))?;
 
                 self.commit_retf_inter_priv(
                     new_cs,
@@ -2336,18 +2329,16 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                     (sp as u16).wrapping_add(delta as u16) as u32
                 }
             };
-            let ss_base = self.seg_base(SegReg32::SS);
             if self.operand_size_override {
-                let new_eip = self.read_dword_linear(bus, ss_base.wrapping_add(stack_offset(0)))?;
-                let new_cs_dword =
-                    self.read_dword_linear(bus, ss_base.wrapping_add(stack_offset(4)))?;
+                let new_eip = self.read_stack_dword(bus, stack_offset(0))?;
+                let new_cs_dword = self.read_stack_dword(bus, stack_offset(4))?;
                 self.load_segment(SegReg32::CS, new_cs_dword as u16, bus)?;
                 self.commit_sp(stack_offset(8u32.wrapping_add(imm as u32)));
                 self.ip = new_eip as u16;
                 self.ip_upper = new_eip & 0xFFFF_0000;
             } else {
-                let new_ip = self.read_word_linear(bus, ss_base.wrapping_add(stack_offset(0)))?;
-                let new_cs = self.read_word_linear(bus, ss_base.wrapping_add(stack_offset(2)))?;
+                let new_ip = self.read_stack_word(bus, stack_offset(0))?;
+                let new_cs = self.read_stack_word(bus, stack_offset(2))?;
                 self.load_segment(SegReg32::CS, new_cs, bus)?;
                 self.commit_sp(stack_offset(4u32.wrapping_add(imm as u32)));
                 self.ip = new_ip;
@@ -2372,13 +2363,11 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         } else {
             self.regs.word(WordReg::SP) as u32
         };
-        let ss_base = self.seg_base(SegReg32::SS);
         let imm32 = imm as u32;
 
         if self.operand_size_override {
-            let new_eip = self.read_dword_linear(bus, ss_base.wrapping_add(sp))?;
-            let new_cs_dword =
-                self.read_dword_linear(bus, ss_base.wrapping_add(sp.wrapping_add(4)))?;
+            let new_eip = self.read_stack_dword(bus, sp)?;
+            let new_cs_dword = self.read_stack_dword(bus, sp.wrapping_add(4))?;
             let new_cs = new_cs_dword as u16;
 
             let new_rpl = new_cs & 3;
@@ -2386,9 +2375,8 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
 
             if new_rpl > old_cpl {
                 let sp_ss_base = sp.wrapping_add(8).wrapping_add(imm32);
-                let new_esp = self.read_dword_linear(bus, ss_base.wrapping_add(sp_ss_base))?;
-                let new_ss_dword =
-                    self.read_dword_linear(bus, ss_base.wrapping_add(sp_ss_base.wrapping_add(4)))?;
+                let new_esp = self.read_stack_dword(bus, sp_ss_base)?;
+                let new_ss_dword = self.read_stack_dword(bus, sp_ss_base.wrapping_add(4))?;
                 let new_ss = new_ss_dword as u16;
 
                 let adj_esp = new_esp.wrapping_add(imm32);
@@ -2398,17 +2386,16 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                 self.commit_retf_intra_priv(new_cs, new_eip, new_sp_val, bus)?;
             }
         } else {
-            let new_ip = self.read_word_linear(bus, ss_base.wrapping_add(sp))?;
-            let new_cs = self.read_word_linear(bus, ss_base.wrapping_add(sp.wrapping_add(2)))?;
+            let new_ip = self.read_stack_word(bus, sp)?;
+            let new_cs = self.read_stack_word(bus, sp.wrapping_add(2))?;
 
             let new_rpl = new_cs & 3;
             let old_cpl = self.cpl();
 
             if new_rpl > old_cpl {
                 let sp_ss_base = sp.wrapping_add(4).wrapping_add(imm32);
-                let new_sp = self.read_word_linear(bus, ss_base.wrapping_add(sp_ss_base))?;
-                let new_ss =
-                    self.read_word_linear(bus, ss_base.wrapping_add(sp_ss_base.wrapping_add(2)))?;
+                let new_sp = self.read_stack_word(bus, sp_ss_base)?;
+                let new_ss = self.read_stack_word(bus, sp_ss_base.wrapping_add(2))?;
 
                 let adj_sp = new_sp.wrapping_add(imm);
                 self.commit_retf_inter_priv(
@@ -2726,6 +2713,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         } else {
             self.calc_ea(modrm, bus);
             let val = self.fetch(bus);
+            self.check_segment_access(self.ea_seg, self.eo32, 1, true, bus)?;
             let addr = self.translate_linear(self.ea, true, bus)?;
             bus.write_byte(addr, val);
         }
@@ -3032,12 +3020,10 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                     (sp as u16).wrapping_add(delta as u16) as u32
                 }
             };
-            let ss_base = self.seg_base(SegReg32::SS);
             if self.operand_size_override {
-                let eip = self.read_dword_linear(bus, ss_base.wrapping_add(stack_offset(0)))?;
-                let cs_dword =
-                    self.read_dword_linear(bus, ss_base.wrapping_add(stack_offset(4)))?;
-                let eflags = self.read_dword_linear(bus, ss_base.wrapping_add(stack_offset(8)))?;
+                let eip = self.read_stack_dword(bus, stack_offset(0))?;
+                let cs_dword = self.read_stack_dword(bus, stack_offset(4))?;
+                let eflags = self.read_stack_dword(bus, stack_offset(8))?;
                 self.load_segment(SegReg32::CS, cs_dword as u16, bus)?;
                 self.commit_sp(stack_offset(12));
                 self.ip = eip as u16;
@@ -3049,10 +3035,9 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                 let load_mask = Self::eflags_upper_writable() & !EFLAGS_VIRTUAL_8086_FLAG;
                 self.eflags_upper = (self.eflags_upper & !load_mask) | (eflags & load_mask);
             } else {
-                let ip = self.read_word_linear(bus, ss_base.wrapping_add(stack_offset(0)))?;
-                let cs = self.read_word_linear(bus, ss_base.wrapping_add(stack_offset(2)))?;
-                let flags_val =
-                    self.read_word_linear(bus, ss_base.wrapping_add(stack_offset(4)))?;
+                let ip = self.read_stack_word(bus, stack_offset(0))?;
+                let cs = self.read_stack_word(bus, stack_offset(2))?;
+                let flags_val = self.read_stack_word(bus, stack_offset(4))?;
                 self.load_segment(SegReg32::CS, cs, bus)?;
                 self.commit_sp(stack_offset(6));
                 self.ip = ip;
@@ -3082,17 +3067,14 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                     (sp as u16).wrapping_add(delta as u16) as u32
                 }
             };
-            let ss_base = self.seg_base(SegReg32::SS);
             if self.operand_size_override {
-                let new_eip = self.read_dword_linear(bus, ss_base.wrapping_add(stack_offset(0)))?;
-                let new_cs_dword =
-                    self.read_dword_linear(bus, ss_base.wrapping_add(stack_offset(4)))?;
-                let new_eflags =
-                    self.read_dword_linear(bus, ss_base.wrapping_add(stack_offset(8)))?;
+                let new_eip = self.read_stack_dword(bus, stack_offset(0))?;
+                let new_cs_dword = self.read_stack_dword(bus, stack_offset(4))?;
+                let new_eflags = self.read_stack_dword(bus, stack_offset(8))?;
                 let new_cs = new_cs_dword as u16;
 
                 self.sregs[SegReg32::CS as usize] = new_cs;
-                self.set_real_segment_cache(SegReg32::CS, new_cs);
+                self.set_fixed_real_segment_cache(SegReg32::CS, new_cs);
                 self.commit_sp(stack_offset(12));
                 // EIP in V86 mode is a 16-bit value; the upper 16 bits of the
                 // popped EIP are discarded so subsequent fetches do not exceed
@@ -3103,13 +3085,12 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                 self.eflags_upper =
                     (new_eflags & Self::eflags_upper_writable()) | EFLAGS_VIRTUAL_8086_FLAG;
             } else {
-                let new_ip = self.read_word_linear(bus, ss_base.wrapping_add(stack_offset(0)))?;
-                let new_cs = self.read_word_linear(bus, ss_base.wrapping_add(stack_offset(2)))?;
-                let new_flags =
-                    self.read_word_linear(bus, ss_base.wrapping_add(stack_offset(4)))?;
+                let new_ip = self.read_stack_word(bus, stack_offset(0))?;
+                let new_cs = self.read_stack_word(bus, stack_offset(2))?;
+                let new_flags = self.read_stack_word(bus, stack_offset(4))?;
 
                 self.sregs[SegReg32::CS as usize] = new_cs;
-                self.set_real_segment_cache(SegReg32::CS, new_cs);
+                self.set_fixed_real_segment_cache(SegReg32::CS, new_cs);
                 self.commit_sp(stack_offset(6));
                 self.ip = new_ip;
                 self.ip_upper = 0;
@@ -3140,35 +3121,26 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         } else {
             self.regs.word(WordReg::SP) as u32
         };
-        let ss_base = self.seg_base(SegReg32::SS);
 
         if self.operand_size_override {
-            let new_eip = self.read_dword_linear(bus, ss_base.wrapping_add(sp))?;
-            let new_cs_dword =
-                self.read_dword_linear(bus, ss_base.wrapping_add(sp.wrapping_add(4)))?;
+            let new_eip = self.read_stack_dword(bus, sp)?;
+            let new_cs_dword = self.read_stack_dword(bus, sp.wrapping_add(4))?;
             let new_cs = new_cs_dword as u16;
-            let new_eflags =
-                self.read_dword_linear(bus, ss_base.wrapping_add(sp.wrapping_add(8)))?;
+            let new_eflags = self.read_stack_dword(bus, sp.wrapping_add(8))?;
 
             // IRET from CPL0 to virtual-8086 mode.
             // Stack frame: EIP, CS, EFLAGS, ESP, SS, ES, DS, FS, GS.
             if old_cpl == 0 && (new_eflags & 0x0002_0000) != 0 {
-                let new_esp =
-                    self.read_dword_linear(bus, ss_base.wrapping_add(sp.wrapping_add(12)))?;
-                let new_ss_dword =
-                    self.read_dword_linear(bus, ss_base.wrapping_add(sp.wrapping_add(16)))?;
+                let new_esp = self.read_stack_dword(bus, sp.wrapping_add(12))?;
+                let new_ss_dword = self.read_stack_dword(bus, sp.wrapping_add(16))?;
                 let new_ss = new_ss_dword as u16;
-                let new_es_dword =
-                    self.read_dword_linear(bus, ss_base.wrapping_add(sp.wrapping_add(20)))?;
+                let new_es_dword = self.read_stack_dword(bus, sp.wrapping_add(20))?;
                 let new_es = new_es_dword as u16;
-                let new_ds_dword =
-                    self.read_dword_linear(bus, ss_base.wrapping_add(sp.wrapping_add(24)))?;
+                let new_ds_dword = self.read_stack_dword(bus, sp.wrapping_add(24))?;
                 let new_ds = new_ds_dword as u16;
-                let new_fs_dword =
-                    self.read_dword_linear(bus, ss_base.wrapping_add(sp.wrapping_add(28)))?;
+                let new_fs_dword = self.read_stack_dword(bus, sp.wrapping_add(28))?;
                 let new_fs = new_fs_dword as u16;
-                let new_gs_dword =
-                    self.read_dword_linear(bus, ss_base.wrapping_add(sp.wrapping_add(32)))?;
+                let new_gs_dword = self.read_stack_dword(bus, sp.wrapping_add(32))?;
                 let new_gs = new_gs_dword as u16;
 
                 self.flags.load_flags(new_eflags as u16, old_cpl, true);
@@ -3176,7 +3148,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                     (new_eflags & Self::eflags_upper_writable()) | EFLAGS_VIRTUAL_8086_FLAG;
 
                 self.sregs[SegReg32::CS as usize] = new_cs;
-                self.set_real_segment_cache(SegReg32::CS, new_cs);
+                self.set_fixed_real_segment_cache(SegReg32::CS, new_cs);
                 // In V86 mode, EIP is a 16-bit value; the upper 16 bits of
                 // the popped 32-bit EIP are discarded so subsequent fetches
                 // do not exceed the implicit 64KB segment limit.
@@ -3184,17 +3156,17 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                 self.ip_upper = 0;
 
                 self.sregs[SegReg32::SS as usize] = new_ss;
-                self.set_real_segment_cache(SegReg32::SS, new_ss);
+                self.set_fixed_real_segment_cache(SegReg32::SS, new_ss);
                 self.regs.set_dword(DwordReg::ESP, new_esp);
 
                 self.sregs[SegReg32::ES as usize] = new_es;
-                self.set_real_segment_cache(SegReg32::ES, new_es);
+                self.set_fixed_real_segment_cache(SegReg32::ES, new_es);
                 self.sregs[SegReg32::DS as usize] = new_ds;
-                self.set_real_segment_cache(SegReg32::DS, new_ds);
+                self.set_fixed_real_segment_cache(SegReg32::DS, new_ds);
                 self.sregs[SegReg32::FS as usize] = new_fs;
-                self.set_real_segment_cache(SegReg32::FS, new_fs);
+                self.set_fixed_real_segment_cache(SegReg32::FS, new_fs);
                 self.sregs[SegReg32::GS as usize] = new_gs;
-                self.set_real_segment_cache(SegReg32::GS, new_gs);
+                self.set_fixed_real_segment_cache(SegReg32::GS, new_gs);
 
                 self.clk(Self::timing(60, 15) + penalty);
                 return Ok(());
@@ -3203,10 +3175,8 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             let new_rpl = new_cs & 3;
 
             if new_rpl > old_cpl {
-                let new_esp =
-                    self.read_dword_linear(bus, ss_base.wrapping_add(sp.wrapping_add(12)))?;
-                let new_ss_dword =
-                    self.read_dword_linear(bus, ss_base.wrapping_add(sp.wrapping_add(16)))?;
+                let new_esp = self.read_stack_dword(bus, sp.wrapping_add(12))?;
+                let new_ss_dword = self.read_stack_dword(bus, sp.wrapping_add(16))?;
                 let new_ss = new_ss_dword as u16;
 
                 let ss_validation = match self.validate_ss_for_iret_return(new_ss, new_rpl, bus)? {
@@ -3288,17 +3258,15 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                 }
             }
         } else {
-            let new_ip = self.read_word_linear(bus, ss_base.wrapping_add(sp))?;
-            let new_cs = self.read_word_linear(bus, ss_base.wrapping_add(sp.wrapping_add(2)))?;
-            let new_flags = self.read_word_linear(bus, ss_base.wrapping_add(sp.wrapping_add(4)))?;
+            let new_ip = self.read_stack_word(bus, sp)?;
+            let new_cs = self.read_stack_word(bus, sp.wrapping_add(2))?;
+            let new_flags = self.read_stack_word(bus, sp.wrapping_add(4))?;
 
             let new_rpl = new_cs & 3;
 
             if new_rpl > old_cpl {
-                let new_sp =
-                    self.read_word_linear(bus, ss_base.wrapping_add(sp.wrapping_add(6)))?;
-                let new_ss =
-                    self.read_word_linear(bus, ss_base.wrapping_add(sp.wrapping_add(8)))?;
+                let new_sp = self.read_stack_word(bus, sp.wrapping_add(6))?;
+                let new_ss = self.read_stack_word(bus, sp.wrapping_add(8))?;
 
                 let ss_validation = match self.validate_ss_for_iret_return(new_ss, new_rpl, bus)? {
                     Err((vector, error_code)) => {
