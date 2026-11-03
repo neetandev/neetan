@@ -526,7 +526,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         if likely(!self.fault_pending) {
             let eip = self.effective_eip();
             let linear = self.seg_bases[SegReg32::CS as usize].wrapping_add(eip);
-            if likely((linear & 0xFFF) <= 0xFFE) {
+            if likely((linear & 0xFFF) <= 0xFFE && eip < self.seg_limits[SegReg32::CS as usize]) {
                 let Ok(addr) = self.fetch_physical_address(linear, bus) else {
                     return 0;
                 };
@@ -548,7 +548,10 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         if likely(!self.fault_pending) {
             let eip = self.effective_eip();
             let linear = self.seg_bases[SegReg32::CS as usize].wrapping_add(eip);
-            if likely((linear & 0xFFF) <= 0xFFC) {
+            if likely(
+                (linear & 0xFFF) <= 0xFFC
+                    && u64::from(eip) + 3 <= u64::from(self.seg_limits[SegReg32::CS as usize]),
+            ) {
                 let Ok(addr) = self.fetch_physical_address(linear, bus) else {
                     return 0;
                 };
@@ -581,16 +584,15 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         self.seg_bases[seg as usize]
     }
 
-    /// Computes the linear address for a byte at `eo32 + delta`.
-    /// In 16-bit address mode, the offset wraps at 16 bits.
+    /// Returns the offset of the effective address plus `delta`. In 16-bit address mode the
+    /// sum wraps at 16 bits.
     #[inline(always)]
-    fn seg_addr(&self, delta: u32) -> u32 {
-        let offset = if self.address_size_override {
+    fn ea_offset(&self, delta: u32) -> u32 {
+        if self.address_size_override {
             self.eo32.wrapping_add(delta)
         } else {
             (self.eo32 as u16).wrapping_add(delta as u16) as u32
-        };
-        self.seg_base(self.ea_seg).wrapping_add(offset)
+        }
     }
 
     #[inline(always)]
@@ -712,7 +714,10 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         selector & 0xFFFC
     }
 
-    fn set_real_segment_cache(&mut self, seg: SegReg32, selector: u16) {
+    /// Sets the cache of `seg` to the fixed attributes of the reset state and of VM86: the
+    /// base `selector << 4`, the limit FFFFh, byte granularity and a present 16-bit
+    /// read/write data segment or readable code segment.
+    fn set_fixed_real_segment_cache(&mut self, seg: SegReg32, selector: u16) {
         self.seg_bases[seg as usize] = (selector as u32) << 4;
         self.seg_limits[seg as usize] = 0xFFFF;
         self.seg_rights[seg as usize] = if seg == SegReg32::CS { 0x9B } else { 0x93 };
@@ -720,6 +725,32 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         self.seg_valid[seg as usize] = true;
         if seg == SegReg32::CS {
             self.stored_cpl = 0;
+        }
+    }
+
+    /// Updates the cache of `seg` for a real mode segment load, CS included. 80486 PRM 22.5
+    /// steps 2 and 3 and 80386 PRM 14.5: the load sets the base to `selector << 4` and keeps
+    /// the cached limit, granularity, type and D/B bit of an earlier protected mode load.
+    /// The cache becomes a present code or data segment, as in Bochs
+    /// (`bochs/cpu/segment_ctrl_pro.cc`, `load_seg_reg` real mode branch).
+    fn set_real_mode_segment_base(&mut self, seg: SegReg32, selector: u16) {
+        self.seg_bases[seg as usize] = (selector as u32) << 4;
+        self.seg_rights[seg as usize] |= 0x90;
+        self.seg_valid[seg as usize] = true;
+        if seg == SegReg32::CS {
+            self.stored_cpl = 0;
+        }
+    }
+
+    /// Loads `selector` into `seg` without a descriptor. Real mode updates only the selector
+    /// and the base. With CR0.PE set, VM86 included, the load sets the fixed real mode
+    /// attributes.
+    fn load_real_or_virtual_8086_segment(&mut self, seg: SegReg32, selector: u16) {
+        self.sregs[seg as usize] = selector;
+        if self.is_protected_mode() {
+            self.set_fixed_real_segment_cache(seg, selector);
+        } else {
+            self.set_real_mode_segment_base(seg, selector);
         }
     }
 
@@ -1058,41 +1089,38 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         if self.fault_pending {
             return Err(Fault);
         }
-        if !self.is_protected_mode() {
-            return Ok(());
+
+        let protected_access_rights = self.is_protected_mode() && !self.is_virtual_mode();
+        if protected_access_rights && !self.seg_valid[seg as usize] {
+            let vector = if seg == SegReg32::SS { 12 } else { 13 };
+            return self.raise_fault_with_code(vector, 0, bus);
         }
 
-        if !self.is_virtual_mode() {
-            if !self.seg_valid[seg as usize] {
-                let vector = if seg == SegReg32::SS { 12 } else { 13 };
-                return self.raise_fault_with_code(vector, 0, bus);
-            }
-
-            let rights = self.seg_rights[seg as usize];
-            let end = offset.saturating_add(size.saturating_sub(1));
-            let wrapped = offset.checked_add(size.saturating_sub(1)).is_none();
-            let limit = self.seg_limits[seg as usize];
-            if Self::descriptor_is_expand_down(rights) {
-                let upper = if self.seg_granularity[seg as usize] & 0x40 != 0 {
-                    0xFFFF_FFFF
-                } else {
-                    0xFFFF
-                };
-                if offset <= limit || end > upper || wrapped {
-                    return self.raise_fault_with_code(
-                        if seg == SegReg32::SS { 12 } else { 13 },
-                        0,
-                        bus,
-                    );
-                }
-            } else if end > limit || wrapped {
+        // 80486 PRM 22.1, 22.7 item 7 and 23.1 (80386 PRM 14.1, 14.7 item 7): real mode
+        // and VM86 check the cached limit as well. A violation is a pseudo-protection
+        // fault, #SS(0) for SS and #GP(0) for the other segments.
+        let rights = self.seg_rights[seg as usize];
+        let end = offset.saturating_add(size.saturating_sub(1));
+        let wrapped = offset.checked_add(size.saturating_sub(1)).is_none();
+        let limit = self.seg_limits[seg as usize];
+        if Self::descriptor_is_expand_down(rights) {
+            let upper = if self.seg_granularity[seg as usize] & 0x40 != 0 {
+                0xFFFF_FFFF
+            } else {
+                0xFFFF
+            };
+            if offset <= limit || end > upper || wrapped {
                 return self.raise_fault_with_code(
                     if seg == SegReg32::SS { 12 } else { 13 },
                     0,
                     bus,
                 );
             }
+        } else if end > limit || wrapped {
+            return self.raise_fault_with_code(if seg == SegReg32::SS { 12 } else { 13 }, 0, bus);
+        }
 
+        if protected_access_rights {
             if write {
                 if !Self::descriptor_is_writable(rights) {
                     let vector = if seg == SegReg32::SS { 12 } else { 13 };
@@ -1137,23 +1165,15 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         delta: u32,
         for_update: bool,
     ) -> Step<u16> {
-        let offset = if self.address_size_override {
-            self.eo32.wrapping_add(delta)
-        } else {
-            (self.eo32 as u16).wrapping_add(delta as u16) as u32
-        };
+        let offset = self.ea_offset(delta);
         self.check_segment_access(self.ea_seg, offset, 2, for_update, bus)?;
-        let l0 = self.seg_addr(delta);
-        let same_page = if self.address_size_override {
-            l0 & 0xFFF <= 0xFFE
-        } else {
-            l0 & 0xFFF <= 0xFFE && (offset as u16) <= 0xFFFE
-        };
-        if same_page {
+        let base = self.seg_base(self.ea_seg);
+        let l0 = base.wrapping_add(offset);
+        if l0 & 0xFFF <= 0xFFE {
             let a0 = self.translate_linear(l0, for_update, bus)?;
             return Ok(bus.read_word(a0));
         }
-        let l1 = self.seg_addr(delta.wrapping_add(1));
+        let l1 = base.wrapping_add(offset.wrapping_add(1));
         let a0 = self.translate_linear(l0, for_update, bus)?;
         let a1 = self.translate_linear(l1, for_update, bus)?;
         Ok(bus.read_byte(a0) as u16 | ((bus.read_byte(a1) as u16) << 8))
@@ -1181,25 +1201,17 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         delta: u32,
         for_update: bool,
     ) -> Step<u32> {
-        let offset = if self.address_size_override {
-            self.eo32.wrapping_add(delta)
-        } else {
-            (self.eo32 as u16).wrapping_add(delta as u16) as u32
-        };
+        let offset = self.ea_offset(delta);
         self.check_segment_access(self.ea_seg, offset, 4, for_update, bus)?;
-        let l0 = self.seg_addr(delta);
-        let same_page = if self.address_size_override {
-            l0 & 0xFFF <= 0xFFC
-        } else {
-            l0 & 0xFFF <= 0xFFC && (offset as u16) <= 0xFFFC
-        };
-        if same_page {
+        let base = self.seg_base(self.ea_seg);
+        let l0 = base.wrapping_add(offset);
+        if l0 & 0xFFF <= 0xFFC {
             let a0 = self.translate_linear(l0, for_update, bus)?;
             return Ok(bus.read_dword(a0));
         }
-        let l1 = self.seg_addr(delta.wrapping_add(1));
-        let l2 = self.seg_addr(delta.wrapping_add(2));
-        let l3 = self.seg_addr(delta.wrapping_add(3));
+        let l1 = base.wrapping_add(offset.wrapping_add(1));
+        let l2 = base.wrapping_add(offset.wrapping_add(2));
+        let l3 = base.wrapping_add(offset.wrapping_add(3));
         let a0 = self.translate_linear(l0, for_update, bus)?;
         let a1 = self.translate_linear(l1, for_update, bus)?;
         let a2 = self.translate_linear(l2, for_update, bus)?;
@@ -1227,19 +1239,16 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
 
     #[inline(always)]
     fn seg_write_word(&mut self, bus: &mut impl common::Bus, value: u16) -> Step {
-        self.check_segment_access(self.ea_seg, self.eo32, 2, true, bus)?;
-        let l0 = self.seg_addr(0);
-        let same_page = if self.address_size_override {
-            l0 & 0xFFF <= 0xFFE
-        } else {
-            l0 & 0xFFF <= 0xFFE && (self.eo32 as u16) <= 0xFFFE
-        };
-        if same_page {
+        let offset = self.ea_offset(0);
+        self.check_segment_access(self.ea_seg, offset, 2, true, bus)?;
+        let base = self.seg_base(self.ea_seg);
+        let l0 = base.wrapping_add(offset);
+        if l0 & 0xFFF <= 0xFFE {
             let a0 = self.translate_linear(l0, true, bus)?;
             bus.write_word(a0, value);
             return Ok(());
         }
-        let l1 = self.seg_addr(1);
+        let l1 = base.wrapping_add(offset.wrapping_add(1));
         let a0 = self.translate_linear(l0, true, bus)?;
         let a1 = self.translate_linear(l1, true, bus)?;
         bus.write_byte(a0, value as u8);
@@ -1249,21 +1258,18 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
 
     #[inline(always)]
     fn seg_write_dword(&mut self, bus: &mut impl common::Bus, value: u32) -> Step {
-        self.check_segment_access(self.ea_seg, self.eo32, 4, true, bus)?;
-        let l0 = self.seg_addr(0);
-        let same_page = if self.address_size_override {
-            l0 & 0xFFF <= 0xFFC
-        } else {
-            l0 & 0xFFF <= 0xFFC && (self.eo32 as u16) <= 0xFFFC
-        };
-        if same_page {
+        let offset = self.ea_offset(0);
+        self.check_segment_access(self.ea_seg, offset, 4, true, bus)?;
+        let base = self.seg_base(self.ea_seg);
+        let l0 = base.wrapping_add(offset);
+        if l0 & 0xFFF <= 0xFFC {
             let a0 = self.translate_linear(l0, true, bus)?;
             bus.write_dword(a0, value);
             return Ok(());
         }
-        let l1 = self.seg_addr(1);
-        let l2 = self.seg_addr(2);
-        let l3 = self.seg_addr(3);
+        let l1 = base.wrapping_add(offset.wrapping_add(1));
+        let l2 = base.wrapping_add(offset.wrapping_add(2));
+        let l3 = base.wrapping_add(offset.wrapping_add(3));
         let a0 = self.translate_linear(l0, true, bus)?;
         let a1 = self.translate_linear(l1, true, bus)?;
         let a2 = self.translate_linear(l2, true, bus)?;
@@ -1458,6 +1464,26 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         self.seg_granularity[SegReg32::SS as usize] & 0x40 != 0
     }
 
+    /// Reads the stack word at the stack offset `offset` after the SS limit check. A word
+    /// that crosses the limit raises #SS(0) (80486 PRM 22.7 item 7 and chapter 26, RET
+    /// and IRET).
+    pub(super) fn read_stack_word(&mut self, bus: &mut impl common::Bus, offset: u32) -> Step<u16> {
+        self.check_segment_access(SegReg32::SS, offset, 2, false, bus)?;
+        let linear = self.seg_base(SegReg32::SS).wrapping_add(offset);
+        self.read_word_linear(bus, linear)
+    }
+
+    /// Reads the stack dword at the stack offset `offset` after the SS limit check.
+    pub(super) fn read_stack_dword(
+        &mut self,
+        bus: &mut impl common::Bus,
+        offset: u32,
+    ) -> Step<u32> {
+        self.check_segment_access(SegReg32::SS, offset, 4, false, bus)?;
+        let linear = self.seg_base(SegReg32::SS).wrapping_add(offset);
+        self.read_dword_linear(bus, linear)
+    }
+
     fn push(&mut self, bus: &mut impl common::Bus, value: u16) -> Step {
         let sp = if self.use_esp() {
             self.regs.dword(crate::DwordReg::ESP).wrapping_sub(2)
@@ -1611,8 +1637,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
 
     fn load_segment(&mut self, seg: SegReg32, selector: u16, bus: &mut impl common::Bus) -> Step {
         if !self.is_protected_mode() || self.is_virtual_mode() {
-            self.sregs[seg as usize] = selector;
-            self.set_real_segment_cache(seg, selector);
+            self.load_real_or_virtual_8086_segment(seg, selector);
             return Ok(());
         }
         self.load_protected_segment(seg, selector, bus)
@@ -2152,17 +2177,17 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             // VM86 task: segment selectors are interpreted with real-mode
             // bases/limits, not protected-mode descriptors.
             self.sregs[SegReg32::ES as usize] = ntss_es;
-            self.set_real_segment_cache(SegReg32::ES, ntss_es);
+            self.set_fixed_real_segment_cache(SegReg32::ES, ntss_es);
             self.sregs[SegReg32::CS as usize] = ntss_cs;
-            self.set_real_segment_cache(SegReg32::CS, ntss_cs);
+            self.set_fixed_real_segment_cache(SegReg32::CS, ntss_cs);
             self.sregs[SegReg32::SS as usize] = ntss_ss;
-            self.set_real_segment_cache(SegReg32::SS, ntss_ss);
+            self.set_fixed_real_segment_cache(SegReg32::SS, ntss_ss);
             self.sregs[SegReg32::DS as usize] = ntss_ds;
-            self.set_real_segment_cache(SegReg32::DS, ntss_ds);
+            self.set_fixed_real_segment_cache(SegReg32::DS, ntss_ds);
             self.sregs[SegReg32::FS as usize] = ntss_fs;
-            self.set_real_segment_cache(SegReg32::FS, ntss_fs);
+            self.set_fixed_real_segment_cache(SegReg32::FS, ntss_fs);
             self.sregs[SegReg32::GS as usize] = ntss_gs;
-            self.set_real_segment_cache(SegReg32::GS, ntss_gs);
+            self.set_fixed_real_segment_cache(SegReg32::GS, ntss_gs);
             self.ip = ntss_eip as u16;
             self.ip_upper = 0;
             return Ok(());
@@ -2563,6 +2588,8 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                 offset_raw & 0xFFFF
             };
             let linear = old_ss_base.wrapping_add(offset);
+            let size = if is_386_gate { 4 } else { 2 };
+            self.check_segment_access(SegReg32::SS, offset, size, false, bus)?;
             params[i as usize] = if is_386_gate {
                 self.read_dword_linear(bus, linear)?
             } else {
@@ -2650,6 +2677,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                 } else {
                     raw_off as u16 as u32
                 };
+                self.check_segment_access(SegReg32::SS, off_lo, bytes_per_push, true, bus)?;
                 let linear_lo = ss_base.wrapping_add(off_lo);
                 self.translate_linear(linear_lo, true, bus)?;
                 if bytes_per_push > 1 {
@@ -2967,7 +2995,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> common::Cpu for I386<CPU_MODE
 
         for seg_idx in 0..6 {
             let seg = SegReg32::from_index(seg_idx);
-            self.set_real_segment_cache(seg, self.sregs[seg as usize]);
+            self.set_fixed_real_segment_cache(seg, self.sregs[seg as usize]);
         }
         match ADDRESS_WIDTH {
             ADDRESS_WIDTH_24 => {
@@ -3020,10 +3048,10 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> common::Cpu for I386<CPU_MODE
     fn warm_reset(&mut self, ss: u16, sp: u16, cs: u16, ip: u16) {
         self.reset();
         self.sregs[SegReg32::SS as usize] = ss;
-        self.set_real_segment_cache(SegReg32::SS, ss);
+        self.set_fixed_real_segment_cache(SegReg32::SS, ss);
         self.regs.set_word(WordReg::SP, sp);
         self.sregs[SegReg32::CS as usize] = cs;
-        self.set_real_segment_cache(SegReg32::CS, cs);
+        self.set_fixed_real_segment_cache(SegReg32::CS, cs);
         self.ip = ip;
     }
 
@@ -3275,8 +3303,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> common::Cpu for I386<CPU_MODE
             common::SegmentRegister::SS => SegReg32::SS,
             common::SegmentRegister::DS => SegReg32::DS,
         };
-        self.state.sregs[seg32 as usize] = selector;
-        self.set_real_segment_cache(seg32, selector);
+        self.load_real_or_virtual_8086_segment(seg32, selector);
     }
 
     fn segment_base(&self, seg: common::SegmentRegister) -> u32 {

@@ -1342,6 +1342,10 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     pub(super) fn fpu_fnstenv(&mut self, bus: &mut impl common::Bus) {
         let use_32bit = self.code_segment_32bit() ^ self.operand_size_override;
         let protected = self.is_protected_mode();
+        let env_size: u32 = if use_32bit { 28 } else { 14 };
+        if self.fpu_check_operand(env_size, true, bus).is_err() {
+            return;
+        }
 
         let saved = if use_32bit {
             self.fpu_fnstenv_32bit(protected, bus)
@@ -1442,6 +1446,10 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     pub(super) fn fpu_fldenv(&mut self, bus: &mut impl common::Bus) {
         let use_32bit = self.code_segment_32bit() ^ self.operand_size_override;
         let protected = self.is_protected_mode();
+        let env_size: u32 = if use_32bit { 28 } else { 14 };
+        if self.fpu_check_operand(env_size, false, bus).is_err() {
+            return;
+        }
 
         let loaded = if use_32bit {
             self.fpu_fldenv_32bit(protected, bus)
@@ -1516,6 +1524,10 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     pub(super) fn fpu_fnsave(&mut self, bus: &mut impl common::Bus) -> Step {
         let use_32bit = self.code_segment_32bit() ^ self.operand_size_override;
         let protected = self.is_protected_mode();
+        let image_size: u32 = if use_32bit { 108 } else { 94 };
+        if self.fpu_check_operand(image_size, true, bus).is_err() {
+            return Ok(());
+        }
 
         let env_saved = if use_32bit {
             self.fpu_fnstenv_32bit(protected, bus)
@@ -1554,6 +1566,10 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     pub(super) fn fpu_frstor(&mut self, bus: &mut impl common::Bus) -> Step {
         let use_32bit = self.code_segment_32bit() ^ self.operand_size_override;
         let protected = self.is_protected_mode();
+        let image_size: u32 = if use_32bit { 108 } else { 94 };
+        if self.fpu_check_operand(image_size, false, bus).is_err() {
+            return Ok(());
+        }
 
         // Gather all 80 register bytes via translate_linear before any
         // commit, so a faulting load leaves both the env and register

@@ -634,17 +634,17 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         let saved_fault_pending = self.fault_pending;
         self.fault_pending = false;
         let return_eip = self.prev_ip_upper | self.prev_ip as u32;
-        if self.is_protected_mode() {
-            match self.check_double_fault(vector) {
-                DoubleFaultResult::Shutdown => return Err(Fault),
-                DoubleFaultResult::DoubleFault => {
-                    self.deliver_charged(8, return_eip, Some(0), false, true, bus)?;
-                    self.trap_level = 0;
-                    self.fault_pending = true;
-                    return Err(Fault);
-                }
-                DoubleFaultResult::Normal => {}
+        // 80486 PRM 22.7 item 22: the escalation applies in real mode as well. A stack
+        // operation that wraps around the limit ends in shutdown.
+        match self.check_double_fault(vector) {
+            DoubleFaultResult::Shutdown => return Err(Fault),
+            DoubleFaultResult::DoubleFault => {
+                self.deliver_charged(8, return_eip, Some(0), false, true, bus)?;
+                self.trap_level = 0;
+                self.fault_pending = true;
+                return Err(Fault);
             }
+            DoubleFaultResult::Normal => {}
         }
         let _ = self.deliver_charged(vector, return_eip, None, false, true, bus);
         self.trap_level = 0;
@@ -664,17 +664,17 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         let saved_fault_pending = self.fault_pending;
         self.fault_pending = false;
         let return_eip = self.prev_ip_upper | self.prev_ip as u32;
-        if self.is_protected_mode() {
-            match self.check_double_fault(vector) {
-                DoubleFaultResult::Shutdown => return Err(Fault),
-                DoubleFaultResult::DoubleFault => {
-                    self.deliver_charged(8, return_eip, Some(0), false, true, bus)?;
-                    self.trap_level = 0;
-                    self.fault_pending = true;
-                    return Err(Fault);
-                }
-                DoubleFaultResult::Normal => {}
+        // 80486 PRM 22.7 item 22: the escalation applies in real mode as well. A stack
+        // operation that wraps around the limit ends in shutdown.
+        match self.check_double_fault(vector) {
+            DoubleFaultResult::Shutdown => return Err(Fault),
+            DoubleFaultResult::DoubleFault => {
+                self.deliver_charged(8, return_eip, Some(0), false, true, bus)?;
+                self.trap_level = 0;
+                self.fault_pending = true;
+                return Err(Fault);
             }
+            DoubleFaultResult::Normal => {}
         }
         let _ = self.deliver_charged(vector, return_eip, Some(error_code), false, true, bus);
         self.trap_level = 0;

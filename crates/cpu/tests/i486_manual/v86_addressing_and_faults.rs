@@ -4,6 +4,7 @@
 //! has CS=0x1000 (base 0x0001_0000), SS=0x2000 (base 0x0002_0000), all
 //! with limit 0xFFFF, and IOPL set per call. The chapter calls out:
 //!   - Sequential execution past 0xFFFF -> #GP (23.6 difference 8).
+//!   - An operand beyond offset 0xFFFF -> #GP(0) (23.1).
 //!   - DIV/IDIV exception saved CS:IP points to faulting insn (23.6 #2).
 //!   - LOCK prefix restricted whitelist -> #UD when misused (23.7.2).
 //!   - Instruction longer than 15 bytes -> #GP (23.6 difference 6).
@@ -551,4 +552,34 @@ fn v86_sidt_to_memory_succeeds() {
 
     let stored_limit = read_word_at(&bus, 0x0004_0000 + memory_offset as u32);
     assert_eq!(stored_limit, state.idt_limit);
+}
+
+#[test]
+fn v86_address_size_operand_beyond_ffff_raises_general_protection_with_zero_code() {
+    let mut cpu = make_cpu_486();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_vm86(&mut bus);
+    install_v86_general_protection_handler(&mut bus);
+    state.gdt_limit = 5 * 8 - 1;
+    state.set_edi(0x0001_0000);
+    state.ip = 0x0040;
+    cpu.load_state(&state);
+
+    // MOV AL, [EDI] with an address-size prefix. The offset 0x10000 lies
+    // beyond the limit 0xFFFF and raises a pseudo-protection fault (23.1).
+    place_in_v86_code(&mut bus, 0x0040, &[0x67, 0x8A, 0x07, HLT_OPCODE]);
+
+    for _ in 0..3 {
+        if cpu.halted() {
+            break;
+        }
+        cpu.step(&mut bus);
+    }
+
+    assert_at_handler(&cpu, HANDLER_GENERAL_PROTECTION_IP);
+    let stack_linear =
+        cpu.state.seg_bases[cpu::SegReg32::SS as usize] + cpu.state.regs.dword(cpu::DwordReg::ESP);
+    assert_eq!(read_dword_at(&bus, stack_linear), 0, "error code");
+    assert_eq!(read_dword_at(&bus, stack_linear + 4), 0x0040, "saved EIP");
 }

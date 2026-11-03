@@ -22,5 +22,6 @@ macro_rules! oracle_cases {
 }
 
 oracle_cases! {
+    real_0213_000046c0_f3_67_66_a5,
     smoke_real_add_byte_memory,
 }

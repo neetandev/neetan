@@ -214,7 +214,9 @@ impl Default for I386State {
     /// matter for typical test scaffolding. Most fields are zero, but
     /// `idt_limit` is initialised to 0x3FF (256 entries x 4 bytes - 1)
     /// per 80486 PRM 22.5 so real-mode INT n through the default IVT
-    /// dispatches normally.
+    /// dispatches normally. The segment caches hold the reset attributes of
+    /// 80486 PRM table 10-1: limit 0xFFFF, a present read/write data segment and
+    /// a readable code segment for CS.
     fn default() -> Self {
         Self {
             regs: RegisterFile32::default(),
@@ -237,10 +239,10 @@ impl Default for I386State {
             idt_base: 0,
             idt_limit: 0x03FF,
             seg_bases: [0; 6],
-            seg_limits: [0; 6],
-            seg_rights: [0; 6],
+            seg_limits: [0xFFFF; 6],
+            seg_rights: [0x93, 0x9B, 0x93, 0x93, 0x93, 0x93],
             seg_granularity: [0; 6],
-            seg_valid: [false; 6],
+            seg_valid: [true; 6],
             ldtr: 0,
             ldtr_base: 0,
             ldtr_limit: 0,
@@ -256,11 +258,16 @@ impl Default for I386State {
 }
 
 impl I386State {
+    /// Sets the selector of `segment`. In real mode it also sets the base to
+    /// `selector << 4` and gives an unusable cache the real mode attributes.
     fn set_segment_for_constructed_state(&mut self, segment: SegReg32, selector: u16) {
         let index = segment as usize;
         self.sregs[index] = selector;
-        if self.cr0 & 1 == 0 && !self.seg_valid[index] {
-            self.seg_bases[index] = u32::from(selector) << 4;
+        if self.cr0 & 1 != 0 {
+            return;
+        }
+        self.seg_bases[index] = u32::from(selector) << 4;
+        if !self.seg_valid[index] {
             self.seg_limits[index] = 0xFFFF;
             self.seg_rights[index] = if segment == SegReg32::CS { 0x9B } else { 0x93 };
             self.seg_granularity[index] = 0;
