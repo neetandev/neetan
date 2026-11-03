@@ -24,7 +24,10 @@ macro_rules! oracle_cases {
 oracle_cases! {
     pm16_0117_00000175_83,
     pm16_0117_000026a6_66_61,
+    pm32_0028_c00325a6_dd,
     real_0213_000046c0_f3_67_66_a5,
     smoke_real_add_byte_memory,
     vm86_094e_0000123c_66_9c,
+    vm86_2ecc_00000053_dc,
+    vm86_2ecc_00000057_dc,
 }

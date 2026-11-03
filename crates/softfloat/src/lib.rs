@@ -68,6 +68,12 @@ pub struct ExceptionFlags {
     pub underflow: bool,
     /// PE - result was rounded
     pub precision: bool,
+    /// C1 - the rounding increased the magnitude of the result
+    pub rounded_up: bool,
+    /// The result is tiny, whether exact or not. An unmasked underflow exception reports
+    /// every tiny result (80486 PRM 16.2.5). `underflow` holds the masked condition, a
+    /// tiny and inexact result.
+    pub tiny: bool,
 }
 
 /// Result of floating-point comparison operations.
@@ -472,7 +478,8 @@ impl Fp80 {
         (significand << shift, shift)
     }
 
-    /// Round and pack a result into Fp80.
+    /// Round and pack a result into Fp80 with the masked response to overflow and
+    /// underflow.
     ///
     /// - `sign`: result sign
     /// - `exponent`: unbiased exponent (maybe out of range)
@@ -488,125 +495,146 @@ impl Fp80 {
         pc: Precision,
         ef: &mut ExceptionFlags,
     ) -> Fp80 {
+        let sign_bit = if sign { 0x8000u16 } else { 0 };
+        if significand == 0 {
+            return Fp80::from_bits(sign_bit, 0);
+        }
         let precision_bits: u32 = match pc {
             Precision::Single => 24,
             Precision::Double => 53,
             Precision::Extended => 64,
         };
+        let leading = significand.leading_zeros();
+        let biased = exponent - leading as i32 + BIAS;
+        match round_to_format(
+            sign,
+            biased,
+            significand << leading,
+            precision_bits,
+            0x7FFF,
+            rc,
+            ef,
+        ) {
+            Rounded::Finite {
+                biased,
+                significand,
+            } => Fp80::from_bits(
+                sign_bit | biased as u16,
+                significand << (64 - precision_bits),
+            ),
+            Rounded::Infinity => Fp80::from_bits(sign_bit | 0x7FFF, 0x8000_0000_0000_0000),
+            Rounded::LargestFinite => {
+                Fp80::from_bits(sign_bit | 0x7FFE, u64::MAX << (64 - precision_bits))
+            }
+        }
+    }
+}
 
-        // The significand has the J-bit at bit 127. We need to round to `precision_bits` bits.
-        // Bits to discard from the 128-bit significand: 128 - precision_bits
-        let discard_bits = 128 - precision_bits;
+/// The result of rounding a value to a floating-point format.
+pub(crate) enum Rounded {
+    /// A finite value with its exponent field and its significand of `precision_bits`
+    /// bits, with the J-bit at the top. A denormal has the exponent field 0.
+    Finite { biased: i32, significand: u64 },
+    /// The overflow result infinity.
+    Infinity,
+    /// The overflow result with the largest finite magnitude of the format.
+    LargestFinite,
+}
 
-        // Extract the kept bits, guard bit, round bit, and sticky bits
-        let round_mask = if discard_bits < 128 {
-            (1u128 << discard_bits) - 1
-        } else {
-            u128::MAX
+/// Rounds `significand`, a 128-bit value with the J-bit at bit 127, to its top `keep` bits
+/// with the rounding mode `rc`. Returns the kept bits after the increment, whether bits were
+/// discarded, and whether the rounding incremented the kept bits.
+fn round_bits(sign: bool, significand: u128, keep: u32, rc: RoundingMode) -> (u128, bool, bool) {
+    let discard = 128 - keep;
+    let kept = significand >> discard;
+    let rest = significand & ((1u128 << discard) - 1);
+    let half = 1u128 << (discard - 1);
+    let increment = rest != 0
+        && match rc {
+            RoundingMode::NearestEven => rest > half || (rest == half && kept & 1 != 0),
+            RoundingMode::Up => !sign,
+            RoundingMode::Down => sign,
+            RoundingMode::Zero => false,
         };
-        let discarded = significand & round_mask;
-        let halfway = 1u128 << (discard_bits - 1);
+    (kept + increment as u128, rest != 0, increment)
+}
 
-        let mut result_sig = significand >> discard_bits;
-
-        let inexact = discarded != 0;
-        if inexact {
+/// Rounds a value to a format with `precision_bits` significand bits (at most 64) and the
+/// all-ones exponent field `max_biased`. `biased` is the exponent field of the value and
+/// `significand` holds the J-bit at bit 127.
+///
+/// Overflow and underflow take the masked responses of the 80486 PRM 16.2.5 and table
+/// 16-12. A result is tiny when its value rounded to `precision_bits` with an unbounded
+/// exponent lies below the smallest normal. The flags record PE, OE, UE and the C1 round-up
+/// indication.
+pub(crate) fn round_to_format(
+    sign: bool,
+    biased: i32,
+    significand: u128,
+    precision_bits: u32,
+    max_biased: i32,
+    rc: RoundingMode,
+    ef: &mut ExceptionFlags,
+) -> Rounded {
+    if biased >= 1 {
+        let (mut kept, inexact, increment) = round_bits(sign, significand, precision_bits, rc);
+        let mut biased = biased;
+        if kept >> precision_bits != 0 {
+            kept >>= 1;
+            biased += 1;
+        }
+        if biased >= max_biased {
+            ef.overflow = true;
             ef.precision = true;
-
-            let round_up = match rc {
-                RoundingMode::NearestEven => {
-                    if discarded > halfway {
-                        true
-                    } else if discarded == halfway {
-                        // Tie: round to even (round up if LSB is odd)
-                        result_sig & 1 != 0
-                    } else {
-                        false
-                    }
-                }
+            let to_infinity = match rc {
+                RoundingMode::NearestEven => true,
                 RoundingMode::Up => !sign,
                 RoundingMode::Down => sign,
                 RoundingMode::Zero => false,
             };
-
-            if round_up {
-                result_sig += 1;
-                // Check for carry out of the precision bits
-                if result_sig >= (1u128 << precision_bits) {
-                    result_sig >>= 1;
-                    exponent_add_one_overflow(sign, exponent + 1, result_sig as u64, ef)
-                } else {
-                    Self::pack_result(sign, exponent, result_sig as u64, precision_bits, ef)
-                }
-            } else {
-                Self::pack_result(sign, exponent, result_sig as u64, precision_bits, ef)
+            if to_infinity {
+                ef.rounded_up = true;
+                return Rounded::Infinity;
             }
-        } else {
-            Self::pack_result(sign, exponent, result_sig as u64, precision_bits, ef)
+            return Rounded::LargestFinite;
         }
+        ef.precision |= inexact;
+        ef.rounded_up |= increment;
+        return Rounded::Finite {
+            biased,
+            significand: kept as u64,
+        };
     }
 
-    fn pack_result(
-        sign: bool,
-        exponent: i32,
-        significand: u64,
-        precision_bits: u32,
-        ef: &mut ExceptionFlags,
-    ) -> Fp80 {
-        // Place the significand bits at the top of the 64-bit field
-        let shift_up = 64 - precision_bits;
-        let sig64 = significand << shift_up;
-
-        let biased = exponent + BIAS;
-
-        if biased >= 0x7FFF {
-            // Overflow
-            ef.overflow = true;
-            ef.precision = true;
-            return if sign {
-                Fp80::NEG_INFINITY
-            } else {
-                Fp80::INFINITY
-            };
+    let tiny = biased < 0 || {
+        let (kept, _, _) = round_bits(sign, significand, precision_bits, rc);
+        kept >> precision_bits == 0
+    };
+    let shifted = shift_right_sticky(significand, (1 - biased) as u32);
+    let (kept, inexact, increment) = round_bits(sign, shifted, precision_bits, rc);
+    if inexact {
+        ef.precision = true;
+        if tiny {
+            ef.underflow = true;
         }
-
-        if biased <= 0 {
-            // Underflow: denormalize
-            let shift_right = (1 - biased) as u32;
-            if shift_right >= 64 || sig64 == 0 {
-                ef.underflow = true;
-                if sig64 != 0 {
-                    ef.precision = true;
-                }
-                return if sign { Fp80::NEG_ZERO } else { Fp80::ZERO };
-            }
-            let denorm_sig = sig64 >> shift_right;
-            if denorm_sig << shift_right != sig64 {
-                ef.underflow = true;
-                ef.precision = true;
-            } else if denorm_sig != sig64 {
-                ef.underflow = true;
-            }
-            let se = if sign { 0x8000u16 } else { 0x0000u16 };
-            return Fp80::from_bits(se, denorm_sig);
-        }
-
-        let se = if sign {
-            0x8000 | biased as u16
-        } else {
-            biased as u16
-        };
-        Fp80::from_bits(se, sig64)
+    }
+    ef.tiny |= tiny;
+    ef.rounded_up |= increment;
+    Rounded::Finite {
+        biased: (kept >> (precision_bits - 1) != 0) as i32,
+        significand: kept as u64,
     }
 }
 
-fn exponent_add_one_overflow(
-    sign: bool,
-    exponent: i32,
-    significand: u64,
-    ef: &mut ExceptionFlags,
-) -> Fp80 {
-    Fp80::pack_result(sign, exponent, significand, 64, ef)
+/// Shifts `value` right by `shift` bits and ORs every lost bit into bit 0.
+pub(crate) fn shift_right_sticky(value: u128, shift: u32) -> u128 {
+    if shift == 0 {
+        value
+    } else if shift >= 128 {
+        (value != 0) as u128
+    } else {
+        (value >> shift) | (value & ((1u128 << shift) - 1) != 0) as u128
+    }
 }
 
 #[cfg(test)]

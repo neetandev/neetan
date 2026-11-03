@@ -1,4 +1,4 @@
-use softfloat::{ExceptionFlags, Fp80, FpOrdering, Precision, RoundingMode};
+use softfloat::{ExceptionFlags, Fp80, FpClass, FpOrdering, Precision, RoundingMode};
 
 use super::{I386, Step};
 
@@ -99,6 +99,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
 
     pub(super) fn fpu_fld_m80(&mut self, bus: &mut impl common::Bus) -> Step {
         let bytes = self.fpu_read_tbyte(bus)?;
+        self.fpu_clear_c1();
         let fp = Fp80::from_le_bytes(bytes);
         self.fpu_push(fp);
         self.clk(Self::timing(44, 6));
@@ -106,6 +107,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     pub(super) fn fpu_fld_sti(&mut self, i: u8) {
+        self.fpu_clear_c1();
         if self.fpu_check_underflow(i) {
             let masked = self.state.fpu.control_word & 1 != 0;
             if masked {
@@ -120,46 +122,49 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     pub(super) fn fpu_fst_m32(&mut self, bus: &mut impl common::Bus) -> Step {
-        if self.fpu_check_underflow(0) {
+        if self.fpu_is_empty(0) {
             let masked = self.state.fpu.control_word & 1 != 0;
             if masked {
                 let bits = Fp80::INDEFINITE
                     .to_f32(self.fpu_rounding_mode(), &mut ExceptionFlags::default());
                 self.fpu_write_u32(bus, bits.to_bits())?;
             }
+            self.fpu_check_underflow(0);
             self.clk(Self::timing(44, 7));
             return Ok(());
         }
         let val = self.fpu_st(0);
         let mut ef = ExceptionFlags::default();
         let f = val.to_f32(self.fpu_rounding_mode(), &mut ef);
-        self.fpu_check_result(&ef);
         self.fpu_write_u32(bus, f.to_bits())?;
+        self.fpu_check_result(&ef);
         self.clk(Self::timing(44, 7));
         Ok(())
     }
 
     pub(super) fn fpu_fst_m64(&mut self, bus: &mut impl common::Bus) -> Step {
-        if self.fpu_check_underflow(0) {
+        if self.fpu_is_empty(0) {
             let masked = self.state.fpu.control_word & 1 != 0;
             if masked {
                 let bits = Fp80::INDEFINITE
                     .to_f64(self.fpu_rounding_mode(), &mut ExceptionFlags::default());
                 self.fpu_write_u64(bus, bits.to_bits())?;
             }
+            self.fpu_check_underflow(0);
             self.clk(Self::timing(45, 8));
             return Ok(());
         }
         let val = self.fpu_st(0);
         let mut ef = ExceptionFlags::default();
         let f = val.to_f64(self.fpu_rounding_mode(), &mut ef);
-        self.fpu_check_result(&ef);
         self.fpu_write_u64(bus, f.to_bits())?;
+        self.fpu_check_result(&ef);
         self.clk(Self::timing(45, 8));
         Ok(())
     }
 
     pub(super) fn fpu_fst_sti(&mut self, i: u8) {
+        self.fpu_clear_c1();
         if self.fpu_check_underflow(0) {
             let masked = self.state.fpu.control_word & 1 != 0;
             if masked {
@@ -186,7 +191,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     pub(super) fn fpu_fstp_m80(&mut self, bus: &mut impl common::Bus) {
-        if self.fpu_check_underflow(0) {
+        if self.fpu_is_empty(0) {
             let masked = self.state.fpu.control_word & 1 != 0;
             if masked
                 && self
@@ -195,6 +200,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             {
                 return;
             }
+            self.fpu_check_underflow(0);
             self.fpu_pop();
             self.clk(Self::timing(53, 6));
             return;
@@ -203,6 +209,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         if self.fpu_write_tbyte(bus, &val.to_le_bytes()).is_err() {
             return;
         }
+        self.fpu_clear_c1();
         self.fpu_pop();
         self.clk(Self::timing(53, 6));
     }
@@ -214,6 +221,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
 
     pub(super) fn fpu_fild_m16(&mut self, bus: &mut impl common::Bus) -> Step {
         let raw = self.fpu_read_u16(bus)?;
+        self.fpu_clear_c1();
         let fp = Fp80::from_i16(raw as i16);
         self.fpu_push(fp);
         self.clk(Self::timing(61, 13));
@@ -222,6 +230,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
 
     pub(super) fn fpu_fild_m32(&mut self, bus: &mut impl common::Bus) -> Step {
         let raw = self.fpu_read_u32(bus)?;
+        self.fpu_clear_c1();
         let fp = Fp80::from_i32(raw as i32);
         self.fpu_push(fp);
         self.clk(Self::timing(45, 9));
@@ -230,6 +239,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
 
     pub(super) fn fpu_fild_m64(&mut self, bus: &mut impl common::Bus) -> Step {
         let raw = self.fpu_read_u64(bus)?;
+        self.fpu_clear_c1();
         let fp = Fp80::from_i64(raw as i64);
         self.fpu_push(fp);
         self.clk(Self::timing(56, 10));
@@ -237,37 +247,39 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     pub(super) fn fpu_fist_m16(&mut self, bus: &mut impl common::Bus) -> Step {
-        if self.fpu_check_underflow(0) {
+        if self.fpu_is_empty(0) {
             let masked = self.state.fpu.control_word & 1 != 0;
             if masked {
                 self.fpu_write_u16(bus, 0x8000u16)?;
             }
+            self.fpu_check_underflow(0);
             self.clk(Self::timing(82, 29));
             return Ok(());
         }
         let val = self.fpu_st(0);
         let mut ef = ExceptionFlags::default();
         let i = val.to_i16(self.fpu_rounding_mode(), &mut ef);
-        self.fpu_check_result(&ef);
         self.fpu_write_u16(bus, i as u16)?;
+        self.fpu_check_result(&ef);
         self.clk(Self::timing(82, 29));
         Ok(())
     }
 
     pub(super) fn fpu_fist_m32(&mut self, bus: &mut impl common::Bus) -> Step {
-        if self.fpu_check_underflow(0) {
+        if self.fpu_is_empty(0) {
             let masked = self.state.fpu.control_word & 1 != 0;
             if masked {
                 self.fpu_write_u32(bus, 0x8000_0000u32)?;
             }
+            self.fpu_check_underflow(0);
             self.clk(Self::timing(79, 28));
             return Ok(());
         }
         let val = self.fpu_st(0);
         let mut ef = ExceptionFlags::default();
         let i = val.to_i32(self.fpu_rounding_mode(), &mut ef);
-        self.fpu_check_result(&ef);
         self.fpu_write_u32(bus, i as u32)?;
+        self.fpu_check_result(&ef);
         self.clk(Self::timing(79, 28));
         Ok(())
     }
@@ -285,11 +297,12 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     pub(super) fn fpu_fistp_m64(&mut self, bus: &mut impl common::Bus) {
-        if self.fpu_check_underflow(0) {
+        if self.fpu_is_empty(0) {
             let masked = self.state.fpu.control_word & 1 != 0;
             if masked && self.fpu_write_u64(bus, 0x8000_0000_0000_0000u64).is_err() {
                 return;
             }
+            self.fpu_check_underflow(0);
             self.fpu_pop();
             self.clk(Self::timing(80, 28));
             return;
@@ -297,10 +310,10 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         let val = self.fpu_st(0);
         let mut ef = ExceptionFlags::default();
         let i = val.to_i64(self.fpu_rounding_mode(), &mut ef);
-        self.fpu_check_result(&ef);
         if self.fpu_write_u64(bus, i as u64).is_err() {
             return;
         }
+        self.fpu_check_result(&ef);
         self.fpu_pop();
         self.clk(Self::timing(80, 28));
     }
@@ -316,7 +329,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     pub(super) fn fpu_fbstp(&mut self, bus: &mut impl common::Bus) {
-        if self.fpu_check_underflow(0) {
+        if self.fpu_is_empty(0) {
             let masked = self.state.fpu.control_word & 1 != 0;
             if masked
                 && self
@@ -328,6 +341,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             {
                 return;
             }
+            self.fpu_check_underflow(0);
             self.fpu_pop();
             self.clk(Self::timing(512, 172));
             return;
@@ -335,10 +349,10 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         let val = self.fpu_st(0);
         let mut ef = ExceptionFlags::default();
         let bcd = val.to_bcd(self.fpu_rounding_mode(), &mut ef);
-        self.fpu_check_result(&ef);
         if self.fpu_write_tbyte(bus, &bcd).is_err() {
             return;
         }
+        self.fpu_check_result(&ef);
         self.fpu_pop();
         self.clk(Self::timing(512, 172));
     }
@@ -371,16 +385,19 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     pub(super) fn fpu_fld1(&mut self) {
+        self.fpu_clear_c1();
         self.fpu_push(Fp80::ONE);
         self.clk(Self::timing(24, 4));
     }
 
     pub(super) fn fpu_fldz(&mut self) {
+        self.fpu_clear_c1();
         self.fpu_push(Fp80::ZERO);
         self.clk(Self::timing(20, 4));
     }
 
     pub(super) fn fpu_fldl2t(&mut self) {
+        self.fpu_clear_c1();
         let rc = self.fpu_rounding_mode();
         let val = match rc {
             RoundingMode::Up => Fp80::LOG2_10_UP,
@@ -391,6 +408,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     pub(super) fn fpu_fldl2e(&mut self) {
+        self.fpu_clear_c1();
         let rc = self.fpu_rounding_mode();
         let val = match rc {
             RoundingMode::Up | RoundingMode::NearestEven => Fp80::LOG2_E_UP,
@@ -401,6 +419,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     pub(super) fn fpu_fldpi(&mut self) {
+        self.fpu_clear_c1();
         let rc = self.fpu_rounding_mode();
         let val = match rc {
             RoundingMode::Up | RoundingMode::NearestEven => Fp80::PI_UP,
@@ -411,6 +430,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     pub(super) fn fpu_fldlg2(&mut self) {
+        self.fpu_clear_c1();
         let rc = self.fpu_rounding_mode();
         let val = match rc {
             RoundingMode::Up | RoundingMode::NearestEven => Fp80::LOG10_2_UP,
@@ -421,6 +441,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     pub(super) fn fpu_fldln2(&mut self) {
+        self.fpu_clear_c1();
         let rc = self.fpu_rounding_mode();
         let val = match rc {
             RoundingMode::Up | RoundingMode::NearestEven => Fp80::LN_2_UP,
@@ -1339,20 +1360,42 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         self.clk(Self::timing(194, 292));
     }
 
+    /// Returns whether FSTENV, FLDENV, FSAVE and FRSTOR use the protected mode image. Real
+    /// mode and virtual-8086 mode use the real mode image (80486 PRM 15.1.5).
+    fn fpu_environment_protected(&self) -> bool {
+        self.is_protected_mode() && !self.is_virtual_mode()
+    }
+
+    /// Returns the size in bytes of the environment image for the operand size.
+    fn fpu_environment_size(&self) -> u32 {
+        if self.operand_size_override { 28 } else { 14 }
+    }
+
+    /// Returns the tag word with the exact tag of every nonempty register derived from its
+    /// contents, as FSTENV and FSAVE store it (80486 PRM 15.1.4).
+    fn fpu_tag_word_image(&self) -> u16 {
+        let mut tag_word = self.state.fpu.tag_word;
+        for physical in 0..8 {
+            let shift = physical * 2;
+            if (tag_word >> shift) & 3 == 0b11 {
+                continue;
+            }
+            let tag = match self.state.fpu.registers[physical].classify() {
+                FpClass::Zero => 0b01,
+                FpClass::Normal => 0b00,
+                _ => 0b10,
+            };
+            tag_word = (tag_word & !(3 << shift)) | (tag << shift);
+        }
+        tag_word
+    }
+
     pub(super) fn fpu_fnstenv(&mut self, bus: &mut impl common::Bus) {
-        let use_32bit = self.code_segment_32bit() ^ self.operand_size_override;
-        let protected = self.is_protected_mode();
-        let env_size: u32 = if use_32bit { 28 } else { 14 };
+        let env_size = self.fpu_environment_size();
         if self.fpu_check_operand(env_size, true, bus).is_err() {
             return;
         }
-
-        let saved = if use_32bit {
-            self.fpu_fnstenv_32bit(protected, bus)
-        } else {
-            self.fpu_fnstenv_16bit(protected, bus)
-        };
-        if saved.is_err() {
+        if self.fpu_store_environment(bus).is_err() {
             return;
         }
 
@@ -1363,29 +1406,75 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         self.clk(Self::timing(103, 67));
     }
 
-    fn fpu_fnstenv_16bit(&mut self, protected: bool, bus: &mut impl common::Bus) -> Step {
+    /// Writes the environment image in the format of the operand size and the mode
+    /// (80486 PRM figures 15-5 to 15-8).
+    fn fpu_store_environment(&mut self, bus: &mut impl common::Bus) -> Step {
         let base = self.ea;
-        self.write_word_linear(bus, base, self.state.fpu.control_word)?;
-        self.write_word_linear(bus, base.wrapping_add(2), self.state.fpu.status_word)?;
-        self.write_word_linear(bus, base.wrapping_add(4), self.state.fpu.tag_word)?;
-
-        if protected {
-            self.write_word_linear(bus, base.wrapping_add(6), self.state.fpu.fip_offset as u16)?;
-            self.write_word_linear(bus, base.wrapping_add(8), self.state.fpu.fip_selector)?;
-            self.write_word_linear(bus, base.wrapping_add(10), self.state.fpu.fdp_offset as u16)?;
-            self.write_word_linear(bus, base.wrapping_add(12), self.state.fpu.fdp_selector)
+        let fields = self.fpu_environment_fields();
+        if self.operand_size_override {
+            for (index, value) in fields.into_iter().enumerate() {
+                self.fpu_write_env_u32(bus, base.wrapping_add(index as u32 * 4), value)?;
+            }
         } else {
-            self.write_word_linear(bus, base.wrapping_add(6), self.state.fpu.fip_offset as u16)?;
-            let ip_hi_opcode = (self.state.fpu.fpu_opcode & 0x7FF)
-                | (((self.state.fpu.fip_offset >> 16) as u16 & 0xF) << 12);
-            self.write_word_linear(bus, base.wrapping_add(8), ip_hi_opcode)?;
-            self.write_word_linear(bus, base.wrapping_add(10), self.state.fpu.fdp_offset as u16)?;
-            self.write_word_linear(
-                bus,
-                base.wrapping_add(12),
-                ((self.state.fpu.fdp_offset >> 16) as u16 & 0xF) << 12,
-            )
+            for (index, value) in fields.into_iter().enumerate() {
+                self.write_word_linear(bus, base.wrapping_add(index as u32 * 2), value as u16)?;
+            }
         }
+        Ok(())
+    }
+
+    /// Returns the seven fields of the environment image for the operand size and the mode.
+    /// A 16-bit image stores the low word of each field.
+    fn fpu_environment_fields(&self) -> [u32; 7] {
+        let fpu = &self.state.fpu;
+        let wide = self.operand_size_override;
+        let reserved = if wide {
+            ENVIRONMENT_RESERVED_HIGH_WORD
+        } else {
+            0
+        };
+        let opcode = fpu.fpu_opcode as u32 & ENVIRONMENT_OPCODE_MASK;
+        let control = reserved | fpu.control_word as u32;
+        let status = reserved | fpu.status_word as u32;
+        let tag = reserved | self.fpu_tag_word_image() as u32;
+
+        if self.fpu_environment_protected() {
+            // Figures 15-5 and 15-7: offsets and selectors. The opcode in bits 26..16 of the
+            // CS selector dword of the 32-bit image is observed behaviour.
+            let selector_dword_opcode = if wide {
+                opcode << PROTECTED_OPCODE_SHIFT
+            } else {
+                0
+            };
+            return [
+                control,
+                status,
+                tag,
+                fpu.fip_offset,
+                selector_dword_opcode | fpu.fip_selector as u32,
+                fpu.fdp_offset,
+                reserved | fpu.fdp_selector as u32,
+            ];
+        }
+
+        // Figures 15-6 and 15-8: the pointers as linear addresses. The linear address
+        // selector * 16 + offset is observed behaviour.
+        let instruction = real_mode_linear_pointer(fpu.fip_selector, fpu.fip_offset);
+        let data = real_mode_linear_pointer(fpu.fdp_selector, fpu.fdp_offset);
+        let high_bits = if wide {
+            REAL_POINTER_HIGH_BITS_32
+        } else {
+            REAL_POINTER_HIGH_BITS_16
+        };
+        [
+            control,
+            status,
+            tag,
+            reserved | (instruction & REAL_POINTER_LOW_MASK),
+            real_pointer_high_field(instruction, high_bits) | opcode,
+            reserved | (data & REAL_POINTER_LOW_MASK),
+            real_pointer_high_field(data, high_bits),
+        ]
     }
 
     fn fpu_write_env_u32(&mut self, bus: &mut impl common::Bus, addr: u32, val: u32) -> Step {
@@ -1399,213 +1488,183 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         Ok(lo | (hi << 16))
     }
 
-    fn fpu_fnstenv_32bit(&mut self, protected: bool, bus: &mut impl common::Bus) -> Step {
-        let base = self.ea;
-        self.fpu_write_env_u32(bus, base, 0xFFFF_0000 | self.state.fpu.control_word as u32)?;
-        self.fpu_write_env_u32(
-            bus,
-            base.wrapping_add(4),
-            0xFFFF_0000 | self.state.fpu.status_word as u32,
-        )?;
-        self.fpu_write_env_u32(
-            bus,
-            base.wrapping_add(8),
-            0xFFFF_0000 | self.state.fpu.tag_word as u32,
-        )?;
-
-        if protected {
-            self.fpu_write_env_u32(bus, base.wrapping_add(12), self.state.fpu.fip_offset)?;
-            let opcode_cs = (self.state.fpu.fpu_opcode as u32 & 0x7FF) << 16
-                | self.state.fpu.fip_selector as u32;
-            self.fpu_write_env_u32(bus, base.wrapping_add(16), opcode_cs)?;
-            self.fpu_write_env_u32(bus, base.wrapping_add(20), self.state.fpu.fdp_offset)?;
-            self.fpu_write_env_u32(
-                bus,
-                base.wrapping_add(24),
-                0xFFFF_0000 | self.state.fpu.fdp_selector as u32,
-            )
-        } else {
-            self.fpu_write_env_u32(
-                bus,
-                base.wrapping_add(12),
-                0xFFFF_0000 | (self.state.fpu.fip_offset & 0xFFFF),
-            )?;
-            let ip_hi_opcode = (self.state.fpu.fpu_opcode as u32 & 0x7FF)
-                | (((self.state.fpu.fip_offset >> 16) & 0xF) << 12);
-            self.fpu_write_env_u32(bus, base.wrapping_add(16), ip_hi_opcode)?;
-            self.fpu_write_env_u32(
-                bus,
-                base.wrapping_add(20),
-                0xFFFF_0000 | (self.state.fpu.fdp_offset & 0xFFFF),
-            )?;
-            let dp_hi = ((self.state.fpu.fdp_offset >> 16) & 0xF) << 12;
-            self.fpu_write_env_u32(bus, base.wrapping_add(24), dp_hi)
-        }
-    }
-
     pub(super) fn fpu_fldenv(&mut self, bus: &mut impl common::Bus) {
-        let use_32bit = self.code_segment_32bit() ^ self.operand_size_override;
-        let protected = self.is_protected_mode();
-        let env_size: u32 = if use_32bit { 28 } else { 14 };
+        let env_size = self.fpu_environment_size();
         if self.fpu_check_operand(env_size, false, bus).is_err() {
             return;
         }
-
-        let loaded = if use_32bit {
-            self.fpu_fldenv_32bit(protected, bus)
-        } else {
-            self.fpu_fldenv_16bit(protected, bus)
-        };
-        if loaded.is_err() {
+        let Ok(words) = self.fpu_read_environment(bus) else {
             return;
-        }
+        };
+        self.fpu_apply_environment(words);
 
         self.fpu_update_es();
         self.clk(Self::timing(71, 44));
     }
 
-    fn fpu_fldenv_16bit(&mut self, protected: bool, bus: &mut impl common::Bus) -> Step {
-        // Gather all words first so a faulting read leaves the FPU
-        // state untouched.
+    /// Reads the seven fields of the environment image in the format of the operand size.
+    fn fpu_read_environment(&mut self, bus: &mut impl common::Bus) -> Step<[u32; 7]> {
         let base = self.ea;
-        let cw = self.read_word_linear(bus, base)?;
-        let sw = self.read_word_linear(bus, base.wrapping_add(2))?;
-        let tw = self.read_word_linear(bus, base.wrapping_add(4))?;
-        let w6 = self.read_word_linear(bus, base.wrapping_add(6))?;
-        let w8 = self.read_word_linear(bus, base.wrapping_add(8))?;
-        let w10 = self.read_word_linear(bus, base.wrapping_add(10))?;
-        let w12 = self.read_word_linear(bus, base.wrapping_add(12))?;
-
-        self.state.fpu.control_word = cw;
-        self.state.fpu.status_word = sw;
-        self.state.fpu.tag_word = tw;
-
-        if protected {
-            self.state.fpu.fip_offset = w6 as u32;
-            self.state.fpu.fip_selector = w8;
-            self.state.fpu.fdp_offset = w10 as u32;
-            self.state.fpu.fdp_selector = w12;
+        let mut words = [0u32; 7];
+        if self.operand_size_override {
+            for (index, word) in words.iter_mut().enumerate() {
+                *word = self.fpu_read_env_u32(bus, base.wrapping_add(index as u32 * 4))?;
+            }
         } else {
-            self.state.fpu.fip_offset = w6 as u32 | (((w8 >> 12) as u32 & 0xF) << 16);
-            self.state.fpu.fpu_opcode = w8 & 0x7FF;
-            self.state.fpu.fdp_offset = w10 as u32 | (((w12 >> 12) as u32 & 0xF) << 16);
+            for (index, word) in words.iter_mut().enumerate() {
+                *word = self.read_word_linear(bus, base.wrapping_add(index as u32 * 2))? as u32;
+            }
         }
-        Ok(())
+        Ok(words)
     }
 
-    fn fpu_fldenv_32bit(&mut self, protected: bool, bus: &mut impl common::Bus) -> Step {
-        let base = self.ea;
-        let cw_dw = self.fpu_read_env_u32(bus, base)?;
-        let sw_dw = self.fpu_read_env_u32(bus, base.wrapping_add(4))?;
-        let tw_dw = self.fpu_read_env_u32(bus, base.wrapping_add(8))?;
-        let dw12 = self.fpu_read_env_u32(bus, base.wrapping_add(12))?;
-        let dw16 = self.fpu_read_env_u32(bus, base.wrapping_add(16))?;
-        let dw20 = self.fpu_read_env_u32(bus, base.wrapping_add(20))?;
-        let dw24 = self.fpu_read_env_u32(bus, base.wrapping_add(24))?;
-
-        self.state.fpu.control_word = cw_dw as u16;
-        self.state.fpu.status_word = sw_dw as u16;
-        self.state.fpu.tag_word = tw_dw as u16;
+    /// Loads the environment fields read from an image in the format of the operand size
+    /// and the mode (80486 PRM figures 15-5 to 15-8).
+    fn fpu_apply_environment(&mut self, fields: [u32; 7]) {
+        let wide = self.operand_size_override;
+        let protected = self.fpu_environment_protected();
+        let fpu = &mut self.state.fpu;
+        fpu.control_word = fields[0] as u16;
+        fpu.status_word = fields[1] as u16;
+        fpu.tag_word = fields[2] as u16;
 
         if protected {
-            self.state.fpu.fip_offset = dw12;
-            self.state.fpu.fip_selector = dw16 as u16;
-            self.state.fpu.fpu_opcode = ((dw16 >> 16) & 0x7FF) as u16;
-            self.state.fpu.fdp_offset = dw20;
-            self.state.fpu.fdp_selector = dw24 as u16;
-        } else {
-            self.state.fpu.fip_offset = (dw12 & 0xFFFF) | (((dw16 >> 12) & 0xF) << 16);
-            self.state.fpu.fpu_opcode = (dw16 & 0x7FF) as u16;
-            self.state.fpu.fdp_offset = (dw20 & 0xFFFF) | (((dw24 >> 12) & 0xF) << 16);
+            let offset_mask = if wide { u32::MAX } else { 0xFFFF };
+            fpu.fip_offset = fields[3] & offset_mask;
+            fpu.fip_selector = fields[4] as u16;
+            fpu.fdp_offset = fields[5] & offset_mask;
+            fpu.fdp_selector = fields[6] as u16;
+            // Observed behaviour: the 16-bit image, which has no opcode field, loads the
+            // opcode as zero.
+            fpu.fpu_opcode = if wide {
+                ((fields[4] >> PROTECTED_OPCODE_SHIFT) & ENVIRONMENT_OPCODE_MASK) as u16
+            } else {
+                0
+            };
+            return;
         }
-        Ok(())
+
+        // Observed behaviour: the loaded linear pointers become the offsets, and the
+        // selectors read as zero.
+        let high_bits = if wide {
+            REAL_POINTER_HIGH_BITS_32
+        } else {
+            REAL_POINTER_HIGH_BITS_16
+        };
+        fpu.fip_offset = (fields[3] & REAL_POINTER_LOW_MASK)
+            | real_pointer_from_high_field(fields[4], high_bits);
+        fpu.fdp_offset = (fields[5] & REAL_POINTER_LOW_MASK)
+            | real_pointer_from_high_field(fields[6], high_bits);
+        fpu.fpu_opcode = (fields[4] & ENVIRONMENT_OPCODE_MASK) as u16;
+        fpu.fip_selector = 0;
+        fpu.fdp_selector = 0;
     }
 
     pub(super) fn fpu_fnsave(&mut self, bus: &mut impl common::Bus) -> Step {
-        let use_32bit = self.code_segment_32bit() ^ self.operand_size_override;
-        let protected = self.is_protected_mode();
-        let image_size: u32 = if use_32bit { 108 } else { 94 };
-        if self.fpu_check_operand(image_size, true, bus).is_err() {
+        let env_size = self.fpu_environment_size();
+        if self.fpu_check_operand(env_size + 80, true, bus).is_err() {
             return Ok(());
         }
 
-        let env_saved = if use_32bit {
-            self.fpu_fnstenv_32bit(protected, bus)
-        } else {
-            self.fpu_fnstenv_16bit(protected, bus)
-        };
-        if env_saved.is_err() {
+        if self.fpu_store_environment(bus).is_err() {
             return Ok(());
         }
 
-        let env_size: u32 = if use_32bit { 28 } else { 14 };
+        // Translate every byte of the register area before the first register write.
+        // FNSAVE re-initializes the FPU only on full success.
         let reg_base = self.ea.wrapping_add(env_size);
-
-        // Save all 8 registers in physical order R0-R7. Translate every
-        // byte first so a fault in the middle leaves the FPU stack
-        // unmodified (FNSAVE re-inits the FPU only on full success).
         let mut phys = [0u32; 80];
         for i in 0..80u32 {
-            let p = self.translate_linear(reg_base.wrapping_add(i), true, bus)?;
-            phys[i as usize] = p;
+            phys[i as usize] = self.translate_linear(reg_base.wrapping_add(i), true, bus)?;
         }
-        for reg_idx in 0..8u32 {
-            let val = self.state.fpu.registers[reg_idx as usize];
-            let bytes = val.to_le_bytes();
+
+        // The registers follow the environment in stack order ST(0) to ST(7).
+        for stack_index in 0..8u8 {
+            let bytes = self.fpu_st(stack_index).to_le_bytes();
             for (j, &byte) in bytes.iter().enumerate() {
-                bus.write_byte(phys[(reg_idx * 10 + j as u32) as usize], byte);
+                bus.write_byte(phys[stack_index as usize * 10 + j], byte);
             }
         }
 
-        // FSAVE reinitializes the FPU - only on full success.
         self.fpu_init();
         self.clk(Self::timing(375, 154));
         Ok(())
     }
 
     pub(super) fn fpu_frstor(&mut self, bus: &mut impl common::Bus) -> Step {
-        let use_32bit = self.code_segment_32bit() ^ self.operand_size_override;
-        let protected = self.is_protected_mode();
-        let image_size: u32 = if use_32bit { 108 } else { 94 };
-        if self.fpu_check_operand(image_size, false, bus).is_err() {
+        let env_size = self.fpu_environment_size();
+        if self.fpu_check_operand(env_size + 80, false, bus).is_err() {
             return Ok(());
         }
 
-        // Gather all 80 register bytes via translate_linear before any
-        // commit, so a faulting load leaves both the env and register
-        // stack at their previous values.
-        let env_size: u32 = if use_32bit { 28 } else { 14 };
+        // Read the environment and all 80 register bytes before any commit, so a faulting
+        // load leaves both the environment and the register stack at their previous values.
+        let Ok(words) = self.fpu_read_environment(bus) else {
+            return Ok(());
+        };
         let reg_base = self.ea.wrapping_add(env_size);
         let mut phys = [0u32; 80];
         for i in 0..80u32 {
-            let p = self.translate_linear(reg_base.wrapping_add(i), false, bus)?;
-            phys[i as usize] = p;
+            phys[i as usize] = self.translate_linear(reg_base.wrapping_add(i), false, bus)?;
         }
-        let mut new_regs = [Fp80::ZERO; 8];
-        for reg_idx in 0..8u32 {
+        let mut stack_values = [Fp80::ZERO; 8];
+        for (stack_index, value) in stack_values.iter_mut().enumerate() {
             let mut bytes = [0u8; 10];
             for (j, byte) in bytes.iter_mut().enumerate() {
-                *byte = bus.read_byte(phys[(reg_idx * 10 + j as u32) as usize]);
+                *byte = bus.read_byte(phys[stack_index * 10 + j]);
             }
-            new_regs[reg_idx as usize] = Fp80::from_le_bytes(bytes);
+            *value = Fp80::from_le_bytes(bytes);
         }
 
-        // Now load the env. fpu_fldenv_* gather their reads internally
-        // before committing, so a fault here leaves FPU state untouched.
-        let env_loaded = if use_32bit {
-            self.fpu_fldenv_32bit(protected, bus)
-        } else {
-            self.fpu_fldenv_16bit(protected, bus)
-        };
-        if env_loaded.is_err() {
-            return Ok(());
-        }
+        self.fpu_apply_environment(words);
 
-        // All gathers succeeded; commit the FPU register stack.
-        self.state.fpu.registers = new_regs;
+        // The image holds the registers in stack order relative to the loaded TOP.
+        for (stack_index, value) in stack_values.into_iter().enumerate() {
+            let physical = self.fpu_st_phys(stack_index as u8);
+            self.state.fpu.registers[physical] = value;
+        }
 
         self.fpu_update_es();
         self.clk(Self::timing(308, 131));
         Ok(())
     }
+}
+
+/// The reserved high word of the control, status, tag and pointer fields of a 32-bit
+/// environment image. Observed behaviour: it is stored as ones.
+const ENVIRONMENT_RESERVED_HIGH_WORD: u32 = 0xFFFF_0000;
+/// The opcode field: the low 11 bits of the last escape instruction (80486 PRM 15.1.5).
+const ENVIRONMENT_OPCODE_MASK: u32 = 0x07FF;
+/// The bit position of the opcode in the CS selector dword of the 32-bit protected mode
+/// image.
+const PROTECTED_OPCODE_SHIFT: u32 = 16;
+/// Pointer bits 15..0, stored in the low word of the pointer offset field (figures 15-6
+/// and 15-8).
+const REAL_POINTER_LOW_MASK: u32 = 0xFFFF;
+/// The first pointer bit of the high field: bits 16 and up.
+const REAL_POINTER_HIGH_FIRST_BIT: u32 = 16;
+/// The bit position of the high pointer bits in their field: bits 31..16 sit at bits
+/// 27..12 of the 32-bit field (figure 15-6), bits 19..16 at bits 15..12 of the 16-bit
+/// field (figure 15-8).
+const REAL_POINTER_HIGH_FIELD_SHIFT: u32 = 12;
+/// The count of high pointer bits in the 32-bit image: bits 31..16.
+const REAL_POINTER_HIGH_BITS_32: u32 = 16;
+/// The count of high pointer bits in the 16-bit image: bits 19..16.
+const REAL_POINTER_HIGH_BITS_16: u32 = 4;
+
+/// Returns the linear address `selector * 16 + offset` of an x87 pointer.
+fn real_mode_linear_pointer(selector: u16, offset: u32) -> u32 {
+    ((selector as u32) << 4).wrapping_add(offset)
+}
+
+/// Returns the field that holds the `count` pointer bits from bit 16 up at bit 12.
+fn real_pointer_high_field(pointer: u32, count: u32) -> u32 {
+    let high_bits = (pointer >> REAL_POINTER_HIGH_FIRST_BIT) & ((1 << count) - 1);
+    high_bits << REAL_POINTER_HIGH_FIELD_SHIFT
+}
+
+/// Returns the pointer bits from bit 16 up held in the high field with `count` bits.
+fn real_pointer_from_high_field(field: u32, count: u32) -> u32 {
+    let high_bits = (field >> REAL_POINTER_HIGH_FIELD_SHIFT) & ((1 << count) - 1);
+    high_bits << REAL_POINTER_HIGH_FIRST_BIT
 }

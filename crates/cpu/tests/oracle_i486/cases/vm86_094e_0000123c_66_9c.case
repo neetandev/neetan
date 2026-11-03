@@ -2,7 +2,7 @@
 name = vm86_094e_0000123c_66_9c
 mode = VM86
 bytes = 66 9C
-note = 80386 PRM 3.8.2 and 80486 PRM 3.8.2: PUSHFD stores EFLAGS with the VM and RF flags clear in the image. In VM86 with IOPL 3 the stored image of EFLAGS 00027246h is 00007246h.
+note = 80386 PRM 3.8.2: PUSHFD does not move the VM and RF flags into the image, and 80486 PRM 3.8.2: RF reads as clear. In VM86 with IOPL 3 the stored image of EFLAGS 00027246h is 00007246h.
 rules = Virtual8086StoredPrivilege
 # diff after the masks:
 #   memory.write     ours 01B8BA=02                                bochs 01B8BA=00
