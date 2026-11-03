@@ -9,9 +9,9 @@ use common::Cpu as _;
 
 use super::setup::{
     GLOBAL_DESCRIPTOR_TABLE_BASE, HANDLER_GENERAL_PROTECTION_IP,
-    RIGHTS_RING0_DATA_WRITABLE_ACCESSED, RING0_CODE_BASE, SHARED_DATA_BASE, TestBus, make_cpu_486,
-    place_at, read_byte_at, read_dword_at, read_word_at, setup_protected_mode_with_handlers,
-    write_segment_descriptor_16bit,
+    RIGHTS_RING0_DATA_WRITABLE_ACCESSED, RING0_CODE_BASE, SHARED_DATA_BASE, TestBus, make_cpu_386,
+    make_cpu_486, place_at, read_byte_at, read_dword_at, read_word_at,
+    setup_protected_mode_with_handlers, write_segment_descriptor_16bit,
 };
 
 const HALT_OPCODE: u8 = 0xF4;
@@ -256,6 +256,50 @@ fn popad_restores_registers_skipping_esp_slot() {
     assert_eq!(cpu.state.ebp(), 0x0000_BBBB);
     assert_eq!(cpu.state.esi(), 0x0000_CCCC);
     assert_eq!(cpu.state.edi(), 0x0000_DDDD);
+}
+
+/// Fills the POPAD stack image at `base` with an ESP slot of 0xDEAD_BEEF.
+fn write_popad_image(bus: &mut TestBus, base: u32) {
+    for slot in 0..8u32 {
+        super::setup::write_dword_at(bus, base + 4 * slot, 0x0000_1000 + slot);
+    }
+    super::setup::write_dword_at(bus, base + 12, 0xDEAD_BEEF);
+}
+
+#[test]
+fn popad_on_16bit_stack_keeps_esp_upper_word() {
+    let mut cpu = make_cpu_486();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_protected_mode_with_handlers(&mut bus);
+    state.set_esp(0x1234_0F00);
+    cpu.load_state(&state);
+    write_popad_image(&mut bus, 0x0F00);
+
+    place_then_halt(&mut bus, &[0x66, 0x61]);
+
+    cpu.step(&mut bus);
+
+    assert_eq!(cpu.state.esp(), 0x1234_0F20);
+    assert_eq!(cpu.state.edi(), 0x0000_1000);
+    assert_eq!(cpu.state.eax(), 0x0000_1007);
+}
+
+#[test]
+fn popad_on_16bit_stack_loads_popped_esp_upper_word_on_386() {
+    let mut cpu = make_cpu_386();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_protected_mode_with_handlers(&mut bus);
+    state.set_esp(0x1234_0F00);
+    cpu.load_state(&state);
+    write_popad_image(&mut bus, 0x0F00);
+
+    place_then_halt(&mut bus, &[0x66, 0x61]);
+
+    cpu.step(&mut bus);
+
+    assert_eq!(cpu.state.esp(), 0xDEAD_0F20);
 }
 
 #[test]

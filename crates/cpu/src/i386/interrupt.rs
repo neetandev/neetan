@@ -402,11 +402,9 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             };
 
             let old_ss = self.sregs[SegReg32::SS as usize];
-            let old_sp = if from_vm86 || self.use_esp() {
-                self.regs.dword(crate::DwordReg::ESP)
-            } else {
-                self.regs.word(crate::WordReg::SP) as u32
-            };
+            // The frame holds the full ESP also for a 16-bit stack (80486 PRM INT n:
+            // the long pointer to the old stack).
+            let old_esp = self.regs.dword(crate::DwordReg::ESP);
             let old_es = self.sregs[SegReg32::ES as usize];
             let old_ds = self.sregs[SegReg32::DS as usize];
             let old_fs = self.sregs[SegReg32::FS as usize];
@@ -506,7 +504,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                     self.push_dword_selector(bus, old_es)?;
                 }
                 self.push_dword_selector(bus, old_ss)?;
-                self.push_dword(bus, old_sp)?;
+                self.push_dword(bus, old_esp)?;
                 self.push_dword(bus, old_eflags)?;
                 self.push_dword_selector(bus, old_cs)?;
                 self.push_dword(bus, return_eip)?;
@@ -521,7 +519,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                     self.push(bus, old_es)?;
                 }
                 self.push(bus, old_ss)?;
-                self.push(bus, old_sp as u16)?;
+                self.push(bus, old_esp as u16)?;
                 self.push(bus, old_eflags as u16)?;
                 self.push(bus, old_cs)?;
                 self.push(bus, return_eip as u16)?;
