@@ -51,12 +51,13 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             self.raise_fault(6, bus)?;
             return Ok(());
         }
-        let dst = (if extension == 7 {
-            self.get_rm_byte(modrm, bus)
-        } else {
-            self.get_rm_byte_for_update(modrm, bus)
-        })?;
+        self.decode_rm(modrm, bus)?;
         let src = self.fetch(bus)?;
+        let dst = (if extension == 7 {
+            self.read_rm_byte(modrm, bus)
+        } else {
+            self.read_rm_byte_for_update(modrm, bus)
+        })?;
         let result = match extension {
             0 => self.alu_add_byte(dst, src),
             1 => self.alu_or_byte(dst, src),
@@ -94,12 +95,13 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             return Ok(());
         }
         if self.operand_size_override {
-            let dst = (if extension == 7 {
-                self.get_rm_dword(modrm, bus)
-            } else {
-                self.get_rm_dword_for_update(modrm, bus)
-            })?;
+            self.decode_rm(modrm, bus)?;
             let src = self.fetchdword(bus)?;
+            let dst = (if extension == 7 {
+                self.read_rm_dword(modrm, bus)
+            } else {
+                self.read_rm_dword_for_update(modrm, bus)
+            })?;
             let result = match extension {
                 0 => self.alu_add_dword(dst, src),
                 1 => self.alu_or_dword(dst, src),
@@ -126,12 +128,13 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             }
             self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(7, 3), 4);
         } else {
-            let dst = (if extension == 7 {
-                self.get_rm_word(modrm, bus)
-            } else {
-                self.get_rm_word_for_update(modrm, bus)
-            })?;
+            self.decode_rm(modrm, bus)?;
             let src = self.fetchword(bus)?;
+            let dst = (if extension == 7 {
+                self.read_rm_word(modrm, bus)
+            } else {
+                self.read_rm_word_for_update(modrm, bus)
+            })?;
             let result = match extension {
                 0 => self.alu_add_word(dst, src),
                 1 => self.alu_or_word(dst, src),
@@ -176,12 +179,13 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             return Ok(());
         }
         if self.operand_size_override {
-            let dst = (if extension == 7 {
-                self.get_rm_dword(modrm, bus)
-            } else {
-                self.get_rm_dword_for_update(modrm, bus)
-            })?;
+            self.decode_rm(modrm, bus)?;
             let src = self.fetch(bus)? as i8 as i32 as u32;
+            let dst = (if extension == 7 {
+                self.read_rm_dword(modrm, bus)
+            } else {
+                self.read_rm_dword_for_update(modrm, bus)
+            })?;
             let result = match extension {
                 0 => self.alu_add_dword(dst, src),
                 1 => self.alu_or_dword(dst, src),
@@ -208,12 +212,13 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             }
             self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(7, 3), 4);
         } else {
-            let dst = (if extension == 7 {
-                self.get_rm_word(modrm, bus)
-            } else {
-                self.get_rm_word_for_update(modrm, bus)
-            })?;
+            self.decode_rm(modrm, bus)?;
             let src = self.fetch(bus)? as i8 as u16;
+            let dst = (if extension == 7 {
+                self.read_rm_word(modrm, bus)
+            } else {
+                self.read_rm_word_for_update(modrm, bus)
+            })?;
             let result = match extension {
                 0 => self.alu_add_word(dst, src),
                 1 => self.alu_or_word(dst, src),
@@ -246,8 +251,9 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     /// Group 0xC0: shift/rotate r/m8, imm8
     pub(super) fn group_c0(&mut self, bus: &mut impl common::Bus) -> Step {
         let modrm = self.fetch(bus)?;
-        let dst = self.get_rm_byte(modrm, bus)?;
+        self.decode_rm(modrm, bus)?;
         let count = self.fetch(bus)?;
+        let dst = self.read_rm_byte(modrm, bus)?;
         let extension = (modrm >> 3) & 7;
         let result = match extension {
             0 => self.alu_rol_byte(dst, count),
@@ -272,8 +278,9 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         let extension = (modrm >> 3) & 7;
         let (register_cycles, memory_cycles) = Self::shift_group_timing(extension, 0);
         if self.operand_size_override {
-            let dst = self.get_rm_dword(modrm, bus)?;
+            self.decode_rm(modrm, bus)?;
             let count = self.fetch(bus)?;
+            let dst = self.read_rm_dword(modrm, bus)?;
             let result = match extension {
                 0 => self.alu_rol_dword(dst, count),
                 1 => self.alu_ror_dword(dst, count),
@@ -288,8 +295,9 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             self.putback_rm_dword(modrm, result, bus)?;
             self.clk_modrm_word(modrm, register_cycles, memory_cycles, 4);
         } else {
-            let dst = self.get_rm_word(modrm, bus)?;
+            self.decode_rm(modrm, bus)?;
             let count = self.fetch(bus)?;
+            let dst = self.read_rm_word(modrm, bus)?;
             let result = match extension {
                 0 => self.alu_rol_word(dst, count),
                 1 => self.alu_ror_word(dst, count),
@@ -442,8 +450,9 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         match op {
             0 | 1 => {
                 // TEST r/m8, imm8
-                let dst = self.get_rm_byte(modrm, bus)?;
+                self.decode_rm(modrm, bus)?;
                 let src = self.fetch(bus)?;
+                let dst = self.read_rm_byte(modrm, bus)?;
                 self.alu_and_byte(dst, src);
                 self.clk_modrm(modrm, Self::timing(2, 1), Self::timing(5, 2));
             }
@@ -549,8 +558,9 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             match op {
                 0 | 1 => {
                     // TEST r/m32, imm32
-                    let dst = self.get_rm_dword(modrm, bus)?;
+                    self.decode_rm(modrm, bus)?;
                     let src = self.fetchdword(bus)?;
+                    let dst = self.read_rm_dword(modrm, bus)?;
                     self.alu_and_dword(dst, src);
                     self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(5, 2), 2);
                 }
@@ -650,8 +660,9 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             match op {
                 0 | 1 => {
                     // TEST r/m16, imm16
-                    let dst = self.get_rm_word(modrm, bus)?;
+                    self.decode_rm(modrm, bus)?;
                     let src = self.fetchword(bus)?;
+                    let dst = self.read_rm_word(modrm, bus)?;
                     self.alu_and_word(dst, src);
                     self.clk_modrm_word(modrm, Self::timing(2, 1), Self::timing(5, 2), 1);
                 }

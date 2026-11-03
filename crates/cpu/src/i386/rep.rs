@@ -215,7 +215,9 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
 
             let interrupt_pending = bus.has_nmi() || (self.flags.if_flag && bus.has_irq());
 
-            if self.cycles_remaining <= 0 || interrupt_pending {
+            // 80486 PRM 9.2 and 11.3.1.4: the single-step trap of TF follows the current
+            // iteration of a repeated string instruction.
+            if self.cycles_remaining <= 0 || interrupt_pending || self.flags.tf {
                 // Save state for resume.
                 self.rep_active = true;
                 self.rep_ip = self.ip;

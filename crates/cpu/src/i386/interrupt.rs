@@ -32,17 +32,23 @@ enum DoubleFaultResult {
     Shutdown,
 }
 
-/// Candidate stack geometry used while probing an interrupt frame.
+/// Candidate stack geometry used while probing an interrupt or call gate frame.
 #[derive(Clone, Copy)]
-struct InterruptStackProbe {
-    base: u32,
-    limit: u32,
-    is_expand_down: bool,
-    is_32bit: bool,
-    initial_stack_pointer: u32,
-    slot_size: u32,
+pub(super) struct InterruptStackProbe {
+    /// The base of the new stack segment.
+    pub(super) base: u32,
+    /// The limit of the new stack segment.
+    pub(super) limit: u32,
+    /// The new stack segment expands down.
+    pub(super) is_expand_down: bool,
+    /// The B bit of the new stack segment.
+    pub(super) is_32bit: bool,
+    /// The stack pointer before the first push.
+    pub(super) initial_stack_pointer: u32,
+    /// The size of one push slot.
+    pub(super) slot_size: u32,
     /// The #SS error code of a limit violation on the new stack.
-    limit_error_code: u16,
+    pub(super) limit_error_code: u16,
 }
 
 /// Exception classification per Intel 386 Programmer's Reference Manual,
@@ -74,8 +80,9 @@ const ESCALATION: [[bool; 4]; 4] = [
 ];
 
 impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH> {
-    /// Pre-translates the pages written by one allocated interrupt stack slot.
-    fn probe_interrupt_stack_slot(
+    /// Checks one push slot of a new stack against its limit and pre-translates the pages
+    /// the push writes.
+    pub(super) fn probe_interrupt_stack_slot(
         &mut self,
         probe: InterruptStackProbe,
         slot_index: u32,
@@ -137,8 +144,8 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
 
     /// Delivers an exception, trap or external interrupt and charges the delivery clocks
     /// of the path it took: real mode, the same privilege level, a more privileged level,
-    /// VM86 to level 0 or a task gate. The instructions INT n, INT 3, INTO and BOUND charge
-    /// their own clocks and do not come here.
+    /// VM86 to level 0 or a task gate. The instructions INT n, INT 3 and INTO charge their
+    /// own clocks and do not come here.
     fn deliver_charged(
         &mut self,
         vector: u8,
@@ -230,8 +237,10 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             self.push(bus, cs)?;
             self.push(bus, return_eip as u16)?;
 
-            let dest_ip = bus.read_word(addr);
-            let dest_cs = bus.read_word(addr + 2);
+            // 80486 PRM 22.3: the IDTR base locates the interrupt table in real mode.
+            let entry = self.idt_base.wrapping_add(addr);
+            let dest_ip = bus.read_word(entry & Self::physical_address_mask());
+            let dest_cs = bus.read_word(entry.wrapping_add(2) & Self::physical_address_mask());
             self.load_segment(SegReg32::CS, dest_cs, bus)?;
             self.ip = dest_ip;
             self.ip_upper = 0;
@@ -283,6 +292,15 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
 
         let cpl = self.cpl();
 
+        // 80486 PRM chapter 26, INT/INTO operation: the gate type check precedes the DPL
+        // check of a software interrupt and the present check.
+        if !matches!(
+            gate_type,
+            INTGATE_386 | TRAPGATE_386 | INTGATE_286 | TRAPGATE_286 | TASKGATE
+        ) {
+            return self.raise_fault_with_code(13, gate_offset as u16 + 2 + ext, bus);
+        }
+
         if is_software_int && gate_dpl < cpl {
             return self.raise_fault_with_code(13, gate_offset as u16 + 2 + ext, bus);
         }
@@ -294,9 +312,13 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         let (gate_ip, is_386_gate) = match gate_type {
             INTGATE_386 | TRAPGATE_386 => ((w3 as u32) << 16 | w0 as u32, true),
             INTGATE_286 | TRAPGATE_286 => (w0 as u32, false),
-            TASKGATE => {
-                let task_selector = gate_selector;
-                self.switch_task(task_selector, super::TaskType::Call, bus)?;
+            _ => {
+                // The type check above leaves the task gate for this arm.
+                self.ip = return_eip as u16;
+                self.ip_upper = return_eip & 0xFFFF_0000;
+                // 80486 PRM 11.3.1.1: the processor sets RF in the EFLAGS image of every
+                // fault, here the image the switch saves in the old TSS.
+                self.switch_task(gate_selector, super::TaskType::Call, ext, is_fault, bus)?;
                 let flags_val = self.flags.compress();
                 let new_cpl = self.cpl();
                 self.flags.load_flags(flags_val, new_cpl, true);
@@ -309,9 +331,6 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                     }
                 }
                 return Ok(());
-            }
-            _ => {
-                return self.raise_fault_with_code(13, gate_offset as u16 + 2 + ext, bus);
             }
         };
 
@@ -608,15 +627,6 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         Ok(())
     }
 
-    pub(super) fn raise_interrupt(&mut self, vector: u8, bus: &mut impl common::Bus) -> Step {
-        let return_eip = if self.rep_active {
-            self.rep_restart_ip_upper | self.rep_restart_ip as u32
-        } else {
-            self.ip_upper | self.ip as u32
-        };
-        self.interrupt_with_return_eip(vector, return_eip, None, false, true, false, bus)
-    }
-
     pub(super) fn raise_software_interrupt(
         &mut self,
         vector: u8,
@@ -636,15 +646,24 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         self.interrupt_with_return_eip(vector, return_eip, None, true, false, false, bus)
     }
 
+    /// Delivers the trap `vector` at the current instruction boundary. A fault during the
+    /// delivery reports the boundary as its return address, and the error codes of the
+    /// delivery set EXT (80486 PRM 9.8 and 9.9: the trap is an event external to the
+    /// program).
     pub(super) fn raise_trap(&mut self, vector: u8, bus: &mut impl common::Bus) -> Step {
         let return_eip = if self.rep_active {
             self.rep_restart_ip_upper | self.rep_restart_ip as u32
         } else {
             self.ip_upper | self.ip as u32
         };
-        self.deliver_charged(vector, return_eip, None, false, false, bus)
+        self.prev_ip = return_eip as u16;
+        self.prev_ip_upper = return_eip & 0xFFFF_0000;
+        self.deliver_charged(vector, return_eip, None, true, false, bus)
     }
 
+    /// Delivers the fault `vector` with the start of the faulting instruction as the return
+    /// address. An error during the delivery sets EXT in its error code (80486 PRM 9.8,
+    /// observed behaviour: an exception counts as an event external to the program).
     pub(super) fn raise_fault<T>(&mut self, vector: u8, bus: &mut impl common::Bus) -> Step<T> {
         if self.shutdown {
             return Err(Fault);
@@ -657,20 +676,21 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         match self.check_double_fault(vector) {
             DoubleFaultResult::Shutdown => return Err(Fault),
             DoubleFaultResult::DoubleFault => {
-                self.deliver_charged(8, return_eip, Some(0), false, true, bus)?;
+                self.deliver_charged(8, return_eip, Some(0), true, true, bus)?;
                 self.trap_level = 0;
                 self.fault_pending = true;
                 return Err(Fault);
             }
             DoubleFaultResult::Normal => {}
         }
-        let _ = self.deliver_charged(vector, return_eip, None, false, true, bus);
+        let _ = self.deliver_charged(vector, return_eip, None, true, true, bus);
         self.trap_level = 0;
         self.fault_pending = saved_fault_pending || self.fault_pending;
         self.instruction_faulted = true;
         Err(Fault)
     }
 
+    /// Delivers the fault `vector` with `error_code`, like `raise_fault`.
     pub(super) fn raise_fault_with_code<T>(
         &mut self,
         vector: u8,
@@ -688,14 +708,14 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         match self.check_double_fault(vector) {
             DoubleFaultResult::Shutdown => return Err(Fault),
             DoubleFaultResult::DoubleFault => {
-                self.deliver_charged(8, return_eip, Some(0), false, true, bus)?;
+                self.deliver_charged(8, return_eip, Some(0), true, true, bus)?;
                 self.trap_level = 0;
                 self.fault_pending = true;
                 return Err(Fault);
             }
             DoubleFaultResult::Normal => {}
         }
-        let _ = self.deliver_charged(vector, return_eip, Some(error_code), false, true, bus);
+        let _ = self.deliver_charged(vector, return_eip, Some(error_code), true, true, bus);
         self.trap_level = 0;
         self.fault_pending = saved_fault_pending || self.fault_pending;
         self.instruction_faulted = true;

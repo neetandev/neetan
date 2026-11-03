@@ -2464,19 +2464,18 @@ fn i386_call_far_through_call_gate_with_parameters() {
 }
 
 #[test]
-fn i386_call_gate_inter_priv_too_small_stack_raises_ss_zero() {
+fn i386_call_gate_inter_priv_tiny_stack_wraps_within_the_limit() {
     let mut cpu: I386 = I386::new();
     let mut bus = TestBus::new();
     let mut state = setup_protected_mode_extended(&mut bus);
     make_ring3_state(&mut state);
     cpu.load_state(&state);
 
-    // Shrink the kernel stack pointer (TSS ESP0) to a value that cannot fit
-    // even the minimum return frame for a 32-bit gate (4 dwords = 16 bytes).
+    // A kernel stack pointer (TSS ESP0) of 8 on the 16-bit ring 0 stack with a 64 KiB
+    // limit. The 16 bytes of the 32-bit gate frame wrap to offset FFF8h, which lies
+    // within the limit (80486 PRM chapter 26, CALL, MORE-PRIVILEGE).
     write_dword_at(&mut bus, PM_TSS_BASE + 4, 8);
 
-    // 32-bit call gate, no parameters; required stack space = 16 bytes,
-    // available = 8 bytes -> #SS(0).
     let gate_target_ip: u32 = 0x0000_0100;
     write_gdt_gate(
         &mut bus,
@@ -2496,20 +2495,13 @@ fn i386_call_gate_inter_priv_too_small_stack_raises_ss_zero() {
         &[0x9A, 0x00, 0x00, 0x40, 0x00], // CALL FAR 0x0040:0
     );
 
-    cpu.step(&mut bus); // CALL FAR -> #SS(0)
-    cpu.step(&mut bus); // HLT in #SS handler
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
 
-    assert!(cpu.halted(), "expected to land at the #SS handler HLT");
-    assert_eq!(
-        cpu.ip(),
-        PM_SS_HANDLER_IP as u32 + 1,
-        "should be at #SS handler"
-    );
-
-    let sp = cpu.esp();
-    let ss_base = cpu.state.seg_bases[cpu::SegReg32::SS as usize];
-    let error_code = read_dword_at(&bus, ss_base + sp);
-    assert_eq!(error_code, 0, "stack-space #SS error code must be 0");
+    assert!(cpu.halted(), "expected to land at the gate target HLT");
+    assert_eq!(cpu.ip(), gate_target_ip + 1);
+    assert_eq!(cpu.ss(), PM_SS_SEL);
+    assert_eq!(cpu.esp(), 0xFFF8);
 }
 
 #[test]
