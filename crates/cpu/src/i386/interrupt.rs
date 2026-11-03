@@ -7,6 +7,25 @@ const INTGATE_386: u8 = 14;
 const TRAPGATE_386: u8 = 15;
 const TASKGATE: u8 = 5;
 
+/// Clocks of an exception, trap or external interrupt delivery in real mode, as
+/// `(386, 486)`. The values are the INT imm8 rows of the 80386 PRM chapter 17 instruction
+/// table and of the 80486 PRM chapter 26 INT/INTO table, which also time the delivery
+/// without the instruction.
+const DELIVERY_REAL_MODE_CLOCKS: (i32, i32) = (37, 30);
+/// Clocks of a delivery in protected mode to the same privilege level, as `(386, 486)`.
+/// The INT imm8 rows of the 80386 PRM chapter 17 and the 80486 PRM chapter 26.
+const DELIVERY_SAME_PRIVILEGE_CLOCKS: (i32, i32) = (59, 44);
+/// Clocks of a delivery in protected mode to a more privileged level, as `(386, 486)`.
+/// The INT imm8 rows of the 80386 PRM chapter 17 and the 80486 PRM chapter 26.
+const DELIVERY_INNER_PRIVILEGE_CLOCKS: (i32, i32) = (99, 71);
+/// Clocks of a delivery from VM86 to privilege level 0, as `(386, 486)`. The INT imm8 rows
+/// of the 80386 PRM chapter 17 and the 80486 PRM chapter 26.
+const DELIVERY_FROM_VIRTUAL_8086_CLOCKS: (i32, i32) = (119, 86);
+/// Clocks of a delivery through a task gate, as `(386, 486)`: 37 plus TS of the 80486 PRM
+/// chapter 26 INT/INTO table, with TS = 199 for a switch from an i486 TSS to an i486 TSS.
+/// The 80386 PRM chapter 17 names TS without a number, so the 386 uses the same value.
+const DELIVERY_TASK_GATE_CLOCKS: (i32, i32) = (37 + 199, 37 + 199);
+
 enum DoubleFaultResult {
     Normal,
     DoubleFault,
@@ -87,7 +106,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         if self.pending_irq & PENDING_NMI != 0 && self.inhibit_all == 0 {
             self.pending_irq &= !PENDING_NMI;
             bus.acknowledge_nmi();
-            let _ = self.raise_interrupt(2, bus);
+            let _ = self.raise_external_interrupt(2, bus);
         } else if self.flags.if_flag
             && self.pending_irq & PENDING_IRQ != 0
             && self.no_interrupt == 0
@@ -95,8 +114,59 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         {
             self.pending_irq &= !PENDING_IRQ;
             let vector = bus.acknowledge_irq();
-            let _ = self.raise_interrupt(vector, bus);
+            let _ = self.raise_external_interrupt(vector, bus);
         }
+    }
+
+    /// Delivers an exception, trap or external interrupt and charges the delivery clocks
+    /// of the path it took: real mode, the same privilege level, a more privileged level,
+    /// VM86 to level 0 or a task gate. The instructions INT n, INT 3, INTO and BOUND charge
+    /// their own clocks and do not come here.
+    fn deliver_charged(
+        &mut self,
+        vector: u8,
+        return_eip: u32,
+        error_code: Option<u16>,
+        is_external: bool,
+        is_fault: bool,
+        bus: &mut impl common::Bus,
+    ) -> Step {
+        let from_real_mode = !self.is_protected_mode();
+        let from_virtual_8086 = self.is_virtual_mode();
+        let old_cpl = self.cpl();
+        let old_task = self.tr;
+        let result = self.interrupt_with_return_eip(
+            vector,
+            return_eip,
+            error_code,
+            false,
+            is_external,
+            is_fault,
+            bus,
+        );
+        let (clocks_386, clocks_486) = if from_real_mode {
+            DELIVERY_REAL_MODE_CLOCKS
+        } else if self.tr != old_task {
+            DELIVERY_TASK_GATE_CLOCKS
+        } else if from_virtual_8086 {
+            DELIVERY_FROM_VIRTUAL_8086_CLOCKS
+        } else if self.cpl() < old_cpl {
+            DELIVERY_INNER_PRIVILEGE_CLOCKS
+        } else {
+            DELIVERY_SAME_PRIVILEGE_CLOCKS
+        };
+        self.clk(Self::timing(clocks_386, clocks_486));
+        result
+    }
+
+    /// Delivers the external interrupt or NMI `vector` at the current instruction boundary.
+    fn raise_external_interrupt(&mut self, vector: u8, bus: &mut impl common::Bus) -> Step {
+        let return_eip = if self.rep_active {
+            self.rep_restart_ip_upper | self.rep_restart_ip as u32
+        } else {
+            self.ip_upper | self.ip as u32
+        };
+        self.deliver_charged(vector, return_eip, None, true, false, bus)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -554,7 +624,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         } else {
             self.ip_upper | self.ip as u32
         };
-        self.interrupt_with_return_eip(vector, return_eip, None, false, false, false, bus)
+        self.deliver_charged(vector, return_eip, None, false, false, bus)
     }
 
     pub(super) fn raise_fault<T>(&mut self, vector: u8, bus: &mut impl common::Bus) -> Step<T> {
@@ -568,15 +638,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             match self.check_double_fault(vector) {
                 DoubleFaultResult::Shutdown => return Err(Fault),
                 DoubleFaultResult::DoubleFault => {
-                    self.interrupt_with_return_eip(
-                        8,
-                        return_eip,
-                        Some(0),
-                        false,
-                        false,
-                        true,
-                        bus,
-                    )?;
+                    self.deliver_charged(8, return_eip, Some(0), false, true, bus)?;
                     self.trap_level = 0;
                     self.fault_pending = true;
                     return Err(Fault);
@@ -584,7 +646,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                 DoubleFaultResult::Normal => {}
             }
         }
-        let _ = self.interrupt_with_return_eip(vector, return_eip, None, false, false, true, bus);
+        let _ = self.deliver_charged(vector, return_eip, None, false, true, bus);
         self.trap_level = 0;
         self.fault_pending = saved_fault_pending || self.fault_pending;
         Err(Fault)
@@ -606,15 +668,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             match self.check_double_fault(vector) {
                 DoubleFaultResult::Shutdown => return Err(Fault),
                 DoubleFaultResult::DoubleFault => {
-                    self.interrupt_with_return_eip(
-                        8,
-                        return_eip,
-                        Some(0),
-                        false,
-                        false,
-                        true,
-                        bus,
-                    )?;
+                    self.deliver_charged(8, return_eip, Some(0), false, true, bus)?;
                     self.trap_level = 0;
                     self.fault_pending = true;
                     return Err(Fault);
@@ -622,15 +676,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                 DoubleFaultResult::Normal => {}
             }
         }
-        let _ = self.interrupt_with_return_eip(
-            vector,
-            return_eip,
-            Some(error_code),
-            false,
-            false,
-            true,
-            bus,
-        );
+        let _ = self.deliver_charged(vector, return_eip, Some(error_code), false, true, bus);
         self.trap_level = 0;
         self.fault_pending = saved_fault_pending || self.fault_pending;
         Err(Fault)
