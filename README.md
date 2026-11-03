@@ -29,10 +29,11 @@ with their own configuration.
 | [Sharp X1](doc/machine-x1.md)                  | -                          |
 | [IBM PC/AT (DOS/V)](doc/machine-at.md)         | [List](doc/games-at.md)    |
 
-Neetan contains no ROM files. The PC-98 and the PC/AT run without ROM files on a
-built-in HLE BIOS. All other families need a ROM set dumped from the real machine.
-[ROMs](doc/roms.md) lists the files of each set. The PC-98 even does not need an
-operating system, since it ships with an MS-DOS 6.2 compatible DOS.
+Neetan contains no ROM files. The PC-98, FM Towns and the PC/AT run without ROM
+files on a built-in HLE BIOS. All other families need a ROM set dumped from the
+real machine. [ROMs](doc/roms.md) lists the files of each set. The PC-98 even
+does not need an operating system, since it ships with an MS-DOS 6.20 compatible
+DOS.
 
 ## Features
 
