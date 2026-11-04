@@ -3578,3 +3578,88 @@ fn int1bh_sasi_verify_high_nibble_ra() {
     let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x00, "SASI verify AH=0x21");
 }
+
+/// INT 1Bh call with AH, AL and BX. Stores result AX to [RESULT] and FLAGS to
+/// [RESULT+2], then HLT.
+#[rustfmt::skip]
+fn make_int1bh_with_flags(ah: u8, al: u8, bx: u16) -> Vec<u8> {
+    vec![
+        0xB8, al, ah,                     // MOV AX, ah:al
+        0xBB, bx as u8, (bx >> 8) as u8, // MOV BX, imm16
+        0x31, 0xED,                       // XOR BP, BP
+        0xCD, 0x1B,                       // INT 0x1B
+        0xA3, 0x00, 0x06,                 // MOV [RESULT], AX
+        0x9C,                             // PUSHF
+        0x58,                             // POP AX
+        0xA3, 0x02, 0x06,                 // MOV [RESULT+2], AX
+        0xF4,                             // HLT
+    ]
+}
+
+/// DA/UA values of units that have no drive on a machine with units 0 and 1 mounted.
+const ABSENT_HDD_UNITS: [u8; 4] = [0x82, 0x83, 0x84, 0x8F];
+
+/// Asserts AH and CF of a result stored by `make_int1bh_with_flags`.
+fn assert_result_ah_and_carry(ram: &[u8; 0xA0000], expected_ah: u8, label: &str) {
+    assert_result_ah(ram, expected_ah, label);
+    let flags = read_ram_u16(ram, RESULT as usize + 2);
+    assert_eq!(flags & 0x0001, 0x0001, "{label}: CF should be set");
+}
+
+#[test]
+fn int1bh_ide_absent_units_report_not_ready_pc9821() {
+    for drive_select in ABSENT_HDD_UNITS {
+        for (function, expected_ah) in [(0x04u8, 0x60u8), (0x84, 0x60), (0x06, 0x60), (0xD0, 0x40)]
+        {
+            let code = make_int1bh_with_flags(function, drive_select, 0x0200);
+            let mut machine = create_machine_pc9821as();
+            machine.bus.insert_hdd(0, make_ide_test_drive(), None);
+            machine.bus.insert_hdd(1, make_ide_test_drive(), None);
+            boot_to_halt!(machine);
+            write_bytes(&mut machine.bus, TEST_CODE, &code);
+            machine.cpu.load_state(&{
+                let mut s = cpu::I386State {
+                    ip: TEST_CODE as u16,
+                    ..Default::default()
+                };
+                s.set_esp(0x4000);
+                s
+            });
+            machine.run_for(INT1BH_BUDGET);
+            let state = machine.inspection_state();
+            assert_result_ah_and_carry(
+                &state.memory.ram,
+                expected_ah,
+                &format!("IDE AH={function:02X} AL={drive_select:02X}"),
+            );
+        }
+    }
+}
+
+#[test]
+fn int1bh_sasi_absent_units_report_not_ready_vm() {
+    for drive_select in ABSENT_HDD_UNITS {
+        for function in [0x04u8, 0x84, 0x06, 0x05] {
+            let code = make_int1bh_with_flags(function, drive_select, 0x0100);
+            let mut machine = create_machine_vm();
+            machine.bus.insert_hdd(0, make_sasi_test_drive(), None);
+            machine.bus.insert_hdd(1, make_sasi_test_drive(), None);
+            boot_to_halt!(machine);
+            write_bytes(&mut machine.bus, TEST_CODE, &code);
+            machine.cpu.load_state(&{
+                let mut s = cpu::V30State::default();
+                s.ip = TEST_CODE as u16;
+                s.initialize_cold_frontend();
+                s.set_sp(0x4000);
+                s
+            });
+            machine.run_for(INT1BH_BUDGET);
+            let state = machine.inspection_state();
+            assert_result_ah_and_carry(
+                &state.memory.ram,
+                0x60,
+                &format!("SASI AH={function:02X} AL={drive_select:02X}"),
+            );
+        }
+    }
+}

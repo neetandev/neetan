@@ -185,14 +185,14 @@ impl SasiController {
     /// Executes a BIOS read: reads sectors and writes to memory via closure.
     pub fn execute_read(
         &self,
-        drive_idx: usize,
+        drive_index: usize,
         xfer_size: u32,
         sector_pos: u32,
         buf_addr: u32,
         write_byte: impl FnMut(u32, u8),
     ) -> u8 {
         crate::disk_hle::execute_read(
-            drive_idx,
+            drive_index,
             xfer_size,
             sector_pos,
             buf_addr,
@@ -203,12 +203,12 @@ impl SasiController {
 
     /// Reads the boot sector (LBA 0, 1024 bytes) from the specified drive
     /// into a local buffer and returns it.
-    pub fn read_boot_sector(&self, drive_idx: usize) -> Option<Vec<u8>> {
-        let geometry = self.drive_geometry(drive_idx)?;
-        let pos = crate::disk_hle::sector_position(0x80 | drive_idx as u8, 0, 0, &geometry);
+    pub fn read_boot_sector(&self, drive_index: usize) -> Option<Vec<u8>> {
+        let geometry = self.drive_geometry(drive_index)?;
+        let pos = crate::disk_hle::sector_position(0x80 | drive_index as u8, 0, 0, &geometry);
         let mut buf = vec![0u8; 0x0400];
         let mut offset = 0usize;
-        let result = self.execute_read(drive_idx, 0x0400, pos, 0, |_addr, byte| {
+        let result = self.execute_read(drive_index, 0x0400, pos, 0, |_addr, byte| {
             buf[offset] = byte;
             offset += 1;
         });
@@ -218,14 +218,14 @@ impl SasiController {
     /// Executes a BIOS write: reads from memory via closure and writes sectors.
     pub fn execute_write(
         &mut self,
-        drive_idx: usize,
+        drive_index: usize,
         xfer_size: u32,
         sector_pos: u32,
         buf_addr: u32,
         read_byte: impl FnMut(u32) -> u8,
     ) -> u8 {
         crate::disk_hle::execute_write::<256>(
-            drive_idx,
+            drive_index,
             xfer_size,
             sector_pos,
             buf_addr,
@@ -235,8 +235,8 @@ impl SasiController {
     }
 
     /// Executes a BIOS sense: returns the SASI media type.
-    pub fn execute_sense(&self, drive_idx: usize) -> u8 {
-        hle::execute_sense(drive_idx, &self.drives)
+    pub fn execute_sense(&self, drive_index: usize) -> u8 {
+        hle::execute_sense(drive_index, &self.drives)
     }
 
     /// Executes a BIOS init: returns the disk equipment word.
@@ -246,17 +246,17 @@ impl SasiController {
     }
 
     /// Executes a BIOS format on a track.
-    pub fn execute_format(&mut self, drive_idx: usize, sector_pos: u32) -> u8 {
-        crate::disk_hle::execute_format(drive_idx, sector_pos, &mut self.drives)
+    pub fn execute_format(&mut self, drive_index: usize, sector_pos: u32) -> u8 {
+        crate::disk_hle::execute_format(drive_index, sector_pos, &mut self.drives)
     }
 
     /// Executes a BIOS mode set (function 0x0E): selects drive mode
     /// (half-height / full-height). Returns 0x00 if the drive exists, 0x60 otherwise.
-    pub fn execute_mode_set(&self, drive_idx: usize) -> u8 {
-        if self.drives[drive_idx].is_some() {
+    pub fn execute_mode_set(&self, drive_index: usize) -> u8 {
+        if crate::disk_hle::mounted_drive(&self.drives, drive_index).is_some() {
             0x00
         } else {
-            0x60
+            crate::disk_hle::STATUS_NOT_READY
         }
     }
 
@@ -264,15 +264,15 @@ impl SasiController {
     /// the mode-set call for the specified drive.
     pub fn mode_set_parameter_pointer(
         &self,
-        drive_idx: usize,
+        drive_index: usize,
         function_code: u8,
     ) -> Option<(u16, u16)> {
-        if self.drives.get(drive_idx)?.is_none() {
+        if self.drives.get(drive_index)?.is_none() {
             return None;
         }
 
         let half_height_mode = function_code & 0x80 != 0;
-        let offset = match (drive_idx, half_height_mode) {
+        let offset = match (drive_index, half_height_mode) {
             (0, false) => PARAM_TABLE_D0_FULL_OFFSET,
             (0, true) => PARAM_TABLE_D0_HALF_OFFSET,
             (1, false) => PARAM_TABLE_D1_FULL_OFFSET,
@@ -491,6 +491,23 @@ mod tests {
         };
         let data = vec![0u8; geometry.total_bytes() as usize];
         HddImage::from_raw(geometry, HddFormat::Thd, data)
+    }
+
+    #[test]
+    fn bios_functions_on_units_two_to_fifteen_report_absent_drive() {
+        let mut sasi = SasiController::new();
+        sasi.insert_drive(0, make_test_drive(), None);
+        sasi.insert_drive(1, make_test_drive(), None);
+        for drive_select in (0x82u8..=0x8F).chain(0x02..=0x0F) {
+            let unit = drive_index(drive_select);
+            assert_eq!(sasi.execute_sense(unit), 0x60);
+            assert_eq!(sasi.execute_mode_set(unit), 0x60);
+            assert_eq!(sasi.execute_read(unit, 256, 0, 0, |_, _| {}), 0x60);
+            assert_eq!(sasi.execute_write(unit, 256, 0, 0, |_| 0), 0x60);
+            assert_eq!(sasi.execute_format(unit, 0), 0x60);
+            assert!(sasi.mode_set_parameter_pointer(unit, 0x8E).is_none());
+            assert!(sasi.read_boot_sector(unit).is_none());
+        }
     }
 
     #[test]

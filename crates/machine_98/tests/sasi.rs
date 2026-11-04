@@ -557,6 +557,22 @@ fn sasi_hle_read_no_drive_sets_error_and_carry() {
 }
 
 #[test]
+fn sasi_hle_units_two_and_above_report_not_ready_with_carry() {
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
+    bus.insert_hdd(0, make_test_drive(), None);
+    bus.insert_hdd(1, make_test_drive(), None);
+
+    for ax in [
+        0x8482u16, 0x0483, 0x0684, 0x058F, 0x0D82, 0x0E83, 0x0603, 0x0404,
+    ] {
+        let frame = SasiTestFrame::new(&mut bus, ax, 0x0100, 0x0000, 0x0000, 0x0000, 0x2000);
+        bus.execute_sasi_hle(frame.ss_base, frame.sp);
+        assert_eq!(frame.result_ah(&mut bus), 0x60, "AX={ax:04X}");
+        assert!(frame.result_cf(&mut bus), "AX={ax:04X}");
+    }
+}
+
+#[test]
 fn sasi_hle_yield_flag_triggers_and_clears() {
     let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
     bus.insert_hdd(0, make_test_drive(), None);
