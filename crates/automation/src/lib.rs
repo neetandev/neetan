@@ -10,6 +10,7 @@ pub mod capabilities;
 pub mod cli;
 pub mod config;
 pub mod executor;
+pub mod guest_clock;
 pub mod input;
 pub mod media;
 pub mod orchestration;

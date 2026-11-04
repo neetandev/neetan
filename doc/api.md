@@ -23,7 +23,7 @@ Options shared by both:
 --global-config <PATH>   Explicit optional configuration layer
 --artifacts <PATH>       Artifact root (default: <script-dir>/artifacts/<stem>)
 --timeout <SECONDS>      Per-script wall-clock deadline (default: 600)
---guest-time <DATETIME>  Fixed guest RTC value (default: 2000-01-01T00:00:00)
+--guest-time <DATETIME>  Guest RTC start time (default: 2000-01-01T00:00:00)
 --help / --version
 ```
 
@@ -37,6 +37,14 @@ sets: `pc98-roms` becomes `<roms-folder>/pc98`, and so on for each system and fo
 SC-55 apply only when they exist. Without `roms-folder` only the explicit ROM keys
 apply. An empty ROM key falls back to its derived folder. Any other host setting,
 for example `backend`, ends with an error.
+
+The guest real-time clock starts at `--guest-time` when a machine opens and
+advances with the emulated time of the machine. The session updates it after
+every frame and after every tick slice of at most one million ticks. The host
+wall clock never enters it. A hard reset and `restore-startup!` keep the clock
+running: the reconstructed machine reads the running session time.
+`restore-state!` rewinds the clock to the emulated time of the
+restored state. The earliest accepted year is 1970.
 
 ### Exit codes (run)
 

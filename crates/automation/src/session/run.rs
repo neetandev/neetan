@@ -165,13 +165,7 @@ impl AutomationSession {
                 max_ticks: chunk,
                 audio_drain_interval_ticks: drain_interval,
             };
-            let outcome = self
-                .active
-                .as_mut()
-                .expect("machine present")
-                .machine
-                .run_automation(request);
-            self.consume_budget(&outcome);
+            let outcome = self.run_machine_step(request);
             if outcome.stop_reason == StopReason::GuestShutdown {
                 return StopReason::GuestShutdown;
             }
@@ -201,13 +195,7 @@ impl AutomationSession {
                 max_ticks: remaining_ticks,
                 audio_drain_interval_ticks: drain_interval,
             };
-            let outcome = self
-                .active
-                .as_mut()
-                .expect("machine present")
-                .machine
-                .run_automation(request);
-            self.consume_budget(&outcome);
+            let outcome = self.run_machine_step(request);
             remaining_ticks = remaining_ticks.saturating_sub(outcome.ticks);
             presented = presented.saturating_add(outcome.frames);
             match outcome.stop_reason {
@@ -216,6 +204,20 @@ impl AutomationSession {
             }
         }
         StopReason::TargetReached
+    }
+
+    /// Runs one bounded request on the active machine, then updates the guest
+    /// clock and the session budgets from its outcome.
+    pub(super) fn run_machine_step(&mut self, request: RunRequest) -> RunOutcome {
+        let outcome = self
+            .active
+            .as_mut()
+            .expect("machine present")
+            .machine
+            .run_automation(request);
+        self.synchronize_guest_clock();
+        self.consume_budget(&outcome);
+        outcome
     }
 
     /// Decrements the tick and frame budgets by a completed sub-chunk.

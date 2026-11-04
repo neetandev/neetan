@@ -194,13 +194,7 @@ impl AutomationSession {
                 max_ticks: remaining_ticks,
                 audio_drain_interval_ticks: INPUT_DRAIN_INTERVAL_TICKS,
             };
-            let outcome = self
-                .active
-                .as_mut()
-                .expect("machine present")
-                .machine
-                .run_automation(request);
-            self.consume_budget(&outcome);
+            let outcome = self.run_machine_step(request);
             remaining_ticks = remaining_ticks.saturating_sub(outcome.ticks);
             presented = presented.saturating_add(outcome.frames);
             if outcome.stop_reason == StopReason::GuestShutdown {

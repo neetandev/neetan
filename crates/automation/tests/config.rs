@@ -70,6 +70,15 @@ fn rejects_invalid_guest_time() {
 }
 
 #[test]
+fn rejects_guest_time_before_1970() {
+    let folder = TemporaryFolder::new("auto_config");
+    let dir = folder.path();
+    let config = write(dir, "common.conf", "guest-time = 1969-12-31T23:59:59\n");
+    let error = CommonConfig::load(None, Some(&config)).unwrap_err();
+    assert!(error.contains("out of range"), "{error}");
+}
+
+#[test]
 fn config_layer_overrides_global_without_conflict() {
     let global_temporary = TemporaryFolder::new("auto_config");
     let global_dir = global_temporary.path();
