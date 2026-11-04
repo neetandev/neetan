@@ -919,6 +919,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
         self.mouse_timer_setting = MOUSE_TIMER_DEFAULT_SETTING;
         self.scheduler.cancel(Event98::MouseTimer);
         self.clear_pic_irq(MOUSE_TIMER_IRQ_LINE);
+        self.update_mouse_timer(false);
 
         // FDC 1MB + 640K: post-Recalibrate state.
         self.floppy.initialize_boot_state(self.clocks.pit_clock_hz);

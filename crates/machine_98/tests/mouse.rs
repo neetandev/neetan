@@ -140,3 +140,117 @@ fn mouse_latch_resets_accumulator() {
     let x_hi = bus.io_read_byte(0x7FD9) & 0x0F;
     assert_eq!(x_hi, 0x01); // 20 = 0x14, high nibble = 0x1
 }
+
+/// Unmasks only the slave cascade on the master PIC and slave IR5 (IR13).
+fn unmask_only_mouse_timer(bus: &mut Pc9801Bus<NoTrace>) {
+    bus.io_write_byte(0x02, 0x7F);
+    bus.io_write_byte(0x0A, 0xDF);
+}
+
+/// Acknowledges the pending IR13 request and ends it on both PICs.
+fn acknowledge_mouse_timer(bus: &mut Pc9801Bus<NoTrace>) {
+    assert_eq!(bus.acknowledge_irq(), 0x15);
+    bus.io_write_byte(0x08, 0x20);
+    bus.io_write_byte(0x00, 0x20);
+}
+
+/// CPU cycles of one 120 Hz mouse timer period.
+fn mouse_timer_period(bus: &Pc9801Bus<NoTrace>) -> u64 {
+    u64::from(bus.cpu_clock_hz()).div_ceil(120)
+}
+
+/// undoc98 io_mouse.txt: the ITF init command 93h clears port C, which sets
+/// INT# = 0, and BFDBh resets to 120 Hz. The timer interrupt runs without any
+/// port C write.
+#[test]
+fn mouse_timer_runs_after_reset_with_int_enabled() {
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9821AP, CpuMode::High, 48000);
+    unmask_only_mouse_timer(&mut bus);
+    let period = mouse_timer_period(&bus);
+    let start = bus.current_cycle();
+
+    bus.set_current_cycle(start + period - 1);
+    assert!(!bus.has_irq());
+    for tick in 1..=3 {
+        bus.set_current_cycle(start + period * tick);
+        assert!(bus.has_irq(), "IR13 must be raised at tick {tick}");
+        acknowledge_mouse_timer(&mut bus);
+    }
+}
+
+/// undoc98 io_mouse.txt: an 8255 mode word clears port C and leaves INT# = 0.
+/// The running timer keeps its period.
+#[test]
+fn mouse_timer_keeps_running_after_mode_word() {
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9821AP, CpuMode::High, 48000);
+    unmask_only_mouse_timer(&mut bus);
+    let period = mouse_timer_period(&bus);
+    let start = bus.current_cycle();
+
+    bus.set_current_cycle(start + period / 2);
+    bus.io_write_byte(0x7FDF, 0x93);
+    bus.set_current_cycle(start + period);
+    assert!(bus.has_irq());
+    acknowledge_mouse_timer(&mut bus);
+    bus.set_current_cycle(start + period * 2);
+    assert!(bus.has_irq());
+}
+
+/// undoc98 io_mouse.txt: INT# = 1 masks the timer interrupt and INT# = 0
+/// enables it again.
+#[test]
+fn mouse_timer_stops_with_int_masked_and_restarts_with_int_enabled() {
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9821AP, CpuMode::High, 48000);
+    unmask_only_mouse_timer(&mut bus);
+    let period = mouse_timer_period(&bus);
+    let start = bus.current_cycle();
+
+    bus.set_current_cycle(start + period);
+    assert!(bus.has_irq());
+    acknowledge_mouse_timer(&mut bus);
+
+    bus.io_write_byte(0x7FDF, 0x09);
+    bus.set_current_cycle(start + period * 4);
+    assert!(!bus.has_irq());
+
+    let restart = bus.current_cycle();
+    bus.io_write_byte(0x7FDF, 0x08);
+    bus.set_current_cycle(restart + period - 1);
+    assert!(!bus.has_irq());
+    bus.set_current_cycle(restart + period);
+    assert!(bus.has_irq());
+}
+
+/// The PC-9801VM resets port C to F0h with INT# = 1. The timer interrupt starts
+/// when INT# is cleared.
+#[test]
+fn mouse_timer_waits_for_int_enable_after_reset_with_int_masked() {
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
+    unmask_only_mouse_timer(&mut bus);
+    let period = mouse_timer_period(&bus);
+    let start = bus.current_cycle();
+
+    bus.set_current_cycle(start + period * 4);
+    assert!(!bus.has_irq());
+
+    let enable = bus.current_cycle();
+    bus.io_write_byte(0x7FDF, 0x08);
+    bus.set_current_cycle(enable + period);
+    assert!(bus.has_irq());
+    acknowledge_mouse_timer(&mut bus);
+}
+
+/// undoc98 io_mouse.txt: INT# = 1 masks the timer interrupt. A pending IR13
+/// request is released when INT# changes from 0 to 1.
+#[test]
+fn mouse_timer_int_masked_releases_pending_request() {
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9821AP, CpuMode::High, 48000);
+    unmask_only_mouse_timer(&mut bus);
+    let period = mouse_timer_period(&bus);
+    let start = bus.current_cycle();
+
+    bus.set_current_cycle(start + period);
+    assert!(bus.has_irq());
+    bus.io_write_byte(0x7FDF, 0x09);
+    assert!(!bus.has_irq());
+}

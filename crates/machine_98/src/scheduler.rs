@@ -235,6 +235,11 @@ impl Pc98Scheduler {
         self.state.cancel(kind as usize);
     }
 
+    /// Returns whether an event of the given kind is pending.
+    pub(crate) fn is_scheduled(&self, kind: Event98) -> bool {
+        self.state.is_scheduled(kind as usize)
+    }
+
     /// Returns the earliest pending event cycle.
     pub(crate) fn next_event_cycle(&self) -> Option<u64> {
         self.state.next_event_cycle()

@@ -1311,6 +1311,25 @@ impl<T: TraceSink> Pc9801Bus<T> {
         self.scheduler.schedule(Event98::MouseTimer, next);
     }
 
+    /// Runs the mouse timer while INT# (port C bit 4) is 0 and stops it while
+    /// INT# is 1. A running timer keeps its pending event. `was_enabled` is the
+    /// INT# state before the change, and a change to 1 clears the IR13 request.
+    /// Reference: `undoc98/io_mouse.txt`, INT# = 0 raises the interrupt
+    /// periodically at the BFDBh rate.
+    fn update_mouse_timer(&mut self, was_enabled: bool) {
+        if self.mouse_timer_irq_enabled() {
+            if !self.scheduler.is_scheduled(Event98::MouseTimer) {
+                self.schedule_mouse_timer();
+            }
+        } else {
+            self.scheduler.cancel(Event98::MouseTimer);
+            if was_enabled {
+                self.clear_pic_irq(MOUSE_TIMER_IRQ_LINE);
+            }
+        }
+        self.update_next_event_cycle();
+    }
+
     fn is_memory_switch_address(address: u32) -> bool {
         (0xA3FE2..=0xA3FFE).contains(&address) && (address - 0xA3FE2).is_multiple_of(4)
     }
