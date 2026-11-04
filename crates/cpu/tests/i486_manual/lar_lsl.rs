@@ -291,6 +291,8 @@ fn install_real_mode_invalid_opcode_handler(bus: &mut TestBus, handler_cs: u16, 
 // the selector source and AX (reg=000) as the destination, giving modrm=C3.
 const LAR_AX_BX: [u8; 3] = [0x0F, 0x02, 0xC3];
 const LAR_EAX_EBX: [u8; 4] = [0x66, 0x0F, 0x02, 0xC3];
+/// LAR ECX,EBX with a 32-bit operand.
+const LAR_ECX_EBX: [u8; 4] = [0x66, 0x0F, 0x02, 0xCB];
 // LAR AX, [DS:0x0040]: modrm=06 disp16=0x0040.
 const LAR_AX_MEM_0040: [u8; 5] = [0x0F, 0x02, 0x06, 0x40, 0x00];
 const LSL_AX_BX: [u8; 3] = [0x0F, 0x03, 0xC3];
@@ -831,8 +833,10 @@ fn lar_protected_mode_dpl3_tss_from_cpl0_clears_zf() {
     );
 }
 
+// No hardware data covers LAR on the 386. The 386 is assumed to return the limit bits
+// 19:16 like the 486.
 #[test]
-fn lar_protected_mode_32bit_operand_includes_granularity_high_byte() {
+fn lar_protected_mode_32bit_operand_returns_limit_bits_386_assumed_like_486() {
     let mut cpu = make_cpu_386();
     let mut bus = TestBus::new();
 
@@ -847,9 +851,39 @@ fn lar_protected_mode_32bit_operand_includes_granularity_high_byte() {
 
     assert!(cpu.state.flags.zf());
     let expected_rights = RIGHTS_RING0_DATA_WRITABLE_ACCESSED;
-    let expected_granularity_high = GRANULARITY_PAGE | GRANULARITY_BIG_OR_DEFAULT32;
-    let expected = ((expected_rights as u32) << 8) | ((expected_granularity_high as u32) << 16);
+    let expected_byte_6 = GRANULARITY_PAGE | GRANULARITY_BIG_OR_DEFAULT32 | 0x0F;
+    let expected = ((expected_rights as u32) << 8) | ((expected_byte_6 as u32) << 16);
     assert_eq!(cpu.eax(), expected);
+}
+
+#[test]
+fn lar_protected_mode_32bit_operand_returns_byte_granular_limit_bits_486() {
+    let mut cpu = make_cpu_486();
+    let mut bus = TestBus::new();
+
+    let mut state = standard_protected_mode(&mut bus);
+    write_segment_descriptor(
+        &mut bus,
+        GLOBAL_DESCRIPTOR_TABLE_BASE,
+        TEST_SLOT_DATA_RING0_GRANULAR,
+        SHARED_DATA_BASE,
+        0x0002_571F,
+        RIGHTS_RING3_DATA_WRITABLE_ACCESSED,
+        0,
+    );
+    state.set_ecx(0);
+    state.set_ebx((TEST_SLOT_DATA_RING0_GRANULAR * 8) as u32);
+    cpu.load_state(&state);
+
+    place_at(&mut bus, RING0_CODE_BASE, &LAR_ECX_EBX);
+
+    cpu.step(&mut bus);
+
+    assert!(cpu.state.flags.zf());
+    assert_eq!(
+        cpu.ecx(),
+        0x0002_0000 | ((RIGHTS_RING3_DATA_WRITABLE_ACCESSED as u32) << 8)
+    );
 }
 
 #[test]
@@ -2176,4 +2210,58 @@ fn lsl_protected_mode_high_rpl_with_dpl_3_data_succeeds() {
 
     assert!(cpu.state.flags.zf());
     assert_eq!(cpu.eax() & 0xFFFF, 0xFFFF);
+}
+
+/// The EFLAGS.ZF bit.
+const EFLAGS_ZERO: u32 = 1 << 6;
+
+/// Runs `code` with BX selecting a descriptor on a not-present LDT page and EFLAGS.ZF set,
+/// and checks that the #PF of the descriptor read ends the instruction with EAX and ZF
+/// unchanged, both live and in the pushed EFLAGS image.
+fn assert_descriptor_page_fault_keeps_state(code: &[u8]) {
+    let mut cpu = make_cpu_486();
+    let mut bus = TestBus::new();
+
+    let mut state = standard_protected_mode(&mut bus);
+    super::setup::enable_identity_paging(&mut bus, &mut state);
+    super::setup::set_identity_page_flags(&mut bus, LDT_BASE, 0);
+    state.set_ebx(SELECTOR_LDT_RING0_CODE as u32);
+    state.set_eflags(state.eflags() | EFLAGS_ZERO);
+    cpu.load_state(&state);
+
+    place_at(&mut bus, RING0_CODE_BASE, code);
+
+    cpu.step(&mut bus);
+
+    assert_eq!(cpu.ip(), u32::from(super::setup::HANDLER_PAGE_FAULT_IP));
+    assert_eq!(cpu.state.cr2, LDT_BASE + 8);
+    assert_eq!(cpu.eax(), SENTINEL_EAX);
+    assert!(cpu.state.flags.zf(), "live ZF after the #PF delivery");
+    let stack = cpu.state.seg_bases[cpu::SegReg32::SS as usize].wrapping_add(cpu.esp());
+    let pushed_eflags = super::setup::read_dword_at(&bus, stack + 12);
+    assert_ne!(
+        pushed_eflags & EFLAGS_ZERO,
+        0,
+        "ZF in the pushed EFLAGS image"
+    );
+}
+
+#[test]
+fn lar_descriptor_page_fault_keeps_destination_and_zf() {
+    assert_descriptor_page_fault_keeps_state(&LAR_EAX_EBX);
+}
+
+#[test]
+fn lsl_descriptor_page_fault_keeps_destination_and_zf() {
+    assert_descriptor_page_fault_keeps_state(&LSL_EAX_EBX);
+}
+
+#[test]
+fn verr_descriptor_page_fault_keeps_zf() {
+    assert_descriptor_page_fault_keeps_state(&VERR_BX);
+}
+
+#[test]
+fn verw_descriptor_page_fault_keeps_zf() {
+    assert_descriptor_page_fault_keeps_state(&VERW_BX);
 }

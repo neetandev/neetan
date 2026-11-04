@@ -1145,14 +1145,14 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             4 => {
                 // VERR
                 let selector = self.get_rm_word(modrm, bus)?;
-                let readable = self.verr_accessible(selector, bus);
+                let readable = self.verr_accessible(selector, bus)?;
                 self.flags.zero_val = if readable { 0 } else { 1 };
                 self.clk_modrm(modrm, Self::timing(14, 11), Self::timing(16, 11));
             }
             5 => {
                 // VERW
                 let selector = self.get_rm_word(modrm, bus)?;
-                let writable = self.selector_accessible(selector, true, bus);
+                let writable = self.selector_accessible(selector, true, bus)?;
                 self.flags.zero_val = if writable { 0 } else { 1 };
                 self.clk_modrm(modrm, Self::timing(14, 11), Self::timing(16, 11));
             }
@@ -1293,6 +1293,12 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         Ok(())
     }
 
+    /// LAR. The 32-bit form returns the second descriptor dword masked with 00FFFF00h. The PRM
+    /// mask 00FxFF00h leaves bits 19:16 undefined. The processor returns the limit bits 19:16
+    /// there (observed behaviour). Interrupt and trap gates (types 6, 7, 0Eh and 0Fh) clear
+    /// ZF. The PRM LAR table lists them as valid, the processor rejects them (observed
+    /// behaviour). A fault on the descriptor read ends the instruction with ZF and the
+    /// destination unchanged (80486 PRM 9.1 and 9.2).
     fn lar(&mut self, bus: &mut impl common::Bus) -> Step {
         let modrm = self.fetch(bus)?;
         if !self.is_protected_mode() || self.is_virtual_mode() {
@@ -1300,10 +1306,13 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             return Ok(());
         }
         let selector = self.get_rm_word(modrm, bus)?;
+        let descriptor = if selector & 0xFFFC != 0 {
+            self.decode_descriptor(selector, bus)?
+        } else {
+            None
+        };
         self.flags.zero_val = 1; // ZF=0: invalid by default
-        if selector & 0xFFFC != 0
-            && let Ok(Some(descriptor)) = self.decode_descriptor(selector, bus)
-        {
+        if let Some(descriptor) = descriptor {
             let rights = descriptor.rights;
             let desc_type = rights & 0x1F;
             let valid_type = if rights & 0x10 != 0 {
@@ -1325,8 +1334,8 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                 if priv_ok {
                     if self.operand_size_override {
                         let reg = self.reg_dword(modrm);
-                        let result = ((rights as u32) << 8)
-                            | (((descriptor.granularity & 0xF0) as u32) << 16);
+                        let result =
+                            ((rights as u32) << 8) | ((descriptor.granularity as u32) << 16);
                         self.regs.set_dword(reg, result);
                     } else {
                         let reg = self.reg_word(modrm);
@@ -1340,6 +1349,8 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         Ok(())
     }
 
+    /// LSL. A fault on the descriptor read ends the instruction with ZF and the destination
+    /// unchanged (80486 PRM 9.1 and 9.2).
     fn lsl_instr(&mut self, bus: &mut impl common::Bus) -> Step {
         let modrm = self.fetch(bus)?;
         if !self.is_protected_mode() || self.is_virtual_mode() {
@@ -1347,10 +1358,13 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             return Ok(());
         }
         let selector = self.get_rm_word(modrm, bus)?;
+        let descriptor = if selector & 0xFFFC != 0 {
+            self.decode_descriptor(selector, bus)?
+        } else {
+            None
+        };
         self.flags.zero_val = 1; // ZF=0: invalid by default
-        if selector & 0xFFFC != 0
-            && let Ok(Some(descriptor)) = self.decode_descriptor(selector, bus)
-        {
+        if let Some(descriptor) = descriptor {
             let rights = descriptor.rights;
             let desc_type = rights & 0x1F;
             let valid_type = if rights & 0x10 != 0 {
@@ -1385,52 +1399,56 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         Ok(())
     }
 
-    fn verr_accessible(&mut self, selector: u16, bus: &mut impl common::Bus) -> bool {
+    /// Returns whether VERR finds `selector` readable at the current privilege level. A
+    /// fault on the descriptor read ends the instruction.
+    fn verr_accessible(&mut self, selector: u16, bus: &mut impl common::Bus) -> Step<bool> {
         if selector & 0xFFFC == 0 {
-            return false;
+            return Ok(false);
         }
-        let Ok(Some(descriptor)) = self.decode_descriptor(selector, bus) else {
-            return false;
+        let Some(descriptor) = self.decode_descriptor(selector, bus)? else {
+            return Ok(false);
         };
         let rights = descriptor.rights;
         if !Self::descriptor_is_segment(rights) {
-            return false;
+            return Ok(false);
         }
         let cpl = self.cpl();
         let rpl = selector & 3;
         let dpl = Self::descriptor_dpl(rights);
         if !Self::descriptor_is_conforming_code(rights) && dpl < cpl.max(rpl) {
-            return false;
+            return Ok(false);
         }
-        Self::descriptor_is_readable(rights)
+        Ok(Self::descriptor_is_readable(rights))
     }
 
+    /// Returns whether VERW (`write`) or a read check finds `selector` accessible at the
+    /// current privilege level. A fault on the descriptor read ends the instruction.
     fn selector_accessible(
         &mut self,
         selector: u16,
         write: bool,
         bus: &mut impl common::Bus,
-    ) -> bool {
+    ) -> Step<bool> {
         if selector & 0xFFFC == 0 {
-            return false;
+            return Ok(false);
         }
-        let Ok(Some(descriptor)) = self.decode_descriptor(selector, bus) else {
-            return false;
+        let Some(descriptor) = self.decode_descriptor(selector, bus)? else {
+            return Ok(false);
         };
         let rights = descriptor.rights;
         if !Self::descriptor_is_segment(rights) {
-            return false;
+            return Ok(false);
         }
         let cpl = self.cpl();
         let rpl = selector & 3;
         let dpl = Self::descriptor_dpl(rights);
         if dpl < cpl.max(rpl) {
-            return false;
+            return Ok(false);
         }
         if write {
-            return Self::descriptor_is_writable(rights);
+            return Ok(Self::descriptor_is_writable(rights));
         }
-        Self::descriptor_is_readable(rights)
+        Ok(Self::descriptor_is_readable(rights))
     }
 
     /// MOV r32, CRn (0F 20) - read from control register.
