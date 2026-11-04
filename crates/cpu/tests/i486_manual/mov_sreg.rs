@@ -163,6 +163,38 @@ fn make_real_mode_state(cs_segment: u16, cs_base: u32) -> I386State {
     state
 }
 
+/// MOV DS with a descriptor whose accessed bit is already set writes nothing to the
+/// descriptor table, so the PTE of the GDT page keeps D=0. A clear accessed bit is set
+/// and marks the page dirty (observed behaviour).
+#[test]
+fn mov_ds_sets_the_gdt_page_dirty_only_when_it_writes_the_accessed_bit() {
+    let mut cpu = make_cpu_486();
+    let mut bus = TestBus::new();
+    let mut state = super::setup::setup_protected_mode(&mut bus, 0xFFFF);
+    super::setup::enable_identity_paging(&mut bus, &mut state);
+    state.set_eax(u32::from(SELECTOR_RING0_DATA));
+    cpu.load_state(&state);
+    let gdt_entry_address =
+        super::setup::PAGE_TABLE_BASE + (GLOBAL_DESCRIPTOR_TABLE_BASE >> 12) * 4;
+    let page_dirty = 0x40;
+
+    place_at(&mut bus, RING0_CODE_BASE, &[0x8E, 0xD8, 0x8E, 0xC0]);
+    cpu.step(&mut bus);
+    assert_eq!(
+        super::setup::read_dword_at(&bus, gdt_entry_address) & page_dirty,
+        0
+    );
+
+    let rights_address = GLOBAL_DESCRIPTOR_TABLE_BASE + 2 * 8 + 5;
+    bus.ram[rights_address as usize] &= !0x01;
+    cpu.step(&mut bus);
+    assert_eq!(bus.ram[rights_address as usize] & 0x01, 0x01);
+    assert_eq!(
+        super::setup::read_dword_at(&bus, gdt_entry_address) & page_dirty,
+        page_dirty
+    );
+}
+
 #[test]
 fn mov_es_real_mode_loads_segment_register_and_base() {
     let mut cpu = make_cpu_386();

@@ -308,6 +308,58 @@ fn in_al_dx_pm_cpl3_iopl0_port_allowed_succeeds() {
     assert_eq!(cpu.eax() & 0xFF, 0x42);
 }
 
+/// 80486 PRM 6.8.3: the I/O permission bitmap reads from the TSS are privilege level 0
+/// accesses. A CPL 3 IN through a TSS in a supervisor page takes no page fault.
+#[test]
+fn in_al_dx_pm_cpl3_iopb_in_supervisor_page_succeeds() {
+    let mut cpu = super::setup::make_cpu_486();
+    let mut bus = TestBus::new();
+    bus.io_read_default = 0x42;
+
+    let mut state = setup_protected_mode_with_iopb(&mut bus, 8, &[0x10]);
+    promote_to_cpl3_iopl(&mut state, 0);
+    state.set_edx(0x0010);
+    let tss_base = state.tr_base;
+    super::setup::enable_user_identity_paging(
+        &mut bus,
+        &mut state,
+        &[super::setup::GLOBAL_DESCRIPTOR_TABLE_BASE, tss_base],
+    );
+    cpu.load_state(&state);
+
+    place_at(&mut bus, RING3_CODE_BASE, &[IN_AL_DX]);
+
+    cpu.step(&mut bus);
+
+    assert_eq!(cpu.state.eip(), 1);
+    assert_eq!(cpu.eax() & 0xFF, 0x42);
+}
+
+/// The VM86 form of `in_al_dx_pm_cpl3_iopb_in_supervisor_page_succeeds`.
+#[test]
+fn in_al_dx_vm86_iopb_in_supervisor_page_succeeds() {
+    let mut cpu = super::setup::make_cpu_486();
+    let mut bus = TestBus::new();
+    bus.io_read_default = 0xAB;
+
+    let mut state = setup_vm86_with_iopl_and_iopb(&mut bus, 0, 8, &[0x10]);
+    state.set_edx(0x0010);
+    let tss_base = state.tr_base;
+    super::setup::enable_user_identity_paging(
+        &mut bus,
+        &mut state,
+        &[super::setup::GLOBAL_DESCRIPTOR_TABLE_BASE, tss_base],
+    );
+    cpu.load_state(&state);
+
+    place_at(&mut bus, 0x0001_0000, &[IN_AL_DX]);
+
+    cpu.step(&mut bus);
+
+    assert_eq!(cpu.state.eip(), 1);
+    assert_eq!(cpu.eax() & 0xFF, 0xAB);
+}
+
 #[test]
 fn in_al_imm_pm_cpl3_iopl0_port_allowed_succeeds() {
     let mut cpu = make_cpu_386();

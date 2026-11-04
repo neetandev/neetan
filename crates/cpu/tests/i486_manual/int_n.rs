@@ -345,6 +345,80 @@ fn int_n_pm_at_cpl3_via_dpl3_gate_succeeds() {
     assert_eq!(cpu.cs() & 3, 0, "Inter-priv int adjusts CPL to target");
 }
 
+/// 80486 PRM 6.8.3 overrides the page protection only for the inner stack of a privilege
+/// change. A CPL 3 INT n to a DPL 3 handler pushes its frame at CPL 3, so a stack in a
+/// supervisor page gives #PF with CR2 at the first frame slot.
+#[test]
+fn int_n_pm_same_privilege_at_cpl3_on_supervisor_stack_page_faults() {
+    let mut cpu = make_cpu_486();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_protected_mode_with_handlers(&mut bus);
+    write_interrupt_gate_386(
+        &mut bus,
+        INTERRUPT_DESCRIPTOR_TABLE_BASE,
+        TEST_VECTOR,
+        TEST_VECTOR_HANDLER_IP as u32,
+        SELECTOR_RING3_CODE,
+        3,
+    );
+    promote_to_ring3(&mut state);
+    state.set_esp(0xF000);
+    let frame_slot = super::setup::RING3_STACK_BASE + 0xF000 - 4;
+    super::setup::enable_user_identity_paging(
+        &mut bus,
+        &mut state,
+        &[GLOBAL_DESCRIPTOR_TABLE_BASE, frame_slot],
+    );
+    cpu.load_state(&state);
+
+    place_at(&mut bus, RING3_CODE_BASE, &[0xCD, TEST_VECTOR]);
+    cpu.step(&mut bus);
+
+    assert_eq!(cpu.state.cr2, frame_slot);
+    assert_eq!(cpu.state.eip(), super::setup::HANDLER_PAGE_FAULT_IP as u32);
+    assert_eq!(cpu.cs(), SELECTOR_RING0_CODE);
+}
+
+/// The inner stack of a CPL 3 INT n to a ring 0 handler is a privilege level 0 access
+/// (80486 PRM 6.8.3). A ring 0 stack in a supervisor page takes the frame.
+#[test]
+fn int_n_pm_privilege_change_pushes_onto_supervisor_stack_page() {
+    let mut cpu = make_cpu_486();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_protected_mode_with_handlers(&mut bus);
+    write_interrupt_gate_386(
+        &mut bus,
+        INTERRUPT_DESCRIPTOR_TABLE_BASE,
+        TEST_VECTOR,
+        TEST_VECTOR_HANDLER_IP as u32,
+        SELECTOR_RING0_CODE,
+        3,
+    );
+    install_int_handler_at(&mut bus, TEST_VECTOR_HANDLER_IP);
+    promote_to_ring3(&mut state);
+    let tss_base = state.tr_base;
+    let ring0_stack_top = RING0_STACK_BASE + 0xFFF0;
+    super::setup::enable_user_identity_paging(
+        &mut bus,
+        &mut state,
+        &[
+            GLOBAL_DESCRIPTOR_TABLE_BASE,
+            INTERRUPT_DESCRIPTOR_TABLE_BASE,
+            tss_base,
+            ring0_stack_top - 4,
+        ],
+    );
+    cpu.load_state(&state);
+
+    place_at(&mut bus, RING3_CODE_BASE, &[0xCD, TEST_VECTOR]);
+    cpu.step(&mut bus);
+
+    assert_eq!(cpu.state.eip(), TEST_VECTOR_HANDLER_IP as u32);
+    assert_eq!(cpu.cs(), SELECTOR_RING0_CODE);
+}
+
 #[test]
 fn int_n_pm_at_cpl3_via_dpl0_gate_raises_general_protection() {
     let mut cpu = make_cpu_386();

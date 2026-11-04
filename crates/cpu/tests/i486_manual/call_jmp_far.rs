@@ -506,6 +506,87 @@ fn call_through_386_call_gate_ring3_to_ring0_copies_dword_parameters() {
     assert_eq!(read_dword_at(&bus, new_ss_base + new_sp + 16), 0x3333_3333);
 }
 
+/// A CPL 3 far CALL through a 386 call gate. The GDT, the TSS and the ring 0 stack lie in
+/// supervisor pages (U/S=0). 80486 PRM 6.8.3 checks the descriptor table, TSS and inner
+/// stack accesses as privilege level 0 accesses, so the call reaches the ring 0 target
+/// without a page fault. The parameter comes from the user page of the caller's stack.
+#[test]
+fn call_through_386_call_gate_ring3_with_supervisor_system_pages() {
+    let mut cpu = make_cpu_486();
+    let mut bus = TestBus::new();
+
+    let mut state = standard_protected_mode_at_ring3(&mut bus);
+    write_call_gate_386(
+        &mut bus,
+        GLOBAL_DESCRIPTOR_TABLE_BASE,
+        TEST_SLOT_CALL_GATE_386_DPL3,
+        GATE_TARGET_IP as u32,
+        SELECTOR_RING0_CODE,
+        1,
+        3,
+    );
+    state.set_esp(0xF000);
+    let inner_stack_top = RING0_STACK_BASE + 0xFFF0;
+    super::setup::enable_user_identity_paging(
+        &mut bus,
+        &mut state,
+        &[
+            GLOBAL_DESCRIPTOR_TABLE_BASE,
+            TASK_STATE_SEGMENT_BASE,
+            inner_stack_top - 4,
+        ],
+    );
+    cpu.load_state(&state);
+
+    let outer_ss_base = cpu.state.seg_bases[cpu::SegReg32::SS as usize];
+    write_dword_at(&mut bus, outer_ss_base + 0xF000, 0x1234_5678);
+    place_call_far_32bit(&mut bus, RING3_CODE_BASE, SELECTOR_CALL_GATE_386_DPL3);
+
+    cpu.step(&mut bus);
+
+    assert_eq!(
+        cpu.state.sregs[cpu::SegReg32::CS as usize],
+        SELECTOR_RING0_CODE
+    );
+    assert_eq!(cpu.state.eip(), GATE_TARGET_IP as u32);
+    assert_eq!(cpu.state.esp(), 0xFFF0 - 20);
+    assert_eq!(read_dword_at(&bus, inner_stack_top - 12), 0x1234_5678);
+    assert_eq!(read_dword_at(&bus, inner_stack_top - 8), 0xF000);
+    cpu.step(&mut bus);
+    assert!(cpu.halted());
+}
+
+/// The parameter copy of a CPL 3 far CALL through a call gate reads the caller's stack at
+/// the caller's privilege level. 80486 PRM 6.8.3 overrides the page protection only for
+/// the inner stack. A caller stack in a supervisor page gives #PF with CR2 at the
+/// parameter.
+#[test]
+fn call_gate_parameter_copy_from_supervisor_caller_stack_page_faults() {
+    let mut cpu = make_cpu_486();
+    let mut bus = TestBus::new();
+
+    let mut state = standard_protected_mode_at_ring3(&mut bus);
+    write_call_gate_386(
+        &mut bus,
+        GLOBAL_DESCRIPTOR_TABLE_BASE,
+        TEST_SLOT_CALL_GATE_386_DPL3,
+        GATE_TARGET_IP as u32,
+        SELECTOR_RING0_CODE,
+        1,
+        3,
+    );
+    state.set_esp(0xF000);
+    let outer_ss_base = state.seg_bases[cpu::SegReg32::SS as usize];
+    super::setup::enable_user_identity_paging(&mut bus, &mut state, &[outer_ss_base + 0xF000]);
+    cpu.load_state(&state);
+    place_call_far_32bit(&mut bus, RING3_CODE_BASE, SELECTOR_CALL_GATE_386_DPL3);
+
+    cpu.step(&mut bus);
+
+    assert_eq!(cpu.state.eip(), super::setup::HANDLER_PAGE_FAULT_IP as u32);
+    assert_eq!(cpu.state.cr2, outer_ss_base + 0xF000);
+}
+
 #[test]
 fn call_gate_parameter_count_truncated_to_lower_five_bits_286() {
     // parameter_count=33 -> 33 & 0x1F = 1 -> exactly one word param copied.
