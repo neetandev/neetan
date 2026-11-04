@@ -2,10 +2,11 @@
 ;
 ; Assembles to the 96 KiB ROM image mapped at physical E8000h-FFFFFh. It holds
 ; the HLE stubs of the BIOS interrupt handlers. Each stub saves AX and DX on the
-; stack (the trap sequence clobbers them), writes a single vector number byte to
-; the emulator trap port 07F0h and then IRETs. The emulator yields on the OUT,
-; restores AX and DX from the stack, reads and writes the CPU registers directly
-; through the Cpu trait and resumes the CPU to execute the IRET. The BIOS logic
+; stack (the trap sequence clobbers them) and writes a single vector number byte
+; to the emulator trap port 07F0h. The emulator yields on the OUT, restores AX
+; and DX from the stack, reads and writes the CPU registers directly through the
+; Cpu trait and resumes the CPU. A plain stub then IRETs. A hardware interrupt
+; stub jumps to an EOI tail that ends the interrupt with guest OUTs and IRETs. The BIOS logic
 ; is Rust code in crates/machine_98/src/bus/bios.rs.
 ;
 ; Build: make (assembles bios.rom and builds fonts/font.rom from fonts/*.bit)
@@ -29,8 +30,8 @@ VEC_N88_BASIC   equ 0xF3        ; N88-BASIC ROM entry was invoked
 
 ; --- HLE interrupt stub macros ---
 ;
-; Each stub saves AX/DX (clobbered by the trap OUT), writes the vector number
-; to the trap port, and IRETs. The Rust HLE handler restores the original AX/DX
+; Each stub saves AX/DX (clobbered by the trap OUT) and writes the vector number
+; to the trap port. hle_stub then IRETs. hle_stub_eoi jumps to an EOI tail. The Rust HLE handler restores the original AX/DX
 ; from the stack before processing, then reads/writes CPU registers directly.
 
 %macro hle_stub 1               ; %1 = vector number
@@ -40,6 +41,18 @@ VEC_N88_BASIC   equ 0xF3        ; N88-BASIC ROM entry was invoked
     mov  al, %1
     out  dx, al
     iret
+%endmacro
+
+; Variant for hardware interrupt handlers: after the HLE trap the stub jumps
+; to an EOI tail (%2) that ends the interrupt with guest OUT instructions and
+; IRETs. The HLE handler has restored AX/DX and the IRET frame at SS:SP.
+%macro hle_stub_eoi 2           ; %1 = vector number, %2 = EOI tail label
+    push ax
+    push dx
+    mov  dx, TRAP_PORT
+    mov  al, %1
+    out  dx, al
+    jmp  %2
 %endmacro
 
 %macro hle_entry_halt 1         ; %1 = pseudo-vector number
@@ -138,35 +151,141 @@ metadata:
     dw bootstrap_entry  - BIOS_BASE_OFF     ; +6: bootstrap entry offset
 
 ; --- Shared IRET stub ---
-; All exception/unused vectors (INT 00h, 01h, 02h, 04h, 06h, 0Ah, 0Bh,
-; 0Dh, 0Eh, 0Fh, 10h, 14h, 15h, etc.) point here.
+; The exception and software vectors without a handler (INT 00h-07h,
+; INT 0Fh and INT 1Dh) point here.
 
 iret_stub:
     iret
 
+; --- Interrupt EOI tails ---
+; The INT 09h, 0Ch, 12h and 13h stubs and the unclaimed interrupt handlers
+; end their interrupt here with guest OUT instructions, so a protected-mode
+; or V86 monitor that virtualizes the PIC observes the EOI. PC-98 handlers
+; use the non-specific EOI (undoc98 io_pic.txt, I/O 0000h and 0008h). A
+; slave interrupt sends the EOI to the slave, reads the slave ISR and sends
+; the master EOI only when no slave interrupt is left in service, following
+; the sequence documented for I/O 0008h with JMP $+2 as the I/O wait.
+
+; Ends a master interrupt and returns.
+master_eoi_iret:
+    push ax
+    mov  al, 0x20                   ; Non-specific EOI
+    out  0x00, al
+    pop  ax
+    iret
+
+; Ends a slave interrupt and returns.
+slave_eoi_iret:
+    push ax
+    mov  al, 0x20                   ; Non-specific EOI to the slave
+    out  0x08, al
+    jmp  short $+2                  ; I/O wait
+    mov  al, 0x0B                   ; OCW3: read the ISR
+    out  0x08, al
+    jmp  short $+2                  ; I/O wait
+    in   al, 0x08
+    cmp  al, 0x00                   ; Slave interrupt still in service?
+    jne  .done
+    mov  al, 0x20                   ; Non-specific EOI to the master
+    out  0x00, al
+.done:
+    pop  ax
+    iret
+
+; --- Unclaimed hardware interrupt handlers ---
+; Each vector of an IR line without a BIOS service (INT 0Bh, 0Dh, 0Eh, 10h,
+; 11h and 14h-17h) enters with AH set to the bit of its IR line. The handler
+; ends the interrupt only when that line is the highest priority interrupt
+; in service, which is the lowest set ISR bit under the fixed priority of the
+; PC-98. A software INT or a spurious request finds another line or no line
+; in service and returns without an EOI. INT 0Fh is master IR7, the slave
+; cascade, so it never carries a hardware interrupt of its own and points to
+; the IRET stub.
+
+%macro unused_irq_entry 2       ; %1 = handler label, %2 = IR line bit
+    push ax
+    push cx
+    mov  ah, %2
+    jmp  %1
+%endmacro
+
+unused_int_0bh:     unused_irq_entry unused_master_irq, 0x08 ; Master IR3
+unused_int_0dh:     unused_irq_entry unused_master_irq, 0x20 ; Master IR5
+unused_int_0eh:     unused_irq_entry unused_master_irq, 0x40 ; Master IR6
+unused_int_10h:     unused_irq_entry unused_slave_irq, 0x01  ; Slave IR0 (IR8)
+unused_int_11h:     unused_irq_entry unused_slave_irq, 0x02  ; Slave IR1 (IR9)
+unused_int_14h:     unused_irq_entry unused_slave_irq, 0x10  ; Slave IR4 (IR12)
+unused_int_15h:     unused_irq_entry unused_slave_irq, 0x20  ; Slave IR5 (IR13)
+unused_int_16h:     unused_irq_entry unused_slave_irq, 0x40  ; Slave IR6 (IR14)
+unused_int_17h:     unused_irq_entry unused_slave_irq, 0x80  ; Slave IR7 (IR15)
+
+; Master line: AH = IR bit. Saved AX and CX are on the stack.
+unused_master_irq:
+    mov  al, 0x0B                   ; OCW3: read the master ISR
+    out  0x00, al
+    jmp  short $+2                  ; I/O wait
+    in   al, 0x00
+    mov  cl, al                     ; CL = lowest set ISR bit
+    neg  cl
+    and  cl, al
+    cmp  cl, ah                     ; This line in service with top priority?
+    jne  unused_irq_return
+    mov  al, 0x20                   ; Non-specific EOI
+    out  0x00, al
+    jmp  unused_irq_return
+
+; Slave line: AH = IR bit. Saved AX and CX are on the stack.
+unused_slave_irq:
+    mov  al, 0x0B                   ; OCW3: read the master ISR
+    out  0x00, al
+    jmp  short $+2                  ; I/O wait
+    in   al, 0x00
+    mov  cl, al                     ; CL = lowest set ISR bit
+    neg  cl
+    and  cl, al
+    cmp  cl, 0x80                   ; Slave cascade in service with top priority?
+    jne  unused_irq_return
+    mov  al, 0x0B                   ; OCW3: read the slave ISR
+    out  0x08, al
+    jmp  short $+2                  ; I/O wait
+    in   al, 0x08
+    mov  cl, al                     ; CL = lowest set ISR bit
+    neg  cl
+    and  cl, al
+    cmp  cl, ah                     ; This line in service with top priority?
+    jne  unused_irq_return
+    pop  cx
+    pop  ax
+    jmp  slave_eoi_iret
+
+unused_irq_return:
+    pop  cx
+    pop  ax
+    iret
+
 ; --- HLE-dispatched interrupt handler stubs ---
 
-; The INT 08h and INT 0Ah stubs run guest code before HLE dispatch: they
-; write the master PIC non-specific EOI (undoc98 io_pic.txt, I/O 0000h)
-; with a guest OUT, so protected-mode or V86 monitors that trap I/O port
-; 0x00 observe the EOI on the bus. All other HLE handlers either don't
-; need an EOI here or send it from inside the HLE handler.
+; The INT 08h and INT 0Ah stubs write the master PIC non-specific EOI
+; (undoc98 io_pic.txt, I/O 0000h) with a guest OUT before HLE dispatch. The
+; INT 09h, 0Ch, 12h and 13h stubs end the interrupt with an EOI tail after
+; HLE dispatch. Protected-mode or V86 monitors that trap the PIC ports
+; observe every EOI of these handlers on the bus.
 int_08h_handler:
     push ax
     mov al, 0x20
     out 0x00, al
     pop ax
     hle_stub 0x08                            ; Timer tick (IRQ 0)
-int_09h_handler:    hle_stub 0x09            ; Keyboard (IRQ 1)
+int_09h_handler:    hle_stub_eoi 0x09, master_eoi_iret ; Keyboard (IRQ 1)
 int_0ah_handler:
     push ax
     mov al, 0x20
     out 0x00, al
     pop ax
     hle_stub 0x0A                            ; VSYNC (IRQ 2)
-int_0ch_handler:    hle_stub 0x0C            ; Serial receive (IRQ 4)
-int_12h_handler:    hle_stub 0x12            ; FDC 640KB (slave IR2)
-int_13h_handler:    hle_stub 0x13            ; FDC 1MB (slave IR3)
+int_0ch_handler:    hle_stub_eoi 0x0C, master_eoi_iret ; Serial receive (IRQ 4)
+int_12h_handler:    hle_stub_eoi 0x12, slave_eoi_iret ; FDC 640KB (slave IR2)
+int_13h_handler:    hle_stub_eoi 0x13, slave_eoi_iret ; FDC 1MB (slave IR3)
 int_18h_handler:    hle_stub 0x18            ; CRT/KB/Graphics
 int_19h_handler:    hle_stub 0x19            ; RS-232C
 int_1ah_handler:    hle_stub_chainable 0x1A  ; Printer/CMT (chainable at +25)
@@ -223,19 +342,19 @@ vector_table:
     dw 0x08, int_08h_handler - BIOS_BASE_OFF   ; INT 08h - Timer tick
     dw 0x09, int_09h_handler - BIOS_BASE_OFF   ; INT 09h - Keyboard
     dw 0x0A, int_0ah_handler - BIOS_BASE_OFF   ; INT 0Ah - VSYNC
-    dw 0x0B, iret_stub       - BIOS_BASE_OFF   ; INT 0Bh - INT0
+    dw 0x0B, unused_int_0bh - BIOS_BASE_OFF    ; INT 0Bh - INT0
     dw 0x0C, int_0ch_handler - BIOS_BASE_OFF   ; INT 0Ch - RS-232C
-    dw 0x0D, iret_stub       - BIOS_BASE_OFF   ; INT 0Dh - INT1
-    dw 0x0E, iret_stub       - BIOS_BASE_OFF   ; INT 0Eh - INT2
+    dw 0x0D, unused_int_0dh - BIOS_BASE_OFF    ; INT 0Dh - INT1
+    dw 0x0E, unused_int_0eh - BIOS_BASE_OFF    ; INT 0Eh - INT2
     dw 0x0F, iret_stub       - BIOS_BASE_OFF   ; INT 0Fh - Spurious
-    dw 0x10, iret_stub       - BIOS_BASE_OFF   ; INT 10h - Printer / slave IR0
-    dw 0x11, iret_stub       - BIOS_BASE_OFF   ; INT 11h - Slave IR1
+    dw 0x10, unused_int_10h - BIOS_BASE_OFF    ; INT 10h - Printer / slave IR0
+    dw 0x11, unused_int_11h - BIOS_BASE_OFF    ; INT 11h - Slave IR1
     dw 0x12, int_12h_handler - BIOS_BASE_OFF   ; INT 12h - FDC 640KB
     dw 0x13, int_13h_handler - BIOS_BASE_OFF   ; INT 13h - FDC 1MB
-    dw 0x14, iret_stub       - BIOS_BASE_OFF   ; INT 14h - INT5
-    dw 0x15, iret_stub       - BIOS_BASE_OFF   ; INT 15h - INT6
-    dw 0x16, iret_stub       - BIOS_BASE_OFF   ; INT 16h - Mouse
-    dw 0x17, iret_stub       - BIOS_BASE_OFF   ; INT 17h - Idle
+    dw 0x14, unused_int_14h - BIOS_BASE_OFF    ; INT 14h - INT5
+    dw 0x15, unused_int_15h - BIOS_BASE_OFF    ; INT 15h - INT6
+    dw 0x16, unused_int_16h - BIOS_BASE_OFF    ; INT 16h - Mouse
+    dw 0x17, unused_int_17h - BIOS_BASE_OFF    ; INT 17h - Idle
     dw 0x18, int_18h_handler - BIOS_BASE_OFF   ; INT 18h - CRT/KB/Graphics
     dw 0x19, int_19h_handler - BIOS_BASE_OFF   ; INT 19h - RS-232C
     dw 0x1A, int_1ah_handler - BIOS_BASE_OFF   ; INT 1Ah - Printer/CMT

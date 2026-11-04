@@ -15,11 +15,9 @@ impl<T: TraceSink> Pc9801Bus<T> {
             .take()
             .or_else(|| self.read_pending_keyboard_scan_code())
         else {
-            self.pic.write_port0(0, 0x20);
             return;
         };
         let (key_code, is_release) = self.buffer_keyboard_scan_code(raw_code);
-        self.pic.write_port0(0, 0x20);
 
         // COPY key (0x60) -> INT 06H, STOP key (0x61) -> INT 05H.
         // The real BIOS dispatches these after EOI via the assembly wrapper.

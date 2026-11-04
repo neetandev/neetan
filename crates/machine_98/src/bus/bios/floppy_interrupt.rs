@@ -7,12 +7,6 @@ use crate::TraceSink;
 
 impl<T: TraceSink> Pc9801Bus<T> {
     pub(super) fn hle_int12h(&mut self, _cpu: &mut impl Cpu) {
-        // ISR-aware EOI: always EOI slave, only EOI master if slave ISR is clear.
-        self.pic.write_port0(1, 0x20);
-        if self.pic.state.chips[1].isr == 0 {
-            self.pic.write_port0(0, 0x20);
-        }
-
         if self.machine_model == MachineModel::PC9801F {
             loop {
                 let fdc = self.floppy.fdc_640k_mut();
@@ -85,12 +79,6 @@ impl<T: TraceSink> Pc9801Bus<T> {
     }
 
     pub(super) fn hle_int13h(&mut self, _cpu: &mut impl Cpu) {
-        // ISR-aware EOI: always EOI slave, only EOI master if slave ISR is clear.
-        self.pic.write_port0(1, 0x20);
-        if self.pic.state.chips[1].isr == 0 {
-            self.pic.write_port0(0, 0x20);
-        }
-
         // Loop to drain all pending FDC results.
         loop {
             let fdc = self.floppy.fdc_1mb_mut();

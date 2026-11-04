@@ -104,8 +104,6 @@ const ENTRY_STATUS_CD: u8 = 0x01;
 
 /// IRQ line of the built-in RS-232C port.
 pub(super) const RS232C_IRQ: u8 = 4;
-/// OCW2 non-specific end of interrupt command.
-const PIC_NONSPECIFIC_EOI: u8 = 0x20;
 
 impl<T: TraceSink> Pc9801Bus<T> {
     /// Returns the linear address of the channel 0 buffer control block or `None` when unset.
@@ -140,8 +138,6 @@ impl<T: TraceSink> Pc9801Bus<T> {
                 self.rs232c_store_entry(block, character, status);
             }
         }
-
-        self.pic.write_port0(0, PIC_NONSPECIFIC_EOI);
     }
 
     /// Builds the status byte stored with a character from the 8251A and the system port.
