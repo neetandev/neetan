@@ -439,6 +439,20 @@ impl I386State {
         self.internal.shutdown
     }
 
+    /// Sets or clears the STI shadow that inhibits maskable interrupts before the next
+    /// instruction.
+    #[doc(hidden)]
+    pub fn set_sti_shadow(&mut self, active: bool) {
+        self.internal.no_interrupt = u8::from(active);
+    }
+
+    /// Sets or clears the MOV SS shadow that inhibits interrupts and debug traps before
+    /// the next instruction.
+    #[doc(hidden)]
+    pub fn set_mov_ss_shadow(&mut self, active: bool) {
+        self.internal.inhibit_all = u8::from(active);
+    }
+
     /// Sets the full 32-bit EIP.
     pub fn set_eip(&mut self, v: u32) {
         self.ip = v as u16;
