@@ -211,10 +211,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
         match vector {
             0x08 => self.hle_int08h(cpu),
             0x09 => self.hle_int09h(cpu),
-            0x0A => {
-                self.pic.write_port0(0, 0x20);
-                self.display_control.state.vsync_irq_enabled = true;
-            }
+            0x0A => self.display_control.state.vsync_irq_enabled = true,
             0x0B | 0x0D | 0x0E => self.pic.write_port0(0, 0x20),
             0x0C => self.hle_int0ch(cpu),
             0x10 | 0x11 | 0x14..=0x17 => {

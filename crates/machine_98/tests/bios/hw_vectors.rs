@@ -143,3 +143,103 @@ test_slave_hwint!(hwint_17_completes_f, 0x17, boot_and_run_f);
 test_slave_hwint!(hwint_17_completes_vm, 0x17, boot_and_run_vm);
 test_slave_hwint!(hwint_17_completes_vx, 0x17, boot_and_run_vx);
 test_slave_hwint!(hwint_17_completes_ra, 0x17, boot_and_run_ra);
+
+const VSYNC_BUDGET: u64 = 4_000_000;
+
+/// Counts the IR2 acknowledges and the master PIC EOIs written by guest OUT
+/// instructions.
+#[derive(Default)]
+struct EoiRecorder {
+    vsync_acknowledges: usize,
+    master_eoi_writes: usize,
+}
+
+impl common::TraceSink for EoiRecorder {
+    fn trace(&mut self, _context: common::TraceContext, event: common::TraceEvent<'_>) {
+        match event {
+            common::TraceEvent::Interrupt(interrupt)
+                if interrupt.action == common::TraceInterruptAction::Acknowledge
+                    && interrupt.line == Some(2) =>
+            {
+                self.vsync_acknowledges += 1;
+            }
+            common::TraceEvent::Access(access)
+                if access.space == common::TraceAddressSpace::MAIN_IO
+                    && access.kind == common::TraceAccessKind::Write
+                    && access.address == 0x00
+                    && access.value == Some(0x20) =>
+            {
+                self.master_eoi_writes += 1;
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Unmasks only IR2, arms the VSYNC interrupt and waits for two of them.
+#[rustfmt::skip]
+const VSYNC_WAIT_CODE: &[u8] = &[
+    0xFA,                               // CLI
+    0xB0, 0xFB,                         // MOV AL, 0xFB            (only IR2 unmasked)
+    0xE6, 0x02,                         // OUT 0x02, AL
+    0xB0, 0xFF,                         // MOV AL, 0xFF
+    0xE6, 0x0A,                         // OUT 0x0A, AL            (slave masked)
+    0xE6, 0x64,                         // OUT 0x64, AL            (arm VSYNC interrupt)
+    0xFB,                               // STI
+    0xF4,                               // HLT
+    0xF4,                               // HLT
+    0xFA,                               // CLI
+    0xC6, 0x06, 0x00, 0x06, 0xAA,       // MOV BYTE [RESULT], 0xAA
+    0xF4,                               // HLT
+];
+
+// The BIOS INT 0Ah handler ends the VSYNC interrupt with a guest OUT to port
+// 00h, so a V86 monitor that traps the PIC ports sees the EOI.
+#[test]
+fn vsync_interrupt_eoi_is_a_guest_io_write_ra() {
+    let mut machine = machine_98::Pc98Machine::<cpu::I386, EoiRecorder>::new(
+        cpu::I386::new(),
+        machine_98::Pc9801Bus::new_with_trace_sink(
+            common::MachineModel::PC9801RA,
+            common::CpuMode::High,
+            48_000,
+            EoiRecorder::default(),
+        ),
+    );
+    machine.bus.load_font_rom(machine_98::BUILTIN_FONT_ROM);
+    boot_to_halt!(machine);
+    super::write_bytes(&mut machine.bus, super::TEST_CODE, VSYNC_WAIT_CODE);
+    machine.cpu.load_state(&{
+        let mut state = cpu::I386State {
+            ip: super::TEST_CODE as u16,
+            ..Default::default()
+        };
+        state.set_esp(0x4000);
+        state
+    });
+    *machine.bus.tracer_mut() = EoiRecorder::default();
+    machine.run_for(VSYNC_BUDGET);
+
+    assert_eq!(
+        machine.bus.read_byte(RESULT),
+        0xAA,
+        "test code should finish"
+    );
+    let recorder = machine.bus.tracer();
+    assert!(
+        recorder.vsync_acknowledges >= 2,
+        "two VSYNC interrupts should be acknowledged (got {})",
+        recorder.vsync_acknowledges
+    );
+    assert!(
+        recorder.master_eoi_writes >= recorder.vsync_acknowledges,
+        "each VSYNC interrupt should end with a guest OUT 00h,20h ({} EOIs for {} interrupts)",
+        recorder.master_eoi_writes,
+        recorder.vsync_acknowledges
+    );
+    assert_eq!(
+        machine.inspection_state().pic.chips[0].isr,
+        0,
+        "master ISR should be clear"
+    );
+}

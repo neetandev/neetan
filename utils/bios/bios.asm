@@ -146,11 +146,11 @@ iret_stub:
 
 ; --- HLE-dispatched interrupt handler stubs ---
 
-; INT 08h is the only stub that runs guest code before HLE dispatch:
-; it writes the PIC EOI from the guest's view so that protected-mode
-; or V86 monitors hooking I/O port 0x00 observe the EOI on the bus.
-; All other HLE handlers either don't need an EOI here or send it
-; from inside the HLE handler.
+; The INT 08h and INT 0Ah stubs run guest code before HLE dispatch: they
+; write the master PIC non-specific EOI (undoc98 io_pic.txt, I/O 0000h)
+; with a guest OUT, so protected-mode or V86 monitors that trap I/O port
+; 0x00 observe the EOI on the bus. All other HLE handlers either don't
+; need an EOI here or send it from inside the HLE handler.
 int_08h_handler:
     push ax
     mov al, 0x20
@@ -158,7 +158,12 @@ int_08h_handler:
     pop ax
     hle_stub 0x08                            ; Timer tick (IRQ 0)
 int_09h_handler:    hle_stub 0x09            ; Keyboard (IRQ 1)
-int_0ah_handler:    hle_stub 0x0A            ; VSYNC (IRQ 2)
+int_0ah_handler:
+    push ax
+    mov al, 0x20
+    out 0x00, al
+    pop ax
+    hle_stub 0x0A                            ; VSYNC (IRQ 2)
 int_0ch_handler:    hle_stub 0x0C            ; Serial receive (IRQ 4)
 int_12h_handler:    hle_stub 0x12            ; FDC 640KB (slave IR2)
 int_13h_handler:    hle_stub 0x13            ; FDC 1MB (slave IR3)
