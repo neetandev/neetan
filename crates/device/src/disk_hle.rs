@@ -34,9 +34,28 @@ pub fn buffer_address(es: u16, bp: u16) -> u32 {
     (es as u32) * 16 + bp as u32
 }
 
-/// Computes the drive index (0 or 1) from the drive select byte (AL).
+/// Computes the unit number (UA, 0 to 15) from the DA/UA byte (AL).
+/// The SASI and IDE BIOS serve units 0 to 3. A higher unit has no drive.
 pub fn drive_index(drive_select: u8) -> usize {
-    (drive_select & 0x03) as usize
+    (drive_select & 0x0F) as usize
+}
+
+/// Status code AH=60h (Not Ready, CF=1) returned for a unit without a mounted drive.
+/// The code comes from the HDD BIOS error status table of the PC-9800 Technical Data
+/// Book BIOS (section 8.6, "エラーステータス(HDD BIOS)").
+pub const STATUS_NOT_READY: u8 = 0x60;
+
+/// Returns the mounted drive of a unit, or `None` for an empty or nonexistent unit.
+pub fn mounted_drive(drives: &[Option<MountedHdd>], drive_index: usize) -> Option<&MountedHdd> {
+    drives.get(drive_index).and_then(Option::as_ref)
+}
+
+/// Returns the mutable mounted drive of a unit, or `None` for an empty or nonexistent unit.
+pub fn mounted_drive_mut(
+    drives: &mut [Option<MountedHdd>],
+    drive_index: usize,
+) -> Option<&mut MountedHdd> {
+    drives.get_mut(drive_index).and_then(Option::as_mut)
 }
 
 /// Executes a BIOS read operation: reads sectors from the HDD image
@@ -44,15 +63,15 @@ pub fn drive_index(drive_select: u8) -> usize {
 ///
 /// Returns the status code (0x00 on success).
 pub fn execute_read(
-    drive_idx: usize,
+    drive_index: usize,
     xfer_size: u32,
     sector_pos: u32,
     buf_addr: u32,
-    drives: &[Option<MountedHdd>; 2],
+    drives: &[Option<MountedHdd>],
     mut write_byte: impl FnMut(u32, u8),
 ) -> u8 {
-    let Some(drive) = &drives[drive_idx] else {
-        return 0x60;
+    let Some(drive) = mounted_drive(drives, drive_index) else {
+        return STATUS_NOT_READY;
     };
 
     let mut remaining = xfer_size;
@@ -85,15 +104,15 @@ pub fn execute_read(
 /// The const generic `SECTOR_SIZE` determines the stack buffer size:
 /// SASI callers use `256`, IDE callers use `512`.
 pub fn execute_write<const SECTOR_SIZE: usize>(
-    drive_idx: usize,
+    drive_index: usize,
     xfer_size: u32,
     sector_pos: u32,
     buf_addr: u32,
-    drives: &mut [Option<MountedHdd>; 2],
+    drives: &mut [Option<MountedHdd>],
     mut read_byte: impl FnMut(u32) -> u8,
 ) -> u8 {
-    let Some(drive) = &mut drives[drive_idx] else {
-        return 0x60;
+    let Some(drive) = mounted_drive_mut(drives, drive_index) else {
+        return STATUS_NOT_READY;
     };
 
     let mut remaining = xfer_size;
@@ -124,7 +143,7 @@ pub fn execute_write<const SECTOR_SIZE: usize>(
 /// Executes a BIOS init operation: returns the disk equipment word
 /// indicating which drives are present. Preserves non-disk bits from
 /// the current equipment word using mask 0xF0FF.
-pub fn execute_init(drives: &[Option<MountedHdd>; 2], current_equip: u16) -> u16 {
+pub fn execute_init(drives: &[Option<MountedHdd>], current_equip: u16) -> u16 {
     let mut disk_equip = current_equip & 0xF0FF;
     for (i, drive) in drives.iter().enumerate() {
         if drive.is_some() {
@@ -136,12 +155,12 @@ pub fn execute_init(drives: &[Option<MountedHdd>; 2], current_equip: u16) -> u16
 
 /// Executes a BIOS format operation on a track.
 pub fn execute_format(
-    drive_idx: usize,
+    drive_index: usize,
     sector_pos: u32,
-    drives: &mut [Option<MountedHdd>; 2],
+    drives: &mut [Option<MountedHdd>],
 ) -> u8 {
-    let Some(drive) = &mut drives[drive_idx] else {
-        return 0x60;
+    let Some(drive) = mounted_drive_mut(drives, drive_index) else {
+        return STATUS_NOT_READY;
     };
     if drive.format_track(sector_pos) {
         0x00
@@ -353,5 +372,36 @@ mod tests {
 
         let sector = drives[0].as_ref().unwrap().read_sector(0).unwrap();
         assert!(sector.iter().all(|&b| b == 0xE5));
+    }
+
+    #[test]
+    fn units_two_to_fifteen_never_reach_a_mounted_drive() {
+        let mut drives: [Option<MountedHdd>; 2] = [Some(make_ide_drive()), Some(make_ide_drive())];
+        for drive_select in (0x82u8..=0x8F).chain(0x02..=0x0F) {
+            let unit = drive_index(drive_select);
+            assert!(unit >= 2, "DA/UA {drive_select:02X}");
+            assert!(mounted_drive(&drives, unit).is_none());
+            assert_eq!(execute_read(unit, 512, 0, 0, &drives, |_, _| {}), 0x60);
+            assert_eq!(
+                execute_write::<512>(unit, 512, 0, 0, &mut drives, |_| 0xBB),
+                0x60
+            );
+            assert_eq!(execute_format(unit, 0, &mut drives), 0x60);
+        }
+        for drive in &drives {
+            let sector = drive.as_ref().unwrap().read_sector(0).unwrap();
+            assert_eq!(sector[0], 0x00);
+            assert_ne!(sector[2], 0xBB);
+        }
+    }
+
+    #[test]
+    fn drive_index_keeps_the_whole_unit_address() {
+        assert_eq!(drive_index(0x82), 2);
+        assert_eq!(drive_index(0x83), 3);
+        assert_eq!(drive_index(0x03), 3);
+        assert_eq!(drive_index(0x84), 4);
+        assert_eq!(drive_index(0x8F), 15);
+        assert_eq!(drive_index(0x04), 4);
     }
 }

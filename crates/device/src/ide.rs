@@ -299,14 +299,14 @@ impl IdeController {
     /// Executes a BIOS read: reads sectors and writes to memory via closure.
     pub fn execute_read(
         &self,
-        drive_idx: usize,
+        drive_index: usize,
         xfer_size: u32,
         sector_pos: u32,
         buf_addr: u32,
         write_byte: impl FnMut(u32, u8),
     ) -> u8 {
         crate::disk_hle::execute_read(
-            drive_idx,
+            drive_index,
             xfer_size,
             sector_pos,
             buf_addr,
@@ -318,9 +318,9 @@ impl IdeController {
     /// Reads the boot sector from the specified HDD drive into a local buffer.
     /// For 256-byte sector (SASI-compat) images, reads 1024 bytes (4 sectors).
     /// For 512-byte sector images, reads 512 bytes (1 sector).
-    pub fn read_boot_sector(&self, drive_idx: usize) -> Option<Vec<u8>> {
-        let geometry = self.drive_geometry(drive_idx)?;
-        let pos = crate::disk_hle::sector_position(0x80 | drive_idx as u8, 0, 0, &geometry);
+    pub fn read_boot_sector(&self, drive_index: usize) -> Option<Vec<u8>> {
+        let geometry = self.drive_geometry(drive_index)?;
+        let pos = crate::disk_hle::sector_position(0x80 | drive_index as u8, 0, 0, &geometry);
         let boot_size: usize = if geometry.sector_size == 256 {
             0x0400
         } else {
@@ -328,7 +328,7 @@ impl IdeController {
         };
         let mut buf = vec![0u8; boot_size];
         let mut offset = 0usize;
-        let result = self.execute_read(drive_idx, boot_size as u32, pos, 0, |_addr, byte| {
+        let result = self.execute_read(drive_index, boot_size as u32, pos, 0, |_addr, byte| {
             buf[offset] = byte;
             offset += 1;
         });
@@ -338,19 +338,18 @@ impl IdeController {
     /// Executes a BIOS write: reads from memory via closure and writes sectors.
     pub fn execute_write(
         &mut self,
-        drive_idx: usize,
+        drive_index: usize,
         xfer_size: u32,
         sector_pos: u32,
         buf_addr: u32,
         read_byte: impl FnMut(u32) -> u8,
     ) -> u8 {
-        let sector_size = self.drives[drive_idx]
-            .as_ref()
+        let sector_size = crate::disk_hle::mounted_drive(&self.drives, drive_index)
             .map(|d| d.geometry().sector_size)
             .unwrap_or(512);
         match sector_size {
             256 => crate::disk_hle::execute_write::<256>(
-                drive_idx,
+                drive_index,
                 xfer_size,
                 sector_pos,
                 buf_addr,
@@ -358,7 +357,7 @@ impl IdeController {
                 read_byte,
             ),
             _ => crate::disk_hle::execute_write::<512>(
-                drive_idx,
+                drive_index,
                 xfer_size,
                 sector_pos,
                 buf_addr,
@@ -369,8 +368,8 @@ impl IdeController {
     }
 
     /// Executes a BIOS sense: returns the IDE media type.
-    pub fn execute_sense(&self, drive_idx: usize) -> u8 {
-        hle::execute_sense(drive_idx, &self.drives)
+    pub fn execute_sense(&self, drive_index: usize) -> u8 {
+        hle::execute_sense(drive_index, &self.drives)
     }
 
     /// Executes a BIOS sense for the CD-ROM unit.
@@ -397,33 +396,33 @@ impl IdeController {
     }
 
     /// Executes a BIOS format on a track.
-    pub fn execute_format(&mut self, drive_idx: usize, sector_pos: u32) -> u8 {
-        crate::disk_hle::execute_format(drive_idx, sector_pos, &mut self.drives)
+    pub fn execute_format(&mut self, drive_index: usize, sector_pos: u32) -> u8 {
+        crate::disk_hle::execute_format(drive_index, sector_pos, &mut self.drives)
     }
 
     /// Executes a BIOS mode set (function 0x0E): returns 0x00 if the drive
     /// exists, 0x60 otherwise.
-    pub fn execute_mode_set(&self, drive_idx: usize) -> u8 {
-        if self.drives[drive_idx].is_some() {
+    pub fn execute_mode_set(&self, drive_index: usize) -> u8 {
+        if crate::disk_hle::mounted_drive(&self.drives, drive_index).is_some() {
             0x00
         } else {
-            0x60
+            crate::disk_hle::STATUS_NOT_READY
         }
     }
 
     /// Executes IDE Check Power Mode (function D0h).
-    pub fn execute_check_power_mode(&self, drive_idx: usize) -> u8 {
-        hle::execute_check_power_mode(drive_idx, &self.drives)
+    pub fn execute_check_power_mode(&self, drive_index: usize) -> u8 {
+        hle::execute_check_power_mode(drive_index, &self.drives)
     }
 
     /// Executes IDE Motor ON (function E0h).
-    pub fn execute_motor_on(&self, drive_idx: usize) -> u8 {
-        hle::execute_motor_on(drive_idx, &self.drives)
+    pub fn execute_motor_on(&self, drive_index: usize) -> u8 {
+        hle::execute_motor_on(drive_index, &self.drives)
     }
 
     /// Executes IDE Motor OFF (function F0h).
-    pub fn execute_motor_off(&self, drive_idx: usize) -> u8 {
-        hle::execute_motor_off(drive_idx, &self.drives)
+    pub fn execute_motor_off(&self, drive_index: usize) -> u8 {
+        hle::execute_motor_off(drive_index, &self.drives)
     }
 
     /// Computes the IDE device connection flags for BIOS memory 0x05BA.
@@ -733,6 +732,26 @@ mod tests {
             bin_data[offset + 1] = i as u8;
         }
         CdImage::from_cue(cue, bin_data).unwrap()
+    }
+
+    #[test]
+    fn bios_functions_on_units_two_to_fifteen_report_absent_drive() {
+        let mut ide = IdeController::new(44100);
+        ide.insert_drive(0, make_test_drive(), None);
+        ide.insert_drive(1, make_test_drive(), None);
+        for drive_select in (0x82u8..=0x8F).chain(0x02..=0x0F) {
+            let unit = drive_index(drive_select);
+            assert_eq!(ide.execute_sense(unit), 0x60);
+            assert_eq!(ide.execute_mode_set(unit), 0x60);
+            assert_eq!(ide.execute_read(unit, 512, 0, 0, |_, _| {}), 0x60);
+            assert_eq!(ide.execute_write(unit, 512, 0, 0, |_| 0), 0x60);
+            assert_eq!(ide.execute_format(unit, 0), 0x60);
+            assert_eq!(ide.execute_check_power_mode(unit), 0x40);
+            assert_eq!(ide.execute_motor_on(unit), 0x40);
+            assert_eq!(ide.execute_motor_off(unit), 0x40);
+            assert!(ide.drive_geometry(unit).is_none());
+            assert!(ide.read_boot_sector(unit).is_none());
+        }
     }
 
     #[test]
