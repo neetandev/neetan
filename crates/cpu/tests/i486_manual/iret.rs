@@ -949,6 +949,36 @@ fn iret_pm_nt_set_switches_via_back_link_to_busy_tss() {
     );
 }
 
+/// 80486 PRM 6.8.3: the back-link read of an IRET with NT=1 is a privilege level 0
+/// access. At CPL 3 with the TSS in a supervisor page the task switch takes no page fault.
+#[test]
+fn iret_pm_nt_at_cpl3_reads_back_link_from_supervisor_page() {
+    let mut cpu = super::setup::make_cpu_486();
+    let mut bus = TestBus::new();
+
+    let mut state = pm_with_nt_secondary_tss_setup(&mut bus);
+    super::setup::promote_to_ring3(&mut state);
+    state.flags.nt = true;
+    super::setup::enable_user_identity_paging(
+        &mut bus,
+        &mut state,
+        &[
+            GLOBAL_DESCRIPTOR_TABLE_BASE,
+            TASK_STATE_SEGMENT_BASE,
+            TASK_STATE_SEGMENT_SECONDARY_BASE,
+        ],
+    );
+    cpu.load_state(&state);
+
+    place_at(&mut bus, super::setup::RING3_CODE_BASE, &[0xCF]);
+    install_target_hlt(&mut bus, RING0_CODE_BASE, SECONDARY_TASK_EIP);
+
+    cpu.step(&mut bus);
+
+    assert_eq!(cpu.state.tr, SELECTOR_SECONDARY_TSS);
+    assert_eq!(cpu.ip(), SECONDARY_TASK_EIP);
+}
+
 #[test]
 fn iret_pm_nt_back_link_to_non_busy_tss_raises_gp() {
     let mut cpu = make_cpu_386();

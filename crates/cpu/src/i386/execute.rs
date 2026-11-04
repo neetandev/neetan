@@ -3156,7 +3156,8 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         // Protected mode IRET.
         if self.flags.nt {
             // Task return via back-link in current TSS.
-            let backlink = self.read_word_linear(bus, self.tr_base)?;
+            // 80486 PRM 6.8.3: the TSS read is a privilege level 0 access.
+            let backlink = self.read_system_word(self.tr_base, bus)?;
             self.switch_task(backlink, super::TaskType::Iret, 0, false, bus)?;
             let flags_val = self.flags.compress();
             let cpl = self.cpl();

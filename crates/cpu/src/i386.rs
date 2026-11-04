@@ -640,12 +640,13 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         if bus.is_io_port_unrestricted(port) {
             return Ok(());
         }
-        // CPL > IOPL (or VM86 with IOPL < 3): consult I/O Permission Bitmap in TSS.
+        // CPL > IOPL (or VM86 with IOPL < 3): consult I/O Permission Bitmap in TSS. The TSS
+        // reads are privilege level 0 accesses (80486 PRM 6.8.3).
         // TSS must be a 386 TSS (type field >= 9) and large enough to hold the IOPB pointer.
         if self.tr_limit < 0x67 || (self.tr_rights & 0x0F) < 9 {
             return self.raise_fault_with_code(13, 0, bus);
         }
-        let iopb = self.read_word_linear(bus, self.tr_base.wrapping_add(0x66))?;
+        let iopb = self.read_system_word(self.tr_base.wrapping_add(0x66), bus)?;
         let byte_idx = u32::from(iopb).wrapping_add(u32::from(port) / 8);
         // Read two consecutive bytes from the IOPB to handle accesses that span a
         // byte boundary (e.g. a dword access starting at port 7 touches bits in two
@@ -655,7 +656,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             return self.raise_fault_with_code(13, 0, bus);
         }
         let linear = self.tr_base.wrapping_add(byte_idx);
-        let map = self.read_word_linear(bus, linear)?;
+        let map = self.read_system_word(linear, bus)?;
         let mask = (1u16 << size) - 1;
         if (map >> (port & 7)) & mask != 0 {
             return self.raise_fault_with_code(13, 0, bus);
@@ -1676,6 +1677,8 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     /// commit in that case so the load is restartable. Null/out-of-table
     /// selectors return `Ok(())` without touching memory - those
     /// cases are unreachable from a successful `decode_descriptor`.
+    /// A descriptor with the accessed bit already set gets no write, so the
+    /// page of the descriptor keeps its dirty bit (observed behaviour).
     fn set_accessed_bit(&mut self, selector: u16, bus: &mut impl common::Bus) -> Step {
         let Some(addr) = self.descriptor_addr_checked(selector) else {
             return Ok(());
@@ -1683,12 +1686,18 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         let saved_supervisor_override = self.supervisor_override;
         self.supervisor_override = true;
         let linear = addr.wrapping_add(5);
-        let phys = self.translate_linear(linear, true, bus);
+        let result = self.set_accessed_bit_at(linear, bus);
         self.supervisor_override = saved_supervisor_override;
-        let phys = phys?;
-        let rights = bus.read_byte(phys);
+        result
+    }
+
+    /// Sets the accessed bit in the descriptor rights byte at `linear` when it is clear.
+    fn set_accessed_bit_at(&mut self, linear: u32, bus: &mut impl common::Bus) -> Step {
+        let read_phys = self.translate_linear(linear, false, bus)?;
+        let rights = bus.read_byte(read_phys);
         if rights & 0x01 == 0 {
-            bus.write_byte(phys, rights | 0x01);
+            let write_phys = self.translate_linear(linear, true, bus)?;
+            bus.write_byte(write_phys, rights | 0x01);
         }
         Ok(())
     }
@@ -2441,16 +2450,14 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             4 | 12 => {
                 // Call gate (4=286, 12=386).
                 let is_386_gate = gate_type == 12;
-                let gate_selector = self.read_word_linear(bus, addr.wrapping_add(2))?;
-                let gc_linear = addr.wrapping_add(4);
-                let gc_phys = self.translate_linear(gc_linear, false, bus)?;
-                let gate_count = bus.read_byte(gc_phys) & 0x1F;
+                let gate_selector = self.read_system_word(addr.wrapping_add(2), bus)?;
+                let gate_count = self.read_system_byte(addr.wrapping_add(4), bus)? & 0x1F;
                 let gate_offset = if is_386_gate {
-                    let lo = self.read_word_linear(bus, addr)?;
-                    let hi = self.read_word_linear(bus, addr.wrapping_add(6))?;
+                    let lo = self.read_system_word(addr, bus)?;
+                    let hi = self.read_system_word(addr.wrapping_add(6), bus)?;
                     lo as u32 | ((hi as u32) << 16)
                 } else {
-                    let lo = self.read_word_linear(bus, addr)?;
+                    let lo = self.read_system_word(addr, bus)?;
                     lo as u32
                 };
 
@@ -2526,7 +2533,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             }
             5 => {
                 // Task gate.
-                let task_selector = self.read_word_linear(bus, addr.wrapping_add(2))?;
+                let task_selector = self.read_system_word(addr.wrapping_add(2), bus)?;
                 self.switch_task(task_selector, gate, 0, false, bus)?;
                 let flags_val = self.flags.compress();
                 let cpl = self.cpl();
@@ -2555,6 +2562,10 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     /// push slot, or one of the descriptor accessed-bit writes aborts with
     /// SS:ESP and CS:EIP still pointing at the caller's frame, so the fault
     /// is reported inter-privilege from the calling CPL.
+    ///
+    /// The TSS reads, the new stack and the return frame are privilege level 0 accesses
+    /// (80486 PRM 6.8.3: the inner stack of a CALL with a privilege change). The
+    /// parameters come from the caller's stack at the caller's privilege level.
     #[allow(clippy::too_many_arguments)]
     fn commit_call_gate_inter_priv(
         &mut self,
@@ -2566,6 +2577,40 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         gate_count: u8,
         old_cs: u16,
         old_eip: u32,
+        bus: &mut impl common::Bus,
+    ) -> Step {
+        let caller_supervisor_override = self.supervisor_override;
+        self.supervisor_override = true;
+        let result = self.commit_call_gate_inter_priv_inner(
+            target_desc,
+            target_dpl,
+            gate_selector,
+            gate_offset,
+            is_386_gate,
+            gate_count,
+            old_cs,
+            old_eip,
+            caller_supervisor_override,
+            bus,
+        );
+        self.supervisor_override = caller_supervisor_override;
+        result
+    }
+
+    /// Body of `commit_call_gate_inter_priv`, run with supervisor accesses.
+    /// `caller_supervisor_override` is the access privilege of the parameter reads.
+    #[allow(clippy::too_many_arguments)]
+    fn commit_call_gate_inter_priv_inner(
+        &mut self,
+        target_desc: SegmentDescriptor,
+        target_dpl: u16,
+        gate_selector: u16,
+        gate_offset: u32,
+        is_386_gate: bool,
+        gate_count: u8,
+        old_cs: u16,
+        old_eip: u32,
+        caller_supervisor_override: bool,
         bus: &mut impl common::Bus,
     ) -> Step {
         let is_386_tss = self.tr_rights & 0x0F >= 9;
@@ -2644,11 +2689,14 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             let linear = old_ss_base.wrapping_add(offset);
             let size = if is_386_gate { 4 } else { 2 };
             self.check_segment_access(SegReg32::SS, offset, size, false, bus)?;
-            params[i as usize] = if is_386_gate {
-                self.read_dword_linear(bus, linear)?
+            self.supervisor_override = caller_supervisor_override;
+            let parameter = if is_386_gate {
+                self.read_dword_linear(bus, linear)
             } else {
-                self.read_word_linear(bus, linear)? as u32
+                self.read_word_linear(bus, linear).map(u32::from)
             };
+            self.supervisor_override = true;
+            params[i as usize] = parameter?;
         }
 
         // Set descriptor accessed bits before any commit. On 486 + CR0.WP=1
@@ -2766,16 +2814,42 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         Ok(())
     }
 
-    /// Reads the 8-byte descriptor at `addr` (a linear address).
-    /// Returns `Err(Fault)` if any byte's translation faulted (the page
-    /// fault is already pending). Callers must propagate as an abort;
-    /// never fall back to a sentinel descriptor.
+    /// Reads the descriptor table byte at the linear address `linear` with the current
+    /// page privilege. Returns `Err(Fault)` if the translation faulted (the page fault is
+    /// already pending).
     #[inline]
     fn read_descriptor_byte(&mut self, linear: u32, bus: &mut impl common::Bus) -> Step<u8> {
         let phys = self.translate_linear(linear, false, bus)?;
         Ok(bus.read_byte(phys))
     }
 
+    /// Reads the byte at `linear` as a privilege level 0 access. 80486 PRM 6.8.3 checks
+    /// accesses to the GDT, LDT, IDT and TSS as level 0 accesses at every CPL.
+    fn read_system_byte(&mut self, linear: u32, bus: &mut impl common::Bus) -> Step<u8> {
+        let saved_supervisor_override = self.supervisor_override;
+        self.supervisor_override = true;
+        let value = self.read_descriptor_byte(linear, bus);
+        self.supervisor_override = saved_supervisor_override;
+        value
+    }
+
+    /// Reads the word at `linear` as a privilege level 0 access, like `read_system_byte`.
+    pub(super) fn read_system_word(
+        &mut self,
+        linear: u32,
+        bus: &mut impl common::Bus,
+    ) -> Step<u16> {
+        let saved_supervisor_override = self.supervisor_override;
+        self.supervisor_override = true;
+        let value = self.read_word_linear(bus, linear);
+        self.supervisor_override = saved_supervisor_override;
+        value
+    }
+
+    /// Reads and decodes the 8-byte descriptor at the linear address `addr` as a privilege
+    /// level 0 access. Returns `Err(Fault)` if any byte's translation faulted (the page
+    /// fault is already pending). Callers must propagate as an abort and never fall back
+    /// to a sentinel descriptor.
     fn decode_descriptor_at(
         &mut self,
         addr: u32,
@@ -2783,13 +2857,8 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     ) -> Step<SegmentDescriptor> {
         let saved_supervisor_override = self.supervisor_override;
         self.supervisor_override = true;
-        // translate_linear short-circuits once fault_pending is set, so the
-        // later reads after a fault on byte N are cheap no-ops returning
-        // Err. Collect first, restore the override, then propagate.
-        // Read all bytes first so that a fault on byte N still restores the
-        // supervisor_override before we propagate. translate_linear short-
-        // circuits once fault_pending is set, so reads after the first fault
-        // are cheap no-ops that propagate Err.
+        // Read all bytes first so that a fault on byte N still restores the override
+        // before the fault propagates. Reads after the first fault are no-ops.
         let b0 = self.read_descriptor_byte(addr, bus);
         let b1 = self.read_descriptor_byte(addr.wrapping_add(1), bus);
         let b2 = self.read_descriptor_byte(addr.wrapping_add(2), bus);

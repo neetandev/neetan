@@ -843,7 +843,7 @@ fn ltr_with_286_tss_loads_successfully_when_limit_meets_minimum() {
 }
 
 #[test]
-fn smsw_register_form_returns_full_cr0_on_386() {
+fn smsw_16bit_register_form_returns_msw_on_386() {
     let mut cpu = make_cpu_386();
     let mut bus = TestBus::new();
 
@@ -855,7 +855,7 @@ fn smsw_register_form_returns_full_cr0_on_386() {
     assert_eq!(
         cpu.eax(),
         0x0000_0010,
-        "SMSW EAX (reg form) returns the full 32-bit CR0 (reset value: ET=1)"
+        "SMSW AX (16-bit reg form) returns the MSW (reset value: ET=1)"
     );
 }
 
@@ -1891,6 +1891,25 @@ fn smsw_register_form_does_not_expose_paging_bit() {
     assert_eq!(cpu.eax() & 0xFFFF_0000, 0);
 }
 
+/// SMSW with a 32-bit register destination stores the whole CR0, the PG bit included
+/// (observed behaviour). 80486 PRM 26-268 documents only the r/m16 form.
+#[test]
+fn smsw_32bit_register_form_returns_whole_cr0() {
+    let mut cpu = make_cpu_486();
+    let mut bus = TestBus::new();
+
+    let mut state = setup_protected_mode(&mut bus, 0xFFFF);
+    super::setup::enable_identity_paging(&mut bus, &mut state);
+    state.set_eax(0xFFFF_FFFF);
+    cpu.load_state(&state);
+
+    place_at(&mut bus, RING0_CODE_BASE, &[0x66, 0x0F, 0x01, 0xE0]);
+    cpu.step(&mut bus);
+
+    assert_eq!(cpu.eax(), cpu.state.cr0);
+    assert_eq!(cpu.eax() & 0x8000_0001, 0x8000_0001);
+}
+
 #[test]
 fn lgdt_at_cpl0_with_existing_paging_continues_to_translate_via_old_gdtr() {
     let mut cpu = make_cpu_386();
@@ -2039,12 +2058,12 @@ fn clts_does_not_clear_em_or_mp() {
 }
 
 #[test]
-fn smsw_register_form_zero_extends_low_16_when_storing_to_32_bit_dest() {
+fn smsw_register_form_stores_whole_cr0_to_32_bit_dest() {
     let mut cpu = make_cpu_486();
     let mut bus = TestBus::new();
 
     let mut state = cpu::I386State {
-        cr0: 0x0000_0011,
+        cr0: 0x4000_0011,
         ..cpu::I386State::default()
     };
     state.set_eax(0xFFFF_FFFF);
@@ -2059,9 +2078,9 @@ fn smsw_register_form_zero_extends_low_16_when_storing_to_32_bit_dest() {
     cpu.step(&mut bus);
 
     assert_eq!(
-        cpu.eax() & 0xFFFF_0000,
-        0,
-        "SMSW with 32-bit dest zero-extends from CR0 low 16"
+        cpu.eax(),
+        0x4000_0011,
+        "SMSW with a 32-bit register destination stores the whole CR0"
     );
 }
 

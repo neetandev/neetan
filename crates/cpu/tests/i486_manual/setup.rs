@@ -1055,6 +1055,30 @@ pub(crate) fn enable_identity_paging(bus: &mut TestBus, state: &mut I386State) {
     state.cr3 = PAGE_DIRECTORY_BASE;
 }
 
+/// Page entry flags: present, writable and user.
+pub(crate) const PAGE_PRESENT_WRITABLE_USER: u32 = 0x007;
+
+/// Identity paging like `enable_identity_paging` with user pages in the low 1 MiB,
+/// except the pages of `supervisor_addresses`, which get U/S=0.
+pub(crate) fn enable_user_identity_paging(
+    bus: &mut TestBus,
+    state: &mut I386State,
+    supervisor_addresses: &[u32],
+) {
+    enable_identity_paging(bus, state);
+    write_dword_at(
+        bus,
+        PAGE_DIRECTORY_BASE,
+        PAGE_TABLE_BASE | PAGE_PRESENT_WRITABLE_USER,
+    );
+    for page in 0..256u32 {
+        set_identity_page_flags(bus, page << 12, PAGE_PRESENT_WRITABLE_USER);
+    }
+    for &address in supervisor_addresses {
+        set_identity_page_flags(bus, address, PAGE_PRESENT_WRITABLE);
+    }
+}
+
 pub(crate) fn set_identity_page_flags(bus: &mut TestBus, linear_address: u32, flags: u32) {
     let entry_index = (linear_address >> 12) & 0x3FF;
     write_dword_at(

@@ -1239,16 +1239,16 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                 self.clk(Self::timing(12, 12));
             }
             4 => {
-                // SMSW - 80486 PRM 26-268 documents only `SMSW r/m16`. The
-                // instruction stores the machine status word (low 16 bits
-                // of CR0). With a 32-bit register destination (0x66 prefix
-                // or default operand size 32) the upper 16 bits are
-                // architecturally undefined; we zero-extend.
+                // SMSW - 80486 PRM 26-268 documents only `SMSW r/m16`, which
+                // stores the machine status word (low 16 bits of CR0). A 32-bit
+                // register destination receives the whole CR0 (observed
+                // behaviour).
                 let mws = self.cr0 as u16;
                 if modrm >= 0xC0 {
                     if self.operand_size_override {
                         let reg = self.rm_dword(modrm);
-                        self.regs.set_dword(reg, mws as u32);
+                        let cr0 = self.cr0;
+                        self.regs.set_dword(reg, cr0);
                     } else {
                         let reg = self.rm_word(modrm);
                         self.regs.set_word(reg, mws);

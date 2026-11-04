@@ -246,6 +246,10 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             self.ip_upper = 0;
             Ok(())
         } else {
+            // 80486 PRM 6.8.3: the IDT, descriptor and TSS reads and the inner stack of a
+            // privilege change are privilege level 0 accesses. The same-privilege frame
+            // drops the override for its pushes.
+            let saved_supervisor_override = self.supervisor_override;
             self.supervisor_override = true;
             let result = self.interrupt_protected(
                 vector,
@@ -256,7 +260,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                 is_fault,
                 bus,
             );
-            self.supervisor_override = false;
+            self.supervisor_override = saved_supervisor_override;
             result
         }
     }
@@ -345,6 +349,41 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             is_fault,
             bus,
         )
+    }
+
+    /// Pushes the EFLAGS, CS, EIP and error code frame of a same-privilege interrupt onto
+    /// the current stack.
+    fn push_same_privilege_frame(
+        &mut self,
+        is_386_gate: bool,
+        return_eip: u32,
+        error_code: Option<u16>,
+        is_fault: bool,
+        bus: &mut impl common::Bus,
+    ) -> Step {
+        if is_386_gate {
+            let mut eflags = self.eflags_upper | self.flags.compress() as u32;
+            if is_fault {
+                eflags |= 0x0001_0000;
+            }
+            let cs = self.sregs[SegReg32::CS as usize];
+            self.push_dword(bus, eflags)?;
+            self.push_dword_selector(bus, cs)?;
+            self.push_dword(bus, return_eip)?;
+            if let Some(code) = error_code {
+                self.push_dword(bus, code as u32)?;
+            }
+        } else {
+            let flags_val = self.flags.compress();
+            let cs = self.sregs[SegReg32::CS as usize];
+            self.push(bus, flags_val)?;
+            self.push(bus, cs)?;
+            self.push(bus, return_eip as u16)?;
+            if let Some(code) = error_code {
+                self.push(bus, code)?;
+            }
+        }
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -588,29 +627,12 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             return Ok(());
         }
 
-        // Same-privilege interrupt.
-        if is_386_gate {
-            let mut eflags = self.eflags_upper | self.flags.compress() as u32;
-            if is_fault {
-                eflags |= 0x0001_0000;
-            }
-            let cs = self.sregs[SegReg32::CS as usize];
-            self.push_dword(bus, eflags)?;
-            self.push_dword_selector(bus, cs)?;
-            self.push_dword(bus, return_eip)?;
-            if let Some(code) = error_code {
-                self.push_dword(bus, code as u32)?;
-            }
-        } else {
-            let flags_val = self.flags.compress();
-            let cs = self.sregs[SegReg32::CS as usize];
-            self.push(bus, flags_val)?;
-            self.push(bus, cs)?;
-            self.push(bus, return_eip as u16)?;
-            if let Some(code) = error_code {
-                self.push(bus, code)?;
-            }
-        }
+        // Same-privilege interrupt: the frame goes to the current stack at the CPL.
+        self.supervisor_override = false;
+        let pushed =
+            self.push_same_privilege_frame(is_386_gate, return_eip, error_code, is_fault, bus);
+        self.supervisor_override = true;
+        pushed?;
 
         self.set_accessed_bit(gate_selector, bus)?;
         let adjusted_selector = (gate_selector & !3) | cpl;
