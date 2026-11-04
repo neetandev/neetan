@@ -14,7 +14,7 @@ use upd7220_gdc::{DOT_CLOCK_200LINE, DOT_CLOCK_400LINE, GdcAction, STATUS_DRAWIN
 
 use crate::{
     Pc9801Bus, TraceSink,
-    bus::{INTERRUPT_DELAY_CYCLES, IO_WAIT_CYCLES, MOUSE_TIMER_IRQ_LINE},
+    bus::{INTERRUPT_DELAY_CYCLES, IO_WAIT_CYCLES},
     scheduler::Event98,
 };
 
@@ -547,12 +547,12 @@ impl<T: TraceSink> Pc9801Bus<T> {
             0x7FDD => {
                 let was_enabled = self.mouse_timer_irq_enabled();
                 self.mouse_ppi.write_port_c(value, self.current_cycle);
-                self.handle_mouse_timer_control_change(was_enabled);
+                self.update_mouse_timer(was_enabled);
             }
             0x7FDF => {
                 let was_enabled = self.mouse_timer_irq_enabled();
                 self.mouse_ppi.write_control(value, self.current_cycle);
-                self.handle_mouse_timer_control_change(was_enabled);
+                self.update_mouse_timer(was_enabled);
             }
             // Hi-reso 8255A mouse port range. Not decoded on the normal-mode
             // machines we emulate.
@@ -1090,18 +1090,6 @@ impl<T: TraceSink> Pc9801Bus<T> {
             self.memory.set_e_plane_enabled(false);
         } else {
             self.update_plane_e_mapping();
-        }
-    }
-
-    fn handle_mouse_timer_control_change(&mut self, was_enabled: bool) {
-        let enabled = self.mouse_timer_irq_enabled();
-        if enabled && !was_enabled {
-            self.schedule_mouse_timer();
-            self.update_next_event_cycle();
-        } else if !enabled && was_enabled {
-            self.scheduler.cancel(Event98::MouseTimer);
-            self.clear_pic_irq(MOUSE_TIMER_IRQ_LINE);
-            self.update_next_event_cycle();
         }
     }
 
