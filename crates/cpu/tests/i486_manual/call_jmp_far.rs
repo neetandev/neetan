@@ -387,6 +387,45 @@ fn call_through_386_call_gate_ring3_to_ring0_pushes_dword_outer_stack_frame() {
     assert_eq!(read_dword_at(&bus, new_ss_base + new_sp + 8), 0xF000);
 }
 
+// 80486 PRM 6.5.1: the old SS is pushed zero-extended to 32 bits. The CS slot of the same
+// frame is written as a dword as well.
+#[test]
+fn call_through_386_call_gate_ring3_to_ring0_zero_extends_selector_slots() {
+    let mut cpu = make_cpu_486();
+    let mut bus = TestBus::new();
+
+    let mut state = standard_protected_mode_at_ring3(&mut bus);
+    write_call_gate_386(
+        &mut bus,
+        GLOBAL_DESCRIPTOR_TABLE_BASE,
+        TEST_SLOT_CALL_GATE_386_DPL3,
+        GATE_TARGET_IP as u32,
+        SELECTOR_RING0_CODE,
+        0,
+        3,
+    );
+    let inner_stack_top = super::setup::RING0_STACK_BASE + 0xFFF0;
+    for address in inner_stack_top - 16..inner_stack_top {
+        bus.ram[address as usize] = 0xA5;
+    }
+    state.set_esp(0xF000);
+    cpu.load_state(&state);
+
+    place_call_far_32bit(&mut bus, RING3_CODE_BASE, SELECTOR_CALL_GATE_386_DPL3);
+
+    cpu.step(&mut bus);
+
+    assert_eq!(
+        read_dword_at(&bus, inner_stack_top - 4),
+        super::setup::SELECTOR_RING3_STACK as u32
+    );
+    assert_eq!(read_dword_at(&bus, inner_stack_top - 8), 0xF000);
+    assert_eq!(
+        read_dword_at(&bus, inner_stack_top - 12),
+        super::setup::SELECTOR_RING3_CODE as u32
+    );
+}
+
 #[test]
 fn call_through_286_call_gate_ring3_to_ring0_copies_word_parameters() {
     let mut cpu = make_cpu_486();
