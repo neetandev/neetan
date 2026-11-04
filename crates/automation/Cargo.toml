@@ -53,6 +53,10 @@ name = "factory"
 required-features = ["pc98", "msx"]
 
 [[test]]
+name = "guest_clock"
+required-features = ["pc98"]
+
+[[test]]
 name = "hdd"
 required-features = ["pc98"]
 

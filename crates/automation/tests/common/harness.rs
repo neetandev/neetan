@@ -15,7 +15,7 @@ use std::{
 
 use automation::{
     AutomationSession, CancelHandle, CommonConfig, ExecutionResult, MachineIdentity,
-    MessageProtocol, RunTermination, execute_script,
+    MessageProtocol, RunTermination, execute_script, guest_clock::GuestClock,
 };
 use common::{
     AutomatedMachine, CpuMode, FixedHostDateTime, HostDateTime, MachineModel,
@@ -223,13 +223,35 @@ pub fn make_session(
 ) -> (AutomationSession, mpsc::Receiver<MessageProtocol>) {
     let (sender, receiver) = mpsc::channel();
     let common = CommonConfig::with_defaults();
-    let factory_rtc = common.host_date_time_source();
+    let guest_clock = common.guest_clock();
     let sample_rate = common.audio_sample_rate();
     let session = AutomationSession::new(
         sender,
         CancelHandle::new(),
         common,
-        factory_rtc,
+        guest_clock,
+        sample_rate,
+        read_root.to_path_buf(),
+        artifact_root.to_path_buf(),
+    );
+    (session, receiver)
+}
+
+/// Creates a session like `make_session` that hands `guest_clock` to every
+/// machine it builds.
+pub fn make_session_with_guest_clock(
+    read_root: &Path,
+    artifact_root: &Path,
+    guest_clock: Arc<GuestClock>,
+) -> (AutomationSession, mpsc::Receiver<MessageProtocol>) {
+    let (sender, receiver) = mpsc::channel();
+    let common = CommonConfig::with_defaults();
+    let sample_rate = common.audio_sample_rate();
+    let session = AutomationSession::new(
+        sender,
+        CancelHandle::new(),
+        common,
+        guest_clock,
         sample_rate,
         read_root.to_path_buf(),
         artifact_root.to_path_buf(),

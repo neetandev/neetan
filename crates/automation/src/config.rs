@@ -14,18 +14,22 @@ use std::{
     sync::Arc,
 };
 
-use common::{FixedHostDateTime, HostDateTime, SharedHostDateTimeSource};
+use common::HostDateTime;
 use machine_factory::config::{
     settings::{ROMS_FOLDER_KEY, Scope, find_setting},
     systems::{derived_rom_folder, rom_folders},
 };
 
+use crate::guest_clock::GuestClock;
+
 /// The default per-script wall-clock timeout in seconds.
 pub const DEFAULT_TIMEOUT_SECONDS: u64 = 600;
 /// The fixed audio output rate for every automated machine.
 pub const AUDIO_SAMPLE_RATE: u32 = 48_000;
+/// The earliest guest year. The guest clock counts seconds from 1970-01-01.
+const MINIMUM_GUEST_YEAR: u16 = 1970;
 
-/// A fixed guest real-time-clock value.
+/// The guest real-time-clock start value.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GuestDateTime {
     /// Four-digit year.
@@ -74,7 +78,8 @@ impl GuestDateTime {
         let hour = parse_field(time_parts[0], "hour", value)?;
         let minute = parse_field(time_parts[1], "minute", value)?;
         let second = parse_field(time_parts[2], "second", value)?;
-        if !(1..=12).contains(&month)
+        if year < MINIMUM_GUEST_YEAR
+            || !(1..=12).contains(&month)
             || !(1..=31).contains(&day)
             || hour > 23
             || minute > 59
@@ -142,7 +147,7 @@ pub struct CommonConfig {
     pub artifact_root: Option<PathBuf>,
     /// Per-script wall-clock timeout in seconds.
     pub timeout_seconds: u64,
-    /// Fixed guest real-time-clock value.
+    /// Guest real-time-clock value at emulated time zero.
     pub guest_time: GuestDateTime,
 }
 
@@ -192,10 +197,10 @@ impl CommonConfig {
         AUDIO_SAMPLE_RATE
     }
 
-    /// Returns the fixed guest real-time-clock source.
+    /// Returns a guest real-time clock that starts at the configured guest time.
     #[must_use]
-    pub fn host_date_time_source(&self) -> SharedHostDateTimeSource {
-        Arc::new(FixedHostDateTime(self.guest_time.to_host_date_time()))
+    pub fn guest_clock(&self) -> Arc<GuestClock> {
+        Arc::new(GuestClock::new(self.guest_time.to_host_date_time()))
     }
 
     /// Returns the artifact root for one script.

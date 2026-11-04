@@ -88,7 +88,7 @@ fn run_inner(
         events.clone(),
         cancel.clone(),
         common.clone(),
-        common.host_date_time_source(),
+        common.guest_clock(),
         common.audio_sample_rate(),
         script_dir.clone(),
         artifact_root.clone(),

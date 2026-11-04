@@ -110,7 +110,7 @@ impl AutomationSession {
         let (trace_sink, trace_handle) = ApplicationTraceSink::new(TraceLimits::default());
         let machine = machine_factory::machines::initialize_automated_machine(
             spec.clone(),
-            self.factory_rtc.clone(),
+            self.guest_clock.clone(),
             self.sample_rate,
             trace_sink,
         )?;
@@ -140,6 +140,7 @@ impl AutomationSession {
                 "a machine scope is already active".to_owned(),
             ));
         }
+        self.guest_clock.set_elapsed_nanoseconds(0);
         let (machine, trace_handle) = self.build_machine(&spec).map_err(OpError::Construction)?;
         let descriptor = machine.automation_descriptor();
         let id = MachineId(self.machine_ids.allocate()?);
@@ -327,6 +328,7 @@ impl AutomationSession {
             .machine
             .restore_state(&state.blob)
             .map_err(map_save_state_error)?;
+        self.synchronize_guest_clock();
         self.release_all_controls();
         Ok(())
     }

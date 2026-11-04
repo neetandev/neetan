@@ -25,12 +25,12 @@ pub(crate) mod trace;
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::PathBuf,
-    sync::mpsc::Sender,
+    sync::{Arc, mpsc::Sender},
 };
 
 use common::{
     AutomatedMachine, AutomationTimeline, HostKey, InputCapabilities, JoystickState,
-    MachineStateBlob, SharedHostDateTimeSource, StartupCapabilities,
+    MachineStateBlob, StartupCapabilities,
     tracing::{TraceFailure, TraceHandle},
 };
 use machine_factory::{InitError, InitErrorKind, config::EmulatorConfig};
@@ -38,6 +38,7 @@ use machine_factory::{InitError, InitErrorKind, config::EmulatorConfig};
 use crate::{
     capabilities::resolve_within,
     config::CommonConfig,
+    guest_clock::GuestClock,
     media::{MediaKind, MediaMount, MediaRequest},
     protocol::{ExecutionResult, MessageProtocol, TestCaseOutcome},
     watchdog::CancelHandle,
@@ -257,7 +258,8 @@ pub struct AutomationSession {
     machine_ids: IdAllocator,
     budgets: SessionBudgets,
     common: CommonConfig,
-    factory_rtc: SharedHostDateTimeSource,
+    /// Guest real-time clock handed to every machine the session builds.
+    guest_clock: Arc<GuestClock>,
     sample_rate: u32,
     /// Root beneath which script-relative media sources resolve.
     read_root: PathBuf,
@@ -275,7 +277,7 @@ impl AutomationSession {
         events: Sender<MessageProtocol>,
         cancel: CancelHandle,
         common: CommonConfig,
-        factory_rtc: SharedHostDateTimeSource,
+        guest_clock: Arc<GuestClock>,
         sample_rate: u32,
         read_root: PathBuf,
         artifact_root: PathBuf,
@@ -289,7 +291,7 @@ impl AutomationSession {
             machine_ids: IdAllocator::new(),
             budgets: SessionBudgets::default(),
             common,
-            factory_rtc,
+            guest_clock,
             sample_rate,
             read_root,
             artifact_root,
@@ -402,6 +404,17 @@ impl AutomationSession {
             .saturating_mul(denominator)
             .saturating_mul(1_000_000_000)
             / numerator
+    }
+
+    /// Sets the guest clock to the emulated time of the active machine.
+    ///
+    /// The session calls this after every bounded run step: one presented frame, or at
+    /// most one million ticks of a tick run. Within a step the guest reads the value of
+    /// the end of the previous step, so two runs of the same script observe the same
+    /// guest time at the same emulated tick.
+    pub(crate) fn synchronize_guest_clock(&self) {
+        self.guest_clock
+            .set_elapsed_nanoseconds(self.emulated_time_ns());
     }
 
     /// Records the authoritative result. The first call wins and is terminal.

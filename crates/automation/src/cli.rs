@@ -243,7 +243,7 @@ Options:
   --global-config <PATH>   Explicit optional configuration layer
   --artifacts <PATH>       Artifact root (default: <script-dir>/artifacts/<stem>)
   --timeout <SECONDS>      Per-script wall-clock deadline (default: 600)
-  --guest-time <DATETIME>  Fixed guest RTC value (default: 2000-01-01T00:00:00)
+  --guest-time <DATETIME>  Guest RTC start time (default: 2000-01-01T00:00:00)
   --jobs <N>               Maximum parallel tests (default: CPU count, orchestrate only)
   --help                   Print this help
   --version                Print version information
