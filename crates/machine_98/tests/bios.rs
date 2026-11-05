@@ -599,6 +599,25 @@ fn boot_inject_run_ra(scancodes: &[u8], code: &[u8], budget: u64) -> Pc9801Ra {
     machine
 }
 
+/// Boots a PC-9821As with DIP SW 2-8 ON (5 MHz graphics GDC allowed), as the machine factory
+/// configures it, and runs `code`.
+fn boot_inject_run_pc9821as_5mhz_dip_switch(code: &[u8], budget: u64) -> Pc9821As {
+    let mut machine = create_machine_pc9821as_hdd();
+    machine.bus.set_gdc_clock_5mhz();
+    boot_to_halt_hdd!(machine);
+    write_bytes(&mut machine.bus, TEST_CODE, code);
+    machine.cpu.load_state(&{
+        let mut s = cpu::I386State {
+            ip: TEST_CODE as u16,
+            ..Default::default()
+        };
+        s.set_esp(0x4000);
+        s
+    });
+    machine.run_for(budget);
+    machine
+}
+
 fn boot_inject_run_pc9821as(scancodes: &[u8], code: &[u8], budget: u64) -> Pc9821As {
     let mut machine = create_machine_pc9821as_hdd();
     boot_to_halt_hdd!(machine);

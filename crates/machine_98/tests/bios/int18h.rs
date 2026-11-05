@@ -3,9 +3,9 @@ use device::upd7220_gdc::DISPLAY_MODE_GRAPHICS;
 
 use super::{
     KB_COUNT, KB_HEAD, KB_TAIL, TEST_CODE, boot_inject_run_f, boot_inject_run_pc9821as,
-    boot_inject_run_ra, boot_inject_run_vm, boot_inject_run_vx, create_machine_f,
-    create_machine_ra, create_machine_vm, create_machine_vx, read_ivt_vector, read_ram_u16,
-    write_bytes,
+    boot_inject_run_pc9821as_5mhz_dip_switch, boot_inject_run_ra, boot_inject_run_vm,
+    boot_inject_run_vx, create_machine_f, create_machine_ra, create_machine_vm, create_machine_vx,
+    read_ivt_vector, read_ram_u16, write_bytes,
 };
 
 const RESULT: u32 = 0x0600;
@@ -5061,4 +5061,158 @@ fn int18h_ah42h_in_640x480_selects_640x400() {
     assert_eq!(state.gdc_slave.al, 400);
     machine.bus.render_display_frame();
     assert_eq!(machine.bus.display_dimensions(), (640, 400));
+}
+
+/// Returns the VSYNC rate of `gdc` in frames per second of guest time.
+fn gdc_frame_rate(gdc: &device::upd7220_gdc::GdcState) -> f64 {
+    f64::from(gdc.cpu_clock_hz) / gdc.vsync_period as f64
+}
+
+/// INT 18h AH=30h AL=0Ch BH=31h selects the 5 MHz graphics GDC clock fixed for 640x480 and
+/// sets 054Dh bit 2 (undoc98 `memsys.txt` 0000:054Dh bit 2, `io_disp.txt` I/O 09A0h bit 1).
+/// The text GDC shows 59.94 Hz frames and the graphics GDC follows with 31.47 kHz lines.
+#[test]
+fn int18h_ah30h_640x480_runs_the_graphics_gdc_at_5mhz() {
+    let mut machine = run_pc9821as_program(&extended_screen_mode_set_program(0x0C, 0x31));
+    assert_eq!(machine.bus.read_byte(0x054D) & 0x04, 0x04);
+    machine.bus.io_write_byte(0x09A0, 0x00);
+    assert_eq!(
+        machine.bus.io_read_byte(0x09A0) & 0x02,
+        0x02,
+        "GDC CLOCK-2 at 5 MHz"
+    );
+
+    let state = machine.inspection_state();
+    let frame_rate = gdc_frame_rate(&state.gdc_master);
+    assert!(
+        (frame_rate - 59.94).abs() < 0.05,
+        "VSYNC at {frame_rate} Hz"
+    );
+    let graphics_frame_rate = gdc_frame_rate(&state.gdc_slave);
+    let line_rate = graphics_frame_rate * 525.0;
+    assert!(
+        (line_rate - 31_470.0).abs() < 20.0,
+        "graphics lines at {line_rate} Hz"
+    );
+}
+
+/// Runs `code` on a booted PC-9821As with DIP SW 2-8 ON and returns the machine after the
+/// program halts.
+fn run_pc9821as_5mhz_dip_switch_program(code: &[u8]) -> machine_98::Pc9821As {
+    let machine = boot_inject_run_pc9821as_5mhz_dip_switch(code, INT18H_BUDGET);
+    assert!(machine.cpu.halted(), "the test program did not reach HLT");
+    machine
+}
+
+/// Returns 054Dh bit 2 and the GDC CLOCK-2 readback of port 09A0h bit 1 (undoc98
+/// `memsys.txt` 0000:054Dh bit 2, `io_disp.txt` I/O 09A0h).
+fn graphics_gdc_clock_5mhz(machine: &mut machine_98::Pc9821As) -> (bool, bool) {
+    machine.bus.io_write_byte(0x09A0, 0x01);
+    (
+        machine.bus.read_byte(0x054D) & 0x04 != 0,
+        machine.bus.io_read_byte(0x09A0) & 0x02 != 0,
+    )
+}
+
+/// INT 18h AH=30h AL=0Ch BH=21h shows 640x400 at 31.47 kHz with 70.09 Hz frames, also with
+/// the graphics GDC at 5 MHz (undoc98 `int18crt.txt` Function 30h, `memsys.txt` 0000:054Dh
+/// bit 2).
+#[test]
+fn int18h_ah30h_31khz_640x400_runs_at_70hz() {
+    let mut machine =
+        run_pc9821as_5mhz_dip_switch_program(&extended_screen_mode_set_program(0x0C, 0x21));
+    assert_eq!(graphics_gdc_clock_5mhz(&mut machine), (true, true));
+    let frame_rate = gdc_frame_rate(&machine.inspection_state().gdc_master);
+    assert!(
+        (frame_rate - 70.09).abs() < 0.05,
+        "VSYNC at {frame_rate} Hz"
+    );
+}
+
+/// A PC-9821As with DIP SW 2-8 ON boots with the graphics GDC at 2.5 MHz, 054Dh bit 2 clear and
+/// bit 5 set (undoc98 `memsys.txt` 0000:054Dh bits 2 and 5).
+#[test]
+fn pc9821as_with_5mhz_dip_switch_boots_at_2_5mhz() {
+    let mut machine = run_pc9821as_5mhz_dip_switch_program(&[0xF4]);
+    assert_eq!(graphics_gdc_clock_5mhz(&mut machine), (false, false));
+    assert_eq!(machine.bus.read_byte(0x054D) & 0x20, 0x20);
+}
+
+/// INT 18h AH=30h with 640x200 runs the graphics GDC at 2.5 MHz, also when DIP SW 2-8 allows
+/// 5 MHz (undoc98 `memsys.txt` 0000:054Dh bit 2).
+#[test]
+fn int18h_ah30h_640x200_selects_2_5mhz() {
+    let mut code = extended_screen_mode_set_call(0x0C, 0x31);
+    code.extend(extended_screen_mode_set_program(0x0C, 0x01));
+    let mut machine = run_pc9821as_5mhz_dip_switch_program(&code);
+    assert_eq!(machine.bus.read_byte(RESULT), 0x00);
+    assert_eq!(graphics_gdc_clock_5mhz(&mut machine), (false, false));
+}
+
+/// INT 18h AH=30h with 640x400 runs the graphics GDC at 5 MHz when 054Dh bit 5 (DIP SW 2-8) is
+/// set and at 2.5 MHz when it is clear (undoc98 `memsys.txt` 0000:054Dh bits 2 and 5).
+#[test]
+fn int18h_ah30h_640x400_follows_dip_switch_2_8() {
+    let program = extended_screen_mode_set_program(0x08, 0x21);
+    let mut machine = run_pc9821as_program(&program);
+    assert_eq!(machine.bus.read_byte(0x054D) & 0x20, 0x00);
+    assert_eq!(graphics_gdc_clock_5mhz(&mut machine), (false, false));
+
+    let mut machine = run_pc9821as_5mhz_dip_switch_program(&program);
+    assert_eq!(graphics_gdc_clock_5mhz(&mut machine), (true, true));
+}
+
+/// INT 18h AH=42h switches the graphics GDC to 5 MHz for 640x400 and back to 2.5 MHz for
+/// 640x200 when DIP SW 2-8 allows 5 MHz, and records the clock in 054Dh bit 2 (undoc98
+/// `memsys.txt` 0000:054Dh bit 2).
+#[test]
+fn int18h_ah42h_switches_the_graphics_gdc_clock() {
+    let mut machine = run_pc9821as_5mhz_dip_switch_program(&make_int18h_call_ch(0x42, 0xC0));
+    assert_eq!(graphics_gdc_clock_5mhz(&mut machine), (true, true));
+    run_int18h_after(&mut machine, 0x42, 0x00, 0x40);
+    assert_eq!(graphics_gdc_clock_5mhz(&mut machine), (false, false));
+}
+
+/// INT 18h AH=42h CH=40h on a PC-9821As with DIP SW 2-8 ON shows the 640x200 UPPER area, which
+/// starts 16000 bytes into each plane, with 40 words (80 bytes) per line on the even rasters and
+/// the odd rasters blank (undoc98 `int18grp.txt` Function 42h, `io_disp.txt` I/O 0068h 08h/09h).
+#[test]
+fn int18h_ah42h_640x200_renders_doubled_lines_after_5mhz_dip_switch_boot() {
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB4, 0x42, // MOV AH, 42h
+        0xB5, 0x40, // MOV CH, 40h
+        0xCD, 0x18, // INT 18h
+        0xB4, 0x40, // MOV AH, 40h
+        0xCD, 0x18, // INT 18h
+        0xF4,       // HLT
+    ];
+    let mut machine = run_pc9821as_5mhz_dip_switch_program(code);
+    let state = machine.inspection_state();
+    assert_eq!(state.gdc_slave.pitch, 40);
+    assert_eq!(state.gdc_slave.lines_per_row, 2);
+
+    for offset in 0..0x8000u32 {
+        machine.bus.write_byte(0xA8000 + offset, 0x00);
+    }
+    machine.bus.write_byte(0xA8000 + 16_000 + 80, 0xFF);
+    machine.bus.io_write_byte(0x68, 0x0F);
+    machine.bus.io_write_byte(0x6A, 0x01);
+    machine.bus.io_write_byte(0xA8, 0x01);
+    machine.bus.io_write_byte(0xAA, 0x00);
+    machine.bus.io_write_byte(0xAC, 0x0F);
+    machine.bus.io_write_byte(0xAE, 0x00);
+    machine.bus.render_display_frame();
+    let framebuffer = machine.bus.display_framebuffer();
+    let lit = |y: usize| {
+        framebuffer[y * 640 * 4..y * 640 * 4 + 3]
+            .iter()
+            .any(|&c| c != 0)
+    };
+    let lit_lines: Vec<usize> = (0..400).filter(|&y| lit(y)).collect();
+    assert_eq!(
+        lit_lines,
+        vec![2],
+        "VRAM line 1 (80 bytes in) shows on screen line 2, the odd raster 3 stays blank"
+    );
 }

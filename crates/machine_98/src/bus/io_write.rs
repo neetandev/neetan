@@ -149,6 +149,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
             // Mode register 2 (GDC clock + color depth + accelerator mode).
             0x6A => {
                 let has_egc = self.grcg.state.chip == grcg::GRCG_CHIP_EGC;
+                let was_5mhz = self.display_control.is_gdc_5mhz();
                 self.display_control.write_mode2(value, has_egc);
                 if self.machine_model.has_pegc() {
                     match value {
@@ -166,8 +167,9 @@ impl<T: TraceSink> Pc9801Bus<T> {
                     }
                 }
                 self.update_plane_e_mapping();
-                self.apply_gdc_dot_clock();
-                self.reschedule_gdc_events();
+                if self.display_control.is_gdc_5mhz() != was_5mhz {
+                    self.apply_gdc_dot_clock();
+                }
             }
             // Border color.
             0x6C => self.display_control.write_border_color(value),
@@ -1244,25 +1246,29 @@ impl<T: TraceSink> Pc9801Bus<T> {
         }
     }
 
+    /// Returns the dot clock of the CRT signal, selected by the scan frequency (port 09A8h) and
+    /// the display line count (port 6Eh). The text GDC runs at this clock.
     fn current_dot_clock_hz(&self) -> u32 {
-        let base = if self.display_control.is_crt_31khz_enabled() {
+        if self.display_control.is_crt_31khz_enabled() {
             DOT_CLOCK_31KHZ
         } else if self.display_control.state.display_line_count & 1 != 0 {
             DOT_CLOCK_400LINE
         } else {
             DOT_CLOCK_200LINE
-        };
-        if self.display_control.is_gdc_5mhz() {
-            base.saturating_mul(2)
-        } else {
-            base
         }
     }
 
+    /// Applies the dot clock to both GDCs. GDC CLOCK-1 and CLOCK-2 at 5 MHz (port 6Ah 83h and
+    /// 85h) double the clock of the graphics GDC only (undoc98 `memsys.txt` 0000:054Dh bit 2).
     pub(super) fn apply_gdc_dot_clock(&mut self) {
         let dot_clock = self.current_dot_clock_hz();
+        let graphics_dot_clock = if self.display_control.is_gdc_5mhz() {
+            dot_clock.saturating_mul(2)
+        } else {
+            dot_clock
+        };
         self.gdc_master.set_dot_clock(dot_clock);
-        self.gdc_slave.set_dot_clock(dot_clock);
+        self.gdc_slave.set_dot_clock(graphics_dot_clock);
     }
 
     pub(super) fn reschedule_gdc_events(&mut self) {
@@ -1498,10 +1504,115 @@ mod tests {
         assert_eq!(bus.gdc_master.state.dot_clock_hz, DOT_CLOCK_400LINE);
         assert_eq!(bus.gdc_slave.state.dot_clock_hz, DOT_CLOCK_400LINE);
 
-        // Both 5MHz bits set: doubled clock.
+        // Both 5MHz bits set: doubled clock of the graphics GDC.
         bus.io_write_byte(0x6A, 0x85);
-        assert_eq!(bus.gdc_master.state.dot_clock_hz, DOT_CLOCK_400LINE * 2);
+        assert_eq!(bus.gdc_master.state.dot_clock_hz, DOT_CLOCK_400LINE);
         assert_eq!(bus.gdc_slave.state.dot_clock_hz, DOT_CLOCK_400LINE * 2);
+    }
+
+    /// Returns the VSYNC rate of `gdc` in frames per second of guest time.
+    fn vsync_hz(gdc: &device::upd7220_gdc::GdcState) -> f64 {
+        f64::from(gdc.cpu_clock_hz) / gdc.vsync_period as f64
+    }
+
+    /// Builds a PC-9821Ap with DIP SW 2-8 ON, as the machine factory does, and the graphics GDC
+    /// switched to 5 MHz with port 6Ah 83h and 85h.
+    fn pc9821ap_bus_with_5mhz_graphics_gdc() -> Pc9801Bus<NoTrace> {
+        let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9821AP, CpuMode::High, 48000);
+        bus.set_gdc_clock_5mhz();
+        bus.io_write_byte(0x6A, 0x83);
+        bus.io_write_byte(0x6A, 0x85);
+        bus
+    }
+
+    /// Sends the SYNC command with `parameters` to the GDC at `command_port`.
+    fn write_gdc_sync(bus: &mut Pc9801Bus<NoTrace>, command_port: u16, parameters: [u8; 8]) {
+        bus.io_write_byte(command_port, 0x0F);
+        for parameter in parameters {
+            bus.io_write_byte(command_port - 2, parameter);
+        }
+    }
+
+    /// The 24.83 kHz display shows 56.42 Hz frames with the graphics GDC at 2.5 MHz and at
+    /// 5 MHz. The GDC clock select (port 6Ah 82h-85h) clocks the graphics GDC only (undoc98
+    /// `io_disp.txt` I/O 006Ah, `memsys.txt` 0000:054Dh bit 2).
+    #[test]
+    fn vsync_rate_at_24khz_ignores_the_graphics_gdc_clock() {
+        let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9821AP, CpuMode::High, 48000);
+        bus.apply_gdc_dot_clock();
+        assert!((vsync_hz(&bus.gdc_master.state) - 56.42).abs() < 0.05);
+
+        let bus = pc9821ap_bus_with_5mhz_graphics_gdc();
+        assert!(bus.display_control.is_gdc_5mhz());
+        assert_eq!(bus.gdc_slave.state.dot_clock_hz, DOT_CLOCK_400LINE * 2);
+        let rate = vsync_hz(&bus.gdc_master.state);
+        assert!((rate - 56.42).abs() < 0.05, "VSYNC at {rate} Hz");
+    }
+
+    /// 640x480 at 31.47 kHz shows 59.94 Hz frames of 525 lines. The graphics GDC at 5 MHz with
+    /// 100 words per line follows the 31.47 kHz lines (undoc98 `int18crt.txt` Function 30h,
+    /// `memsys.txt` 0000:054Dh bit 2).
+    #[test]
+    fn vsync_and_line_rate_at_31khz_640x480() {
+        let mut bus = pc9821ap_bus_with_5mhz_graphics_gdc();
+        bus.io_write_byte(0x09A8, 0x01);
+        write_gdc_sync(
+            &mut bus,
+            0x62,
+            [0x10, 0x4E, 0x4B, 0x0C, 0x03, 0x06, 0xE0, 0x95],
+        );
+        write_gdc_sync(
+            &mut bus,
+            0xA2,
+            [0x02, 0x4E, 0x4B, 0x0C, 0x03, 0x06, 0xE0, 0x95],
+        );
+
+        let master_rate = vsync_hz(&bus.gdc_master.state);
+        assert!(
+            (master_rate - 59.94).abs() < 0.05,
+            "VSYNC at {master_rate} Hz"
+        );
+        let slave_rate = vsync_hz(&bus.gdc_slave.state);
+        assert!(
+            (slave_rate - 59.94).abs() < 0.05,
+            "graphics frame at {slave_rate} Hz"
+        );
+        let line_rate = slave_rate * 525.0;
+        assert!(
+            (line_rate - 31_470.0).abs() < 20.0,
+            "graphics lines at {line_rate} Hz"
+        );
+    }
+
+    /// Mode F/F 2 writes (port 6Ah) that leave the GDC clock alone keep the VSYNC of the text
+    /// GDC on schedule (undoc98 `memsys.txt` 0000:054Dh bit 2).
+    #[test]
+    fn mode_ff2_writes_keep_the_vsync_schedule() {
+        let mut bus = pc9821ap_bus_with_5mhz_graphics_gdc();
+        let vsync_index = crate::scheduler::Event98::GdcVsync as usize;
+        let scheduled = bus.scheduler.state.fire_cycles[vsync_index];
+        assert!(scheduled.is_some());
+        for step in 0..100u64 {
+            bus.current_cycle = step * 1000;
+            bus.io_write_byte(0x6A, 0x07);
+            bus.io_write_byte(0x6A, 0x05);
+        }
+        assert_eq!(bus.scheduler.state.fire_cycles[vsync_index], scheduled);
+    }
+
+    /// 640x400 at 31.47 kHz shows 70.09 Hz frames of 449 lines (undoc98 `int18crt.txt`
+    /// Function 30h).
+    #[test]
+    fn vsync_rate_at_31khz_400_lines() {
+        let mut bus = pc9821ap_bus_with_5mhz_graphics_gdc();
+        bus.io_write_byte(0x09A8, 0x01);
+        write_gdc_sync(
+            &mut bus,
+            0x62,
+            [0x10, 0x4E, 0x47, 0x0C, 0x07, 0x0D, 0x90, 0x89],
+        );
+        let rate = vsync_hz(&bus.gdc_master.state);
+        assert!((rate - 70.09).abs() < 0.05, "VSYNC at {rate} Hz");
     }
 
     #[test]

@@ -12,11 +12,11 @@ use super::{
     crt::{CELL_RASTERS_400_LINE, CRT_STATUS_ADDRESS},
     graphics::{
         FULL_SCREEN_LINE_COUNT, GRAPHICS_RESOLUTION_ADDRESS, PRXCRT_31KHZ, PRXCRT_ADDRESS,
-        PRXCRT_DIP_SWITCH_1_8, PRXDUPD_5MHZ_ACTIVE, PRXDUPD_ADDRESS, PRXDUPD_EXTENDED_GRAPHICS,
-        PRXDUPD_FLASH_DRAW, RESOLUTION_480_LINE, RESOLUTION_ALL, RESOLUTION_LOWER, RESOLUTION_MASK,
-        RESOLUTION_UPPER, SETTING_AREA_ALL, SETTING_AREA_LOWER, SETTING_AREA_SHIFT,
-        SETTING_AREA_UPPER, SETTING_DISPLAY_BANK, SETTING_MONOCHROME, SYNC_MODE_GRAPHICS,
-        SYNC_TIMING_2_5MHZ, SYNC_TIMING_5MHZ, SyncTiming,
+        PRXCRT_DIP_SWITCH_1_8, PRXDUPD_5MHZ_ACTIVE, PRXDUPD_5MHZ_ALLOWED, PRXDUPD_ADDRESS,
+        PRXDUPD_EXTENDED_GRAPHICS, PRXDUPD_FLASH_DRAW, RESOLUTION_480_LINE, RESOLUTION_ALL,
+        RESOLUTION_LOWER, RESOLUTION_MASK, RESOLUTION_UPPER, SETTING_AREA_ALL, SETTING_AREA_LOWER,
+        SETTING_AREA_SHIFT, SETTING_AREA_UPPER, SETTING_DISPLAY_BANK, SETTING_MONOCHROME,
+        SYNC_MODE_GRAPHICS, SYNC_TIMING_2_5MHZ, SYNC_TIMING_5MHZ, SyncTiming,
     },
 };
 use crate::TraceSink;
@@ -335,7 +335,9 @@ impl<T: TraceSink> Pc9801Bus<T> {
         self.gdc_master.state.display_enabled = false;
     }
 
-    /// Selects the graphics resolution with its GDC timing and the PEGC screen layout.
+    /// Selects the graphics resolution with its GDC timing, GDC clock and PEGC screen layout. The
+    /// graphics GDC runs at 5 MHz in 640x480 and in 640x400 when DIP SW 2-8 allows it, and at
+    /// 2.5 MHz in 640x200 (undoc98 `memsys.txt` 0000:054Dh bit 2).
     fn extended_screen_set_graphics(&mut self, is_31khz: bool, resolution: u8, area_flags: u8) {
         if resolution == RESOLUTION_480_LINE {
             self.pegc.set_256_color_enabled(true);
@@ -348,6 +350,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
             let saved = &mut ram[GRAPHICS_RESOLUTION_ADDRESS];
             *saved = (*saved & !RESOLUTION_MASK) | RESOLUTION_480_LINE;
             self.update_plane_e_mapping();
+            self.graphics_set_gdc_clock(true);
 
             self.gdc_slave
                 .load_sync_params(&SYNC_TIMING_31KHZ_480_LINE.sync_parameters(SYNC_MODE_GRAPHICS));
@@ -366,6 +369,8 @@ impl<T: TraceSink> Pc9801Bus<T> {
             self.memory.state.ram[PRXDUPD_ADDRESS] &= !PRXDUPD_EXTENDED_GRAPHICS;
         }
         self.update_plane_e_mapping();
+        let five_mhz_allowed = self.memory.state.ram[PRXDUPD_ADDRESS] & PRXDUPD_5MHZ_ALLOWED != 0;
+        self.graphics_set_gdc_clock(resolution == RESOLUTION_ALL && five_mhz_allowed);
         self.graphics_set_display_area(display_area_setting(resolution) | area_flags);
 
         let is_5mhz = self.memory.state.ram[PRXDUPD_ADDRESS] & PRXDUPD_5MHZ_ACTIVE != 0;
