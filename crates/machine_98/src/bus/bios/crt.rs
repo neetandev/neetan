@@ -5,13 +5,18 @@
 
 use common::{Cpu, MachineModel};
 
-use super::{super::Pc9801Bus, cgrom_kanji_offset, real_mode_address};
+use super::{
+    super::Pc9801Bus,
+    cgrom_kanji_offset,
+    extended_screen::{LINES_400, LINES_480, ROWS_20, ROWS_25, ROWS_30},
+    real_mode_address,
+};
 use crate::TraceSink;
 
 /// Work area byte with the raster count of one text row minus one (CRT_RASTER).
 const CRT_RASTER_ADDRESS: usize = 0x053B;
 /// Work area byte with the text screen status flags (CRT_STS_FLAG).
-const CRT_STATUS_ADDRESS: usize = 0x053C;
+pub(super) const CRT_STATUS_ADDRESS: usize = 0x053C;
 /// Work area word with the offset of the AH=0Fh display area list (CRT_OFST).
 const CRT_LIST_OFFSET_ADDRESS: usize = 0x053E;
 /// Work area word with the segment of the AH=0Fh display area list.
@@ -40,6 +45,8 @@ const MODE_40_COLUMNS: u8 = 0x02;
 const MODE_SIMPLE_GRAPHICS: u8 = 0x04;
 /// AH=0Ah mode bit: the KCG is in dot access mode.
 const MODE_KCG_DOT_ACCESS: u8 = 0x08;
+/// AH=0Ah mode bit: 30 text rows together with `MODE_20_ROWS` in 640x480.
+const MODE_30_ROWS: u8 = 0x10;
 /// AH=0Ah mode bits stored in CRT_STS_FLAG on a 640x400 display.
 const MODE_STORED_BITS: u8 = 0x0F;
 
@@ -63,11 +70,9 @@ const MODE_FF_KCG_DOT_ACCESS: u8 = 0x0B;
 /// Character cell height in rasters on a 640x200 display.
 const CELL_RASTERS_200_LINE: u8 = 8;
 /// Character cell height in rasters on a 640x400 display.
-const CELL_RASTERS_400_LINE: u8 = 16;
+pub(super) const CELL_RASTERS_400_LINE: u8 = 16;
 /// Display lines of a 640x200 display.
 const SCREEN_LINES_200_LINE: u16 = 200;
-/// Display lines of a 640x400 display.
-const SCREEN_LINES_400_LINE: u16 = 400;
 /// Shift of the line count inside the SCROLL parameter word.
 const SCROLL_LINE_COUNT_SHIFT: u16 = 4;
 
@@ -169,6 +174,8 @@ impl<T: TraceSink> Pc9801Bus<T> {
             0x18 => self.crt_set_buzzer(false),
             0x1A => self.crt_define_user_character(cpu.bx(), cpu.cx(), cpu.dx()),
             0x1B => self.crt_set_kcg_access(cpu.al()),
+            0x30 => self.int18h_extended_screen_mode_set(cpu),
+            0x31 => self.int18h_extended_screen_mode_get(cpu),
             0x40 => self.int18h_graphics_display_start(),
             0x41 => self.int18h_graphics_display_stop(),
             0x42 => self.int18h_display_area_set(cpu),
@@ -193,10 +200,18 @@ impl<T: TraceSink> Pc9801Bus<T> {
         self.memory.state.ram[CRT_RASTER_ADDRESS].wrapping_add(1)
     }
 
-    /// AH=0Ah: sets the text rows, columns, attribute mode and KCG access mode.
+    /// AH=0Ah: sets the text rows, columns, attribute mode and KCG access mode. In 640x480 it
+    /// also accepts 30 rows, rejects bit 4 without bit 0 and hides the text screen.
     fn crt_set_mode(&mut self, mode: u8) {
+        let is_480_line = self.crt_480_line_mode();
+        if is_480_line && mode & MODE_30_ROWS != 0 && mode & MODE_20_ROWS == 0 {
+            return;
+        }
         let high_resolution = self.crt_high_resolution();
         let mut status = mode & MODE_STORED_BITS;
+        if is_480_line {
+            status |= mode & MODE_30_ROWS;
+        }
         if high_resolution {
             status |= STATUS_HIGH_RESOLUTION;
         }
@@ -224,6 +239,21 @@ impl<T: TraceSink> Pc9801Bus<T> {
             self.display_control.write_video_mode(command);
         }
 
+        if is_480_line {
+            let rows = if mode & MODE_30_ROWS != 0 {
+                ROWS_30
+            } else if mode & MODE_20_ROWS != 0 {
+                ROWS_20
+            } else {
+                ROWS_25
+            };
+            let is_31khz = self.display_control.is_crt_31khz_enabled();
+            self.extended_screen_set_text(is_31khz, true, rows);
+            self.apply_gdc_dot_clock();
+            self.reschedule_gdc_events();
+            return;
+        }
+
         let cell_rasters = if high_resolution {
             CELL_RASTERS_400_LINE
         } else {
@@ -234,6 +264,13 @@ impl<T: TraceSink> Pc9801Bus<T> {
         } else {
             cell_rasters
         };
+        self.crt_set_row_rasters(row_rasters, cell_rasters);
+        self.crt_set_cursor_form(false);
+    }
+
+    /// Stores `row_rasters` in CRT_RASTER and centers a character cell of `cell_rasters` in the
+    /// text row with the line counter registers.
+    pub(super) fn crt_set_row_rasters(&mut self, row_rasters: u8, cell_rasters: u8) {
         self.memory.state.ram[CRT_RASTER_ADDRESS] = row_rasters - 1;
 
         let top_margin = (row_rasters - cell_rasters) / 2;
@@ -243,12 +280,10 @@ impl<T: TraceSink> Pc9801Bus<T> {
             .write_register(LINE_COUNTER_BL, row_rasters - top_margin - 1);
         self.crtc.write_register(LINE_COUNTER_CL, cell_rasters);
         self.crtc.write_register(LINE_COUNTER_SSL, 0);
-
-        self.crt_set_cursor_form(false);
     }
 
     /// AH=10h: issues CSRFORM for a full row cursor and hides the cursor.
-    fn crt_set_cursor_form(&mut self, steady: bool) {
+    pub(super) fn crt_set_cursor_form(&mut self, steady: bool) {
         self.memory.state.ram[CRT_STATUS_ADDRESS] &= !STATUS_VSYNC_WAIT;
         let last_raster = self.memory.state.ram[CRT_RASTER_ADDRESS];
         let gdc = &mut self.gdc_master.state;
@@ -261,15 +296,17 @@ impl<T: TraceSink> Pc9801Bus<T> {
 
     /// Returns the display lines of the whole text screen.
     fn crt_screen_lines(&self) -> u16 {
-        if self.memory.state.ram[CRT_STATUS_ADDRESS] & STATUS_HIGH_RESOLUTION != 0 {
-            SCREEN_LINES_400_LINE
-        } else {
+        if self.memory.state.ram[CRT_STATUS_ADDRESS] & STATUS_HIGH_RESOLUTION == 0 {
             SCREEN_LINES_200_LINE
+        } else if self.crt_480_line_mode() {
+            LINES_480
+        } else {
+            LINES_400
         }
     }
 
     /// AH=0Eh: shows text VRAM from one offset on the whole screen.
-    fn crt_set_single_area(&mut self, vram_offset: u16) {
+    pub(super) fn crt_set_single_area(&mut self, vram_offset: u16) {
         let gdc_address = vram_offset >> 1;
         let lines = self.crt_screen_lines();
         let area = &mut self.gdc_master.state.scroll[0];
