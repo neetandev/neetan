@@ -30,6 +30,19 @@ pub(crate) fn anonymous_identity(
     ResourceIdentity::new(builder.finish(), byte_length)
 }
 
+/// Combines a source identity with the current content of a part of the
+/// medium. Keeps the byte length of the source identity.
+pub(crate) fn content_identity(
+    domain: &str,
+    source: ResourceIdentity,
+    content: &[u8],
+) -> ResourceIdentity {
+    let mut builder = FingerprintBuilder::new(domain);
+    builder.add("source", &source.digest);
+    builder.add("content", content);
+    ResourceIdentity::new(builder.finish(), source.byte_length)
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;

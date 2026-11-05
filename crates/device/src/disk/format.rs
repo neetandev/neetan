@@ -1,7 +1,7 @@
 //! Hard-disk formatting: partition table, BPB/boot sector, FAT, and root
 //! directory layout for FAT12/FAT16 volumes.
 
-use super::{HddGeometry, HddImage, pc98_ide};
+use super::{HddGeometry, HddImage, pc98_ide, pc98_sasi};
 
 /// The partition-table style written to the first sectors of a hard disk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,8 +159,12 @@ pub fn hdd_bpb_params(sector_size: u16, partition_sectors: u32) -> BpbParams {
     }
 }
 
-/// Builds the PC-98 partition-table sector (disk sector 1). One FAT16 partition
-/// spanning the disk, active, data starting on the second track.
+/// Partition name of the partition neetan writes into a PC-98 partition
+/// table.
+pub const PC98_PARTITION_NAME: &[u8; 16] = b"NEETAN          ";
+
+/// Builds the PC-98 partition-table sector (disk sector 1). One DOS
+/// partition spanning the disk, active, data starting on the second track.
 pub fn pc98_partition_table_sector(
     sector_size: u16,
     total_sectors: u32,
@@ -192,22 +196,22 @@ pub fn pc98_partition_table_sector(
     sector[15] = (end_cylinder >> 8) as u8;
 
     // Partition name (16 bytes, space-padded).
-    sector[16..32].copy_from_slice(b"NEETAN          ");
+    sector[16..32].copy_from_slice(PC98_PARTITION_NAME);
 
     sector
 }
 
-/// First cylinder of the partition written on a PC-98 IDE disk.
-pub const PC98_IDE_PARTITION_START_CYLINDER: u16 = 1;
+/// First cylinder of the partition in the NEC layout of a PC-98 fixed disk.
+pub const PC98_NEC_PARTITION_START_CYLINDER: u16 = 1;
 
-/// Builds the PC-98 partition-table sector of a PC-98 IDE disk in the NEC
-/// layout. One FAT16 partition, active, with its IPL and data on cylinder 1
+/// Builds the PC-98 partition-table sector of a fixed disk in the NEC
+/// layout. One DOS partition, active, with its IPL and data on cylinder 1
 /// and its data end on the whole cylinder `end_cylinder`.
-pub fn pc98_ide_partition_table_sector(sector_size: u16, end_cylinder: u16) -> Vec<u8> {
+pub fn pc98_nec_partition_table_sector(sector_size: u16, end_cylinder: u16) -> Vec<u8> {
     let mut sector = vec![0u8; sector_size as usize];
     sector[0] = 0x21;
     sector[1] = 0x81;
-    let [start_low, start_high] = PC98_IDE_PARTITION_START_CYLINDER.to_le_bytes();
+    let [start_low, start_high] = PC98_NEC_PARTITION_START_CYLINDER.to_le_bytes();
     sector[6] = start_low;
     sector[7] = start_high;
     sector[10] = start_low;
@@ -215,7 +219,7 @@ pub fn pc98_ide_partition_table_sector(sector_size: u16, end_cylinder: u16) -> V
     let [end_low, end_high] = end_cylinder.to_le_bytes();
     sector[14] = end_low;
     sector[15] = end_high;
-    sector[16..32].copy_from_slice(b"NEETAN          ");
+    sector[16..32].copy_from_slice(PC98_PARTITION_NAME);
     sector
 }
 
@@ -397,28 +401,41 @@ pub fn fat_region(bpb: &BpbParams, sector_size: u16) -> Vec<u8> {
     fat_data
 }
 
+/// Returns the geometry of the NEC layout a PC-98 partition table takes on
+/// an image: the PC-98 IDE BIOS geometry on a PC-98 IDE image, the image
+/// geometry on a SASI image. Returns `None` for any other image.
+fn pc98_nec_layout_geometry(image: &HddImage) -> Option<HddGeometry> {
+    if pc98_ide::is_ide_image_format(image.format)
+        && pc98_ide::is_ide_sector_size(image.geometry.sector_size)
+    {
+        Some(pc98_ide::bios_geometry(image.geometry))
+    } else if pc98_sasi::is_sasi_sector_size(image.geometry.sector_size) {
+        Some(image.geometry)
+    } else {
+        None
+    }
+}
+
 /// Formats an in-memory hard-disk image: writes the partition table, boot
 /// sector, both FAT copies, and an empty root directory. The data area is left
 /// as-is (a freshly built blank image is already zero-filled). A PC-98
-/// partition table on a PC-98 IDE image lays the disk out in the NEC layout
-/// of the PC-98 IDE BIOS geometry, with the partition on cylinder 1.
+/// partition table on a PC-98 IDE image or a SASI image lays the
+/// disk out in the NEC layout, with the partition on cylinder 1. The IDE
+/// image takes the PC-98 IDE BIOS geometry, the SASI image its own geometry.
 pub fn format_hdd_image(
     image: &mut HddImage,
     table: PartitionTableType,
 ) -> Result<(), FormatError> {
-    let is_pc98_ide = table == PartitionTableType::Pc98
-        && pc98_ide::is_ide_image_format(image.format)
-        && pc98_ide::is_ide_sector_size(image.geometry.sector_size);
-    let geometry: HddGeometry = if is_pc98_ide {
-        pc98_ide::bios_geometry(image.geometry)
-    } else {
-        image.geometry
+    let nec_geometry = match table {
+        PartitionTableType::Pc98 => pc98_nec_layout_geometry(image),
+        PartitionTableType::At => None,
     };
+    let geometry = nec_geometry.unwrap_or(image.geometry);
     let sector_size = geometry.sector_size;
     let total_sectors = geometry.total_sectors();
     let sectors_per_track = geometry.sectors_per_track;
-    let partition_offset = if is_pc98_ide {
-        u32::from(PC98_IDE_PARTITION_START_CYLINDER)
+    let partition_offset = if nec_geometry.is_some() {
+        u32::from(PC98_NEC_PARTITION_START_CYLINDER)
             * u32::from(geometry.heads)
             * u32::from(sectors_per_track)
     } else {
@@ -443,8 +460,8 @@ pub fn format_hdd_image(
         PartitionTableType::Pc98 => {
             let ipl = vec![0u8; sector_size as usize];
             write(image, 0, &ipl)?;
-            let part = if is_pc98_ide {
-                pc98_ide_partition_table_sector(sector_size, geometry.cylinders - 1)
+            let part = if nec_geometry.is_some() {
+                pc98_nec_partition_table_sector(sector_size, geometry.cylinders - 1)
             } else {
                 pc98_partition_table_sector(
                     sector_size,
@@ -506,17 +523,87 @@ mod tests {
         let mut image = blank_hdd_image(HddSizeType::Mb40);
         format_hdd_image(&mut image, PartitionTableType::Pc98).unwrap();
 
-        // Sector 1 carries the PC-98 partition table.
         let part = image.read_sector(1).unwrap();
         assert_eq!(part[0], 0x21);
         assert_eq!(part[1], 0x81);
         assert_eq!(&part[16..22], b"NEETAN");
 
-        // The boot sector sits at the start of the second track.
-        let partition_offset = image.geometry.sectors_per_track as u32;
-        let boot = image.read_sector(partition_offset).unwrap();
+        let boot = image.read_sector(264).unwrap();
         assert_eq!(&boot[0..3], &[0xEB, 0x3C, 0x90]);
         assert_eq!(&boot[3..11], b"NEETAN  ");
+    }
+
+    #[test]
+    fn pc98_format_of_a_sasi_disk_writes_the_nec_layout() {
+        let sasi_types = [
+            (HddSizeType::Mb5, 153u16, 4u8),
+            (HddSizeType::Mb10, 310, 4),
+            (HddSizeType::Mb15, 310, 6),
+            (HddSizeType::Mb20, 310, 8),
+            (HddSizeType::Mb30, 615, 6),
+            (HddSizeType::Mb40, 615, 8),
+        ];
+        for (size, cylinders, heads) in sasi_types {
+            let mut image = blank_hdd_image(size);
+            format_hdd_image(&mut image, PartitionTableType::Pc98).unwrap();
+            let start = u32::from(heads) * 33;
+
+            let part = image.read_sector(1).unwrap();
+            assert_eq!(&part[4..8], &[0, 0, 1, 0], "{}", size.as_token());
+            assert_eq!(&part[8..12], &[0, 0, 1, 0], "{}", size.as_token());
+            let [cylinder_low, cylinder_high] = (cylinders - 1).to_le_bytes();
+            assert_eq!(
+                &part[12..16],
+                &[0, 0, cylinder_low, cylinder_high],
+                "{}",
+                size.as_token()
+            );
+
+            let boot = image.read_sector(start).unwrap();
+            assert_eq!(&boot[0..3], &[0xEB, 0x3C, 0x90]);
+            assert_eq!(u16::from_le_bytes([boot[11], boot[12]]), 256);
+            assert_eq!(u16::from_le_bytes([boot[24], boot[25]]), 33);
+            assert_eq!(u16::from_le_bytes([boot[26], boot[27]]), u16::from(heads));
+            assert_eq!(
+                u32::from_le_bytes([boot[28], boot[29], boot[30], boot[31]]),
+                start
+            );
+            let volume_sectors = match u16::from_le_bytes([boot[19], boot[20]]) {
+                0 => u32::from_le_bytes([boot[32], boot[33], boot[34], boot[35]]),
+                total => u32::from(total),
+            };
+            assert_eq!(
+                volume_sectors,
+                (u32::from(cylinders) - 1) * start,
+                "{}",
+                size.as_token()
+            );
+        }
+    }
+
+    #[test]
+    fn pc98_format_of_a_non_standard_sasi_geometry_writes_the_nec_layout() {
+        let geometry = HddGeometry {
+            cylinders: 320,
+            heads: 4,
+            sectors_per_track: 33,
+            sector_size: 256,
+        };
+        let mut image = HddImage::from_raw(
+            geometry,
+            HddFormat::Hdi,
+            vec![0u8; geometry.total_bytes() as usize],
+        );
+        format_hdd_image(&mut image, PartitionTableType::Pc98).unwrap();
+
+        let part = image.read_sector(1).unwrap();
+        assert_eq!(&part[8..12], &[0, 0, 1, 0]);
+        assert_eq!(&part[12..16], &[0, 0, 63, 1]);
+        let boot = image.read_sector(132).unwrap();
+        assert_eq!(
+            u32::from_le_bytes([boot[28], boot[29], boot[30], boot[31]]),
+            132
+        );
     }
 
     #[test]

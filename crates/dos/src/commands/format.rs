@@ -1,6 +1,6 @@
 //! FORMAT command.
 
-use device::disk::{format as disk_format, pc98_ide};
+use device::disk::{format as disk_format, pc98_ide, pc98_sasi};
 
 use crate::{
     DiskIo, DosState, DriveIo, IoAccess,
@@ -58,11 +58,18 @@ state_struct_codec!(FormatState {
     verify,
 });
 
-/// Returns the LBA of the partition FORMAT writes on a fixed disk: cylinder 1
-/// on a PC-98 IDE disk, the second track otherwise.
+/// Returns whether FORMAT lays a fixed disk with this sector size out in
+/// the NEC layout: a PC-98 IDE disk in its BIOS geometry, a SASI disk in its
+/// image geometry.
+fn uses_nec_layout(sector_size: u16) -> bool {
+    pc98_ide::is_ide_sector_size(sector_size) || pc98_sasi::is_sasi_sector_size(sector_size)
+}
+
+/// Returns the LBA of the partition FORMAT writes on a fixed disk: the
+/// start of cylinder 1 in the NEC layout, the second track otherwise.
 fn hdd_partition_offset(sector_size: u16, heads: u8, sectors_per_track: u8) -> u32 {
-    if pc98_ide::is_ide_sector_size(sector_size) {
-        u32::from(disk_format::PC98_IDE_PARTITION_START_CYLINDER)
+    if uses_nec_layout(sector_size) {
+        u32::from(disk_format::PC98_NEC_PARTITION_START_CYLINDER)
             * u32::from(heads)
             * u32::from(sectors_per_track)
     } else {
@@ -70,17 +77,18 @@ fn hdd_partition_offset(sector_size: u16, heads: u8, sectors_per_track: u8) -> u
     }
 }
 
-/// Builds the PC-98 partition table FORMAT writes on a fixed disk: the NEC
-/// layout on a PC-98 IDE disk, a partition from the second track otherwise.
+/// Builds the PC-98 partition table FORMAT writes on a fixed disk: one
+/// partition from cylinder 1 to the last cylinder in the NEC layout, one
+/// partition from the second track otherwise.
 fn pc98_partition_table(
     sector_size: u16,
     total_sectors: u32,
     heads: u8,
     sectors_per_track: u8,
 ) -> Vec<u8> {
-    if pc98_ide::is_ide_sector_size(sector_size) {
+    if uses_nec_layout(sector_size) {
         let sectors_per_cylinder = u32::from(heads) * u32::from(sectors_per_track);
-        disk_format::pc98_ide_partition_table_sector(
+        disk_format::pc98_nec_partition_table_sector(
             sector_size,
             (total_sectors / sectors_per_cylinder - 1) as u16,
         )
@@ -651,9 +659,31 @@ mod tests {
     }
 
     #[test]
-    fn sasi_disk_keeps_the_partition_on_the_second_track() {
-        assert_eq!(hdd_partition_offset(256, 8, 33), 33);
-        let table = pc98_partition_table(256, 615 * 8 * 33, 8, 33);
-        assert_eq!(&table[8..12], &[0, 1, 0, 0]);
+    fn sasi_disk_takes_the_nec_layout() {
+        let total_sectors = 615 * 8 * 33;
+        assert_eq!(hdd_partition_offset(256, 8, 33), 264);
+        let table = pc98_partition_table(256, total_sectors, 8, 33);
+        assert_eq!(&table[4..8], &[0, 0, 1, 0], "IPL on cylinder 1");
+        assert_eq!(&table[8..12], &[0, 0, 1, 0], "data start on cylinder 1");
+        let [cylinder_low, cylinder_high] = 614u16.to_le_bytes();
+        assert_eq!(&table[12..16], &[0, 0, cylinder_low, cylinder_high]);
+
+        let partition_sectors = total_sectors - 264;
+        let bpb = disk_format::hdd_bpb_params(256, partition_sectors);
+        let boot = disk_format::hdd_boot_sector(&bpb, 256, partition_sectors, 33, 8, 264);
+        assert_eq!(&boot[24..28], &[33, 0, 8, 0]);
+        assert_eq!(
+            u32::from_le_bytes([boot[28], boot[29], boot[30], boot[31]]),
+            264
+        );
+    }
+
+    #[test]
+    fn non_standard_sasi_geometry_takes_the_nec_layout() {
+        let total_sectors = 320 * 4 * 33;
+        assert_eq!(hdd_partition_offset(256, 4, 33), 132);
+        let table = pc98_partition_table(256, total_sectors, 4, 33);
+        assert_eq!(&table[8..12], &[0, 0, 1, 0]);
+        assert_eq!(&table[12..16], &[0, 0, 63, 1]);
     }
 }
