@@ -57,7 +57,7 @@ pub(super) const PRXDUPD_ADDRESS: usize = 0x054D;
 /// PRXDUPD bit: extended graphics mode (PEGC) on the PC-9821.
 pub(super) const PRXDUPD_EXTENDED_GRAPHICS: u8 = 0x80;
 /// PRXDUPD bit: DIP SW 2-8 selects 5 MHz for 640x400 graphics.
-const PRXDUPD_5MHZ_ALLOWED: u8 = 0x20;
+pub(super) const PRXDUPD_5MHZ_ALLOWED: u8 = 0x20;
 /// PRXDUPD bit: flash drawing.
 pub(super) const PRXDUPD_FLASH_DRAW: u8 = 0x08;
 /// PRXDUPD bit: the GDC runs at 5 MHz.
@@ -258,26 +258,31 @@ impl<T: TraceSink> Pc9801Bus<T> {
             return;
         }
 
-        let (timing, words_per_line, clock_commands, flags) = if full_height {
-            (
-                &SYNC_TIMING_5MHZ,
-                WORDS_PER_LINE_5MHZ,
-                [MODE_FF2_GDC_CLOCK1_5MHZ, MODE_FF2_GDC_CLOCK2_5MHZ],
-                prxdupd | PRXDUPD_5MHZ_ACTIVE,
-            )
+        let (timing, words_per_line) = if full_height {
+            (&SYNC_TIMING_5MHZ, WORDS_PER_LINE_5MHZ)
         } else {
-            (
-                &SYNC_TIMING_2_5MHZ,
-                WORDS_PER_LINE_2_5MHZ,
-                [MODE_FF2_GDC_CLOCK1_2_5MHZ, MODE_FF2_GDC_CLOCK2_2_5MHZ],
-                prxdupd & !PRXDUPD_5MHZ_ACTIVE,
-            )
+            (&SYNC_TIMING_2_5MHZ, WORDS_PER_LINE_2_5MHZ)
         };
-        self.memory.state.ram[PRXDUPD_ADDRESS] = flags;
-
         self.gdc_slave
             .load_sync_params(&timing.sync_parameters(SYNC_MODE_GRAPHICS));
         self.gdc_slave.state.pitch = words_per_line;
+        self.graphics_set_gdc_clock(full_height);
+    }
+
+    /// Selects 5 MHz or 2.5 MHz on GDC CLOCK-1 and CLOCK-2 (port 6Ah 82h-85h) and records the
+    /// clock in PRXDUPD bit 2.
+    pub(super) fn graphics_set_gdc_clock(&mut self, five_mhz: bool) {
+        let clock_commands = if five_mhz {
+            [MODE_FF2_GDC_CLOCK1_5MHZ, MODE_FF2_GDC_CLOCK2_5MHZ]
+        } else {
+            [MODE_FF2_GDC_CLOCK1_2_5MHZ, MODE_FF2_GDC_CLOCK2_2_5MHZ]
+        };
+        let prxdupd = &mut self.memory.state.ram[PRXDUPD_ADDRESS];
+        if five_mhz {
+            *prxdupd |= PRXDUPD_5MHZ_ACTIVE;
+        } else {
+            *prxdupd &= !PRXDUPD_5MHZ_ACTIVE;
+        }
         let has_egc = self.grcg.state.chip == grcg::GRCG_CHIP_EGC;
         for command in clock_commands {
             self.display_control.write_mode2(command, has_egc);

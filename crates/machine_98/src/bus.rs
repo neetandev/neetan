@@ -863,9 +863,9 @@ impl<T: TraceSink> Pc9801Bus<T> {
         }
     }
 
-    /// Configures the GDC clock to 5 MHz (400-line graphics mode).
+    /// Sets DIP switch 2-8 to ON: the BIOS may run the graphics GDC at 5 MHz in 640x400.
     ///
-    /// Equivalent to setting DIP switch 2-8 to ON on real hardware.
+    /// The GDC keeps the 2.5 MHz boot clock (undoc98 `memsys.txt` 0000:054Dh bits 2 and 5).
     pub fn set_gdc_clock_5mhz(&mut self) {
         self.system_ppi.state.dip_switch_2 &= !0x80;
         if self.machine_model.has_sdip() {
@@ -876,7 +876,6 @@ impl<T: TraceSink> Pc9801Bus<T> {
         self.memory.state.ram[0x054C] &= !0x40;
         self.memory.state.ram[0x054D] |= 0x20;
         self.gdc_slave.state.lines_per_row = 1;
-        self.display_control.state.mode2 |= 0x0600;
     }
 
     /// Returns the CPU clock frequency in Hz.
