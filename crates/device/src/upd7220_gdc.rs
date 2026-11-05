@@ -46,6 +46,9 @@ const DISPLAY_MODE_MASK: u8 = DISPLAY_MODE_GRAPHICS | DISPLAY_MODE_CHARACTER;
 /// Dot clock for 400-line mode (24.83 kHz horizontal): 21.0526 MHz.
 pub const DOT_CLOCK_400LINE: u32 = 21_052_600;
 
+/// Dot clock for the 31.47 kHz display: 800 dots per line, 25.175 MHz.
+pub const DOT_CLOCK_31KHZ: u32 = 25_175_000;
+
 /// Dot clock for 200-line mode (15.98 kHz horizontal): 14.31818 MHz.
 pub const DOT_CLOCK_200LINE: u32 = 14_318_180;
 

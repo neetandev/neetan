@@ -10,6 +10,7 @@ mod cmt_printer;
 mod comed;
 mod crt;
 mod disk;
+mod extended_screen;
 mod floppy_interrupt;
 mod graphics;
 mod keyboard;

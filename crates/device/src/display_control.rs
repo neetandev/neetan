@@ -88,9 +88,9 @@ pub struct DisplayControlState {
     pub display_page: u8,
     /// VRAM drawing page select (port 0xA6 R/W, bit 0 only).
     pub access_page: u8,
-    /// 31.778 kHz horizontal scan / 480-line mode select (port 0x09A8 R/W).
+    /// 31.47 kHz horizontal scan / 480-line mode select (port 0x09A8 R/W).
     ///
-    /// 0 = 24.823 kHz (400 lines), 1 = 31.778 kHz (480 lines). PEGC 480-line
+    /// 0 = 24.83 kHz (400 lines), 1 = 31.47 kHz (480 lines). PEGC 480-line
     /// output requires this flag in addition to a GDC AL > 400 setup.
     pub crt_31khz_enabled: bool,
 }}
@@ -127,12 +127,12 @@ impl DisplayControl {
         }
     }
 
-    /// Returns whether the CRT is configured for 31.778 kHz / 480-line scan.
+    /// Returns whether the CRT is configured for 31.47 kHz / 480-line scan.
     pub fn is_crt_31khz_enabled(&self) -> bool {
         self.state.crt_31khz_enabled
     }
 
-    /// Sets the CRT 31.778 kHz / 480-line scan flag (port 0x09A8 write).
+    /// Sets the CRT 31.47 kHz / 480-line scan flag (port 0x09A8 write).
     pub fn set_crt_31khz_enabled(&mut self, enabled: bool) {
         self.state.crt_31khz_enabled = enabled;
     }

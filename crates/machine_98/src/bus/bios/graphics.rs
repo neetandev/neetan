@@ -15,17 +15,17 @@ const GDC_OPE_CLEAR: u8 = 2;
 const GDC_OPE_SET: u8 = 3;
 
 /// AH=42h CH shift of the VRAM area field (bits 7-6).
-const SETTING_AREA_SHIFT: u8 = 6;
+pub(super) const SETTING_AREA_SHIFT: u8 = 6;
 /// AH=42h VRAM area: the whole 32 KB of each plane (640x400).
-const SETTING_AREA_ALL: u8 = 0b11;
+pub(super) const SETTING_AREA_ALL: u8 = 0b11;
 /// AH=42h VRAM area: the lower 16 KB of each plane (640x200 LOWER).
-const SETTING_AREA_LOWER: u8 = 0b10;
+pub(super) const SETTING_AREA_LOWER: u8 = 0b10;
 /// AH=42h VRAM area: the upper 16 KB of each plane (640x200 UPPER).
-const SETTING_AREA_UPPER: u8 = 0b01;
+pub(super) const SETTING_AREA_UPPER: u8 = 0b01;
 /// AH=42h CH bit: monochrome graphics.
-const SETTING_MONOCHROME: u8 = 0x20;
+pub(super) const SETTING_MONOCHROME: u8 = 0x20;
 /// AH=42h CH bit: display bank 1.
-const SETTING_DISPLAY_BANK: u8 = 0x10;
+pub(super) const SETTING_DISPLAY_BANK: u8 = 0x10;
 /// Shift of the display bank bit in CH.
 const SETTING_DISPLAY_BANK_SHIFT: u8 = 4;
 
@@ -47,32 +47,38 @@ const MODE_FF2_GDC_CLOCK2_2_5MHZ: u8 = 0x84;
 const MODE_FF2_GDC_CLOCK2_5MHZ: u8 = 0x85;
 
 /// Work area byte with the graphics status flags (PRXCRT).
-const PRXCRT_ADDRESS: usize = 0x054C;
+pub(super) const PRXCRT_ADDRESS: usize = 0x054C;
+/// PRXCRT bit 5: the display runs at 31.47 kHz.
+pub(super) const PRXCRT_31KHZ: u8 = 0x20;
 /// PRXCRT bit: DIP SW 1-8 was on at boot.
-const PRXCRT_DIP_SWITCH_1_8: u8 = 0x01;
+pub(super) const PRXCRT_DIP_SWITCH_1_8: u8 = 0x01;
 /// Work area byte with the graphics mode flags (PRXDUPD).
-const PRXDUPD_ADDRESS: usize = 0x054D;
+pub(super) const PRXDUPD_ADDRESS: usize = 0x054D;
+/// PRXDUPD bit: extended graphics mode (PEGC) on the PC-9821.
+pub(super) const PRXDUPD_EXTENDED_GRAPHICS: u8 = 0x80;
 /// PRXDUPD bit: DIP SW 2-8 selects 5 MHz for 640x400 graphics.
 const PRXDUPD_5MHZ_ALLOWED: u8 = 0x20;
 /// PRXDUPD bit: flash drawing.
-const PRXDUPD_FLASH_DRAW: u8 = 0x08;
+pub(super) const PRXDUPD_FLASH_DRAW: u8 = 0x08;
 /// PRXDUPD bit: the GDC runs at 5 MHz.
-const PRXDUPD_5MHZ_ACTIVE: u8 = 0x04;
+pub(super) const PRXDUPD_5MHZ_ACTIVE: u8 = 0x04;
 /// Work area byte whose bits 1-0 hold the graphics resolution on the PC-9821.
-const GRAPHICS_RESOLUTION_ADDRESS: usize = 0x0597;
+pub(super) const GRAPHICS_RESOLUTION_ADDRESS: usize = 0x0597;
 /// Graphics resolution field of `GRAPHICS_RESOLUTION_ADDRESS`.
-const RESOLUTION_MASK: u8 = 0x03;
+pub(super) const RESOLUTION_MASK: u8 = 0x03;
 /// Saved graphics resolution: 640x200 UPPER.
-const RESOLUTION_UPPER: u8 = 0b00;
+pub(super) const RESOLUTION_UPPER: u8 = 0b00;
 /// Saved graphics resolution: 640x200 LOWER.
-const RESOLUTION_LOWER: u8 = 0b01;
+pub(super) const RESOLUTION_LOWER: u8 = 0b01;
 /// Saved graphics resolution: 640x400.
-const RESOLUTION_ALL: u8 = 0b10;
+pub(super) const RESOLUTION_ALL: u8 = 0b10;
+/// Saved graphics resolution: 640x480.
+pub(super) const RESOLUTION_480_LINE: u8 = 0b11;
 
 /// GDC word address of the upper area: 200 lines of 40 words.
 const UPPER_AREA_START_ADDRESS: u32 = 8000;
 /// SCROLL line count that covers the whole screen (the SL field value 0 means 1024 lines).
-const FULL_SCREEN_LINE_COUNT: u16 = 0x400;
+pub(super) const FULL_SCREEN_LINE_COUNT: u16 = 0x400;
 /// Graphics GDC words per line at 2.5 MHz (16 dots per word).
 const WORDS_PER_LINE_2_5MHZ: u16 = 40;
 /// Graphics GDC words per line at 5 MHz.
@@ -90,31 +96,31 @@ enum DisplayArea {
 }
 
 /// SYNC mode byte of the graphics GDC: graphics display mode, drawing at any time.
-const SYNC_MODE_GRAPHICS: u8 = 0x02;
+pub(super) const SYNC_MODE_GRAPHICS: u8 = 0x02;
 
-/// Graphics GDC SYNC parameters in the field encoding of the uPD7220 SYNC command.
-struct SyncTiming {
+/// GDC SYNC parameters in the field encoding of the uPD7220 SYNC command.
+pub(super) struct SyncTiming {
     /// C/R: active words per line minus 2.
-    words_per_line: u8,
+    pub(super) words_per_line: u8,
     /// HS: horizontal sync width minus 1.
-    horizontal_sync: u8,
+    pub(super) horizontal_sync: u8,
     /// HFP: horizontal front porch minus 1.
-    horizontal_front_porch: u8,
+    pub(super) horizontal_front_porch: u8,
     /// HBP: horizontal back porch minus 1.
-    horizontal_back_porch: u8,
+    pub(super) horizontal_back_porch: u8,
     /// VS: vertical sync width in lines.
-    vertical_sync: u8,
+    pub(super) vertical_sync: u8,
     /// VFP: vertical front porch in lines.
-    vertical_front_porch: u8,
+    pub(super) vertical_front_porch: u8,
     /// VBP: vertical back porch in lines.
-    vertical_back_porch: u8,
+    pub(super) vertical_back_porch: u8,
     /// L/F: active lines per frame.
-    active_lines: u16,
+    pub(super) active_lines: u16,
 }
 
 impl SyncTiming {
     /// Packs the timing into the eight SYNC parameter bytes after the mode byte `mode`.
-    const fn sync_parameters(&self, mode: u8) -> [u8; 8] {
+    pub(super) const fn sync_parameters(&self, mode: u8) -> [u8; 8] {
         [
             mode,
             self.words_per_line,
@@ -129,7 +135,7 @@ impl SyncTiming {
 }
 
 /// Standard graphics GDC timing at 2.5 MHz on a 24.83 kHz display.
-const SYNC_TIMING_2_5MHZ: SyncTiming = SyncTiming {
+pub(super) const SYNC_TIMING_2_5MHZ: SyncTiming = SyncTiming {
     words_per_line: 0x26,
     horizontal_sync: 0x03,
     horizontal_front_porch: 0x04,
@@ -141,7 +147,7 @@ const SYNC_TIMING_2_5MHZ: SyncTiming = SyncTiming {
 };
 
 /// Standard graphics GDC timing at 5 MHz on a 24.83 kHz display.
-const SYNC_TIMING_5MHZ: SyncTiming = SyncTiming {
+pub(super) const SYNC_TIMING_5MHZ: SyncTiming = SyncTiming {
     words_per_line: 0x4E,
     horizontal_sync: 0x07,
     horizontal_front_porch: 0x09,
@@ -166,6 +172,16 @@ impl<T: TraceSink> Pc9801Bus<T> {
     /// INT 18h AH=42h: selects the graphics VRAM area, the color mode and the display bank.
     pub(super) fn int18h_display_area_set(&mut self, cpu: &mut impl Cpu) {
         let setting = cpu.ch();
+        if self.crt_480_line_mode() {
+            self.extended_screen_leave_480_line(setting);
+        } else {
+            self.graphics_set_display_area(setting);
+        }
+    }
+
+    /// Applies the AH=42h `setting` byte: VRAM area (bits 7-6), monochrome (bit 5) and display
+    /// bank (bit 4).
+    pub(super) fn graphics_set_display_area(&mut self, setting: u8) {
         let area = match setting >> SETTING_AREA_SHIFT {
             SETTING_AREA_ALL => DisplayArea::All,
             SETTING_AREA_LOWER => DisplayArea::Lower,

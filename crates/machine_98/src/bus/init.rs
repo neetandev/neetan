@@ -541,6 +541,16 @@ impl<T: TraceSink> Pc9801Bus<T> {
         }
         self.memory.state.ram[0x054D] = prxdupd;
 
+        // 0x0597: bit 7 = INT 18h AH=30h/31h supported, bit 2 = extended graphics supported.
+        let mut extended_screen_flags: u8 = 0x00;
+        if self.machine_model.has_31khz_display() {
+            extended_screen_flags |= 0x80;
+        }
+        if self.machine_model.has_pegc() {
+            extended_screen_flags |= 0x04;
+        }
+        self.memory.state.ram[0x0597] = extended_screen_flags;
+
         // DISK_EQUIP (0x055C): 2 built-in 1MB FDD drives on later machines.
         self.memory.state.ram[0x055C] = match self.machine_model {
             MachineModel::PC9801F => 0x00,

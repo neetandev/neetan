@@ -4727,3 +4727,338 @@ fn int18h_ah4d_extended_graphics_toggles_pegc_256_color_mode() {
         "INT 18h AH=4Dh CH=00h must clear BDA 054Dh bit 7",
     );
 }
+
+/// Runs `code` on a booted PC-9821As and returns the machine after the program halts.
+fn run_pc9821as_program(code: &[u8]) -> machine_98::Pc9821As {
+    let machine = boot_inject_run_pc9821as(&[], code, INT18H_BUDGET);
+    assert!(machine.cpu.halted(), "the test program did not reach HLT");
+    machine
+}
+
+/// Reads a little-endian word at `address`.
+fn read_word(bus: &mut impl Bus, address: u32) -> u16 {
+    u16::from(bus.read_byte(address)) | (u16::from(bus.read_byte(address + 1)) << 8)
+}
+
+/// Returns the code of INT 18h AH=30h with `rate` in AL and `screen` in BH.
+fn extended_screen_mode_set_call(rate: u8, screen: u8) -> Vec<u8> {
+    vec![0xB8, rate, 0x30, 0xB7, screen, 0xCD, 0x18]
+}
+
+/// Returns the code that stores AX at RESULT and BX at RESULT+2.
+fn store_ax_bx() -> Vec<u8> {
+    vec![0xA3, 0x00, 0x06, 0x89, 0x1E, 0x02, 0x06]
+}
+
+/// Returns the code of INT 18h AH=30h with `rate` and `screen` that stores AX and BX and halts.
+fn extended_screen_mode_set_program(rate: u8, screen: u8) -> Vec<u8> {
+    let mut code = extended_screen_mode_set_call(rate, screen);
+    code.extend(store_ax_bx());
+    code.push(0xF4);
+    code
+}
+
+/// Runs INT 18h with `ah`, `al` and `ch` on a booted machine and halts.
+fn run_int18h_after(machine: &mut machine_98::Pc9821As, ah: u8, al: u8, ch: u8) {
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB4, ah,   // MOV AH, ah
+        0xB0, al,   // MOV AL, al
+        0xB5, ch,   // MOV CH, ch
+        0xCD, 0x18, // INT 18h
+        0xF4,       // HLT
+    ];
+    write_bytes(&mut machine.bus, TEST_CODE, code);
+    machine.cpu.load_state(&{
+        let mut state = cpu::I386State {
+            ip: TEST_CODE as u16,
+            ..Default::default()
+        };
+        state.set_esp(0x4000);
+        state
+    });
+    machine.run_for(INT18H_BUDGET);
+    assert!(
+        machine.cpu.halted(),
+        "the follow-up INT 18h call did not reach HLT"
+    );
+}
+
+/// Reads the mode F/F 2 state with `index` through port 09A0h (undoc98 `io_disp.txt`).
+fn read_mode_ff2(machine: &mut machine_98::Pc9821As, index: u8) -> u8 {
+    machine.bus.io_write_byte(0x09A0, index);
+    machine.bus.io_read_byte(0x09A0) & 0x01
+}
+
+/// Windows 95 enters its 640x480 256-color desktop with INT 18h AH=31h, AH=30h AL=08h BH=21h,
+/// AH=30h AL=0Ch BH=31h and the mode F/F 2 commands 07h, 21h, 06h, 41h, 07h, 69h, 06h, 41h
+/// (undoc98 `int18crt.txt` Function 30h and 31h, `io_disp.txt` I/O 006Ah). The display output
+/// shows 480 lines afterwards.
+#[test]
+fn int18h_ah30h_windows_95_sequence_shows_640x480() {
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB4, 0x31,             // MOV AH, 31h
+        0xCD, 0x18,             // INT 18h
+        0xB8, 0x08, 0x30,       // MOV AX, 3008h
+        0xB7, 0x21,             // MOV BH, 21h
+        0xCD, 0x18,             // INT 18h
+        0xB8, 0x0C, 0x30,       // MOV AX, 300Ch
+        0xB7, 0x31,             // MOV BH, 31h
+        0xCD, 0x18,             // INT 18h
+        0xA3, 0x00, 0x06,       // MOV [RESULT], AX
+        0x89, 0x1E, 0x02, 0x06, // MOV [RESULT+2], BX
+        0xB0, 0x07, 0xE6, 0x6A, // MOV AL, 07h / OUT 6Ah, AL
+        0xB0, 0x21, 0xE6, 0x6A, // MOV AL, 21h / OUT 6Ah, AL
+        0xB0, 0x06, 0xE6, 0x6A, // MOV AL, 06h / OUT 6Ah, AL
+        0xB0, 0x41, 0xE6, 0x6A, // MOV AL, 41h / OUT 6Ah, AL
+        0xB0, 0x07, 0xE6, 0x6A, // MOV AL, 07h / OUT 6Ah, AL
+        0xB0, 0x69, 0xE6, 0x6A, // MOV AL, 69h / OUT 6Ah, AL
+        0xB0, 0x06, 0xE6, 0x6A, // MOV AL, 06h / OUT 6Ah, AL
+        0xB0, 0x41, 0xE6, 0x6A, // MOV AL, 41h / OUT 6Ah, AL
+        0xF4,                   // HLT
+    ];
+    let mut machine = run_pc9821as_program(code);
+    assert_eq!(
+        machine.bus.read_byte(RESULT),
+        0x00,
+        "AH=30h must return AL=00h"
+    );
+    assert_eq!(
+        machine.bus.read_byte(RESULT + 3),
+        0x00,
+        "AH=30h must return BH=00h"
+    );
+    machine.bus.render_display_frame();
+    assert_eq!(machine.bus.display_dimensions(), (640, 480));
+}
+
+/// INT 18h AH=30h AL=0Ch BH=31h alone sets up 640x480: 31.47 kHz, PEGC 256 colors in the
+/// one-screen layout, 25 text rows of 19 rasters with the text hidden, and the work areas
+/// 0459h, 053Bh, 053Ch, 054Ch, 054Dh and 0597h (undoc98 `int18crt.txt` Function 30h,
+/// `memsys.txt`).
+#[test]
+fn int18h_ah30h_sets_up_640x480_without_guest_port_writes() {
+    let mut machine = run_pc9821as_program(&extended_screen_mode_set_program(0x0C, 0x31));
+    assert_eq!(machine.bus.read_byte(RESULT), 0x00);
+    assert_eq!(machine.bus.read_byte(RESULT + 3), 0x00);
+    assert_eq!(machine.bus.io_read_byte(0x09A8) & 0x01, 0x01);
+    assert_eq!(read_mode_ff2(&mut machine, 0x0A), 1, "PEGC 256 colors");
+    assert_eq!(
+        read_mode_ff2(&mut machine, 0x0D),
+        1,
+        "PEGC one-screen layout"
+    );
+    assert_eq!(machine.bus.read_byte(0x0597) & 0x87, 0x87);
+    assert_eq!(machine.bus.read_byte(0x0459) & 0x09, 0x09);
+    assert_eq!(
+        machine.bus.read_byte(0x053B),
+        0x12,
+        "25 rows of 480 lines have 19 rasters"
+    );
+    assert_eq!(machine.bus.read_byte(0x053C) & 0x11, 0x00, "25 rows");
+    assert_eq!(machine.bus.read_byte(0x054C) & 0x20, 0x20, "31.47 kHz flag");
+    assert_eq!(
+        machine.bus.read_byte(0x054D) & 0x80,
+        0x80,
+        "extended graphics"
+    );
+
+    let state = machine.inspection_state();
+    assert!(
+        !state.gdc_master.display_enabled,
+        "AH=30h hides the text screen"
+    );
+    assert!(!state.gdc_master.cursor_display, "AH=30h hides the cursor");
+    assert_eq!(state.gdc_master.al, 475, "25 rows of 19 rasters");
+    assert_eq!(state.gdc_master.pitch, 80);
+    assert_eq!(state.gdc_master.scroll[0].start_address, 0);
+    assert_eq!(state.gdc_master.scroll[0].line_count, 480);
+    assert_eq!(state.gdc_slave.al, 480);
+    assert_eq!(state.gdc_slave.scroll[0].start_address, 0);
+    assert_eq!(state.gdc_slave.scroll[0].line_count, 0x400);
+    assert_eq!(&state.crtc.regs[..4], &[0x1F, 0x11, 0x10, 0x00]);
+
+    machine.bus.render_display_frame();
+    assert_eq!(machine.bus.display_dimensions(), (640, 480));
+}
+
+/// INT 18h AH=31h reads back the mode set by AH=30h (undoc98 `int18crt.txt` Function 31h).
+#[test]
+fn int18h_ah31h_returns_mode_of_ah30h() {
+    let mut code = extended_screen_mode_set_call(0x0C, 0x32);
+    #[rustfmt::skip]
+    code.extend_from_slice(&[
+        0x31, 0xC0, // XOR AX, AX
+        0x31, 0xDB, // XOR BX, BX
+        0xB4, 0x31, // MOV AH, 31h
+        0xCD, 0x18, // INT 18h
+    ]);
+    code.extend(store_ax_bx());
+    code.push(0xF4);
+    let mut machine = run_pc9821as_program(&code);
+    assert_eq!(machine.bus.read_byte(RESULT), 0x0C);
+    assert_eq!(machine.bus.read_byte(RESULT + 3), 0x32);
+    assert_eq!(
+        machine.bus.read_byte(0x053C) & 0x11,
+        0x11,
+        "30 text rows set CRT_STS_FLAG bits 4 and 0"
+    );
+    assert_eq!(
+        machine.bus.read_byte(0x053B),
+        0x0F,
+        "30 rows of 480 lines have 16 rasters"
+    );
+}
+
+/// INT 18h AH=30h rejects reserved bits, 640x480 at 24.83 kHz, 30 rows at 640x400 and the
+/// forbidden AL=0Dh BH=31h with AL=BH=01h and leaves the 400 line display (undoc98
+/// `int18crt.txt` Function 30h).
+#[test]
+fn int18h_ah30h_rejects_invalid_modes() {
+    let cases: &[(u8, u8)] = &[
+        (0x08, 0x31),
+        (0x0C, 0x22),
+        (0x0D, 0x31),
+        (0x1C, 0x31),
+        (0x0E, 0x31),
+        (0x0C, 0x71),
+        (0x0C, 0x35),
+        (0x04, 0x21),
+        (0x0C, 0x33),
+    ];
+    for &(rate, screen) in cases {
+        let mut machine = run_pc9821as_program(&extended_screen_mode_set_program(rate, screen));
+        assert_eq!(
+            machine.bus.read_byte(RESULT),
+            0x01,
+            "AL for {rate:02X}h/{screen:02X}h"
+        );
+        assert_eq!(
+            machine.bus.read_byte(RESULT + 3),
+            0x01,
+            "BH for {rate:02X}h/{screen:02X}h"
+        );
+        assert_eq!(machine.bus.io_read_byte(0x09A8) & 0x01, 0x00);
+        assert_eq!(machine.bus.read_byte(0x0459) & 0x01, 0x00);
+        machine.bus.render_display_frame();
+        assert_eq!(machine.bus.display_dimensions(), (640, 400));
+    }
+}
+
+/// INT 18h AH=30h and AH=31h do nothing on a PC-9801RA, which lacks them (undoc98
+/// `int18crt.txt` Function 30h, `memsys.txt` 0597h bit 7). Port 09A8h has no effect there
+/// (`io_disp.txt` I/O 09A8h).
+#[test]
+fn int18h_ah30h_and_ah31h_leave_registers_on_pc9801ra() {
+    let mut code = extended_screen_mode_set_call(0x0C, 0x31);
+    code.extend(store_ax_bx());
+    #[rustfmt::skip]
+    code.extend_from_slice(&[
+        0xB8, 0x55, 0x31,       // MOV AX, 3155h
+        0xBB, 0xAA, 0x66,       // MOV BX, 66AAh
+        0xCD, 0x18,             // INT 18h
+        0xA3, 0x04, 0x06,       // MOV [RESULT+4], AX
+        0x89, 0x1E, 0x06, 0x06, // MOV [RESULT+6], BX
+        0xB0, 0x01,             // MOV AL, 01h
+        0xBA, 0xA8, 0x09,       // MOV DX, 09A8h
+        0xEE,                   // OUT DX, AL
+        0xF4,                   // HLT
+    ]);
+    let mut machine = boot_inject_run_ra(&[], &code, INT18H_BUDGET);
+    assert!(machine.cpu.halted());
+    assert_eq!(read_word(&mut machine.bus, RESULT), 0x300C);
+    assert_eq!(machine.bus.read_byte(RESULT + 3), 0x31);
+    assert_eq!(read_word(&mut machine.bus, RESULT + 4), 0x3155);
+    assert_eq!(read_word(&mut machine.bus, RESULT + 6), 0x66AA);
+    assert_eq!(machine.bus.read_byte(0x0597), 0x00);
+    assert!(!machine.inspection_state().display_control.crt_31khz_enabled);
+    machine.bus.render_display_frame();
+    assert_eq!(machine.bus.display_dimensions(), (640, 400));
+}
+
+/// INT 18h AH=30h AL=08h BH=21h after 640x480 returns to 24.83 kHz 640x400 in the two-screen
+/// layout. The extended graphics mode stays, as 640x400 keeps the previous graphics mode
+/// (undoc98 `int18crt.txt` Function 30h).
+#[test]
+fn int18h_ah30h_returns_from_640x480_to_640x400() {
+    let mut code = extended_screen_mode_set_call(0x0C, 0x31);
+    code.extend(extended_screen_mode_set_program(0x08, 0x21));
+    let mut machine = run_pc9821as_program(&code);
+    assert_eq!(machine.bus.read_byte(RESULT), 0x00);
+    assert_eq!(machine.bus.io_read_byte(0x09A8) & 0x01, 0x00);
+    assert_eq!(read_mode_ff2(&mut machine, 0x0D), 0, "two-screen layout");
+    assert_eq!(
+        read_mode_ff2(&mut machine, 0x0A),
+        1,
+        "PEGC stays in 640x400"
+    );
+    assert_eq!(machine.bus.read_byte(0x054D) & 0x80, 0x80);
+    assert_eq!(machine.bus.read_byte(0x054C) & 0x20, 0x00);
+    assert_eq!(machine.bus.read_byte(0x0459) & 0x01, 0x00);
+    assert_eq!(machine.bus.read_byte(0x0597) & 0x03, 0x02);
+    assert_eq!(machine.bus.read_byte(0x053B), 0x0F);
+
+    let state = machine.inspection_state();
+    assert!(!state.gdc_master.display_enabled);
+    assert_eq!(state.gdc_master.al, 400);
+    assert_eq!(state.gdc_slave.al, 400);
+    assert_eq!(&state.crtc.regs[..4], &[0x00, 0x0F, 0x10, 0x00]);
+
+    machine.bus.render_display_frame();
+    assert_eq!(machine.bus.display_dimensions(), (640, 400));
+}
+
+/// INT 18h AH=0Ah in 640x480 accepts 30 rows, ignores bit 4 without bit 0 and hides the text
+/// screen (undoc98 `int18crt.txt` Function 0Ah).
+#[test]
+fn int18h_ah0ah_in_640x480_sets_30_rows_and_rejects_bit_4_alone() {
+    let mut machine = run_pc9821as_program(&extended_screen_mode_set_program(0x0C, 0x31));
+    run_int18h_after(&mut machine, 0x0C, 0x00, 0x00);
+    run_int18h_after(&mut machine, 0x0A, 0x10, 0x00);
+    assert_eq!(
+        machine.bus.read_byte(0x053C) & 0x11,
+        0x00,
+        "bit 4 alone is rejected"
+    );
+    assert!(machine.inspection_state().gdc_master.display_enabled);
+
+    run_int18h_after(&mut machine, 0x0A, 0x11, 0x00);
+    assert_eq!(machine.bus.read_byte(0x053C) & 0x11, 0x11);
+    assert_eq!(machine.bus.read_byte(0x053B), 0x0F);
+    let state = machine.inspection_state();
+    assert!(
+        !state.gdc_master.display_enabled,
+        "AH=0Ah hides the text in 640x480"
+    );
+    assert_eq!(state.gdc_master.al, 480);
+}
+
+/// INT 18h AH=0Eh in 640x480 shows text VRAM on all 480 lines (undoc98 `int18crt.txt`
+/// Function 0Eh).
+#[test]
+fn int18h_ah0eh_in_640x480_covers_480_lines() {
+    let mut machine = run_pc9821as_program(&extended_screen_mode_set_program(0x0C, 0x30));
+    run_int18h_after(&mut machine, 0x0E, 0x00, 0x00);
+    assert_eq!(
+        machine.inspection_state().gdc_master.scroll[0].line_count,
+        480
+    );
+}
+
+/// INT 18h AH=42h CH=C0h in 640x480 selects 640x400 at the unchanged 31.47 kHz scan frequency
+/// in the two-screen layout (undoc98 `int18grp.txt` Function 42h).
+#[test]
+fn int18h_ah42h_in_640x480_selects_640x400() {
+    let mut machine = run_pc9821as_program(&extended_screen_mode_set_program(0x0C, 0x31));
+    run_int18h_after(&mut machine, 0x42, 0x00, 0xC0);
+    assert_eq!(machine.bus.io_read_byte(0x09A8) & 0x01, 0x01);
+    assert_eq!(read_mode_ff2(&mut machine, 0x0D), 0);
+    assert_eq!(machine.bus.read_byte(0x0459) & 0x01, 0x00);
+    assert_eq!(machine.bus.read_byte(0x0597) & 0x03, 0x02);
+    let state = machine.inspection_state();
+    assert_eq!(state.gdc_master.al, 400);
+    assert_eq!(state.gdc_slave.al, 400);
+    machine.bus.render_display_frame();
+    assert_eq!(machine.bus.display_dimensions(), (640, 400));
+}

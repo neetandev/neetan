@@ -10,7 +10,9 @@ use device::{
     upd765a_fdc::FdcAction,
     upd7220_gdc,
 };
-use upd7220_gdc::{DOT_CLOCK_200LINE, DOT_CLOCK_400LINE, GdcAction, STATUS_DRAWING, VramOp};
+use upd7220_gdc::{
+    DOT_CLOCK_31KHZ, DOT_CLOCK_200LINE, DOT_CLOCK_400LINE, GdcAction, STATUS_DRAWING, VramOp,
+};
 
 use crate::{
     Pc9801Bus, TraceSink,
@@ -627,9 +629,11 @@ impl<T: TraceSink> Pc9801Bus<T> {
             }
 
             // 31 kHz horizontal scan-frequency register (port 09A8h).
-            // 0 = 24.823 kHz / 400 lines, 1 = 31.778 kHz / 480 lines.
-            0x09A8 => {
+            // 0 = 24.83 kHz / 400 lines, 1 = 31.47 kHz / 480 lines.
+            0x09A8 if self.machine_model.has_31khz_display() => {
                 self.display_control.set_crt_31khz_enabled(value & 1 != 0);
+                self.apply_gdc_dot_clock();
+                self.reschedule_gdc_events();
             }
 
             // IDE bank select
@@ -1241,7 +1245,9 @@ impl<T: TraceSink> Pc9801Bus<T> {
     }
 
     fn current_dot_clock_hz(&self) -> u32 {
-        let base = if self.display_control.state.display_line_count & 1 != 0 {
+        let base = if self.display_control.is_crt_31khz_enabled() {
+            DOT_CLOCK_31KHZ
+        } else if self.display_control.state.display_line_count & 1 != 0 {
             DOT_CLOCK_400LINE
         } else {
             DOT_CLOCK_200LINE

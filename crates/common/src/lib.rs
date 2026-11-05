@@ -738,6 +738,17 @@ impl MachineModel {
         }
     }
 
+    /// Returns whether this machine switches its display to 31.47 kHz with port 09A8h and the
+    /// INT 18h AH=30h and AH=31h BIOS functions.
+    pub const fn has_31khz_display(self) -> bool {
+        match self {
+            Self::PC9801F | Self::PC9801VM | Self::PC9801VX | Self::PC9801RS | Self::PC9801RA => {
+                false
+            }
+            Self::PC9821AS | Self::PC9821AP => true,
+        }
+    }
+
     /// Returns whether this machine has the PEGC 256-color packed pixel graphics controller.
     pub const fn has_pegc(self) -> bool {
         match self {
