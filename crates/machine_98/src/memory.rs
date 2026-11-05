@@ -128,6 +128,14 @@ const NEC_COPYRIGHT: &[u8] = b"Copyright (C) 1983 by NEC Corporation";
 const NEC_COPYRIGHT_OFFSET_F: usize = 0x0DE2;
 const NEC_COPYRIGHT_OFFSET_VM: usize = 0x0DD8;
 
+/// ROM offset of the PC-9821 function flag area at F8E8:0000h (F8E80h - E8000h).
+const PC9821_FUNCTION_FLAGS_OFFSET: usize = 0x10E80;
+/// Size of the PC-9821 function flag area F8E8:0000h-003Fh.
+const PC9821_FUNCTION_FLAGS_SIZE: usize = 0x40;
+/// PC-9821 identification bytes at F8E8:0000h ("98H,21H").
+/// Ref: PC-9800 Technical Data Book BIOS edition, RS-232C BIOS, 19200bps.
+const PC9821_IDENTIFICATION: [u8; 2] = [0x98, 0x21];
+
 save_state::runtime_state! {
 /// Snapshot of mutable memory, bank selection, and character generator data.
 #[derive(Clone, PartialEq, Eq)]
@@ -400,6 +408,20 @@ impl Pc9801Memory {
             | MachineModel::PC9821AP => NEC_COPYRIGHT_OFFSET_VM,
         };
         self.rom[offset..offset + NEC_COPYRIGHT.len()].copy_from_slice(NEC_COPYRIGHT);
+    }
+
+    /// Installs the PC-9821 function flag area at F8E8:0000h on PC-9821 models.
+    /// The area starts with the identification bytes 98h,21h. All flag bytes
+    /// after them are zero. The boot later writes the IDE bitmap to 0010h.
+    /// Ref: PC-9800 Technical Data Book BIOS edition, undoc98 `int19bio.txt`.
+    pub(crate) fn install_pc9821_function_flags(&mut self, machine_model: MachineModel) {
+        if !machine_model.is_pc9821() {
+            return;
+        }
+        let area = &mut self.rom[PC9821_FUNCTION_FLAGS_OFFSET
+            ..PC9821_FUNCTION_FLAGS_OFFSET + PC9821_FUNCTION_FLAGS_SIZE];
+        area.fill(0x00);
+        area[..PC9821_IDENTIFICATION.len()].copy_from_slice(&PC9821_IDENTIFICATION);
     }
 
     /// Reads a byte directly from the ROM buffer at the given ROM-relative offset.

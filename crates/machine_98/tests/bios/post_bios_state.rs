@@ -1,3 +1,4 @@
+use common::Bus;
 use device::upd7220_gdc::{DISPLAY_MODE_GRAPHICS, DISPLAY_MODE_MIXED};
 
 use super::read_ram_u16;
@@ -1630,4 +1631,53 @@ fn hle_bootstrap_2hd_keeps_1mb_boot_device_vx() {
         0x00,
         "Drive 0 should be in 1MB DISK_EQUIP"
     );
+}
+
+/// Physical address of the PC-9821 function flag area F8E8:0000h.
+const PC9821_FUNCTION_FLAGS: u32 = 0xF8E80;
+
+/// Asserts the identification bytes and the zero flag bytes 0002h, 0004h and 0011h.
+fn assert_pc9821_function_flags(bus: &mut impl Bus, machine: &str) {
+    for (offset, expected) in [
+        (0x00, 0x98),
+        (0x01, 0x21),
+        (0x02, 0x00),
+        (0x04, 0x00),
+        (0x11, 0x00),
+    ] {
+        assert_eq!(
+            bus.read_byte(PC9821_FUNCTION_FLAGS + offset),
+            expected,
+            "{machine}: F8E8:{offset:04X}h"
+        );
+    }
+}
+
+#[test]
+fn pc9821_function_flags_identify_pc9821_as() {
+    let mut machine = super::create_machine_pc9821as();
+    boot_to_halt!(machine);
+    assert_pc9821_function_flags(&mut machine.bus, "PC-9821AS");
+}
+
+#[test]
+fn pc9821_function_flags_identify_pc9821_ap() {
+    let mut machine = machine_98::Pc9821Ap::new(
+        cpu::I386::<{ cpu::CPU_MODEL_486_DX }>::new(),
+        machine_98::Pc9801Bus::new(common::MachineModel::PC9821AP, common::CpuMode::High, 48000),
+    );
+    machine.bus.load_font_rom(machine_98::BUILTIN_FONT_ROM);
+    boot_to_halt!(machine);
+    assert_pc9821_function_flags(&mut machine.bus, "PC-9821AP");
+}
+
+#[test]
+fn pc9801_function_flags_area_holds_no_pc9821_identification() {
+    let mut machine = super::create_machine_ra();
+    boot_to_halt!(machine);
+    let identification = [
+        machine.bus.read_byte(PC9821_FUNCTION_FLAGS),
+        machine.bus.read_byte(PC9821_FUNCTION_FLAGS + 1),
+    ];
+    assert_eq!(identification, [0xFF, 0xFF], "F8E8:0000h");
 }
