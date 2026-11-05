@@ -67,7 +67,7 @@ impl<T: TraceSink> Pc8801Bus<T> {
     /// Dispatches the action returned by the FDC after a command is assembled.
     fn on_fdc_action(&mut self, action: FdcAction, context: TraceContext) {
         match action {
-            FdcAction::None => {}
+            FdcAction::None | FdcAction::ReadyChangeInterrupt => {}
             FdcAction::ScheduleSeekInterrupt => {
                 // Defer the seek/recalibrate completion interrupt by the head-settle
                 // delay, then raise it for the sub CPU to service.

@@ -823,15 +823,17 @@ impl<T: TraceSink> Pc88VaBus<T> {
         }
     }
 
-    /// Raises the uPD765A ready-line-change interrupt for a runtime media swap
-    /// so system software can invalidate its cached directory. The initial
-    /// disk mounts happen before the machine runs (cycle 0); those must not
-    /// raise an interrupt, since the boot FDC reset has not run yet.
-    fn signal_drive_ready_change(&mut self, drive: usize, present: bool) {
+    /// Sets the uPD765A ready line of a drive after a media swap. The ready
+    /// polling reports a runtime swap with an interrupt, so system software can
+    /// invalidate its cached directory. A mount before the machine runs
+    /// (cycle 0) only latches the level, since the boot FDC reset has not run
+    /// yet.
+    fn signal_drive_ready_change(&mut self, drive: usize, ready: bool) {
         if self.current_cycle == 0 {
+            self.fdc.latch_ready_line(drive, ready);
             return;
         }
-        self.fdc.signal_ready_line_change(drive, present);
+        self.fdc.signal_ready_line_change(drive, ready);
         self.update_main_fdc_irq();
     }
 

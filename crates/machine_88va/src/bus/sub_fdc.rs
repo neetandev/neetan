@@ -62,7 +62,7 @@ impl<T: common::TraceSink> Pc88VaBus<T> {
     /// Dispatches the action returned by the FDC after a command is assembled.
     fn on_fdc_action(&mut self, action: FdcAction) {
         match action {
-            FdcAction::None => {}
+            FdcAction::None | FdcAction::ReadyChangeInterrupt => {}
             FdcAction::ScheduleSeekInterrupt => {
                 // Defer the seek/recalibrate completion interrupt by the head-settle
                 // delay, then raise it for the sub CPU to service.

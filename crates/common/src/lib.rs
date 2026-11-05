@@ -795,6 +795,20 @@ impl MachineModel {
         }
     }
 
+    /// Returns whether the RDY input of the built-in FDC is pulled up, so a
+    /// media change never changes the ready level the FDC sees.
+    pub const fn fdc_ready_pulled_up(self) -> bool {
+        match self {
+            Self::PC9801F => true,
+            Self::PC9801VM
+            | Self::PC9801VX
+            | Self::PC9801RS
+            | Self::PC9801RA
+            | Self::PC9821AS
+            | Self::PC9821AP => false,
+        }
+    }
+
     /// Returns whether this machine has the 320KB FDD PPI host interface.
     pub const fn has_fdd320_ppi(self) -> bool {
         match self {

@@ -177,7 +177,7 @@ impl<T: TraceSink> Pc6000Bus<T> {
     /// Dispatches the action returned by the FDC after a command is assembled.
     fn on_fdc_action(&mut self, action: FdcAction) {
         match action {
-            FdcAction::None => {}
+            FdcAction::None | FdcAction::ReadyChangeInterrupt => {}
             FdcAction::ScheduleSeekInterrupt => {
                 self.fdc.state.interrupt_pending = false;
                 self.scheduler.schedule(

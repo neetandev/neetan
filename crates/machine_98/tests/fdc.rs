@@ -349,3 +349,105 @@ fn fdc_dma_bank_register_drives_a23_a20_on_pc9821ap() {
         "DMA should read the buffer at 0xE36000"
     );
 }
+
+/// Initializes both PICs with the PC-98 vector bases and unmasks every line.
+fn initialize_pics(bus: &mut Pc9801Bus<NoTrace>) {
+    bus.io_write_byte(0x00, 0x11);
+    bus.io_write_byte(0x02, 0x08);
+    bus.io_write_byte(0x02, 0x80);
+    bus.io_write_byte(0x02, 0x1D);
+    bus.io_write_byte(0x02, 0x00);
+    bus.io_write_byte(0x08, 0x11);
+    bus.io_write_byte(0x0A, 0x10);
+    bus.io_write_byte(0x0A, 0x07);
+    bus.io_write_byte(0x0A, 0x09);
+    bus.io_write_byte(0x0A, 0x00);
+}
+
+/// Issues SENSE INTERRUPT STATUS on an FDC data port until no drive status is
+/// left and returns the ST0 values.
+fn drain_fdc_interrupt_statuses(bus: &mut Pc9801Bus<NoTrace>, data_port: u16) -> Vec<u8> {
+    let mut statuses = Vec::new();
+    loop {
+        bus.io_write_byte(data_port, 0x08);
+        let st0 = bus.io_read_byte(data_port);
+        if st0 == 0x80 {
+            return statuses;
+        }
+        let _pcn = bus.io_read_byte(data_port);
+        statuses.push(st0);
+    }
+}
+
+/// Takes the pending interrupt, issues SENSE INTERRUPT STATUS to the 1MB FDC,
+/// ends the interrupt on both PICs and returns the vector and ST0.
+fn service_fdc_interrupt(bus: &mut Pc9801Bus<NoTrace>) -> (u8, u8) {
+    let vector = bus.acknowledge_irq();
+    bus.io_write_byte(0x92, 0x08);
+    let st0 = bus.io_read_byte(0x92);
+    let _pcn = bus.io_read_byte(0x92);
+    bus.io_write_byte(0x08, 0x20);
+    bus.io_write_byte(0x00, 0x20);
+    (vector, st0)
+}
+
+/// Builds a 2HD test disk.
+fn test_disk(fill: u8) -> FloppyImage {
+    let d88 = build_test_d88(&[(0, 0, 1, 3, &vec![fill; 1024])], false);
+    FloppyImage::from_d88_bytes(&d88).expect("floppy image parse failed")
+}
+
+#[test]
+fn fdc_power_on_mount_reports_no_ready_line_change() {
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9821AP, CpuMode::High, 48000);
+    initialize_pics(&mut bus);
+    bus.insert_floppy(0, test_disk(0x55), None);
+    bus.set_current_cycle(1000);
+
+    let statuses = drain_fdc_interrupt_statuses(&mut bus, 0x92);
+    assert!(
+        statuses.iter().all(|&st0| st0 & 0xC0 != 0xC0),
+        "the power-on mount reports no ready line change: {statuses:02X?}"
+    );
+    bus.set_current_cycle(2000);
+    assert!(!bus.has_irq());
+}
+
+#[test]
+fn fdc_disk_swap_reports_not_ready_then_ready_change() {
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9821AP, CpuMode::High, 48000);
+    initialize_pics(&mut bus);
+    bus.insert_floppy(0, test_disk(0x55), None);
+    bus.set_current_cycle(1000);
+    drain_fdc_interrupt_statuses(&mut bus, 0x92);
+
+    bus.eject_floppy(0);
+    bus.insert_floppy(0, test_disk(0xAA), None);
+    bus.set_current_cycle(2000);
+    assert!(bus.has_irq(), "the removal raises the FDC interrupt");
+    assert_eq!(service_fdc_interrupt(&mut bus), (0x13, 0xC8));
+
+    bus.set_current_cycle(3000);
+    assert!(bus.has_irq(), "the insertion raises a second FDC interrupt");
+    assert_eq!(service_fdc_interrupt(&mut bus), (0x13, 0xC0));
+
+    bus.set_current_cycle(4000);
+    assert!(!bus.has_irq());
+}
+
+#[test]
+fn fdc_640k_forced_ready_reports_no_disk_swap() {
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
+    initialize_pics(&mut bus);
+    bus.io_write_byte(0xBE, 0x00);
+    bus.io_write_byte(0xCC, 0x48);
+    bus.set_current_cycle(1000);
+    drain_fdc_interrupt_statuses(&mut bus, 0xCA);
+
+    bus.insert_floppy(0, test_disk(0x55), None);
+    bus.set_current_cycle(2000);
+    bus.eject_floppy(0);
+    bus.set_current_cycle(3000);
+    assert!(!bus.has_irq(), "FRY holds RDY active, so IRQ 10 stays low");
+    assert!(drain_fdc_interrupt_statuses(&mut bus, 0xCA).is_empty());
+}

@@ -113,7 +113,7 @@ impl<T: TraceSink> AtBus<T> {
     /// Dispatches the action returned by an assembled FDC command.
     fn on_fdc_action(&mut self, action: FdcAction, cylinders_before: [u8; 4]) {
         match action {
-            FdcAction::None => {}
+            FdcAction::None | FdcAction::ReadyChangeInterrupt => {}
             FdcAction::ScheduleSeekInterrupt => self.schedule_fdc_seek_interrupt(cylinders_before),
             FdcAction::StartReadData
             | FdcAction::StartWriteData

@@ -650,7 +650,9 @@ impl<T: TraceSink> Pc9801Bus<T> {
         backing: common::MediaBacking,
     ) {
         let install_fdd640k_hle = self.machine_model == MachineModel::PC9801F;
+        let interface = self.floppy.port_interface();
         self.floppy.insert_drive_backed(drive, image, backing);
+        self.signal_floppy_ready_change(interface, drive, true);
         if install_fdd640k_hle {
             self.fdd640k_hle.install_rom();
         }
@@ -677,7 +679,9 @@ impl<T: TraceSink> Pc9801Bus<T> {
 
     /// Ejects the floppy disk from the specified drive, flushing if dirty.
     pub fn eject_floppy(&mut self, drive: usize) {
+        let interface = self.floppy.port_interface();
         self.floppy.eject_drive(drive);
+        self.signal_floppy_ready_change(interface, drive, false);
         if let Some(dos) = self.dos.as_mut() {
             dos.invalidate_drive_caches(pc98_drives::FLOPPY_2HD_CLASS | drive as u8);
             dos.invalidate_drive_caches(pc98_drives::FLOPPY_2DD_CLASS | drive as u8);
