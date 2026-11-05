@@ -115,6 +115,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
                 break;
             }
         }
+        self.ide.apply_bios_translation();
 
         // Set IDE device connection flags and BIOS work area.
         if self.machine_model.has_ide() {
@@ -151,6 +152,16 @@ impl<T: TraceSink> Pc9801Bus<T> {
             // ROM presence markers (segment >> 8)
             self.memory.state.ram[0x04B0] = 0xD8;
             self.memory.state.ram[0x04B8] = 0xD8;
+            // DISK_PRM0/DISK_PRM1 = D800:0100/D800:0108 (drive parameter tables).
+            // Ref: undoc98 `memsys.txt`
+            for (drive, pointer) in [0x05E8usize, 0x05EC].into_iter().enumerate() {
+                let offset =
+                    device::ide::PARAMETER_TABLE_OFFSET + drive * device::ide::PARAMETER_TABLE_SIZE;
+                self.memory.state.ram[pointer] = offset as u8;
+                self.memory.state.ram[pointer + 1] = (offset >> 8) as u8;
+                self.memory.state.ram[pointer + 2] = 0x00;
+                self.memory.state.ram[pointer + 3] = 0xD8;
+            }
             // Unmask IRQ 9 (slave PIC IR1) so IDE/ATAPI interrupts can fire.
             self.pic.state.chips[1].imr &= !0x02;
             self.pic.invalidate_irq_cache();

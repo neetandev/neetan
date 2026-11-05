@@ -11,7 +11,7 @@ use std::{
 
 use common::{Context, StringError, bail, info};
 use device::{
-    disk::{HddFormat, HddImage, load_hdd_image},
+    disk::{HddFormat, HddGeometry, HddImage, load_hdd_image, pc98_ide},
     floppy::{FloppyFormat, FloppyImage, MsxDskGeometry, d88::D88MediaType, load_floppy_image},
 };
 use dos::{
@@ -668,7 +668,12 @@ struct FddGeometry {
 }
 
 impl FileImageDiskIo {
-    fn new_hdd(image: HddImage) -> Self {
+    /// Wraps a hard disk image. A PC-98 image laid out in its image geometry
+    /// is migrated to the PC-98 IDE BIOS geometry.
+    fn new_hdd(mut image: HddImage) -> Self {
+        if pc98_ide::is_ide_image_format(image.format) {
+            pc98_ide::migrate_to_bios_geometry(&mut image);
+        }
         Self {
             image: FileImage::Hdd(image),
             drive_da: 0x80,
@@ -838,17 +843,29 @@ impl DiskIo for FileImageDiskIo {
             return None;
         }
         match &self.image {
-            FileImage::Hdd(image) => Some((
-                image.geometry.cylinders,
-                image.geometry.heads,
-                image.geometry.sectors_per_track,
-            )),
+            FileImage::Hdd(image) => {
+                let geometry = hdd_chs_geometry(image);
+                Some((
+                    geometry.cylinders,
+                    geometry.heads,
+                    geometry.sectors_per_track,
+                ))
+            }
             FileImage::Fdd { geometry, .. } => Some((
                 geometry.cylinders,
                 geometry.heads,
                 geometry.sectors_per_track,
             )),
         }
+    }
+}
+
+/// Returns the geometry the partition table of a hard disk image uses.
+fn hdd_chs_geometry(image: &HddImage) -> HddGeometry {
+    if pc98_ide::is_ide_image_format(image.format) {
+        pc98_ide::bios_geometry(image.geometry)
+    } else {
+        image.geometry
     }
 }
 

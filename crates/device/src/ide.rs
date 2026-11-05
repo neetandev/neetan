@@ -25,12 +25,21 @@ pub use crate::disk_hle::{buffer_address, drive_index, sector_position, transfer
 use crate::{
     cd_audio::CdAudioPlayer,
     cdrom::CdImage,
-    disk::{HddGeometry, HddImage, MountedHdd},
+    disk::{HddGeometry, HddImage, MountedHdd, pc98_ide},
     scsi::cdrom::{ScsiCdrom, ScsiCdromState},
 };
 
 /// Size of the expansion ROM window mapped at 0xD8000.
 pub const ROM_SIZE: usize = 8192;
+
+/// ROM offset of the parameter table of IDE HD #0 (DISK_PRM0).
+pub const PARAMETER_TABLE_OFFSET: usize = 0x0100;
+
+/// Size of one drive parameter table in the ROM.
+pub const PARAMETER_TABLE_SIZE: usize = 8;
+
+/// Number of drive parameter tables in the ROM.
+const PARAMETER_TABLE_COUNT: usize = 2;
 
 /// 8192-byte expansion ROM image.
 static ROM_IMAGE: &[u8; ROM_SIZE] = include_bytes!("../../../utils/ide/ide.rom");
@@ -164,20 +173,35 @@ impl IdeController {
     }
 
     /// Inserts a hard disk image with the requested backing on channel 0.
+    /// An image laid out in its image geometry is migrated to the BIOS
+    /// geometry, and a file-backed mount writes the migrated image to its
+    /// file at once. When that write fails, the mount keeps its changes in
+    /// memory only. The drive takes the CHS translation of the
+    /// BIOS geometry.
     /// Installs the expansion ROM on the first insertion.
     pub fn insert_drive_backed(
         &mut self,
         drive: usize,
-        image: HddImage,
+        mut image: HddImage,
         backing: common::MediaBacking,
     ) {
         let sector_size = image.geometry.sector_size as usize;
         if let Some(mounted) = self.drives[drive].take() {
             mounted.eject();
         }
-        self.drives[drive] = Some(crate::disk::mounted_hdd_from_backing(image, backing));
+        let migrated = pc98_ide::migrate_to_bios_geometry(&mut image);
+        let mut mounted = crate::disk::mounted_hdd_from_backing(image, backing);
+        if migrated {
+            mounted.mark_image_changed();
+            if let Err(err) = mounted.flush() {
+                common::error!("HDD migration flush failed: {err}");
+                mounted.detach_backend();
+            }
+        }
+        self.drives[drive] = Some(mounted);
         self.lle_controller
             .set_drive_sector_size(0, drive, sector_size);
+        self.set_bios_translation(drive);
         self.install_rom();
     }
 
@@ -387,7 +411,15 @@ impl IdeController {
 
     /// Executes a BIOS format on a track.
     pub fn execute_format(&mut self, drive_index: usize, sector_pos: u32) -> u8 {
-        crate::disk_hle::execute_format(drive_index, sector_pos, &mut self.drives)
+        let sectors_per_track = self
+            .bios_geometry(drive_index)
+            .map_or(0, |geometry| geometry.sectors_per_track);
+        crate::disk_hle::execute_format(
+            drive_index,
+            sector_pos,
+            sectors_per_track,
+            &mut self.drives,
+        )
     }
 
     /// Executes a BIOS mode set (function 0x0E): returns 0x00 if the drive
@@ -448,6 +480,33 @@ impl IdeController {
         self.drives.get(drive)?.as_ref().map(MountedHdd::geometry)
     }
 
+    /// Returns the geometry the IDE BIOS uses for the selected drive, if
+    /// present.
+    pub fn bios_geometry(&self, drive: usize) -> Option<HddGeometry> {
+        self.drive_geometry(drive).map(pc98_ide::bios_geometry)
+    }
+
+    /// Sets the CHS translation of every mounted drive to the BIOS geometry,
+    /// the effect of the INITIALIZE DEVICE PARAMETERS command the IDE BIOS
+    /// issues.
+    pub fn apply_bios_translation(&mut self) {
+        for drive in 0..self.drives.len() {
+            self.set_bios_translation(drive);
+        }
+    }
+
+    /// Sets the CHS translation of a mounted drive to the BIOS geometry.
+    fn set_bios_translation(&mut self, drive: usize) {
+        if let Some(geometry) = self.bios_geometry(drive) {
+            self.lle_controller.set_drive_translation(
+                0,
+                drive,
+                geometry.heads,
+                geometry.sectors_per_track,
+            );
+        }
+    }
+
     /// Reads a single sector by LBA, returning a copy of the data.
     pub fn read_sector_raw(&self, drive: usize, lba: u32) -> Option<Vec<u8>> {
         self.drives
@@ -486,9 +545,39 @@ impl IdeController {
             .map(|m| m.geometry().total_sectors())
     }
 
-    /// Reads a byte from the expansion ROM at the given offset.
+    /// Reads a byte from the expansion ROM at the given offset. The drive
+    /// parameter tables reflect the mounted drives.
     pub fn read_rom_byte(&self, offset: usize) -> u8 {
-        self.rom.as_ref().map_or(0xFF, |rom| rom[offset])
+        let Some(rom) = self.rom.as_ref() else {
+            return 0xFF;
+        };
+        let table_range = PARAMETER_TABLE_OFFSET
+            ..PARAMETER_TABLE_OFFSET + PARAMETER_TABLE_COUNT * PARAMETER_TABLE_SIZE;
+        if table_range.contains(&offset) {
+            let relative = offset - PARAMETER_TABLE_OFFSET;
+            return self.parameter_table_byte(
+                relative / PARAMETER_TABLE_SIZE,
+                relative % PARAMETER_TABLE_SIZE,
+            );
+        }
+        rom[offset]
+    }
+
+    /// Returns a byte of the drive parameter table that DISK_PRM0 and
+    /// DISK_PRM1 (0000:05E8h, 0000:05ECh) point at, in the BIOS geometry:
+    /// +00h cylinders - 1 (word), +02h heads, +03h drive heads, +04h sense
+    /// result, +05h new sense result.
+    fn parameter_table_byte(&self, drive_index: usize, offset: usize) -> u8 {
+        let Some(geometry) = self.bios_geometry(drive_index) else {
+            return 0x00;
+        };
+        match offset {
+            0 => geometry.cylinders.saturating_sub(1) as u8,
+            1 => (geometry.cylinders.saturating_sub(1) >> 8) as u8,
+            2 | 3 => geometry.heads,
+            4 | 5 => self.execute_sense(drive_index),
+            _ => 0x00,
+        }
     }
 
     /// Reads the 16-bit data register (port 0x0640).
@@ -671,10 +760,15 @@ impl IdeController {
 
 #[cfg(test)]
 mod tests {
+    use common::temporary::TemporaryFile;
+
     use super::*;
     use crate::{
         cdrom::CdImage,
-        disk::{HddFormat, HddGeometry},
+        disk::{
+            HddFormat, HddGeometry, HddSizeType, blank_hdd_image,
+            test_support::image_in_image_geometry,
+        },
     };
 
     fn make_test_drive() -> HddImage {
@@ -720,6 +814,176 @@ mod tests {
             assert!(ide.drive_geometry(unit).is_none());
             assert!(ide.read_boot_sector(unit).is_none());
         }
+    }
+
+    #[test]
+    fn rom_parameter_tables_describe_the_bios_geometry() {
+        let expected_last_cylinders = [
+            (HddSizeType::IdeMb40, 609u16),
+            (HddSizeType::IdeMb80, 1220),
+            (HddSizeType::IdeMb120, 1830),
+            (HddSizeType::IdeMb200, 3016),
+            (HddSizeType::IdeMb500, 7521),
+        ];
+        for (size, last_cylinder) in expected_last_cylinders {
+            let mut ide = IdeController::new(44100);
+            ide.insert_drive(0, blank_hdd_image(size), None);
+
+            let drive0: Vec<u8> = (0..PARAMETER_TABLE_SIZE)
+                .map(|offset| ide.read_rom_byte(PARAMETER_TABLE_OFFSET + offset))
+                .collect();
+            let [cylinder_low, cylinder_high] = last_cylinder.to_le_bytes();
+            assert_eq!(
+                drive0,
+                [cylinder_low, cylinder_high, 8, 8, 0x0F, 0x0F, 0, 0],
+                "{}",
+                size.as_token()
+            );
+
+            let drive1: Vec<u8> = (0..PARAMETER_TABLE_SIZE)
+                .map(|offset| {
+                    ide.read_rom_byte(PARAMETER_TABLE_OFFSET + PARAMETER_TABLE_SIZE + offset)
+                })
+                .collect();
+            assert_eq!(drive1, [0; PARAMETER_TABLE_SIZE]);
+        }
+    }
+
+    #[test]
+    fn format_fills_a_track_of_17_sectors() {
+        let mut ide = IdeController::new(44100);
+        ide.insert_drive(0, blank_hdd_image(HddSizeType::IdeMb500), None);
+
+        assert_eq!(ide.execute_format(0, 17), 0x00);
+        for lba in 17..34 {
+            assert!(
+                ide.read_sector(0, lba)
+                    .unwrap()
+                    .iter()
+                    .all(|&byte| byte == 0xE5)
+            );
+        }
+        assert!(
+            ide.read_sector(0, 34)
+                .unwrap()
+                .iter()
+                .all(|&byte| byte == 0x00)
+        );
+    }
+
+    #[test]
+    fn file_backed_mount_writes_the_migrated_image_before_a_guest_write() {
+        let original = image_in_image_geometry(977, 10, 17);
+        let file = TemporaryFile::new("ide_test", "migrate.hdi", &original.to_bytes());
+
+        let mut ide = IdeController::new(44100);
+        ide.insert_drive(0, original.clone(), Some(file.path().to_path_buf()));
+        assert_eq!(
+            std::fs::read(file.path()).unwrap(),
+            ide.drive_image_bytes(0).unwrap()
+        );
+
+        let guest_sector = vec![0xA5u8; 512];
+        assert!(ide.write_sector_raw(0, 5000, &guest_sector));
+        drop(ide);
+
+        let written = HddImage::from_hdi(&std::fs::read(file.path()).unwrap()).unwrap();
+        assert_eq!(written.read_sector(136).unwrap()[24..28], [17, 0, 8, 0]);
+        assert_eq!(written.read_sector(5000).unwrap(), &guest_sector[..]);
+    }
+
+    #[test]
+    fn failed_migration_write_keeps_guest_writes_in_memory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let original = image_in_image_geometry(977, 10, 17);
+        let folder = common::temporary::TemporaryFolder::new("ide_read_only_folder");
+        let path = folder.path().join("disk.hdi");
+        std::fs::write(&path, original.to_bytes()).unwrap();
+        std::fs::set_permissions(folder.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let mut ide = IdeController::new(44100);
+        ide.insert_drive(0, original.clone(), Some(path.clone()));
+        let guest_sector = vec![0xA5u8; 512];
+        assert!(ide.write_sector_raw(0, 5000, &guest_sector));
+        assert_eq!(ide.read_sector(0, 5000).unwrap(), &guest_sector[..]);
+        drop(ide);
+
+        let on_disk = std::fs::read(&path).unwrap();
+        std::fs::set_permissions(folder.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(on_disk, original.to_bytes());
+    }
+
+    #[test]
+    fn ram_backed_mount_migrates_the_image_in_memory() {
+        let original = image_in_image_geometry(977, 10, 17);
+        let mut ide = IdeController::new(44100);
+        ide.insert_drive_backed(0, original.clone(), common::MediaBacking::Ram);
+
+        assert_ne!(ide.drive_image_bytes(0).unwrap(), original.to_bytes());
+        assert_eq!(ide.read_sector(0, 136).unwrap()[24..28], [17, 0, 8, 0]);
+    }
+
+    #[test]
+    fn mount_of_an_unwritable_file_has_no_unwritten_changes() {
+        let folder = common::temporary::TemporaryFolder::new("ide_unwritable");
+        let path = folder.path().join("missing").join("disk.hdi");
+
+        let mut ide = IdeController::new(44100);
+        ide.insert_drive(0, image_in_image_geometry(977, 10, 17), Some(path));
+
+        assert!(ide.flush_all_drives().is_ok());
+    }
+
+    #[test]
+    fn inserted_drive_maps_chs_commands_through_8_heads_and_17_sectors() {
+        let geometry = HddGeometry {
+            cylinders: 20,
+            heads: 4,
+            sectors_per_track: 17,
+            sector_size: 512,
+        };
+        let mut data = vec![0u8; geometry.total_bytes() as usize];
+        for (lba, sector) in data.as_chunks_mut::<512>().0.iter_mut().enumerate() {
+            sector[..4].copy_from_slice(&(lba as u32).to_le_bytes());
+        }
+        let mut ide = IdeController::new(44100);
+        ide.insert_drive(0, HddImage::from_raw(geometry, HddFormat::Hdi, data), None);
+
+        ide.write_device_head(0xA2);
+        ide.write_sector_count(1);
+        ide.write_sector_number(1);
+        ide.write_cylinder_low(1);
+        ide.write_cylinder_high(0);
+        ide.write_command(0x20);
+        let (first_word, _) = ide.read_data_word();
+        assert_eq!(first_word, 170);
+    }
+
+    #[test]
+    fn inserted_256_byte_sector_drive_maps_chs_commands_through_its_own_geometry() {
+        let geometry = HddGeometry {
+            cylinders: 153,
+            heads: 4,
+            sectors_per_track: 33,
+            sector_size: 256,
+        };
+        let mut data = vec![0u8; geometry.total_bytes() as usize];
+        for (lba, sector) in data.as_chunks_mut::<256>().0.iter_mut().enumerate() {
+            sector[..4].copy_from_slice(&(lba as u32).to_le_bytes());
+        }
+        let mut ide = IdeController::new(44100);
+        ide.insert_drive(0, blank_hdd_image(HddSizeType::IdeMb80), None);
+        ide.insert_drive(0, HddImage::from_raw(geometry, HddFormat::Thd, data), None);
+
+        ide.write_device_head(0xA2);
+        ide.write_sector_count(1);
+        ide.write_sector_number(1);
+        ide.write_cylinder_low(1);
+        ide.write_cylinder_high(0);
+        ide.write_command(0x20);
+        let (first_word, _) = ide.read_data_word();
+        assert_eq!(first_word, (4 + 2) * 33);
     }
 
     #[test]

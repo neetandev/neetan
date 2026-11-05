@@ -18,9 +18,10 @@ pub mod at_flat;
 pub mod format;
 pub mod hdi;
 pub mod nhd;
+pub mod pc98_ide;
 pub mod raw;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 pub mod thd;
 pub mod x68k_sasi;
 
@@ -192,10 +193,10 @@ impl HddImage {
         true
     }
 
-    /// Formats a track starting at the given LBA by filling sectors with 0xE5.
-    pub fn format_track(&mut self, start_lba: u32) -> bool {
-        let sectors_per_track = self.geometry.sectors_per_track as u32;
-        for i in 0..sectors_per_track {
+    /// Formats a track of `sectors_per_track` sectors starting at the given
+    /// LBA by filling its sectors with 0xE5.
+    pub fn format_track(&mut self, start_lba: u32, sectors_per_track: u8) -> bool {
+        for i in 0..u32::from(sectors_per_track) {
             let lba = start_lba + i;
             if lba >= self.geometry.total_sectors() {
                 return false;
@@ -700,6 +701,19 @@ impl MountedHdd {
         self.image.geometry
     }
 
+    /// Marks the in-memory image for a full write to its host file at the
+    /// next flush. A mount without a writable host file stays clean.
+    pub fn mark_image_changed(&mut self) {
+        if self.backend.is_some() {
+            self.dirty = true;
+        }
+    }
+
+    /// Detaches the host file. Later writes change only the in-memory image.
+    pub fn detach_backend(&mut self) {
+        self.backend = None;
+    }
+
     /// Returns whether the image has unwritten changes.
     pub fn is_dirty(&self) -> bool {
         self.dirty
@@ -731,18 +745,18 @@ impl MountedHdd {
         true
     }
 
-    /// Formats the track containing `start_lba` by filling its sectors
-    /// with 0xE5.
-    pub fn format_track(&mut self, start_lba: u32) -> bool {
+    /// Formats the track of `sectors_per_track` sectors starting at
+    /// `start_lba` by filling its sectors with 0xE5.
+    pub fn format_track(&mut self, start_lba: u32, sectors_per_track: u8) -> bool {
         if self.read_only {
             return true;
         }
-        if !self.image.format_track(start_lba) {
+        if !self.image.format_track(start_lba, sectors_per_track) {
             return false;
         }
         if let Some(backend) = self.backend.as_mut() {
             let sector_size = self.image.geometry.sector_size as usize;
-            let spt = self.image.geometry.sectors_per_track as usize;
+            let spt = usize::from(sectors_per_track);
             let offset =
                 self.image.header_bytes.len() as u64 + start_lba as u64 * sector_size as u64;
             let buf = vec![0xE5u8; spt * sector_size];
@@ -923,7 +937,7 @@ mod tests {
         let image = build_nhd_image(153, 4, 33, 256);
         let mut hdd = HddImage::from_nhd(&image).unwrap();
 
-        assert!(hdd.format_track(0));
+        assert!(hdd.format_track(0, hdd.geometry.sectors_per_track));
 
         for lba in 0..33 {
             let sector = hdd.read_sector(lba).unwrap();
@@ -1034,7 +1048,7 @@ mod tests {
         let mut mounted = MountedHdd::new(image, Some(path.clone()));
 
         // Format the track containing LBA 17 (cylinder 0, head 1).
-        assert!(mounted.format_track(17));
+        assert!(mounted.format_track(17, 17));
 
         drop(mounted);
         let raw = std::fs::read(&path).unwrap();
@@ -1107,7 +1121,7 @@ mod tests {
 
         // A successful format_track must NOT clear dirty, otherwise the
         // earlier in-memory-only mutation is silently lost on flush.
-        assert!(mounted.format_track(34));
+        assert!(mounted.format_track(34, 17));
         assert!(
             mounted.is_dirty(),
             "dirty must remain set after later successful format_track"

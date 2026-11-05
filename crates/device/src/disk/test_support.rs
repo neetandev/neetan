@@ -1,6 +1,7 @@
 //! Shared test-only image builders for the disk modules.
 
 use crate::disk::{
+    HddFormat, HddGeometry, HddImage,
     hdi::HDI_HEADER_SIZE,
     nhd::{NHD_HEADER_SIZE, NHD_SIGNATURE},
     thd::{THD_HEADER_SIZE, THD_HEADS, THD_SECTOR_SIZE, THD_SECTORS_PER_TRACK},
@@ -69,4 +70,118 @@ pub(crate) fn build_thd_image(cylinders: u16) -> Vec<u8> {
 
     header.extend_from_slice(&data);
     header
+}
+
+/// Builds an image laid out in its image geometry like NEC FDISK and
+/// FORMAT with one partition from cylinder 1 to cylinder `cylinders - 5`.
+/// Every sector outside the partition table and the boot record holds its
+/// LBA.
+pub(crate) fn image_in_image_geometry(
+    cylinders: u16,
+    heads: u8,
+    sectors_per_track: u8,
+) -> HddImage {
+    let span = u32::from(cylinders - 5) * u32::from(heads) * u32::from(sectors_per_track);
+    let volume = (span - u32::from(heads) * u32::from(sectors_per_track)) & !3;
+    pc98_image_in_image_geometry(
+        cylinders,
+        heads,
+        sectors_per_track,
+        &[(1, cylinders - 5, volume)],
+    )
+}
+
+/// Builds an image laid out in its image geometry like NEC FDISK and FORMAT.
+/// Each partition is its first cylinder, its last cylinder and the size of
+/// its volume in 512-byte sectors, a multiple of 4. The boot record of each
+/// volume has 2048-byte logical sectors. Every sector outside the partition
+/// table and the boot records holds its LBA.
+pub(crate) fn pc98_image_in_image_geometry(
+    cylinders: u16,
+    heads: u8,
+    sectors_per_track: u8,
+    partitions: &[(u16, u16, u32)],
+) -> HddImage {
+    let geometry = HddGeometry {
+        cylinders,
+        heads,
+        sectors_per_track,
+        sector_size: 512,
+    };
+    let mut data = vec![0u8; geometry.total_bytes() as usize];
+    for (lba, sector) in data.as_chunks_mut::<512>().0.iter_mut().enumerate() {
+        sector[..4].copy_from_slice(&(lba as u32).to_le_bytes());
+    }
+    let mut image = HddImage::from_raw(geometry, HddFormat::Hdi, data);
+    let sectors_per_cylinder = u32::from(heads) * u32::from(sectors_per_track);
+
+    let mut table = vec![0u8; 512];
+    for (index, &(first_cylinder, last_cylinder, volume)) in partitions.iter().enumerate() {
+        let entry = &mut table[index * 32..][..32];
+        entry[0] = 0xA1;
+        entry[1] = 0x91;
+        entry[6..8].copy_from_slice(&first_cylinder.to_le_bytes());
+        entry[10..12].copy_from_slice(&first_cylinder.to_le_bytes());
+        entry[14..16].copy_from_slice(&last_cylinder.to_le_bytes());
+        entry[16..32].copy_from_slice(b"MS-DOS 6.20     ");
+
+        let start = u32::from(first_cylinder) * sectors_per_cylinder;
+        let logical_sectors = volume / 4;
+        let mut boot_record = image.read_sector(start).unwrap().to_vec();
+        boot_record[..3].copy_from_slice(&[0xEB, 0x45, 0x90]);
+        boot_record[11..13].copy_from_slice(&2048u16.to_le_bytes());
+        match u16::try_from(logical_sectors) {
+            Ok(total) => boot_record[19..21].copy_from_slice(&total.to_le_bytes()),
+            Err(_) => {
+                boot_record[19..21].copy_from_slice(&0u16.to_le_bytes());
+                boot_record[32..36].copy_from_slice(&logical_sectors.to_le_bytes());
+            }
+        }
+        boot_record[22..24].copy_from_slice(&20u16.to_le_bytes());
+        boot_record[24..26].copy_from_slice(&u16::from(sectors_per_track).to_le_bytes());
+        boot_record[26..28].copy_from_slice(&u16::from(heads).to_le_bytes());
+        boot_record[28..32].copy_from_slice(&start.to_le_bytes());
+        image.write_sector(start, &boot_record);
+    }
+    image.write_sector(1, &table);
+    image
+}
+
+/// Builds an image of a PC-98 IDE disk type formatted by `format_hdd_image`
+/// before the BIOS geometry: the partition table and the boot record use
+/// the image geometry, the volume starts on head 1 of cylinder 0 and fills
+/// the rest of the disk. Every sector outside the partition table and the
+/// boot record holds its LBA.
+pub(crate) fn neetan_formatted_in_image_geometry(size: crate::disk::HddSizeType) -> HddImage {
+    use crate::disk::format::{hdd_boot_sector, hdd_bpb_params, pc98_partition_table_sector};
+
+    let (geometry, format) = size.geometry();
+    let mut data = vec![0u8; geometry.total_bytes() as usize];
+    for (lba, sector) in data.as_chunks_mut::<512>().0.iter_mut().enumerate() {
+        sector[..4].copy_from_slice(&(lba as u32).to_le_bytes());
+    }
+    let mut image = HddImage::from_raw(geometry, format, data);
+    let total_sectors = geometry.total_sectors();
+    let start = u32::from(geometry.sectors_per_track);
+    let partition_sectors = total_sectors - start;
+    image.write_sector(
+        1,
+        &pc98_partition_table_sector(
+            512,
+            total_sectors,
+            geometry.heads,
+            geometry.sectors_per_track,
+        ),
+    );
+    let bpb = hdd_bpb_params(512, partition_sectors);
+    let boot = hdd_boot_sector(
+        &bpb,
+        512,
+        partition_sectors,
+        geometry.sectors_per_track,
+        geometry.heads,
+        start,
+    );
+    image.write_sector(start, &boot);
+    image
 }

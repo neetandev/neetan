@@ -1,6 +1,6 @@
 use common::Bus;
 use device::{
-    disk::{HddFormat, HddGeometry, HddImage},
+    disk::{HddFormat, HddGeometry, HddImage, HddSizeType, blank_hdd_image},
     floppy::FloppyImage,
 };
 
@@ -3312,9 +3312,76 @@ fn int1bh_ide_sense_new_pc9821() {
     let bx = read_ram_u16(&state.memory.ram, RESULT as usize + 2);
     assert_eq!(bx, 0x0200, "BX should be sector size (512)");
     let cx = read_ram_u16(&state.memory.ram, RESULT as usize + 4);
-    assert_eq!(cx, 19, "CX should be cylinders - 1 (20 - 1 = 19)");
+    assert_eq!(cx, 9, "CX should be cylinders - 1 (1360 / 136 - 1 = 9)");
     let dx = read_ram_u16(&state.memory.ram, RESULT as usize + 6);
-    assert_eq!(dx, 0x0411, "DX should encode DH=heads(4), DL=sectors(17)");
+    assert_eq!(dx, 0x0811, "DX should encode DH=heads(8), DL=sectors(17)");
+}
+
+/// INT 1Bh new sense of IDE drive 0 into [RESULT..RESULT+8], then a CHS read
+/// of one sector at cylinder 2, head 5, sector 9 into DATA_BUFFER with its AX
+/// in [RESULT+8].
+#[rustfmt::skip]
+fn make_int1bh_ide_sense_and_chs_read() -> Vec<u8> {
+    vec![
+        0xB8, DA_IDE_CHS_DRIVE0, 0x84,      // MOV AX, 0x84:DA
+        0xCD, 0x1B,                         // INT 0x1B
+        0xA3, 0x00, 0x06,                   // MOV [RESULT], AX
+        0x89, 0x1E, 0x02, 0x06,             // MOV [RESULT+2], BX
+        0x89, 0x0E, 0x04, 0x06,             // MOV [RESULT+4], CX
+        0x89, 0x16, 0x06, 0x06,             // MOV [RESULT+6], DX
+        0x31, 0xC0,                         // XOR AX, AX
+        0x8E, 0xC0,                         // MOV ES, AX
+        0xBD, 0x00, 0x30,                   // MOV BP, DATA_BUFFER
+        0xBB, 0x00, 0x02,                   // MOV BX, 512
+        0xB9, 0x02, 0x00,                   // MOV CX, cylinder 2
+        0xBA, 0x09, 0x05,                   // MOV DX, head 5, sector 9
+        0xB8, DA_IDE_CHS_DRIVE0, 0x06,      // MOV AX, 0x06:DA
+        0xCD, 0x1B,                         // INT 0x1B
+        0xA3, 0x08, 0x06,                   // MOV [RESULT+8], AX
+        0xF4,                               // HLT
+    ]
+}
+
+#[test]
+fn int1bh_ide_uses_the_bios_geometry_for_the_ide_disk_types_pc9821() {
+    const CHS_2_5_9_LBA: u32 = 2 * 136 + 5 * 17 + 9;
+    let expected_cylinders = [
+        (HddSizeType::IdeMb40, 610u16),
+        (HddSizeType::IdeMb80, 1221),
+        (HddSizeType::IdeMb120, 1831),
+        (HddSizeType::IdeMb200, 3017),
+        (HddSizeType::IdeMb500, 7522),
+    ];
+    for (size, cylinders) in expected_cylinders {
+        let mut image = blank_hdd_image(size);
+        let mut marker = vec![0u8; 512];
+        marker[..4].copy_from_slice(b"CHS!");
+        image.write_sector(CHS_2_5_9_LBA, &marker);
+
+        let code = make_int1bh_ide_sense_and_chs_read();
+        let machine = boot_and_run_ide_pc9821(&code, Some((0, image)), INT1BH_BUDGET);
+        let state = machine.inspection_state();
+        let ram = &state.memory.ram;
+        let token = size.as_token();
+        assert_eq!(read_ram_u16(ram, RESULT as usize) >> 8, 0x0F, "{token} AH");
+        assert_eq!(read_ram_u16(ram, RESULT as usize + 2), 0x0200, "{token} BX");
+        assert_eq!(
+            read_ram_u16(ram, RESULT as usize + 4),
+            cylinders - 1,
+            "{token} CX"
+        );
+        assert_eq!(read_ram_u16(ram, RESULT as usize + 6), 0x0811, "{token} DX");
+        assert_eq!(
+            read_ram_u16(ram, RESULT as usize + 8) >> 8,
+            0x00,
+            "{token} read AH"
+        );
+        assert_eq!(
+            &ram[DATA_BUFFER as usize..DATA_BUFFER as usize + 4],
+            b"CHS!",
+            "{token} CHS 2/5/9 is LBA {CHS_2_5_9_LBA}"
+        );
+    }
 }
 
 #[test]
