@@ -1026,6 +1026,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
     fn handle_fdc_action(&mut self, action: FdcAction, interface: u8) {
         match action {
             FdcAction::None => {}
+            FdcAction::ReadyChangeInterrupt => self.raise_fdc_ready_change_interrupt(interface),
             FdcAction::ScheduleSeekInterrupt => {
                 {
                     let fdc = if interface == 0 {

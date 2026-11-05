@@ -301,7 +301,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
             }
             0x92 => {
                 if self.floppy.port_exc_is_1mb() {
-                    self.floppy.fdc_1mb_mut().read_data()
+                    self.read_fdc_data(0)
                 } else {
                     0xFF
                 }
@@ -323,7 +323,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
             }
             0xCA => {
                 if !self.floppy.port_exc_is_1mb() {
-                    self.floppy.fdc_640k_mut().read_data()
+                    self.read_fdc_data(1)
                 } else {
                     0xFF
                 }

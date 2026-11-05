@@ -1,7 +1,9 @@
 use common::{
     TraceContext, TraceDeviceEvent, TraceEvent, TraceEventKey, TraceField, TraceValue, trace_id,
 };
-use device::upd765a_fdc::{FdcCommand, ST0_NOT_READY, ST1_MISSING_ADDRESS_MARK, ST1_NOT_WRITABLE};
+use device::upd765a_fdc::{
+    FdcCommand, FloppyController, ST0_NOT_READY, ST1_MISSING_ADDRESS_MARK, ST1_NOT_WRITABLE,
+};
 use stack_vec::StackVec;
 
 use crate::{Pc9801Bus, TraceSink, bus::INTERRUPT_DELAY_CYCLES, scheduler::Event98};
@@ -303,6 +305,59 @@ impl<T: TraceSink> Pc9801Bus<T> {
             self.current_cycle + INTERRUPT_DELAY_CYCLES,
         );
         self.update_next_event_cycle();
+    }
+
+    /// Sets the ready line of a drive after a media change. The FDC of
+    /// `interface`, the interface PORT EXC selected before the change, reports
+    /// it. The other FDC takes the level without a report. The mounts before
+    /// the machine runs (cycle 0) report nothing.
+    pub(super) fn signal_floppy_ready_change(&mut self, interface: u8, drive: usize, ready: bool) {
+        let ready_pulled_up = self.machine_model.fdc_ready_pulled_up();
+        let other_interface = 1 - interface;
+        self.floppy
+            .interface_fdc_mut(other_interface)
+            .latch_ready_line(drive, ready);
+        let fdc = self.floppy.interface_fdc_mut(interface);
+        if self.current_cycle == 0 || ready_pulled_up {
+            fdc.latch_ready_line(drive, ready);
+        } else if fdc.signal_ready_line_change(drive, ready) {
+            self.raise_fdc_ready_change_interrupt(interface);
+        }
+    }
+
+    /// Reads the data register of an FDC interface. Draining a result lets the
+    /// ready polling report a pending ready line change.
+    pub(super) fn read_fdc_data(&mut self, interface: u8) -> u8 {
+        let (value, reported) = self
+            .floppy
+            .interface_fdc_mut(interface)
+            .read_data_reporting();
+        if reported {
+            self.raise_fdc_ready_change_interrupt(interface);
+        }
+        value
+    }
+
+    /// Raises the interrupt of an FDC interface after its ready polling
+    /// reported a drive ready line change. A pending FDC interrupt event of the
+    /// same interface delivers it. Otherwise the event is scheduled, or, while
+    /// the event serves the other interface, the IRQ is raised at once.
+    pub(super) fn raise_fdc_ready_change_interrupt(&mut self, interface: u8) {
+        if !self.scheduler.is_scheduled(Event98::FdcInterrupt) {
+            self.floppy.set_active_interface(interface);
+            self.scheduler.schedule(
+                Event98::FdcInterrupt,
+                self.current_cycle + INTERRUPT_DELAY_CYCLES,
+            );
+            self.update_next_event_cycle();
+        } else if self.floppy.irq_line() != FloppyController::interface_irq_line(interface)
+            && self
+                .floppy
+                .interface_fdc_mut(interface)
+                .take_interrupt_pending()
+        {
+            self.raise_pic_irq(FloppyController::interface_irq_line(interface));
+        }
     }
 
     pub(super) fn handle_fdc_interrupt(&mut self) {

@@ -80,6 +80,9 @@ pub enum FdcAction {
     StartFormatTrack,
     /// Start a SCAN transfer: bus should arm sectors and compare host data.
     StartScan,
+    /// Raise the interrupt for a ready line change that the ready polling
+    /// reported.
+    ReadyChangeInterrupt,
 }
 
 save_state::runtime_state_enum! {
@@ -180,6 +183,11 @@ pub struct Upd765aFdcState {
     pub drive_has_disk: u8,
     /// Bitmask of drives that have a write-protected disk (bit per drive 0-3).
     pub drive_write_protected: u8,
+    /// Drive ready lines watched by the ready polling (bit per drive 0-3).
+    pub drive_ready_line: u8,
+    /// Ready level of each drive as the ready polling last reported it (bit per
+    /// drive 0-3).
+    pub drive_ready_reported: u8,
     /// Non-DMA (PIO) execution-phase data FIFO (one sector at a time). Unused on
     /// the DMA path; only touched while `exec_pio` is set.
     pub exec_buf: Vec<u8>,
@@ -458,6 +466,8 @@ impl<const PLATFORM: u8> Upd765aFdc<PLATFORM> {
                     0
                 },
                 drive_write_protected: 0,
+                drive_ready_line: 0,
+                drive_ready_reported: 0,
                 exec_buf: Vec::new(),
                 exec_index: 0,
                 exec_len: 0,
@@ -553,23 +563,71 @@ impl<const PLATFORM: u8> Upd765aFdc<PLATFORM> {
         std::mem::replace(&mut self.state.interrupt_pending, false)
     }
 
-    /// Signals that a drive's ready line changed state (media inserted or
-    /// removed). While idle the uPD765A continuously polls the four drives'
-    /// ready lines and raises an interrupt on any transition; the host then
-    /// issues Sense Interrupt Status and reads ST0 with IC = 11. System
-    /// software uses this to invalidate cached directory data when a disk is
-    /// swapped. The interrupt is only raised when the controller is idle, so an
-    /// in-flight command is never disturbed.
-    pub fn signal_ready_line_change(&mut self, drive: usize, ready: bool) {
-        if drive >= 4 || self.state.drive_equipped & (1 << drive) == 0 {
+    /// Sets the ready line of a drive (media inserted or removed). The ready
+    /// polling reports a new level with an ST0 of IC = 11, and NR when the
+    /// drive is not ready. System software uses this to detect a disk swap.
+    /// Returns whether the polling reported a change at once.
+    pub fn signal_ready_line_change(&mut self, drive: usize, ready: bool) -> bool {
+        if drive >= 4 {
+            return false;
+        }
+        self.set_ready_line(drive, ready);
+        self.poll_ready_lines()
+    }
+
+    /// Sets the ready line of a drive and takes its level as reported, without
+    /// an interrupt. This is the state of a disk mounted before power-on.
+    pub fn latch_ready_line(&mut self, drive: usize, ready: bool) {
+        if drive >= 4 {
             return;
         }
-        if self.state.phase != FdcPhase::Idle {
-            return;
+        self.set_ready_line(drive, ready);
+        let mask = 1u8 << drive;
+        self.state.drive_ready_reported =
+            (self.state.drive_ready_reported & !mask) | (self.state.drive_ready_line & mask);
+    }
+
+    fn set_ready_line(&mut self, drive: usize, ready: bool) {
+        let mask = 1u8 << drive;
+        if ready {
+            self.state.drive_ready_line |= mask;
+        } else {
+            self.state.drive_ready_line &= !mask;
         }
-        let not_ready = if ready { 0 } else { ST0_NOT_READY };
-        self.state.drive_st0[drive] = ST0_READY_LINE_CHANGED | not_ready | (drive as u8);
-        self.state.interrupt_pending = true;
+    }
+
+    /// Reports the ready lines whose level differs from the last reported level
+    /// while the controller is idle. A drive gets a new status only after Sense
+    /// Interrupt Status took its previous one. A removal followed by an
+    /// insertion thus reports a not ready status first and a ready status after
+    /// it. The forced ready signal (FRY) holds the RDY input of the controller
+    /// active, so nothing is reported while it is set. Returns whether a change
+    /// was reported.
+    fn poll_ready_lines(&mut self) -> bool {
+        if self.state.phase != FdcPhase::Idle || self.state.control & CTRL_FORCED_READY != 0 {
+            return false;
+        }
+        let mut reported = false;
+        for drive in 0..self.state.drive_st0.len() {
+            let mask = 1u8 << drive;
+            let changed = (self.state.drive_ready_line ^ self.state.drive_ready_reported) & mask;
+            if changed == 0
+                || self.state.drive_equipped & mask == 0
+                || self.state.drive_st0[drive] != 0
+            {
+                continue;
+            }
+            let not_ready = if self.state.drive_ready_line & mask != 0 {
+                0
+            } else {
+                ST0_NOT_READY
+            };
+            self.state.drive_st0[drive] = ST0_READY_LINE_CHANGED | not_ready | (drive as u8);
+            self.state.drive_ready_reported ^= mask;
+            self.state.interrupt_pending = true;
+            reported = true;
+        }
+        reported
     }
 
     /// Moves a drive's seek status into the busy-command waiting latch.
@@ -615,8 +673,14 @@ impl<const PLATFORM: u8> Upd765aFdc<PLATFORM> {
 
     /// Reads the data register (FIFO).
     pub fn read_data(&mut self) -> u8 {
+        self.read_data_reporting().0
+    }
+
+    /// Reads the data register (FIFO). Also returns whether draining the result
+    /// phase let the ready polling report a ready line change.
+    pub fn read_data_reporting(&mut self) -> (u8, bool) {
         if PLATFORM == UPD765_PLATFORM_ISA_AT && self.reset_held {
-            return 0xFF;
+            return (0xFF, false);
         }
 
         // DMA-paced execution-phase read: serve the next sector byte without
@@ -632,7 +696,7 @@ impl<const PLATFORM: u8> Upd765aFdc<PLATFORM> {
             if self.state.exec_index < self.state.exec_len {
                 self.state.exec_index += 1;
             }
-            return value;
+            return (value, false);
         }
 
         // Non-DMA (PIO) execution-phase read: serve the next sector byte. RQM is
@@ -640,7 +704,7 @@ impl<const PLATFORM: u8> Upd765aFdc<PLATFORM> {
         if self.state.phase == FdcPhase::Execution && self.state.exec_pio && self.state.exec_reading
         {
             if self.state.status & MSR_RQM == 0 {
-                return 0xFF;
+                return (0xFF, false);
             }
             let value = self
                 .state
@@ -652,11 +716,11 @@ impl<const PLATFORM: u8> Upd765aFdc<PLATFORM> {
                 self.state.exec_index += 1;
             }
             self.state.status = MSR_DIO | MSR_EXM | MSR_CB;
-            return value;
+            return (value, false);
         }
 
         if self.state.phase != FdcPhase::Result {
-            return 0xFF;
+            return (0xFF, false);
         }
 
         let index = self.state.result_index as usize;
@@ -668,9 +732,10 @@ impl<const PLATFORM: u8> Upd765aFdc<PLATFORM> {
             self.state.status = MSR_RQM;
             self.state.sense_interrupt_result = false;
             self.state.interrupt_pending = self.state.drive_st0.iter().any(|&status| status != 0);
+            return (value, self.poll_ready_lines());
         }
 
-        value
+        (value, false)
     }
 
     /// Writes the data register (command/parameter bytes).
@@ -1046,6 +1111,7 @@ impl<const PLATFORM: u8> Upd765aFdc<PLATFORM> {
         self.state.result_index = 0;
         self.state.drive_st0 = [0; 4];
         self.state.drive_st0_waiting = [0; 4];
+        self.state.drive_ready_reported = self.state.drive_ready_line;
         self.state.interrupt_pending = false;
         self.state.sense_interrupt_result = false;
         self.state.exec_pio = false;
@@ -1065,7 +1131,11 @@ impl<const PLATFORM: u8> Upd765aFdc<PLATFORM> {
                 self.state.nd = self.state.params[1] & 0x01 != 0;
                 self.state.phase = FdcPhase::Idle;
                 self.state.status = MSR_RQM;
-                FdcAction::None
+                if self.poll_ready_lines() {
+                    FdcAction::ReadyChangeInterrupt
+                } else {
+                    FdcAction::None
+                }
             }
 
             // Sense Drive Status: return ST3.
@@ -1148,6 +1218,7 @@ impl<const PLATFORM: u8> Upd765aFdc<PLATFORM> {
                 self.state.interrupt_pending = true;
                 self.state.phase = FdcPhase::Idle;
                 self.state.status = MSR_RQM | drive_busy;
+                self.poll_ready_lines();
                 FdcAction::ScheduleSeekInterrupt
             }
 
@@ -1191,6 +1262,7 @@ impl<const PLATFORM: u8> Upd765aFdc<PLATFORM> {
                 self.state.interrupt_pending = true;
                 self.state.phase = FdcPhase::Idle;
                 self.state.status = MSR_RQM | drive_busy;
+                self.poll_ready_lines();
                 FdcAction::ScheduleSeekInterrupt
             }
 
@@ -1470,6 +1542,24 @@ impl FloppyController {
         &mut self.fdc_640k
     }
 
+    /// Returns the FDC of an interface (0=1MB, 1=640K).
+    pub fn interface_fdc_mut(
+        &mut self,
+        interface: u8,
+    ) -> &mut Upd765aFdc<UPD765_PLATFORM_STANDARD> {
+        if interface == 0 {
+            &mut self.fdc_1mb
+        } else {
+            &mut self.fdc_640k
+        }
+    }
+
+    /// Returns the interface (0=1MB, 1=640K) that PORT EXC maps to the I/O
+    /// ports.
+    pub fn port_interface(&self) -> u8 {
+        if self.port_exc_is_1mb() { 0 } else { 1 }
+    }
+
     /// Returns a reference to the FDC for the currently active interface.
     pub fn active_fdc(&self) -> &Upd765aFdc<UPD765_PLATFORM_STANDARD> {
         if self.active_interface == 0 {
@@ -1495,7 +1585,12 @@ impl FloppyController {
 
     /// Returns the IRQ line for the currently active FDC interface.
     pub fn irq_line(&self) -> u8 {
-        if self.active_interface == 0 {
+        Self::interface_irq_line(self.active_interface)
+    }
+
+    /// Returns the IRQ line of an interface (0=1MB, 1=640K).
+    pub fn interface_irq_line(interface: u8) -> u8 {
+        if interface == 0 {
             FDC_IRQ_1MB
         } else {
             FDC_IRQ_640K
@@ -2128,44 +2223,134 @@ mod tests {
         assert_eq!(fdc.state.phase, FdcPhase::Idle);
     }
 
+    /// Issues SENSE INTERRUPT STATUS and returns ST0, draining the PCN byte.
+    fn sense_interrupt_st0(fdc: &mut StandardUpd765aFdc) -> u8 {
+        fdc.write_data(0x08);
+        let st0 = fdc.read_data();
+        if st0 != ST0_INVALID_COMMAND {
+            let _pcn = fdc.read_data();
+        }
+        st0
+    }
+
     #[test]
     fn ready_line_change_raises_interrupt_reported_by_sense() {
         let mut fdc = StandardUpd765aFdc::new();
-        fdc.state.drive_equipped = 0x03; // Drives 0 and 1 equipped.
+        fdc.state.drive_equipped = 0x03;
 
-        // Disk inserted into drive 1: ready line goes active.
-        fdc.signal_ready_line_change(1, true);
+        assert!(fdc.signal_ready_line_change(1, true));
         assert!(fdc.state.interrupt_pending);
-
-        // Sense Interrupt Status reports IC = 11 (ready line changed) for drive 1.
-        fdc.write_data(0x08);
-        let st0 = fdc.read_data();
-        assert_eq!(st0, ST0_READY_LINE_CHANGED | 0x01);
-        let _pcn = fdc.read_data();
+        assert_eq!(sense_interrupt_st0(&mut fdc), ST0_READY_LINE_CHANGED | 0x01);
         assert!(!fdc.state.interrupt_pending);
 
-        // Disk removed: ready line goes inactive, NR set in ST0.
-        fdc.signal_ready_line_change(1, false);
-        fdc.write_data(0x08);
+        assert!(fdc.signal_ready_line_change(1, false));
         assert_eq!(
-            fdc.read_data(),
+            sense_interrupt_st0(&mut fdc),
             ST0_READY_LINE_CHANGED | ST0_NOT_READY | 0x01
         );
     }
 
     #[test]
-    fn ready_line_change_ignored_when_not_idle_or_unequipped() {
+    fn disk_swap_reports_not_ready_before_ready() {
         let mut fdc = StandardUpd765aFdc::new();
-        fdc.state.drive_equipped = 0x01; // Only drive 0 equipped.
+        fdc.state.drive_equipped = 0x03;
+        fdc.latch_ready_line(0, true);
 
-        // Unequipped drive: no interrupt.
-        fdc.signal_ready_line_change(1, true);
+        assert!(fdc.signal_ready_line_change(0, false));
+        assert!(!fdc.signal_ready_line_change(0, true));
+
+        fdc.write_data(0x08);
+        assert_eq!(fdc.read_data(), ST0_READY_LINE_CHANGED | ST0_NOT_READY);
+        assert!(fdc.read_data_reporting().1);
+        assert!(fdc.state.interrupt_pending);
+
+        assert_eq!(sense_interrupt_st0(&mut fdc), ST0_READY_LINE_CHANGED);
         assert!(!fdc.state.interrupt_pending);
+        assert_eq!(sense_interrupt_st0(&mut fdc), ST0_INVALID_COMMAND);
+    }
 
-        // Mid-command (not idle): the in-flight command must not be disturbed.
-        fdc.state.phase = FdcPhase::Execution;
+    #[test]
+    fn swap_back_before_sense_reports_one_not_ready() {
+        let mut fdc = StandardUpd765aFdc::new();
+        fdc.state.drive_equipped = 0x01;
+        fdc.latch_ready_line(0, true);
+
+        fdc.signal_ready_line_change(0, false);
         fdc.signal_ready_line_change(0, true);
+        fdc.signal_ready_line_change(0, false);
+
+        assert_eq!(
+            sense_interrupt_st0(&mut fdc),
+            ST0_READY_LINE_CHANGED | ST0_NOT_READY
+        );
         assert!(!fdc.state.interrupt_pending);
+        assert_eq!(sense_interrupt_st0(&mut fdc), ST0_INVALID_COMMAND);
+    }
+
+    #[test]
+    fn latched_ready_line_reports_nothing() {
+        let mut fdc = StandardUpd765aFdc::new();
+        fdc.state.drive_equipped = 0x01;
+        fdc.latch_ready_line(0, true);
+        assert!(!fdc.state.interrupt_pending);
+        assert_eq!(sense_interrupt_st0(&mut fdc), ST0_INVALID_COMMAND);
+    }
+
+    #[test]
+    fn ready_line_change_waits_for_idle_and_ignores_unequipped() {
+        let mut fdc = StandardUpd765aFdc::new();
+        fdc.state.drive_equipped = 0x01;
+
+        assert!(!fdc.signal_ready_line_change(1, true));
+        assert!(!fdc.state.interrupt_pending);
+
+        // Mid-command: the in-flight command is not disturbed.
+        fdc.write_data(0x04);
+        assert_eq!(fdc.state.phase, FdcPhase::Command);
+        assert!(!fdc.signal_ready_line_change(0, true));
+        assert!(!fdc.state.interrupt_pending);
+
+        // The change is reported once the command result is drained.
+        fdc.write_data(0x00);
+        assert!(fdc.read_data_reporting().1);
+        assert!(fdc.state.interrupt_pending);
+        assert_eq!(sense_interrupt_st0(&mut fdc), ST0_READY_LINE_CHANGED);
+    }
+
+    #[test]
+    fn specify_reports_pending_ready_line_change() {
+        let mut fdc = StandardUpd765aFdc::new();
+        fdc.state.drive_equipped = 0x01;
+        fdc.write_data(0x03);
+        fdc.signal_ready_line_change(0, true);
+        fdc.write_data(0xC1);
+        assert_eq!(fdc.write_data(0x0A), FdcAction::ReadyChangeInterrupt);
+        assert_eq!(sense_interrupt_st0(&mut fdc), ST0_READY_LINE_CHANGED);
+    }
+
+    #[test]
+    fn forced_ready_holds_ready_line_change() {
+        let mut fdc = StandardUpd765aFdc::new();
+        fdc.state.drive_equipped = 0x01;
+        fdc.latch_ready_line(0, true);
+        fdc.write_control(CTRL_FORCED_READY);
+
+        assert!(!fdc.signal_ready_line_change(0, false));
+        assert!(!fdc.state.interrupt_pending);
+        assert_eq!(sense_interrupt_st0(&mut fdc), ST0_INVALID_COMMAND);
+    }
+
+    #[test]
+    fn reset_drops_unreported_ready_line_change() {
+        let mut fdc = StandardUpd765aFdc::new();
+        fdc.state.drive_equipped = 0x01;
+        fdc.write_data(0x04);
+        fdc.signal_ready_line_change(0, true);
+
+        fdc.write_control(CTRL_RESET);
+        assert_eq!(fdc.state.drive_ready_reported, 0x01);
+        assert!(!fdc.state.interrupt_pending);
+        assert_eq!(sense_interrupt_st0(&mut fdc), ST0_INVALID_COMMAND);
     }
 
     #[test]
