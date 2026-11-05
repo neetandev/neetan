@@ -15,7 +15,7 @@ use std::{cell::Cell, path::PathBuf};
 pub use lle::{SasiAction, SasiPhase};
 pub use x68k_hdc::{X68K_SASI_DRIVE_COUNT, X68kSasiHdc, X68kSasiHdcState};
 
-use crate::disk::{HddGeometry, HddImage, MountedHdd};
+use crate::disk::{HddGeometry, HddImage, MountedHdd, pc98_sasi};
 pub use crate::disk_hle::{buffer_address, drive_index, sector_position, transfer_size};
 
 /// Size of the expansion ROM window mapped at 0xD7000.
@@ -141,7 +141,11 @@ impl SasiController {
         self.insert_drive_backed(drive, image, path.into());
     }
 
-    /// Inserts a hard disk image with the requested backing.
+    /// Inserts a hard disk image with the requested backing. An image that
+    /// neetan formatted with its partition in cylinder 0 is migrated to the
+    /// NEC layout, and a
+    /// file-backed mount writes the migrated image to its file at once. When
+    /// that write fails, the mount keeps its changes in memory only.
     /// Installs the expansion ROM on the first insertion.
     pub fn insert_drive_backed(
         &mut self,
@@ -152,7 +156,11 @@ impl SasiController {
         if let Some(mounted) = self.drives[drive].take() {
             mounted.eject();
         }
-        self.drives[drive] = Some(crate::disk::mounted_hdd_from_backing(image, backing));
+        self.drives[drive] = Some(crate::disk::mounted_hdd_with_migration(
+            image,
+            backing,
+            pc98_sasi::migrate_to_nec_layout,
+        ));
         if self.rom.is_none() {
             self.rom = Some(Box::new(*ROM_IMAGE));
         }
@@ -489,7 +497,71 @@ mod tests {
     use common::temporary::TemporaryFile;
 
     use super::*;
-    use crate::disk::{HddFormat, HddGeometry};
+    use crate::disk::{
+        HddFormat, HddGeometry, HddSizeType, test_support::neetan_formatted_sasi_in_cylinder_0,
+    };
+
+    #[test]
+    fn file_backed_mount_writes_the_image_migrated_to_the_nec_layout() {
+        let original = neetan_formatted_sasi_in_cylinder_0(HddSizeType::Mb40.geometry().0);
+        let file = TemporaryFile::new("sasi_test", "migrate.hdi", &original.to_bytes());
+        let path = file.path().to_path_buf();
+        let old_identity = MountedHdd::new(original.clone(), Some(path.clone())).identity();
+
+        let mut sasi = SasiController::new();
+        sasi.insert_drive(0, original, Some(path.clone()));
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            sasi.drive_image_bytes(0).unwrap()
+        );
+        drop(sasi);
+
+        let written = HddImage::from_hdi(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(&written.read_sector(1).unwrap()[8..12], &[0, 0, 1, 0]);
+        assert_eq!(
+            &written.read_sector(264).unwrap()[28..32],
+            &264u32.to_le_bytes()
+        );
+        let mut remounted = SasiController::new();
+        remounted.insert_drive(0, written, Some(path));
+        let current = remounted.media_manifest().unwrap();
+        let mut before_migration = current.bindings()[0].clone();
+        before_migration.identity = old_identity;
+        let saved = save_state::MediaManifest::new(vec![before_migration]).unwrap();
+        assert!(saved.verify_current(&current).is_err());
+    }
+
+    #[test]
+    fn save_state_after_a_guest_table_write_matches_after_a_remount() {
+        let mut image = crate::disk::blank_hdd_image(HddSizeType::Mb40);
+        crate::disk::format::format_hdd_image(
+            &mut image,
+            crate::disk::format::PartitionTableType::Pc98,
+        )
+        .unwrap();
+        let file = TemporaryFile::new("sasi_test", "table.hdi", &image.to_bytes());
+        let path = file.path().to_path_buf();
+
+        let mut sasi = SasiController::new();
+        sasi.insert_drive(0, image, Some(path.clone()));
+        let mounted = sasi.media_manifest().unwrap();
+        let mut table = sasi.read_sector(0, 1).unwrap().to_vec();
+        table[16..32].copy_from_slice(b"GUEST FDISK     ");
+        assert!(sasi.write_sector_raw(0, 1, &table));
+        let saved = sasi.media_manifest().unwrap();
+        assert!(mounted.verify_current(&saved).is_err());
+        sasi.flush_all_drives().unwrap();
+        drop(sasi);
+
+        let mut remounted = SasiController::new();
+        let written = HddImage::from_hdi(&std::fs::read(&path).unwrap()).unwrap();
+        remounted.insert_drive(0, written, Some(path));
+        assert!(
+            saved
+                .verify_current(&remounted.media_manifest().unwrap())
+                .is_ok()
+        );
+    }
 
     fn make_test_drive() -> HddImage {
         let geometry = HddGeometry {

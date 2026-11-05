@@ -11,7 +11,7 @@ use std::{
 
 use common::{Context, StringError, bail, info};
 use device::{
-    disk::{HddFormat, HddGeometry, HddImage, load_hdd_image, pc98_ide},
+    disk::{HddFormat, HddGeometry, HddImage, load_hdd_image, pc98_ide, pc98_sasi},
     floppy::{FloppyFormat, FloppyImage, MsxDskGeometry, d88::D88MediaType, load_floppy_image},
 };
 use dos::{
@@ -669,11 +669,14 @@ struct FddGeometry {
 
 impl FileImageDiskIo {
     /// Wraps a hard disk image. A PC-98 image laid out in its image geometry
-    /// is migrated to the PC-98 IDE BIOS geometry.
+    /// is migrated to the PC-98 IDE BIOS geometry. A SASI image that neetan
+    /// formatted with its partition in cylinder 0 is migrated to the NEC
+    /// layout.
     fn new_hdd(mut image: HddImage) -> Self {
         if pc98_ide::is_ide_image_format(image.format) {
             pc98_ide::migrate_to_bios_geometry(&mut image);
         }
+        pc98_sasi::migrate_to_nec_layout(&mut image);
         Self {
             image: FileImage::Hdd(image),
             drive_da: 0x80,

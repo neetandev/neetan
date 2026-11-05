@@ -19,6 +19,7 @@ pub mod format;
 pub mod hdi;
 pub mod nhd;
 pub mod pc98_ide;
+pub mod pc98_sasi;
 pub mod raw;
 #[cfg(test)]
 pub(crate) mod test_support;
@@ -605,7 +606,9 @@ pub struct MountedHdd {
     last_flush_error: Option<common::FlushError>,
     dirty: bool,
     read_only: bool,
-    identity: save_state::ResourceIdentity,
+    /// The identity of the source and the image structure, recorded at
+    /// mount.
+    source_identity: save_state::ResourceIdentity,
     source_path: Option<save_state::MediaSourcePath>,
 }
 
@@ -616,6 +619,27 @@ pub fn mounted_hdd_from_backing(image: HddImage, backing: common::MediaBacking) 
         common::MediaBacking::WriteThrough(path) => MountedHdd::new(image, Some(path)),
         common::MediaBacking::ReadOnly => MountedHdd::new_read_only(image),
     }
+}
+
+/// Builds a mount from a media backing after `migrate` updated the layout
+/// of the image in memory. When `migrate` changed the image, a file-backed
+/// mount writes it to its file at once. When that write fails, the mount
+/// keeps its changes in memory only.
+pub fn mounted_hdd_with_migration(
+    mut image: HddImage,
+    backing: common::MediaBacking,
+    migrate: impl FnOnce(&mut HddImage) -> bool,
+) -> MountedHdd {
+    let migrated = migrate(&mut image);
+    let mut mounted = mounted_hdd_from_backing(image, backing);
+    if migrated {
+        mounted.mark_image_changed();
+        if let Err(err) = mounted.flush() {
+            common::error!("HDD migration flush failed: {err}");
+            mounted.detach_backend();
+        }
+    }
+    mounted
 }
 
 impl MountedHdd {
@@ -644,7 +668,7 @@ impl MountedHdd {
         let structure = hdd_identity_structure(&image);
         let byte_length = image.header_bytes.len() as u64 + image.data.len() as u64;
         let source_path = path.as_deref().map(save_state::MediaSourcePath::from_path);
-        let identity = match source_path.as_ref() {
+        let source_identity = match source_path.as_ref() {
             Some(source_path) => crate::media_identity::path_identity(
                 "neetan-hdd-source-v1",
                 source_path,
@@ -676,7 +700,7 @@ impl MountedHdd {
             last_flush_error: None,
             dirty: false,
             read_only: false,
-            identity,
+            source_identity,
             source_path,
         }
     }
@@ -686,9 +710,22 @@ impl MountedHdd {
         &self.image
     }
 
-    /// Returns the stable identity recorded when the image was mounted.
-    pub const fn identity(&self) -> save_state::ResourceIdentity {
-        self.identity
+    /// Returns the identity of the mount: the source and image structure
+    /// recorded at mount, and the current content of the first two sectors.
+    /// The first two sectors hold the IPL and the partition table, and a
+    /// layout migration rewrites them.
+    pub fn identity(&self) -> save_state::ResourceIdentity {
+        let mut layout_sectors = Vec::new();
+        for lba in 0..2 {
+            if let Some(sector) = self.image.read_sector(lba) {
+                layout_sectors.extend_from_slice(sector);
+            }
+        }
+        crate::media_identity::content_identity(
+            "neetan-hdd-layout-v1",
+            self.source_identity,
+            &layout_sectors,
+        )
     }
 
     /// Returns the normalized configured source path, when file-backed.

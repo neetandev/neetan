@@ -185,3 +185,48 @@ pub(crate) fn neetan_formatted_in_image_geometry(size: crate::disk::HddSizeType)
     image.write_sector(start, &boot);
     image
 }
+
+/// Builds an empty HDI image of a SASI disk with 256-byte sectors and the
+/// neetan partition name. Its volume starts on head 1 of cylinder 0 and
+/// fills the rest of the disk.
+pub(crate) fn neetan_formatted_sasi_in_cylinder_0(geometry: HddGeometry) -> HddImage {
+    use crate::disk::format::{
+        fat_region, hdd_boot_sector, hdd_bpb_params, pc98_partition_table_sector,
+    };
+
+    let mut image = HddImage::from_raw(
+        geometry,
+        HddFormat::Hdi,
+        vec![0u8; geometry.total_bytes() as usize],
+    );
+    let total_sectors = geometry.total_sectors();
+    let start = u32::from(geometry.sectors_per_track);
+    let partition_sectors = total_sectors - start;
+    image.write_sector(
+        1,
+        &pc98_partition_table_sector(
+            256,
+            total_sectors,
+            geometry.heads,
+            geometry.sectors_per_track,
+        ),
+    );
+    let bpb = hdd_bpb_params(256, partition_sectors);
+    let boot = hdd_boot_sector(
+        &bpb,
+        256,
+        partition_sectors,
+        geometry.sectors_per_track,
+        geometry.heads,
+        start,
+    );
+    image.write_sector(start, &boot);
+    let fat = fat_region(&bpb, 256);
+    for copy in 0..u32::from(bpb.num_fats) {
+        let base = start + u32::from(bpb.reserved_sectors) + copy * u32::from(bpb.sectors_per_fat);
+        for (offset, sector) in fat.as_chunks::<256>().0.iter().enumerate() {
+            image.write_sector(base + offset as u32, sector);
+        }
+    }
+    image
+}

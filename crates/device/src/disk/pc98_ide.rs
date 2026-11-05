@@ -32,28 +32,28 @@ const MAXIMUM_CYLINDERS: u32 = 65535;
 const BIOS_SECTOR_SIZE: u16 = 512;
 
 /// LBA of the PC-98 partition table.
-const PARTITION_TABLE_LBA: u32 = 1;
+pub(super) const PARTITION_TABLE_LBA: u32 = 1;
 
 /// Size of one PC-98 partition table entry.
-const PARTITION_ENTRY_SIZE: usize = 32;
+pub(super) const PARTITION_ENTRY_SIZE: usize = 32;
 
 /// Entry offset of the IPL address.
-const ENTRY_IPL_OFFSET: usize = 4;
+pub(super) const ENTRY_IPL_OFFSET: usize = 4;
 
 /// Entry offset of the data start address.
-const ENTRY_START_OFFSET: usize = 8;
+pub(super) const ENTRY_START_OFFSET: usize = 8;
 
 /// Entry offset of the data end address.
-const ENTRY_END_OFFSET: usize = 12;
+pub(super) const ENTRY_END_OFFSET: usize = 12;
 
 /// Boot record offset of the bytes per sector word.
-const BOOT_RECORD_BYTES_PER_SECTOR_OFFSET: usize = 11;
+pub(super) const BOOT_RECORD_BYTES_PER_SECTOR_OFFSET: usize = 11;
 
 /// Boot record offset of the 16-bit total sectors word.
-const BOOT_RECORD_TOTAL_SECTORS_16_OFFSET: usize = 19;
+pub(super) const BOOT_RECORD_TOTAL_SECTORS_16_OFFSET: usize = 19;
 
 /// Boot record offset of the 16-bit sectors per FAT word.
-const BOOT_RECORD_SECTORS_PER_FAT_16_OFFSET: usize = 22;
+pub(super) const BOOT_RECORD_SECTORS_PER_FAT_16_OFFSET: usize = 22;
 
 /// Boot record offset of the sectors per track word.
 const BOOT_RECORD_SECTORS_PER_TRACK_OFFSET: usize = 24;
@@ -65,7 +65,7 @@ const BOOT_RECORD_HEADS_OFFSET: usize = 26;
 const BOOT_RECORD_HIDDEN_SECTORS_OFFSET: usize = 28;
 
 /// Boot record offset of the 32-bit total sectors double word.
-const BOOT_RECORD_TOTAL_SECTORS_32_OFFSET: usize = 32;
+pub(super) const BOOT_RECORD_TOTAL_SECTORS_32_OFFSET: usize = 32;
 
 /// FAT32 boot record offset of the backup boot sector word.
 const FAT32_BACKUP_BOOT_SECTOR_OFFSET: usize = 50;
@@ -118,19 +118,19 @@ pub fn is_ide_image_format(format: HddFormat) -> bool {
 }
 
 /// The FAT volume of a partition.
-struct FatVolume {
-    volume_sectors: u32,
+pub(super) struct FatVolume {
+    pub(super) volume_sectors: u32,
     backup_boot_sector: Option<u32>,
-    has_nec_partition_start: bool,
+    pub(super) has_nec_partition_start: bool,
 }
 
 /// A partition of the image geometry.
-struct Partition {
-    entry_index: usize,
-    ipl: u32,
-    start: u32,
-    end: u32,
-    volume: FatVolume,
+pub(super) struct Partition {
+    pub(super) entry_index: usize,
+    pub(super) ipl: u32,
+    pub(super) start: u32,
+    pub(super) end: u32,
+    pub(super) volume: FatVolume,
 }
 
 /// The cylinders appended to an image and the new HDI data size.
@@ -161,6 +161,7 @@ pub fn migrate_to_bios_geometry(image: &mut HddImage) -> bool {
         return false;
     };
     let mut table = table.to_vec();
+    let new_geometry = bios_geometry(image.geometry);
     if let Some(enlargement) = enlargement {
         enlarge(image, &enlargement);
     }
@@ -185,8 +186,9 @@ pub fn migrate_to_bios_geometry(image: &mut HddImage) -> bool {
         for (offset, has_nec_partition_start) in boot_records {
             let lba = placement.new_start + offset;
             if let Some(boot_record) = image.read_sector(lba) {
-                let boot_record = boot_record_in_bios_geometry(
+                let boot_record = boot_record_in_geometry(
                     boot_record,
+                    new_geometry,
                     placement.new_start,
                     has_nec_partition_start,
                 );
@@ -345,7 +347,7 @@ fn enlarge(image: &mut HddImage, enlargement: &Enlargement) {
 
 /// Returns whether a partition table entry is empty: its MID and SID are
 /// zero.
-fn is_empty_entry(entry: &[u8]) -> bool {
+pub(super) fn is_empty_entry(entry: &[u8]) -> bool {
     entry[0] == 0 && entry[1] == 0
 }
 
@@ -353,7 +355,11 @@ fn is_empty_entry(entry: &[u8]) -> bool {
 /// image geometry. An empty IPL address means the partition start. Returns
 /// `None` when the entry does not describe a partition with a readable FAT
 /// volume in the image geometry.
-fn read_partition(image: &HddImage, entry_index: usize, entry: &[u8]) -> Option<Partition> {
+pub(super) fn read_partition(
+    image: &HddImage,
+    entry_index: usize,
+    entry: &[u8],
+) -> Option<Partition> {
     let geometry = image.geometry;
     let start = chs_to_lba(&entry[ENTRY_START_OFFSET..ENTRY_START_OFFSET + 4], geometry)?;
     let ipl_address = &entry[ENTRY_IPL_OFFSET..ENTRY_IPL_OFFSET + 4];
@@ -399,11 +405,12 @@ fn read_fat_volume(
     if read_double_word(boot_record, BOOT_RECORD_HIDDEN_SECTORS_OFFSET) != start {
         return None;
     }
+    let sector_size = image.geometry.sector_size;
     let bytes_per_sector = read_word(boot_record, BOOT_RECORD_BYTES_PER_SECTOR_OFFSET);
-    if !bytes_per_sector.is_power_of_two() || bytes_per_sector < BIOS_SECTOR_SIZE {
+    if !bytes_per_sector.is_power_of_two() || bytes_per_sector < sector_size {
         return None;
     }
-    let sectors_per_logical_sector = u32::from(bytes_per_sector / BIOS_SECTOR_SIZE);
+    let sectors_per_logical_sector = u32::from(bytes_per_sector / sector_size);
     let total_sectors = match read_word(boot_record, BOOT_RECORD_TOTAL_SECTORS_16_OFFSET) {
         0 => read_double_word(boot_record, BOOT_RECORD_TOTAL_SECTORS_32_OFFSET),
         total => u32::from(total),
@@ -464,19 +471,20 @@ fn bpb_holds_geometry(boot_record: &[u8], geometry: HddGeometry) -> bool {
         && read_word(boot_record, BOOT_RECORD_HEADS_OFFSET) == u16::from(geometry.heads)
 }
 
-/// Returns the boot record with the BIOS geometry and the hidden sectors of
-/// a partition at `start` in its BPB. A NEC boot record also takes `start`
-/// as its partition start.
-fn boot_record_in_bios_geometry(
+/// Returns the boot record with the sectors per track and heads of
+/// `geometry` and the hidden sectors of a partition at `start` in its BPB. A
+/// NEC boot record also takes `start` as its partition start.
+pub(super) fn boot_record_in_geometry(
     boot_record: &[u8],
+    geometry: HddGeometry,
     start: u32,
     has_nec_partition_start: bool,
 ) -> Vec<u8> {
     let mut new_boot_record = boot_record.to_vec();
     new_boot_record[BOOT_RECORD_SECTORS_PER_TRACK_OFFSET..][..2]
-        .copy_from_slice(&u16::from(BIOS_SECTORS_PER_TRACK).to_le_bytes());
+        .copy_from_slice(&u16::from(geometry.sectors_per_track).to_le_bytes());
     new_boot_record[BOOT_RECORD_HEADS_OFFSET..][..2]
-        .copy_from_slice(&u16::from(BIOS_HEADS).to_le_bytes());
+        .copy_from_slice(&u16::from(geometry.heads).to_le_bytes());
     new_boot_record[BOOT_RECORD_HIDDEN_SECTORS_OFFSET..][..4].copy_from_slice(&start.to_le_bytes());
     if has_nec_partition_start {
         new_boot_record[NEC_BOOT_RECORD_PARTITION_START_OFFSET..][..4]
@@ -486,12 +494,12 @@ fn boot_record_in_bios_geometry(
 }
 
 /// Reads a little-endian word.
-fn read_word(bytes: &[u8], offset: usize) -> u16 {
+pub(super) fn read_word(bytes: &[u8], offset: usize) -> u16 {
     u16::from_le_bytes([bytes[offset], bytes[offset + 1]])
 }
 
 /// Reads a little-endian double word.
-fn read_double_word(bytes: &[u8], offset: usize) -> u32 {
+pub(super) fn read_double_word(bytes: &[u8], offset: usize) -> u32 {
     u32::from_le_bytes([
         bytes[offset],
         bytes[offset + 1],
@@ -531,7 +539,7 @@ fn lba_to_chs(lba: u32) -> [u8; 4] {
 }
 
 /// Encodes sector 0 of head 0 of a cylinder as a partition table address.
-fn cylinder_address(cylinder: u16) -> [u8; 4] {
+pub(super) fn cylinder_address(cylinder: u16) -> [u8; 4] {
     let [cylinder_low, cylinder_high] = cylinder.to_le_bytes();
     [0, 0, cylinder_low, cylinder_high]
 }

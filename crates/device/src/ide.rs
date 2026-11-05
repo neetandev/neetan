@@ -25,7 +25,7 @@ pub use crate::disk_hle::{buffer_address, drive_index, sector_position, transfer
 use crate::{
     cd_audio::CdAudioPlayer,
     cdrom::CdImage,
-    disk::{HddGeometry, HddImage, MountedHdd, pc98_ide},
+    disk::{HddGeometry, HddImage, MountedHdd, pc98_ide, pc98_sasi},
     scsi::cdrom::{ScsiCdrom, ScsiCdromState},
 };
 
@@ -174,31 +174,29 @@ impl IdeController {
 
     /// Inserts a hard disk image with the requested backing on channel 0.
     /// An image laid out in its image geometry is migrated to the BIOS
-    /// geometry, and a file-backed mount writes the migrated image to its
-    /// file at once. When that write fails, the mount keeps its changes in
-    /// memory only. The drive takes the CHS translation of the
-    /// BIOS geometry.
+    /// geometry. A SASI image that neetan formatted with its partition in
+    /// cylinder 0 is migrated to the NEC layout. A file-backed mount writes
+    /// the migrated image to its file at once. When that write fails, the
+    /// mount keeps its changes in memory only. The drive takes the CHS
+    /// translation of the BIOS geometry.
     /// Installs the expansion ROM on the first insertion.
     pub fn insert_drive_backed(
         &mut self,
         drive: usize,
-        mut image: HddImage,
+        image: HddImage,
         backing: common::MediaBacking,
     ) {
         let sector_size = image.geometry.sector_size as usize;
         if let Some(mounted) = self.drives[drive].take() {
             mounted.eject();
         }
-        let migrated = pc98_ide::migrate_to_bios_geometry(&mut image);
-        let mut mounted = crate::disk::mounted_hdd_from_backing(image, backing);
-        if migrated {
-            mounted.mark_image_changed();
-            if let Err(err) = mounted.flush() {
-                common::error!("HDD migration flush failed: {err}");
-                mounted.detach_backend();
-            }
-        }
-        self.drives[drive] = Some(mounted);
+        self.drives[drive] = Some(crate::disk::mounted_hdd_with_migration(
+            image,
+            backing,
+            |image| {
+                pc98_ide::migrate_to_bios_geometry(image) || pc98_sasi::migrate_to_nec_layout(image)
+            },
+        ));
         self.lle_controller
             .set_drive_sector_size(0, drive, sector_size);
         self.set_bios_translation(drive);
@@ -767,7 +765,7 @@ mod tests {
         cdrom::CdImage,
         disk::{
             HddFormat, HddGeometry, HddSizeType, blank_hdd_image,
-            test_support::image_in_image_geometry,
+            test_support::{image_in_image_geometry, neetan_formatted_sasi_in_cylinder_0},
         },
     };
 
@@ -912,6 +910,22 @@ mod tests {
         let on_disk = std::fs::read(&path).unwrap();
         std::fs::set_permissions(folder.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(on_disk, original.to_bytes());
+    }
+
+    #[test]
+    fn mount_of_a_256_byte_sector_image_migrates_it_to_the_nec_layout() {
+        let original = neetan_formatted_sasi_in_cylinder_0(HddSizeType::Mb40.geometry().0);
+        let mut ide = IdeController::new(44100);
+        ide.insert_drive_backed(0, original, common::MediaBacking::Ram);
+
+        assert_eq!(
+            &ide.read_sector(0, 1).unwrap()[4..12],
+            &[0, 0, 1, 0, 0, 0, 1, 0]
+        );
+        assert_eq!(
+            &ide.read_sector(0, 264).unwrap()[28..32],
+            &264u32.to_le_bytes()
+        );
     }
 
     #[test]
