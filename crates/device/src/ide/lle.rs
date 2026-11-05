@@ -118,6 +118,10 @@ impl IdeDrive {
         }
     }
 
+    /// Applies the reset of SRST, DEVICE RESET (08h) and EXECUTE DEVICE
+    /// DIAGNOSTIC (90h). The CHS translation from INITIALIZE DEVICE
+    /// PARAMETERS and the multiple mode keep their values. Only a power-on
+    /// reset restores the default translation.
     fn reset(&mut self) {
         self.status = STATUS_DRDY | STATUS_DSC;
         self.error = 0x01;
@@ -132,8 +136,6 @@ impl IdeDrive {
         self.interrupt_pending = false;
         self.block_size = 1;
         self.sectors_in_block = 0;
-        self.logical_heads = 0;
-        self.logical_sectors_per_track = 0;
     }
 
     fn interrupts_enabled(&self) -> bool {
@@ -2070,6 +2072,30 @@ mod tests {
 
         let (first_word, _) = controller.read_data_word(&drives);
         // LBA 16: high byte = 0x00, low byte = 16.
+        assert_eq!(first_word & 0xFF, 0x00);
+        assert_eq!(first_word >> 8, 16);
+    }
+
+    #[test]
+    fn software_reset_keeps_chs_translation() {
+        let mut controller = Controller::new();
+        let drives = make_drives(Some(make_test_drive()));
+
+        controller.write_device_head(0xA1);
+        controller.write_sector_count(8);
+        controller.write_command(0x91, &drives);
+
+        controller.write_device_control(CONTROL_SRST);
+        controller.write_device_control(0);
+
+        controller.write_cylinder_low(1);
+        controller.write_cylinder_high(0);
+        controller.write_device_head(0xA0);
+        controller.write_sector_number(1);
+        controller.write_sector_count(1);
+        controller.write_command(0x20, &drives);
+
+        let (first_word, _) = controller.read_data_word(&drives);
         assert_eq!(first_word & 0xFF, 0x00);
         assert_eq!(first_word >> 8, 16);
     }
