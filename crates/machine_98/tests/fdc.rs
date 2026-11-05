@@ -42,7 +42,7 @@ fn build_test_d88(sectors: &[(u8, u8, u8, u8, &[u8])], write_protected: bool) ->
 fn setup_dma_for_write(bus: &mut Pc9801Bus<NoTrace>, mem_addr: u32, byte_count: u16) {
     let addr_low = (mem_addr & 0xFF) as u8;
     let addr_high = ((mem_addr >> 8) & 0xFF) as u8;
-    let page = ((mem_addr >> 16) & 0x0F) as u8;
+    let page = (mem_addr >> 16) as u8;
     let count = byte_count - 1; // DMA count register = N-1
     let count_low = (count & 0xFF) as u8;
     let count_high = ((count >> 8) & 0xFF) as u8;
@@ -304,5 +304,48 @@ fn fdc_write_data_updates_dirty_flag() {
     assert!(
         !bus.is_floppy_dirty(0),
         "drive 0 should not be dirty after eject"
+    );
+}
+
+/// Writes sector C=0 H=0 R=1 N=3 of a fresh disk through DMA channel 2 programmed with
+/// `dma_addr` and returns the written sector data.
+fn write_sector_through_dma(bus: &mut Pc9801Bus<NoTrace>, dma_addr: u32) -> Vec<u8> {
+    let sector_data = vec![0x55u8; 1024];
+    let d88_bytes = build_test_d88(&[(0, 0, 1, 3, &sector_data)], false);
+    let disk = FloppyImage::from_d88_bytes(&d88_bytes).expect("floppy image parse failed");
+    bus.insert_floppy(0, disk, None);
+
+    setup_dma_for_write(bus, dma_addr, 1024);
+    issue_write_data(bus, 0, 0, 1, 3, 1);
+    bus.set_current_cycle(1024);
+
+    let result = read_fdc_results(bus);
+    assert_eq!(
+        result[0] & 0xC0,
+        0x00,
+        "ST0 should indicate normal termination"
+    );
+
+    bus.floppy_disk(0)
+        .expect("disk should still be inserted")
+        .find_sector_near_track_index(0, 0, 0, 1, 3)
+        .expect("sector should exist")
+        .data
+        .clone()
+}
+
+#[test]
+fn fdc_dma_bank_register_drives_a23_a20_on_pc9821ap() {
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9821AP, CpuMode::High, 48000);
+    for i in 0..1024u32 {
+        bus.write_byte(0x36000 + i, 0x11);
+        bus.write_byte(0xE36000 + i, 0xAA);
+    }
+
+    let sector = write_sector_through_dma(&mut bus, 0xE36000);
+
+    assert!(
+        sector.iter().all(|&b| b == 0xAA),
+        "DMA should read the buffer at 0xE36000"
     );
 }

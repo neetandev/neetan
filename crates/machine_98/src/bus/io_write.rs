@@ -73,10 +73,18 @@ impl<T: TraceSink> Pc9801Bus<T> {
             0x1B => self.dma.master_clear(),
             0x1D => self.dma.state.mask = 0,
             0x1F => self.dma.write_all_mask(value),
-            0x21 => self.dma.write_page(1, value & 0x0F),
-            0x23 => self.dma.write_page(2, value & 0x0F),
-            0x25 => self.dma.write_page(3, value & 0x0F),
-            0x27 => self.dma.write_page(0, value & 0x0F),
+            0x21 => self
+                .dma
+                .write_page(1, value & self.machine_model.dma_bank_mask()),
+            0x23 => self
+                .dma
+                .write_page(2, value & self.machine_model.dma_bank_mask()),
+            0x25 => self
+                .dma
+                .write_page(3, value & self.machine_model.dma_bank_mask()),
+            0x27 => self
+                .dma
+                .write_page(0, value & self.machine_model.dma_bank_mask()),
             // DMA auto-increment boundary mode register.
             0x29 => self.dma.write_bound(value),
 
@@ -1435,6 +1443,20 @@ mod tests {
     fn enable_egc_mode(bus: &mut Pc9801Bus<NoTrace>) {
         bus.io_write_byte(0x6A, 0x07);
         bus.io_write_byte(0x6A, 0x05);
+    }
+
+    #[test]
+    fn dma_bank_register_keeps_a19_a16_on_pc9801vm() {
+        let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
+        bus.io_write_byte(0x23, 0xE1);
+        assert_eq!(bus.dma.state.channels[2].page, 0x01);
+    }
+
+    #[test]
+    fn dma_bank_register_keeps_a23_a16_on_pc9821ap() {
+        let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9821AP, CpuMode::High, 48000);
+        bus.io_write_byte(0x23, 0xE1);
+        assert_eq!(bus.dma.state.channels[2].page, 0xE1);
     }
 
     #[test]

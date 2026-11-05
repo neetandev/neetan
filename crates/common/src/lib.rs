@@ -712,6 +712,18 @@ impl MachineModel {
         }
     }
 
+    /// Returns the mask of the valid bits of the DMA bank registers (ports 21h, 23h, 25h and
+    /// 27h). The 8086 and V30 machines decode A19-A16 (bits 3-0). The 80286 and later machines
+    /// decode A23-A16 (bits 7-0).
+    pub const fn dma_bank_mask(self) -> u8 {
+        match self {
+            Self::PC9801F | Self::PC9801VM => 0x0F,
+            Self::PC9801VX | Self::PC9801RS | Self::PC9801RA | Self::PC9821AS | Self::PC9821AP => {
+                0xFF
+            }
+        }
+    }
+
     /// Returns whether this machine has DMA extended page registers (A24-A31).
     pub const fn has_extended_dma(self) -> bool {
         match self {
