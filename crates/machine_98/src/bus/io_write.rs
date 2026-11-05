@@ -529,11 +529,6 @@ impl<T: TraceSink> Pc9801Bus<T> {
                 self.sasi.write_trap_port(value);
             }
 
-            // IDE HLE trap port.
-            0x07EE if self.machine_model.has_ide() => {
-                self.ide.write_trap_port(value);
-            }
-
             // BIOS HLE trap port.
             0x07F0 => {
                 self.bios.write_trap_port(value);

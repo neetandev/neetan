@@ -140,11 +140,11 @@ impl<T: TraceSink> Pc9801Bus<T> {
 
         // Install IDE expansion ROM's IRQ 9 handler and presence markers.
         // The real BIOS scans expansion ROMs and calls their init code.
-        // Our ide.rom's init entry installs the IRQ handler at D800:008D
+        // Our ide.rom's init entry installs the IRQ handler at D800:007F
         // and sets ROM presence markers at 0x04B0/0x04B8.
         if self.ide.rom_installed() {
-            // IVT[0x11] = D800:008D (IDE IRQ 9 handler in expansion ROM)
-            self.memory.state.ram[0x0044] = 0x8D; // offset low
+            // IVT[0x11] = D800:007F (IDE IRQ 9 handler in expansion ROM)
+            self.memory.state.ram[0x0044] = 0x7F; // offset low
             self.memory.state.ram[0x0045] = 0x00; // offset high
             self.memory.state.ram[0x0046] = 0x00; // segment low (D800)
             self.memory.state.ram[0x0047] = 0xD8; // segment high

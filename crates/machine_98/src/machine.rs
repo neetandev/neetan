@@ -684,15 +684,6 @@ impl<C: Cpu, T: TraceSink> Pc98Machine<C, T> {
                 continue;
             }
 
-            if unlikely(self.bus.ide_hle_pending()) {
-                self.bus.set_hle_paging(self.cpu.cr0(), self.cpu.cr3());
-                self.bus.execute_ide_hle(
-                    self.cpu.segment_base(common::SegmentRegister::SS),
-                    self.cpu.sp(),
-                );
-                continue;
-            }
-
             if unlikely(self.bus.fdd640k_hle_pending()) {
                 self.bus.set_hle_paging(self.cpu.cr0(), self.cpu.cr3());
                 self.bus.execute_fdd640k_hle(

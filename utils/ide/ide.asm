@@ -1,11 +1,8 @@
-; ide.asm - IDE HLE ROM stub for Neetan
+; ide.asm - IDE expansion ROM stub for Neetan
 ;
 ; Assembles to an 8192-byte expansion ROM image mapped at physical 0xD8000.
-; Provides High-Level Emulation (HLE) for IDE disk I/O by intercepting
-; INT 1Bh calls. When software issues INT 1Bh, this ROM writes a single
-; byte to the emulator trap port (0x07EE). The emulator detects the write
-; and handles the disk operation directly in Rust, bypassing the slow LLE
-; path.
+; Marks the IDE BIOS as present, holds the IDE IRQ handler and boots from an
+; IDE device. The HLE system BIOS serves INT 1Bh for IDE drives itself.
 ;
 ; Build: nasm -f bin -o ide.rom ide.asm
 
@@ -13,7 +10,6 @@
 [cpu 186]
 [org 0x0000]
 
-TRAP_PORT               equ 0x07EE
 IDE_STATUS_PORT         equ 0x064E
 MASTER_PIC_CMD          equ 0x00
 SLAVE_PIC_CMD           equ 0x08
@@ -64,8 +60,9 @@ IDE_DEVICE_2            equ 0x0B
     jmp short boot_ide
     nop
 
-; Entry 8 (offset 0x18): INT 1Bh disk BIOS handler.
-    jmp short int1b_handler
+; Entry 8 (offset 0x18): Unused.
+    retf
+    nop
     nop
 
 ; Entries 9-15 (offsets 0x1B-0x2F): Unused.
@@ -114,25 +111,6 @@ setup_vectors:
     mov ax, 0x0300                  ; AH=03 (init), AL=00
     int 0x1B
     retf
-
-; int1b_handler
-; INT 1Bh disk BIOS handler entry.
-; The system BIOS pushes DS, SI, DI, ES, BP, DX, CX, BX, AX onto the stack
-; before dispatching here. This routine writes a single byte to the emulator
-; trap port, then pops all registers and IRETs.
-int1b_handler:
-    mov dx, TRAP_PORT
-    out dx, al
-    pop ax
-    pop bx
-    pop cx
-    pop dx
-    pop bp
-    pop es
-    pop di
-    pop si
-    pop ds
-    iret
 
 ; boot_ide
 ; Attempts to boot from an IDE device.

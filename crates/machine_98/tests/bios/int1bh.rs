@@ -3273,10 +3273,34 @@ fn int1bh_ide_verify_pc9821() {
 
 #[test]
 fn int1bh_ide_sense_pc9821() {
-    let code = make_int1bh_simple(0x04, DA_IDE_CHS_DRIVE0);
+    #[rustfmt::skip]
+    let code = vec![
+        0xB8, 0x00, 0x20,                   // MOV AX, 0x2000
+        0x8E, 0xC0,                         // MOV ES, AX
+        0x31, 0xED,                         // XOR BP, BP
+        0x26, 0xC6, 0x06, 0x00, 0x00, 0x5A, // MOV BYTE [ES:0000], 0x5A
+        0xB8, DA_IDE_CHS_DRIVE0, 0x04,      // MOV AX, 0x04:DA
+        0xCD, 0x1B,                         // INT 0x1B
+        0xA3, 0x00, 0x06,                   // MOV [RESULT], AX
+        0x8C, 0x06, 0x02, 0x06,             // MOV [RESULT+2], ES
+        0x89, 0x2E, 0x04, 0x06,             // MOV [RESULT+4], BP
+        0xF4,                               // HLT
+    ];
     let machine = boot_and_run_ide_pc9821(&code, Some((0, make_ide_test_drive())), INT1BH_BUDGET);
     let state = machine.inspection_state();
     assert_result_ah(&state.memory.ram, 0x0F, "IDE sense");
+    let es = read_ram_u16(&state.memory.ram, RESULT as usize + 2);
+    let bp = read_ram_u16(&state.memory.ram, RESULT as usize + 4);
+    assert_eq!((es, bp), (0x2000, 0x0000), "legacy sense must keep ES:BP");
+    let buffer = &state.memory.ram[0x20000..0x20200];
+    assert_eq!(
+        buffer[0], 0x5A,
+        "legacy sense must not write the ES:BP buffer"
+    );
+    assert!(
+        buffer[1..].iter().all(|&byte| byte == 0),
+        "legacy sense must not write the ES:BP buffer"
+    );
 }
 
 #[test]
