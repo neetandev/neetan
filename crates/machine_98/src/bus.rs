@@ -3374,7 +3374,7 @@ impl<T: TraceSink> common::Bus for Pc9801Bus<T> {
     }
 
     fn is_io_port_unrestricted(&self, port: u16) -> bool {
-        matches!(port, 0x07EE..=0x07F0)
+        matches!(port, 0x07EF..=0x07F0)
     }
 
     fn has_irq(&self) -> bool {
@@ -3437,7 +3437,6 @@ impl<T: TraceSink> common::Bus for Pc9801Bus<T> {
     fn cpu_should_yield(&self) -> bool {
         T::ENABLED && self.tracer.yield_requested()
             || self.sasi.take_yield_requested()
-            || self.ide.take_yield_requested()
             || self.fdd640k_hle.take_yield_requested()
             || self.bios.take_yield_requested()
     }

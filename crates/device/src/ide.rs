@@ -1,8 +1,8 @@
 //! PC-98 IDE (ATA) controller with ATAPI CD-ROM support.
 //!
-//! Consolidates the IDE HLE (High-Level Emulation) and LLE (Low-Level
-//! Emulation) into a single controller module. The HLE intercepts INT 1Bh
-//! via an expansion ROM stub at 0xD8000, while the LLE handles direct
+//! Consolidates the IDE BIOS helpers and the LLE (Low-Level Emulation) into a
+//! single controller module. The expansion ROM stub at 0xD8000 holds the IDE
+//! IRQ handler and marks the IDE BIOS as present. The LLE handles direct
 //! hardware register access at ports 0x0640-0x064E and 0x074C-0x074E.
 //!
 //! The controller supports two channels via bank switching (port 0x0432):
@@ -15,7 +15,7 @@ pub(crate) mod atapi;
 mod hle;
 mod lle;
 
-use std::{cell::Cell, path::PathBuf};
+use std::path::PathBuf;
 
 pub use at::{AtIdeController, AtIdeControllerState};
 pub use at_atapi::{AtAtapiController, AtAtapiControllerState};
@@ -40,8 +40,6 @@ save_state::runtime_state! {
 #[derive(Clone)]
 pub struct IdeControllerState {
     lle: lle::Controller,
-    hle_pending: bool,
-    yield_requested: bool,
     rom_installed: bool,
     optical: ScsiCdromState,
     atapi: atapi::AtapiState,
@@ -53,8 +51,6 @@ pub struct IdeControllerState {
 #[derive(Debug)]
 pub struct IdeController {
     lle_controller: lle::Controller,
-    hle_pending: bool,
-    yield_requested: Cell<bool>,
     rom: Option<Box<[u8; ROM_SIZE]>>,
     // Channel 0: HDD drives (master/slave).
     drives: [Option<MountedHdd>; 2],
@@ -76,8 +72,6 @@ impl IdeController {
     pub fn new(output_sample_rate: u32) -> Self {
         Self {
             lle_controller: lle::Controller::new(),
-            hle_pending: false,
-            yield_requested: Cell::new(false),
             rom: None,
             drives: [None, None],
             optical: ScsiCdrom::new(output_sample_rate),
@@ -90,8 +84,6 @@ impl IdeController {
     pub fn capture_state(&self) -> Result<IdeControllerState, save_state::StateValidationError> {
         Ok(IdeControllerState {
             lle: self.lle_controller.clone(),
-            hle_pending: self.hle_pending,
-            yield_requested: self.yield_requested.get(),
             rom_installed: self.rom.is_some(),
             optical: self.optical.capture_state(),
             atapi: self.atapi_state.clone(),
@@ -116,8 +108,6 @@ impl IdeController {
         }
         self.optical.restore_state(state.optical)?;
         self.lle_controller = state.lle;
-        self.hle_pending = state.hle_pending;
-        self.yield_requested.set(state.yield_requested);
         self.atapi_state = state.atapi;
         self.work_area_mapped = state.work_area_mapped;
         Ok(())
@@ -501,28 +491,6 @@ impl IdeController {
         self.rom.as_ref().map_or(0xFF, |rom| rom[offset])
     }
 
-    /// Writes a byte to the trap port (0x07EE).
-    /// Any single byte triggers the HLE trap.
-    pub fn write_trap_port(&mut self, _value: u8) {
-        self.hle_pending = true;
-        self.yield_requested.set(true);
-    }
-
-    /// Returns true if an IDE HLE trap is pending.
-    pub fn hle_pending(&self) -> bool {
-        self.hle_pending
-    }
-
-    /// Clears the HLE pending flag after execution.
-    pub fn clear_hle_pending(&mut self) {
-        self.hle_pending = false;
-    }
-
-    /// Returns and clears the yield-requested flag.
-    pub fn take_yield_requested(&self) -> bool {
-        self.yield_requested.replace(false)
-    }
-
     /// Reads the 16-bit data register (port 0x0640).
     /// Returns `(word, action)` where action indicates if an interrupt should be scheduled
     /// (e.g. at chunk boundaries during multi-sector ATAPI reads).
@@ -752,16 +720,6 @@ mod tests {
             assert!(ide.drive_geometry(unit).is_none());
             assert!(ide.read_boot_sector(unit).is_none());
         }
-    }
-
-    #[test]
-    fn trap_triggers_on_single_byte() {
-        let mut ide = IdeController::new(44100);
-        assert!(!ide.hle_pending());
-        ide.write_trap_port(0x00);
-        assert!(ide.hle_pending());
-        assert!(ide.take_yield_requested());
-        assert!(!ide.take_yield_requested());
     }
 
     #[test]

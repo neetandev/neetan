@@ -420,7 +420,10 @@ impl<T: TraceSink> Pc9801Bus<T> {
 #[cfg(test)]
 mod tests {
     use common::{Bus, Cpu, CpuMode, CpuType, MachineModel, NoTrace, SegmentRegister};
-    use device::floppy::FloppyImage;
+    use device::{
+        disk::{HddFormat, HddGeometry, HddImage},
+        floppy::FloppyImage,
+    };
 
     use super::{
         PAGE_ACCESSED, PAGE_DIRTY, hle_page_translate_read, hle_page_translate_write,
@@ -779,6 +782,66 @@ mod tests {
         assert_eq!(bus.read_byte(0x0003_0000), 0xA5);
         assert_eq!(bus.read_byte(0x0002_0000), 0x00);
         assert_eq!(bus.read_byte(0x0002_2220), 0x00);
+    }
+
+    fn test_ide_bus(first_sector_byte: u8) -> Pc9801Bus<NoTrace> {
+        let mut bus = Pc9801Bus::new(MachineModel::PC9821AS, CpuMode::Low, 48000);
+        let geometry = HddGeometry {
+            cylinders: 20,
+            heads: 4,
+            sectors_per_track: 17,
+            sector_size: 512,
+        };
+        let mut data = vec![0u8; geometry.total_bytes() as usize];
+        data[0] = first_sector_byte;
+        bus.insert_hdd(0, HddImage::from_raw(geometry, HddFormat::Hdi, data), None);
+        bus
+    }
+
+    #[test]
+    fn int1bh_ide_read_uses_paged_protected_mode_buffer() {
+        let mut bus = test_ide_bus(0xA5);
+        setup_hle_page_tables(&mut bus);
+
+        let mut cpu = TestCpu::default();
+        cpu.set_ax(0x0680);
+        cpu.set_bx(0x0200);
+        cpu.set_cx(0x0000);
+        cpu.set_dx(0x0000);
+        cpu.set_bp(0);
+        cpu.set_es(0x2222);
+        cpu.set_segment_base_for_test(SegmentRegister::ES, 0x0002_0000);
+
+        bus.hle_int1bh(&mut cpu);
+
+        assert_eq!(cpu.ah(), 0x00);
+        assert_eq!(bus.read_byte(0x0003_0000), 0xA5);
+        assert_eq!(bus.read_byte(0x0002_0000), 0x00);
+        assert_eq!(bus.read_byte(0x0002_2220), 0x00);
+    }
+
+    #[test]
+    fn int1bh_ide_write_uses_paged_protected_mode_buffer() {
+        let mut bus = test_ide_bus(0x00);
+        setup_hle_page_tables(&mut bus);
+        bus.write_byte(0x0003_0000, 0x5A);
+        bus.write_byte(0x0002_0000, 0x11);
+        bus.write_byte(0x0002_2220, 0x22);
+
+        let mut cpu = TestCpu::default();
+        cpu.set_ax(0x0580);
+        cpu.set_bx(0x0200);
+        cpu.set_cx(0x0000);
+        cpu.set_dx(0x0001);
+        cpu.set_bp(0);
+        cpu.set_es(0x2222);
+        cpu.set_segment_base_for_test(SegmentRegister::ES, 0x0002_0000);
+
+        bus.hle_int1bh(&mut cpu);
+
+        assert_eq!(cpu.ah(), 0x00);
+        let sector = bus.ide.read_sector_raw(0, 1).unwrap();
+        assert_eq!(sector[0], 0x5A);
     }
 
     #[test]

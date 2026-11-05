@@ -1481,11 +1481,11 @@ fn post_bios_state_pc9821as_ide() {
     check!(f, state.mouse_ppi.port_c, 0x00, "Mouse PPI port C");
 
     // === IDE ===
-    // IVT[0x11] should point to the IDE ROM's IRQ 9 handler at D800:008D.
+    // IVT[0x11] should point to the IDE ROM's IRQ 9 handler at D800:007F.
     check!(
         f,
         read_ram_u16(&state.memory.ram, 0x0044),
-        0x008D,
+        0x007F,
         "IVT[0x11] offset (IDE IRQ handler)"
     );
     check!(
