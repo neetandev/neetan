@@ -601,6 +601,8 @@ impl<T: TraceSink> Pc9801Bus<T> {
         // Load stub BIOS ROM, keyboard tables, and populate IVT.
         self.memory.load_stub_bios_rom();
         self.memory.install_nec_copyright(self.machine_model);
+        self.memory
+            .install_pc9821_function_flags(self.machine_model);
         let keyboard_rom_offset = match self.machine_model {
             MachineModel::PC9801F => KEYBOARD_ROM_OFFSET_F,
             MachineModel::PC9801VM
