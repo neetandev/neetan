@@ -4,7 +4,12 @@ use std::path::{Path, PathBuf};
 
 use common::temporary::TemporaryFolder;
 use device::{
-    disk::{HddFormat, HddGeometry, HddImage},
+    disk::{
+        HddFormat, HddGeometry, HddImage, HddSizeType, blank_hdd_image,
+        format::{
+            PartitionTableType, fat_region, format_hdd_image, hdd_boot_sector, hdd_bpb_params,
+        },
+    },
     floppy::{
         FloppyImage,
         d88::{D88Disk, D88MediaType, D88Sector},
@@ -854,4 +859,87 @@ fn msx_720kb_dsk_floppy_roundtrip() {
     copy(image(&image_path, b"A:\\MSX.TXT".to_vec()), host(&output)).unwrap();
     assert_eq!(std::fs::read(&output).unwrap(), b"MSX DSK data");
     assert_eq!(std::fs::metadata(&image_path).unwrap().len(), 737_280);
+}
+
+/// Builds a PC-98 `.hdi` image partitioned and formatted in its image
+/// geometry with the partition on cylinder 1, the layout of an image written
+/// before the PC-98 IDE BIOS geometry.
+fn build_image_geometry_layout_hdi(cylinders: u16, heads: u8, sectors_per_track: u8) -> Vec<u8> {
+    let geometry = HddGeometry {
+        cylinders,
+        heads,
+        sectors_per_track,
+        sector_size: HDD_SECTOR_SIZE,
+    };
+    let mut image = HddImage::from_raw(
+        geometry,
+        HddFormat::Hdi,
+        vec![0u8; geometry.total_bytes() as usize],
+    );
+    let start = u32::from(heads) * u32::from(sectors_per_track);
+    let partition_sectors = u32::from(cylinders - 2) * start;
+
+    let mut table = vec![0u8; usize::from(HDD_SECTOR_SIZE)];
+    table[0] = 0xA1;
+    table[1] = 0x91;
+    table[6..8].copy_from_slice(&1u16.to_le_bytes());
+    table[10..12].copy_from_slice(&1u16.to_le_bytes());
+    table[14..16].copy_from_slice(&(cylinders - 1).to_le_bytes());
+    image.write_sector(1, &table);
+
+    let bpb = hdd_bpb_params(HDD_SECTOR_SIZE, partition_sectors);
+    let boot = hdd_boot_sector(
+        &bpb,
+        HDD_SECTOR_SIZE,
+        partition_sectors,
+        sectors_per_track,
+        heads,
+        start,
+    );
+    image.write_sector(start, &boot);
+    let fat = fat_region(&bpb, HDD_SECTOR_SIZE);
+    for copy in 0..u32::from(bpb.num_fats) {
+        let base = start + u32::from(bpb.reserved_sectors) + copy * u32::from(bpb.sectors_per_fat);
+        for (offset, sector) in fat.chunks_exact(usize::from(HDD_SECTOR_SIZE)).enumerate() {
+            image.write_sector(base + offset as u32, sector);
+        }
+    }
+    image.to_bytes()
+}
+
+#[test]
+fn ide_image_formatted_in_the_bios_geometry_roundtrips_a_file() {
+    let folder = TemporaryFolder::new("copy_ide_bios_geometry");
+    let dir = folder.path();
+    let mut disk = blank_hdd_image(HddSizeType::IdeMb500);
+    format_hdd_image(&mut disk, PartitionTableType::Pc98).unwrap();
+    let image_path = dir.join("disk.hdi");
+    std::fs::write(&image_path, disk.to_bytes()).unwrap();
+    let src = dir.join("input.txt");
+    std::fs::write(&src, b"bios geometry\n").unwrap();
+
+    copy(host(&src), image(&image_path, b"C:\\OUT.TXT".to_vec())).expect("write into image");
+    let out = dir.join("out.txt");
+    copy(image(&image_path, b"C:\\OUT.TXT".to_vec()), host(&out)).expect("read from image");
+
+    assert_eq!(std::fs::read(&out).unwrap(), b"bios geometry\n");
+}
+
+#[test]
+fn ide_image_in_the_image_geometry_is_migrated_and_roundtrips_a_file() {
+    let folder = TemporaryFolder::new("copy_ide_image_geometry");
+    let dir = folder.path();
+    let image_path = dir.join("disk.hdi");
+    std::fs::write(&image_path, build_image_geometry_layout_hdi(977, 10, 17)).unwrap();
+    let src = dir.join("input.txt");
+    std::fs::write(&src, b"image geometry\n").unwrap();
+
+    copy(host(&src), image(&image_path, b"C:\\OUT.TXT".to_vec())).expect("write into image");
+    let out = dir.join("out.txt");
+    copy(image(&image_path, b"C:\\OUT.TXT".to_vec()), host(&out)).expect("read from image");
+
+    assert_eq!(std::fs::read(&out).unwrap(), b"image geometry\n");
+    let written = std::fs::read(&image_path).unwrap();
+    let boot_record = 32 + 136 * usize::from(HDD_SECTOR_SIZE);
+    assert_eq!(&written[boot_record + 24..boot_record + 28], &[17, 0, 8, 0]);
 }

@@ -247,7 +247,15 @@ impl SasiController {
 
     /// Executes a BIOS format on a track.
     pub fn execute_format(&mut self, drive_index: usize, sector_pos: u32) -> u8 {
-        crate::disk_hle::execute_format(drive_index, sector_pos, &mut self.drives)
+        let sectors_per_track = self
+            .drive_geometry(drive_index)
+            .map_or(0, |geometry| geometry.sectors_per_track);
+        crate::disk_hle::execute_format(
+            drive_index,
+            sector_pos,
+            sectors_per_track,
+            &mut self.drives,
+        )
     }
 
     /// Executes a BIOS mode set (function 0x0E): selects drive mode
@@ -383,7 +391,8 @@ impl SasiController {
         let unit = self.lle_controller.current_unit() as usize;
         let sector = self.lle_controller.current_sector();
         if let Some(drive) = &mut self.drives[unit] {
-            drive.format_track(sector);
+            let sectors_per_track = drive.geometry().sectors_per_track;
+            drive.format_track(sector, sectors_per_track);
         }
     }
 

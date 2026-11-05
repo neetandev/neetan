@@ -231,7 +231,7 @@ impl DosDiskIo<'_> {
     fn hdd_geometry(&self, unit: usize) -> Option<(u16, u8, u8)> {
         let geom = match self.hdd_source(unit)? {
             HddSource::Sasi => self.sasi.drive_geometry(unit)?,
-            HddSource::Ide => self.ide.drive_geometry(unit)?,
+            HddSource::Ide => self.ide.bios_geometry(unit)?,
         };
         Some((geom.cylinders, geom.heads, geom.sectors_per_track))
     }
@@ -442,5 +442,27 @@ impl CdromIo for DosDiskIo<'_> {
                 input_channel: info.input_channel,
                 volume: info.volume,
             });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use device::disk::{HddSizeType, blank_hdd_image};
+
+    use super::*;
+
+    #[test]
+    fn ide_drive_geometry_is_the_bios_geometry() {
+        let mut floppy = FloppyController::new();
+        let mut sasi = SasiController::new();
+        let mut ide = IdeController::new(48000);
+        ide.insert_drive(0, blank_hdd_image(HddSizeType::IdeMb500), None);
+        let disk_io = DosDiskIo {
+            floppy: &mut floppy,
+            sasi: &mut sasi,
+            ide: &mut ide,
+        };
+
+        assert_eq!(disk_io.drive_geometry(0x80), Some((7522, 8, 17)));
     }
 }

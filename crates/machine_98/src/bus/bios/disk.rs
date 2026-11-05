@@ -458,7 +458,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
                             if sense_result >= 0x20 {
                                 sense_result
                             } else {
-                                if let Some(geometry) = self.ide.drive_geometry(drive_idx) {
+                                if let Some(geometry) = self.ide.bios_geometry(drive_idx) {
                                     cpu.set_bx(geometry.sector_size);
                                     cpu.set_cx(geometry.cylinders.saturating_sub(1));
                                     let dx_value = ((u16::from(geometry.heads)) << 8)
@@ -479,7 +479,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
                 },
                 0x05 => {
                     let xfer = device::ide::transfer_size(bx);
-                    let geometry = self.ide.drive_geometry(drive_idx);
+                    let geometry = self.ide.bios_geometry(drive_idx);
                     let pos = geometry
                         .map(|g| device::ide::sector_position(drive_select, cx, dx, &g))
                         .unwrap_or(0);
@@ -488,7 +488,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
                 }
                 0x06 => {
                     let xfer = device::ide::transfer_size(bx);
-                    let geometry = self.ide.drive_geometry(drive_idx);
+                    let geometry = self.ide.bios_geometry(drive_idx);
                     let pos = geometry
                         .map(|g| device::ide::sector_position(drive_select, cx, dx, &g))
                         .unwrap_or(0);
@@ -497,7 +497,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
                 }
                 0x07 | 0x0F => 0x00,
                 0x0D => {
-                    let geometry = self.ide.drive_geometry(drive_idx);
+                    let geometry = self.ide.bios_geometry(drive_idx);
                     let pos = geometry
                         .map(|g| device::ide::sector_position(drive_select, cx, dx, &g))
                         .unwrap_or(0);

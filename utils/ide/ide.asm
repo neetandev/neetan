@@ -18,6 +18,8 @@ IPL_SEGMENT             equ 0x1FC0
 IPL_SIZE                equ 0x0400
 IDE_DEVICE_1            equ 0x0A
 IDE_DEVICE_2            equ 0x0B
+PARAMETER_TABLE_OFFSET  equ 0x0100
+PARAMETER_TABLE_SIZE    equ 0x0008
 
 ; --- Expansion ROM entry point vector table (offsets 0x00-0x2F) ---
 ;
@@ -170,6 +172,16 @@ irq_handler:
     pop dx
     pop ax
     iret
+
+; Drive parameter tables of IDE HD #0 and #1 (DISK_PRM0, DISK_PRM1).
+; The emulator supplies the bytes from the mounted drives:
+; +00h WORD cylinders - 1, +02h BYTE heads, +03h BYTE drive heads,
+; +04h BYTE sense (04h) result, +05h BYTE new sense (84h) result.
+    times PARAMETER_TABLE_OFFSET - ($ - $$) db 0xFF
+drive0_parameters:
+    times PARAMETER_TABLE_SIZE db 0x00
+drive1_parameters:
+    times PARAMETER_TABLE_SIZE db 0x00
 
 ; Pad to 8192 bytes with 0xFF.
     times 8192 - ($ - $$) db 0xFF

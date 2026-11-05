@@ -1,7 +1,7 @@
 //! Hard-disk formatting: partition table, BPB/boot sector, FAT, and root
 //! directory layout for FAT12/FAT16 volumes.
 
-use super::{HddGeometry, HddImage};
+use super::{HddGeometry, HddImage, pc98_ide};
 
 /// The partition-table style written to the first sectors of a hard disk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -197,6 +197,28 @@ pub fn pc98_partition_table_sector(
     sector
 }
 
+/// First cylinder of the partition written on a PC-98 IDE disk.
+pub const PC98_IDE_PARTITION_START_CYLINDER: u16 = 1;
+
+/// Builds the PC-98 partition-table sector of a PC-98 IDE disk in the NEC
+/// layout. One FAT16 partition, active, with its IPL and data on cylinder 1
+/// and its data end on the whole cylinder `end_cylinder`.
+pub fn pc98_ide_partition_table_sector(sector_size: u16, end_cylinder: u16) -> Vec<u8> {
+    let mut sector = vec![0u8; sector_size as usize];
+    sector[0] = 0x21;
+    sector[1] = 0x81;
+    let [start_low, start_high] = PC98_IDE_PARTITION_START_CYLINDER.to_le_bytes();
+    sector[6] = start_low;
+    sector[7] = start_high;
+    sector[10] = start_low;
+    sector[11] = start_high;
+    let [end_low, end_high] = end_cylinder.to_le_bytes();
+    sector[14] = end_low;
+    sector[15] = end_high;
+    sector[16..32].copy_from_slice(b"NEETAN          ");
+    sector
+}
+
 /// BIOS drive number of the first hard disk, stored in the extended BPB.
 const HDD_PHYSICAL_DRIVE_NUMBER: u8 = 0x80;
 
@@ -377,16 +399,31 @@ pub fn fat_region(bpb: &BpbParams, sector_size: u16) -> Vec<u8> {
 
 /// Formats an in-memory hard-disk image: writes the partition table, boot
 /// sector, both FAT copies, and an empty root directory. The data area is left
-/// as-is (a freshly built blank image is already zero-filled).
+/// as-is (a freshly built blank image is already zero-filled). A PC-98
+/// partition table on a PC-98 IDE image lays the disk out in the NEC layout
+/// of the PC-98 IDE BIOS geometry, with the partition on cylinder 1.
 pub fn format_hdd_image(
     image: &mut HddImage,
     table: PartitionTableType,
 ) -> Result<(), FormatError> {
-    let geometry: HddGeometry = image.geometry;
+    let is_pc98_ide = table == PartitionTableType::Pc98
+        && pc98_ide::is_ide_image_format(image.format)
+        && pc98_ide::is_ide_sector_size(image.geometry.sector_size);
+    let geometry: HddGeometry = if is_pc98_ide {
+        pc98_ide::bios_geometry(image.geometry)
+    } else {
+        image.geometry
+    };
     let sector_size = geometry.sector_size;
     let total_sectors = geometry.total_sectors();
     let sectors_per_track = geometry.sectors_per_track;
-    let partition_offset = sectors_per_track as u32;
+    let partition_offset = if is_pc98_ide {
+        u32::from(PC98_IDE_PARTITION_START_CYLINDER)
+            * u32::from(geometry.heads)
+            * u32::from(sectors_per_track)
+    } else {
+        u32::from(sectors_per_track)
+    };
 
     if total_sectors <= partition_offset {
         return Err(FormatError::ImageTooSmall);
@@ -406,12 +443,16 @@ pub fn format_hdd_image(
         PartitionTableType::Pc98 => {
             let ipl = vec![0u8; sector_size as usize];
             write(image, 0, &ipl)?;
-            let part = pc98_partition_table_sector(
-                sector_size,
-                total_sectors,
-                geometry.heads,
-                sectors_per_track,
-            );
+            let part = if is_pc98_ide {
+                pc98_ide_partition_table_sector(sector_size, geometry.cylinders - 1)
+            } else {
+                pc98_partition_table_sector(
+                    sector_size,
+                    total_sectors,
+                    geometry.heads,
+                    sectors_per_track,
+                )
+            };
             write(image, 1, &part)?;
         }
         PartitionTableType::At => {
@@ -476,6 +517,35 @@ mod tests {
         let boot = image.read_sector(partition_offset).unwrap();
         assert_eq!(&boot[0..3], &[0xEB, 0x3C, 0x90]);
         assert_eq!(&boot[3..11], b"NEETAN  ");
+    }
+
+    #[test]
+    fn pc98_format_of_an_ide_disk_writes_the_nec_layout() {
+        let mut image = blank_hdd_image(HddSizeType::IdeMb500);
+        format_hdd_image(&mut image, PartitionTableType::Pc98).unwrap();
+
+        let part = image.read_sector(1).unwrap();
+        assert_eq!(&part[4..8], &[0, 0, 1, 0], "IPL on cylinder 1");
+        assert_eq!(&part[8..12], &[0, 0, 1, 0], "data start on cylinder 1");
+        let [cylinder_low, cylinder_high] = 7521u16.to_le_bytes();
+        assert_eq!(
+            &part[12..16],
+            &[0, 0, cylinder_low, cylinder_high],
+            "data end on the last of 7522 cylinders"
+        );
+
+        let boot = image.read_sector(136).unwrap();
+        assert_eq!(&boot[0..3], &[0xEB, 0x3C, 0x90]);
+        assert_eq!(u16::from_le_bytes([boot[24], boot[25]]), 17);
+        assert_eq!(u16::from_le_bytes([boot[26], boot[27]]), 8);
+        assert_eq!(
+            u32::from_le_bytes([boot[28], boot[29], boot[30], boot[31]]),
+            136
+        );
+        assert_eq!(
+            u32::from_le_bytes([boot[32], boot[33], boot[34], boot[35]]),
+            7521 * 136
+        );
     }
 
     #[test]

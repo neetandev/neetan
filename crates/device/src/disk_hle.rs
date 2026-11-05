@@ -153,16 +153,18 @@ pub fn execute_init(drives: &[Option<MountedHdd>], current_equip: u16) -> u16 {
     disk_equip
 }
 
-/// Executes a BIOS format operation on a track.
+/// Executes a BIOS format operation on a track of `sectors_per_track`
+/// sectors.
 pub fn execute_format(
     drive_index: usize,
     sector_pos: u32,
+    sectors_per_track: u8,
     drives: &mut [Option<MountedHdd>],
 ) -> u8 {
     let Some(drive) = mounted_drive_mut(drives, drive_index) else {
         return STATUS_NOT_READY;
     };
-    if drive.format_track(sector_pos) {
+    if drive.format_track(sector_pos, sectors_per_track) {
         0x00
     } else {
         0xD0
@@ -367,7 +369,7 @@ mod tests {
     #[test]
     fn format_fills_with_e5() {
         let mut drives: [Option<MountedHdd>; 2] = [Some(make_sasi_drive()), None];
-        let status = execute_format(0, 0, &mut drives);
+        let status = execute_format(0, 0, 33, &mut drives);
         assert_eq!(status, 0x00);
 
         let sector = drives[0].as_ref().unwrap().read_sector(0).unwrap();
@@ -386,7 +388,7 @@ mod tests {
                 execute_write::<512>(unit, 512, 0, 0, &mut drives, |_| 0xBB),
                 0x60
             );
-            assert_eq!(execute_format(unit, 0, &mut drives), 0x60);
+            assert_eq!(execute_format(unit, 0, 17, &mut drives), 0x60);
         }
         for drive in &drives {
             let sector = drive.as_ref().unwrap().read_sector(0).unwrap();

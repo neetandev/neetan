@@ -281,6 +281,20 @@ impl Controller {
         self.channels[channel].drives[drive].sector_size = sector_size;
     }
 
+    /// Sets the CHS translation of a drive, the state INITIALIZE DEVICE
+    /// PARAMETERS (91h) leaves.
+    pub(super) fn set_drive_translation(
+        &mut self,
+        channel: usize,
+        drive: usize,
+        heads: u8,
+        sectors_per_track: u8,
+    ) {
+        let drive = &mut self.channels[channel].drives[drive];
+        drive.logical_heads = heads;
+        drive.logical_sectors_per_track = sectors_per_track;
+    }
+
     fn channel(&self) -> &IdeChannel {
         &self.channels[self.active_channel]
     }
