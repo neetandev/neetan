@@ -890,6 +890,7 @@ mod tests {
         assert_eq!(written.read_sector(5000).unwrap(), &guest_sector[..]);
     }
 
+    #[cfg(unix)]
     #[test]
     fn failed_migration_write_keeps_guest_writes_in_memory() {
         use std::os::unix::fs::PermissionsExt;
