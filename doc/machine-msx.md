@@ -67,14 +67,16 @@ when the cartridge is ejected or the emulator exits.
 ## ROM set
 
 The MSX targets need real ROM sets, pointed to by `--msx-roms`. ROMs are
-identified by their BLAKE3 content hash rather than by file name, so the four
-MAME sets can share one flat directory:
+identified by their BLAKE3 content hash rather than by file name, so the three
+MAME machine sets and the FS-CA1 firmware can share one flat directory. The FS-CA1
+firmware comes from the MAME software list item `msx1_cart:fsca1` or from the
+openMSX system ROM pack:
 
-| Target | MAME ROM sets      |
-|--------|--------------------|
-| MSX    | `hb201`, `fsca1`   |
-| MSX2   | `hbf1xd`, `fsca1`  |
-| MSX2+  | `hbf1xdj`, `fsca1` |
+| Target | ROM sources                  |
+|--------|------------------------------|
+| MSX    | `hb201`, `msx1_cart:fsca1`   |
+| MSX2   | `hbf1xd`, `msx1_cart:fsca1`  |
+| MSX2+  | `hbf1xdj`, `msx1_cart:fsca1` |
 
 See the [MSX ROMs](roms.md#msx) section for the exact ROM slots, per-model
 requirements, accepted FS-CA1 variants, and BLAKE3 digests.

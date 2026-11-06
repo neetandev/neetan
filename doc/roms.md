@@ -38,8 +38,9 @@ against the tables below. File names do not matter and stray or unrelated files
 are simply ignored, so you can drop a whole MAME set (or several sets) into one
 directory and neetan picks out the files it needs.
 
-There is one exception where file names are used: every Roland SC-55 set is matched
-by file name (see that section).
+There are two exceptions where file names are used. Every Roland SC-55 set is matched
+by file name (see that section). The Roland MT-32 loader reads only files with the
+`.rom` extension (see that section).
 
 | Machine            | Option           | Default folder | Required?                        |
 |--------------------|------------------|----------------|----------------------------------|
@@ -74,7 +75,7 @@ for that machine.
 | PC-9801RS / PC-9801RA | `pc9801rs`                                | The `pc9801rs` set supplies the BIOS for both models; ships the font ROM            |
 | PC-9821AS / PC-9821AP | -                                         | HLE BIOS only                                                                       |
 | PC-8801MC             | `pc8801mc` (+ `pc8001mk2`, `pc8001mk2sr`) | The two `pc8001*` sets only add the optional N80 boot-mode ROMs                     |
-| PC-88VA2              | `pc88va2`                                 | The sub-CPU ROM is NO_DUMP in MAME and must be sourced separately                   |
+| PC-88VA2              | `pc88va2` + `pc88va2_fd_if`               | The `pc88va2_fd_if` device set holds the floppy sub-CPU ROM `vasubsys.rom`          |
 | PC-6001               | `pc6001`                                  |                                                                                     |
 | PC-6001mkII           | `pc6001mk2`                               |                                                                                     |
 | PC-6601               | `pc6601`                                  |                                                                                     |
@@ -84,16 +85,16 @@ for that machine.
 | Sharp X68000          | `x68000`                                  | Original CZ-600C split IPL                                                          |
 | Sharp X68000 SUPER    | `x68ksupr`                                | IPL V1.0 and internal SCSI ROM                                                      |
 | Sharp X68000 XVI      | `x68kxvi`                                 | IPL V1.1 with the compatible Compact-XVI SCSI ROM                                   |
-| MSX                   | `hb201` + `fsca1`                         | Sony HB-201 firmware and Panasonic FS-CA1 MSX-AUDIO                                 |
-| MSX2                  | `hbf1xd` + `fsca1`                        | Sony HB-F1XD firmware and Panasonic FS-CA1 MSX-AUDIO                                |
-| MSX2+                 | `hbf1xdj` + `fsca1`                       | Sony HB-F1XDJ firmware and Panasonic FS-CA1 MSX-AUDIO                               |
+| MSX                   | `hb201` + `msx1_cart:fsca1`               | Sony HB-201 firmware. FS-CA1 MSX-AUDIO from a software list, see the MSX section    |
+| MSX2                  | `hbf1xd` + `msx1_cart:fsca1`              | Sony HB-F1XD firmware. FS-CA1 MSX-AUDIO from a software list, see the MSX section   |
+| MSX2+                 | `hbf1xdj` + `msx1_cart:fsca1`             | Sony HB-F1XDJ firmware. FS-CA1 MSX-AUDIO from a software list, see the MSX section  |
 | Sharp X1              | `x1`                                      | Both X1 sets share the `--x1-roms` directory                                        |
 | Sharp X1 turbo        | `x1turbo`                                 | The ANK font is byte-identical with the `x1` set                                    |
 | Fujitsu FM-7          | `fm7`                                     | Both FM-7 sets share the `--fm7-roms` directory. Kanji ROM optional                 |
 | Fujitsu FM-77AV       | `fm77av`                                  | The sub monitor C and kanji ROMs are byte-identical with the `fm7` set              |
 | IBM PC/AT (DOS/V)     | `ct486` + `et4000`                        | Optional (HLE BIOS by default). Both share the `--at-roms` dir, `--bios` boots them |
-| Roland MT-32          | MT-32 v1.07 (recommended)                 | Any supported control + PCM pair works; see the MT-32 section                       |
-| Roland SC-55          | SC-55 v1.21 (recommended)                 | Any supported model works; see the SC-55 section                                    |
+| Roland MT-32          | `mt32`                                    | MT-32 v1.07 recommended. Files need the `.rom` extension, see the MT-32 section     |
+| Roland SC-55          | `sc55`                                    | SC-55 v1.21 recommended. Files need fixed names, see the SC-55 section              |
 
 The PC-98 models all use the single `--pc98-roms` directory. Because matching is by
 content hash, you can extract the `pc9801f`, `pc9801vm`, `pc9801vx`, and `pc9801rs`
@@ -117,9 +118,9 @@ roms/
 |-- pc88/          --pc88-roms                     pc8801mc [+ pc8001mk2, pc8001mk2sr]
 |   |-- mc_n88.rom, mc_n88_0.rom ... cdbios.rom, kanji1.rom, mc_kanji2.rom, ...
 |   `-- n80_2.rom, n80_2sr.rom, n80_3.rom          (optional N80 boot modes)
-|-- pc88va/        --pc88va-roms   pc88va2
+|-- pc88va/        --pc88va-roms   pc88va2 + pc88va2_fd_if
 |   |-- varom00_va2.rom, varom08_va2.rom, varom1_va2.rom, vafont_va2.rom, vadic_va2.rom
-|   `-- (sub-CPU ROM: not in the MAME set, source separately)
+|   `-- vasubsys.rom                               (floppy sub-CPU ROM, from pc88va2_fd_if)
 |-- pc6000/        --pc6000-roms   pc6001 ... pc6601sr
 |   `-- basicrom.60, systemrom1.64, cgrom*.*, kanjirom.*, voicerom.*, ...
 |-- towns/         --towns-roms    fmtownsmx (optional)
@@ -130,10 +131,11 @@ roms/
 |   |-- rh-ix0897cezz.ic12, rh-ix0898cezz.ic11     (original split IPL)
 |   |-- iplrom.dat, scsiinsu.bin                   (SUPER)
 |   `-- iplromxv.dat, scsiinco.bin                 (XVI compatibility set)
-|-- msx/           --msx-roms                      hb201 + hbf1xd + hbf1xdj + fsca1 sets
+|-- msx/           --msx-roms                      hb201 + hbf1xd + hbf1xdj sets + FS-CA1
 |   |-- 201bios.ic9, 201note.ic8                   (Sony HB-201)
 |   |-- f1xdbios.rom.ic27, f1xdext.rom.ic27, f1xddisk.rom.ic27
-|   `-- hb-f1xdj_main.rom, f1xjfirm.rom, f1xjkfn.rom, fs-ca1_CLEAN.rom
+|   |-- hb-f1xdj_main.rom, f1xjfirm.rom, f1xjkfn.rom
+|   `-- fs-ca1_firmware.rom                        (Panasonic FS-CA1 MSX-AUDIO)
 |-- x1/            --x1-roms                       x1 + x1turbo sets
 |   |-- ipl.x1, ipl.x1t                            (IPL ROMs: X1, X1turbo)
 |   |-- fnt0808.x1, fnt0808_turbo.x1, ank.fnt      (8x8 CG fonts + shared 8x16 ANK font)
@@ -146,10 +148,10 @@ roms/
 |-- at/            --at-roms                       ct486 + et4000 sets (optional)
 |   |-- chips_1.ami                                (AMI CS4031 system BIOS)
 |   `-- et4000.bin                                 (Tseng ET4000AX VGA BIOS)
-|-- mt32/          --mt32-roms     MT-32 v1.07
-|   |-- MT32_CONTROL.ROM
+|-- mt32/          --mt32-roms     mt32 set, MT-32 v1.07
+|   |-- MT32_CONTROL_A.ROM, MT32_CONTROL_B.ROM     (control ROM halves, merged on load)
 |   `-- MT32_PCM.ROM
-`-- sc55/          --sc55-roms     SC-55 v1.21
+`-- sc55/          --sc55-roms     sc55 set, SC-55 v1.21
     |-- sc55_rom1.bin, sc55_rom2.bin
     `-- sc55_waverom1.bin, sc55_waverom2.bin, sc55_waverom3.bin
 ```
@@ -211,6 +213,9 @@ The bash script below turns a set of extracted MAME sets into the `roms/` layout
 above. Run it from a directory that contains the extracted sets (any depth, any
 names); it hashes every file once, then verifies and copies each ROM neetan needs
 with `b3sum` + `cp`, printing `OK` / `MISS` per file. It requires `b3sum`.
+A line may list several accepted hashes separated by `|`. The first hash with a
+source file supplies the destination. Place the FS-CA1 dump (see [MSX](#msx)) next
+to the extracted sets.
 
 ```bash
 #!/usr/bin/env bash
@@ -227,8 +232,13 @@ while IFS= read -r -d '' file; do
 done < <(find . -type f -not -path "./$DEST/*" -print0)
 
 status=0
-place() { # <blake3> <dest-relative-path>
-    local want="$1" dest="$2" src="${SRC[$1]:-}"
+place() { # <blake3>[|<blake3>...] <dest-relative-path>
+    local want="$1" dest="$2" src="" hash hashes
+    IFS='|' read -ra hashes <<< "$want"
+    for hash in "${hashes[@]}"; do
+        src="${SRC[$hash]:-}"
+        [ -n "$src" ] && break
+    done
     if [ -z "$src" ]; then
         echo "MISS  $dest  (no source file with b3sum $want)" >&2
         status=1
@@ -285,6 +295,7 @@ bba5011412fb266b3c15ff08d2508716ba2ac54fec3aa172b59e441486807eab  pc88va/varom00
 1239bf390d444ff205f70c700527cb50bc90107904050fa8713a415a17bf0e42  pc88va/varom1_va2.rom
 b47ec9f55ff199ac71f453385aec0f370afbb958fd47ad9bb5161bdf4e2bb3ee  pc88va/vafont_va2.rom
 21fcd88c97b881e55f015f22d62002022189572e171f1c5e485b751c84379b30  pc88va/vadic_va2.rom
+531ab2aa2c7d7c4deb2ddd8303c6637ea7e273648825fb51e17c8660d7496565  pc88va/vasubsys.rom
 # --- PC-6001 / PC-6601 (roms/pc6000) ---
 13bc0696487984f7836f094312b64fb0702dcb5ac3b941a79bd6f174e657697d  pc6000/basicrom.60
 d951eae886dec98a063e5fb11e12b0385f5dd4617c0546fe7cf9fd77b17ae41c  pc6000/basicrom.62
@@ -324,7 +335,7 @@ f89293a24e85a897a12193bff2a75edead4667f2fa0a43f2fe969abecd14ee44  msx/f1xddisk.r
 cf60edceac5ceff127f719da30f1cf0335b4fce9866ce92edf4823d75bbd0797  msx/hb-f1xdj_main.rom
 1535249326208c0447d09b918dd025b8e9e3dbd542c7625e509ef41c83c84be1  msx/f1xjfirm.rom
 9953b4914d1567ac414fb57279872df830aecbb7dfa83e64ec63eb44b8df42e0  msx/f1xjkfn.rom
-fa7cf919162d7118e4b434b9442501d166b18c127521c1614506f7535c02f69a  msx/fs-ca1_CLEAN.rom
+fa7cf919162d7118e4b434b9442501d166b18c127521c1614506f7535c02f69a|5a2241ea860d89951ca2eab1402d22b4d6c06a4b40929e9d0f5b11c7ef62e257  msx/fs-ca1_firmware.rom
 # --- Sharp X1 / X1 turbo (both sets share roms/x1) ---
 194f351bc1024188162856e2374d92bc608d9c742ca007d8c19a4b4eed44abbc  x1/ipl.x1
 871c77226a6e65bf1820c0a3e6f63a330cb1d2eb6c135fc9e4da9741ce38106c  x1/ipl.x1t
@@ -350,7 +361,8 @@ edf5fc537af21d93c73d3446e44654fbab0106edaf85f564abfad99bd28590e1  fm7/subsys_b.r
 bcd8d7424756ca90c5853ac24c2a7f3621d5ff1f6f7a170027e0fbe2b10fd6f1  at/chips_1.ami
 24a00c4924d76f1bbb9afb554ff49009d004212d269bd7665fdfda9084bf3ec6  at/et4000.bin
 # --- Roland MT-32 v1.07 (roms/mt32) ---
-8f123c1f38104a2a7eb1df35fd5b26ca1b857185086a87233b355510264602bf  mt32/MT32_CONTROL.ROM
+d8f51c813aebfa8f47a20ec8d5dc1bd870720b19d2ae43a20eea19612fb249d1  mt32/MT32_CONTROL_A.ROM
+31f0fa94dda0bb836106b53c21d78e016bf970ea794a6cd84dbf4bd852ada51e  mt32/MT32_CONTROL_B.ROM
 7805996b758fab5469e96d9a28588eb2e991440242372f7546345cdc66c8d97a  mt32/MT32_PCM.ROM
 # --- Roland SC-55 v1.21 (roms/sc55; names matter for SC-55) ---
 4755d6b3b0455b13c9176f409f4d9c2d9953f61fb5e68df3094886b7b2795f9e  sc55/sc55_rom1.bin
@@ -465,9 +477,9 @@ These ROMs are required only when the matching boot mode is selected:
 ## PC-88VA2
 
 The PC-88VA2 needs a real ROM set (MAME set `pc88va2`), pointed to by `--pc88va-roms`.
-The floppy sub-CPU ROM (`subsys`) is marked `NO_DUMP` in MAME and is not part of the
-`pc88va2` set; it must be sourced separately (sometimes called `disk.rom` (8 KiB) in
-older dumps; a PC-88VA's disk.rom should be the same). All slots are required:
+The floppy sub-CPU ROM (`subsys`) comes from the separate MAME device set
+`pc88va2_fd_if` as `vasubsys.rom`. Extract both sets into the one directory. Other
+PC-88VA emulators name this file `VASUBSYS.ROM`. All slots are required:
 
 | Slot         | Size    | Contents                  | BLAKE3                                                             |
 |--------------|---------|---------------------------|--------------------------------------------------------------------|
@@ -569,8 +581,20 @@ targets use the Sony HB-201, HB-F1XD, and HB-F1XDJ firmware respectively. Extrac
 whichever MAME sets you need into the directory. They can share it because ROMs
 are identified by BLAKE3 content hash rather than by file name.
 
-All three targets also install Panasonic FS-CA1 MSX-AUDIO internally. The
-128 KiB clean EEPROM dump and MAME's variant are accepted.
+All three targets also install Panasonic FS-CA1 MSX-AUDIO internally. This firmware
+is a cartridge and no MAME machine set holds it. Either of two 128 KiB dumps is
+accepted:
+
+- The MAME software list `msx1_cart` holds it in the item `fsca1` as
+  `msx audio (japan) (fs-ca1) (program).rom`. A software list collection ships it
+  as `msx1_cart/fsca1.zip`. The openMSX system ROM pack holds the same dump as
+  `Panasonic FS-CA1 Jorito.rom`.
+- The openMSX system ROM pack holds the clean EEPROM dump as `fs-ca1_CLEAN.rom`.
+  MAME marks its own dump as a bad dump. It differs from the clean dump in one bit.
+  Prefer the clean dump when you have it.
+
+The file `fs-ca1.rom` of the openMSX system ROM pack is a third dump with RAM
+contents in it. neetan rejects it.
 
 | Model | Firmware image      | Size    | Contents             | BLAKE3                                                             |
 |-------|---------------------|---------|----------------------|--------------------------------------------------------------------|
@@ -583,7 +607,7 @@ All three targets also install Panasonic FS-CA1 MSX-AUDIO internally. The
 | MSX2+ | `f1xjfirm.rom`      | 1 MiB   | Sony firmware mapper | `1535249326208c0447d09b918dd025b8e9e3dbd542c7625e509ef41c83c84be1` |
 | MSX2+ | `f1xjkfn.rom`       | 256 KiB | Kanji font           | `9953b4914d1567ac414fb57279872df830aecbb7dfa83e64ec63eb44b8df42e0` |
 | All   | `fs-ca1_CLEAN.rom`  | 128 KiB | FS-CA1 clean EEPROM  | `fa7cf919162d7118e4b434b9442501d166b18c127521c1614506f7535c02f69a` |
-| All   | `fs-ca1.rom`        | 128 KiB | FS-CA1 MAME variant  | `5a2241ea860d89951ca2eab1402d22b4d6c06a4b40929e9d0f5b11c7ef62e257` |
+| All   | `fsca1` (MAME)      | 128 KiB | FS-CA1 MAME variant  | `5a2241ea860d89951ca2eab1402d22b4d6c06a4b40929e9d0f5b11c7ef62e257` |
 
 ## Sharp X1
 
@@ -665,13 +689,22 @@ a named substitute.
 ## MIDI: Roland MT-32
 
 Place your MT-32 ROM files into a single directory and point `--mt32-roms` at it.
-ROMs are identified by size and BLAKE3 hash, so file names do not matter. You need one
+The loader reads only files with the `.rom` extension (any case). It identifies them
+by size and BLAKE3 hash, so the rest of the file name does not matter. You need one
 control ROM and one PCM ROM. Split ROM pairs (two halves) are also supported and merged
 automatically.
 
-Recommended: MT-32 control ROM v1.07 (`MT32_CONTROL.ROM`
-`8f123c1f...`) with the MT-32 PCM ROM (`MT32_PCM.ROM` `7805996b...`). The control ROM
-version determines the emulated model:
+Recommended: MT-32 control ROM v1.07 (`8f123c1f...`) with the MT-32 PCM ROM
+(`7805996b...`). The MAME set `mt32` holds both, with the extension `.bin`. Rename
+the files you use to `.rom`:
+
+| MAME file             | Contents                     | Rename to (example)  |
+|-----------------------|------------------------------|----------------------|
+| `mt32_1.0.7.ic27.bin` | Control v1.07, half a (Mux0) | `MT32_CONTROL_A.ROM` |
+| `mt32_1.0.7.ic26.bin` | Control v1.07, half b (Mux1) | `MT32_CONTROL_B.ROM` |
+| `r15449121.ic37.bin`  | MT-32 PCM ROM                | `MT32_PCM.ROM`       |
+
+The control ROM version determines the emulated model:
 
 | Model                     | Control ROM versions                  |
 |---------------------------|---------------------------------------|
@@ -728,7 +761,16 @@ Place the ROM files for your device model into a single directory and point
 present and the first matching set wins.
 
 Recommended: SC-55 v1.21 (mk1) - place `sc55_rom1.bin`, `sc55_rom2.bin`,
-`sc55_waverom1.bin`, `sc55_waverom2.bin`, and `sc55_waverom3.bin`.
+`sc55_waverom1.bin`, `sc55_waverom2.bin`, and `sc55_waverom3.bin`. The MAME set
+`sc55` holds these files under other names. Rename them:
+
+| MAME file                           | Rename to           |
+|-------------------------------------|---------------------|
+| `roland_r15199778_6435328a97f.ic30` | `sc55_rom1.bin`     |
+| `roland_r15209363.ic23`             | `sc55_rom2.bin`     |
+| `roland-gss.a_r15209276.ic28`       | `sc55_waverom1.bin` |
+| `roland-gss.b_r15209277.ic27`       | `sc55_waverom2.bin` |
+| `roland-gss.c_r15209281.ic26`       | `sc55_waverom3.bin` |
 
 | Model                    | Required files                                                                                       |
 |--------------------------|------------------------------------------------------------------------------------------------------|
