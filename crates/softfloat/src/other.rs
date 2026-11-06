@@ -218,18 +218,12 @@ fn remainder_impl(
     let exp_diff = dividend_exp - divisor_exp;
 
     if exp_diff < 0 {
-        if round_nearest && exp_diff == -1 {
-            let doubled_dividend = (dividend_sig as u128) << 1;
-            let divisor_128 = divisor_sig as u128;
-            if doubled_dividend > divisor_128 {
-                let result_sign = !dividend_sign;
-                let result = pack_remainder_u64(
-                    result_sign,
-                    divisor_exp,
-                    (divisor_128 - doubled_dividend) as u64,
-                );
-                return (result, 1, true);
-            }
+        // |x| > |y| / 2 holds when the dividend significand exceeds the divisor significand.
+        // |y| - |x| is 2 x divisor_sig - dividend_sig at the dividend exponent.
+        if round_nearest && exp_diff == -1 && dividend_sig > divisor_sig {
+            let difference = ((divisor_sig as u128) << 1) - dividend_sig as u128;
+            let result = pack_remainder_u64(!dividend_sign, dividend_exp, difference as u64);
+            return (result, 1, true);
         }
         return (dividend.canonical(), 0, true);
     }
@@ -751,6 +745,130 @@ mod tests {
         assert_eq!(rem, Fp80::from_bits(0x4020, 0xA168_C234_0000_0000));
         assert_eq!(q_bits, 0);
         assert!(!complete);
+    }
+
+    /// FPREM1 with the dividend exponent one below the divisor exponent rounds the quotient
+    /// to 1 above half the modulus and to the even 0 at a tie (80486 PRM, FPREM1).
+    #[test]
+    fn test_ieee_remainder_exponent_one_below() {
+        let negative_half = Fp80::from_bits(0xBFFE, 0x8000_0000_0000_0000);
+        let one_and_quarter = Fp80::from_bits(0x3FFF, 0xA000_0000_0000_0000);
+        let one_and_three_quarters = Fp80::from_bits(0x3FFF, 0xE000_0000_0000_0000);
+        let negative_one_and_half = Fp80::from_bits(0xBFFF, 0xC000_0000_0000_0000);
+        let negative_one_and_quarter = Fp80::from_bits(0xBFFF, 0xA000_0000_0000_0000);
+        for (dividend, divisor, expected, expected_quotient) in [
+            (ONE_AND_HALF, TWO, negative_half, 1),
+            (Fp80::ONE, THREE, Fp80::ONE, 0),
+            (Fp80::ONE, TWO, Fp80::ONE, 0),
+            (negative_one_and_half, TWO, HALF, 1),
+            (one_and_three_quarters, THREE, negative_one_and_quarter, 1),
+            (one_and_quarter, THREE, one_and_quarter, 0),
+            (ONE_AND_HALF, THREE, ONE_AND_HALF, 0),
+            (THREE, FOUR, NEGATIVE_ONE, 1),
+        ] {
+            let mut ef = no_exceptions();
+            let (rem, q_bits, complete) = dividend.ieee_remainder(divisor, &mut ef);
+            assert_eq!(rem, expected, "{dividend:?} by {divisor:?}");
+            assert_eq!(rem.sign(), expected.sign(), "{dividend:?} by {divisor:?}");
+            assert_eq!(q_bits, expected_quotient, "{dividend:?} by {divisor:?}");
+            assert!(complete);
+            assert_eq!(ef, no_exceptions());
+        }
+    }
+
+    /// FPREM1 with the dividend exponent one below normalizes a small difference and gives
+    /// an exact denormal result.
+    #[test]
+    fn test_ieee_remainder_exponent_one_below_normalizes_the_result() {
+        let mut ef = no_exceptions();
+        let below_two = Fp80::from_bits(0x3FFF, 0xFFFF_FFFF_FFFF_FFFF);
+        let (rem, q_bits, _) = below_two.ieee_remainder(TWO, &mut ef);
+        assert_eq!(rem, Fp80::from_bits(0xBFC0, 0x8000_0000_0000_0000));
+        assert_eq!(q_bits, 1);
+
+        let mut ef = no_exceptions();
+        let largest_denormal = Fp80::from_bits(0x0000, 0x7FFF_FFFF_FFFF_FFFF);
+        let smallest_normal = Fp80::from_bits(0x0001, 0x8000_0000_0000_0000);
+        let (rem, q_bits, _) = largest_denormal.ieee_remainder(smallest_normal, &mut ef);
+        assert_eq!(rem, Fp80::from_bits(0x8000, 0x0000_0000_0000_0001));
+        assert_eq!(q_bits, 1);
+        assert!(ef.denormal);
+    }
+
+    /// Returns the next value of the xorshift64 sequence in `state`.
+    fn next_random(state: &mut u64) -> u64 {
+        *state ^= *state << 13;
+        *state ^= *state >> 7;
+        *state ^= *state << 17;
+        *state
+    }
+
+    /// Returns `value` in units of 2^(`unit_exponent` - 63) as a signed integer. The value
+    /// must be an exact multiple of that unit.
+    fn value_in_units(value: Fp80, unit_exponent: i32) -> i128 {
+        let field = i32::from(value.exponent().max(1));
+        let shift = field - BIAS - unit_exponent;
+        let significand = i128::from(value.significand());
+        let magnitude = if shift >= 0 {
+            significand << shift
+        } else {
+            assert_eq!(significand & ((1 << -shift) - 1), 0);
+            significand >> -shift
+        };
+        if value.sign() { -magnitude } else { magnitude }
+    }
+
+    /// FPREM1 matches an exact IEEE remainder reference over random operands with the
+    /// dividend exponent one below the divisor exponent, normal and denormal.
+    #[test]
+    fn test_ieee_remainder_exponent_one_below_matches_the_exact_reference() {
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        for iteration in 0..20_000 {
+            let signs = next_random(&mut state);
+            let dividend_sign = if signs & 1 != 0 { 0x8000 } else { 0 };
+            let divisor_sign = if signs & 2 != 0 { 0x8000 } else { 0 };
+            let divisor_significand = next_random(&mut state) | 0x8000_0000_0000_0000;
+            let (dividend, divisor) = if iteration % 8 == 0 {
+                let dividend_significand =
+                    (next_random(&mut state) | 0x4000_0000_0000_0000) & 0x7FFF_FFFF_FFFF_FFFF;
+                (
+                    Fp80::from_bits(dividend_sign, dividend_significand),
+                    Fp80::from_bits(divisor_sign | 0x0001, divisor_significand),
+                )
+            } else {
+                let divisor_field = (next_random(&mut state) % 0x7FFD) as u16 + 2;
+                let dividend_significand = next_random(&mut state) | 0x8000_0000_0000_0000;
+                (
+                    Fp80::from_bits(dividend_sign | (divisor_field - 1), dividend_significand),
+                    Fp80::from_bits(divisor_sign | divisor_field, divisor_significand),
+                )
+            };
+            let unit_exponent = i32::from(divisor.exponent() & 0x7FFF) - BIAS - 1;
+            let dividend_units = value_in_units(dividend, unit_exponent);
+            let modulus = value_in_units(divisor, unit_exponent).abs();
+            let mut quotient = dividend_units.abs() / modulus;
+            let mut remainder = dividend_units.abs() % modulus;
+            if remainder * 2 > modulus || (remainder * 2 == modulus && quotient & 1 != 0) {
+                remainder -= modulus;
+                quotient += 1;
+            }
+            let expected = if dividend_units < 0 {
+                -remainder
+            } else {
+                remainder
+            };
+
+            let mut ef = no_exceptions();
+            let (rem, q_bits, complete) = dividend.ieee_remainder(divisor, &mut ef);
+            let label = format!("{dividend:?} by {divisor:?}");
+            assert_eq!(value_in_units(rem, unit_exponent), expected, "{label}");
+            assert!(
+                rem.exponent() & 0x7FFF == 0 || rem.significand() >> 63 == 1,
+                "{label}"
+            );
+            assert_eq!(i128::from(q_bits), quotient & 7, "{label}");
+            assert!(complete, "{label}");
+        }
     }
 
     #[test]
