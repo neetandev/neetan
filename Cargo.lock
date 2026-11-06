@@ -21,6 +21,7 @@ dependencies = [
  "blake3",
  "common",
  "device",
+ "dos",
  "machine_98",
  "machine_factory",
  "machine_fm7",

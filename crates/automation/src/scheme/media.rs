@@ -3,7 +3,7 @@
 use std::{cell::RefCell, rc::Rc};
 
 use device::disk::{HddSizeType, format::PartitionTableType};
-use r7rs::{Engine, Error, LibraryName, NativeContext, Value};
+use r7rs::{Engine, Error, LibraryName, NativeContext, Value, ValueKind};
 
 use super::support::{error_value, machine_id, make_alist, op_error_value, to_count};
 use crate::{
@@ -197,11 +197,16 @@ pub(super) fn register_media_natives(
             Ok(slot) => slot as usize,
             Err(value) => return Ok(value),
         };
-        let table_name = context.to_symbol_name(args[3])?.to_owned();
-        let table = match parse_partition_table(&table_name) {
-            Ok(table) => table,
-            Err(message) => return error_value(context, "neetan/argument", &message),
-        };
+        let table =
+            if context.kind(args[3]) == ValueKind::Boolean && args[3] == Value::boolean(false) {
+                None
+            } else {
+                let table_name = context.to_symbol_name(args[3])?.to_owned();
+                match parse_partition_table(&table_name) {
+                    Ok(table) => Some(table),
+                    Err(message) => return error_value(context, "neetan/argument", &message),
+                }
+            };
         match format_hdd.borrow_mut().format_hdd(slot, table) {
             Ok(()) => Ok(Value::boolean(true)),
             Err(error) => op_error_value(context, &error),
