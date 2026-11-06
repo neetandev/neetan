@@ -4241,3 +4241,194 @@ fn paging_fault_pop_rm_o32_mem_v86_preserves_esp() {
 
     assert_v86_pf_frame_preserves_sp_with_cr2(&cpu, &bus, 0x2000, 0, 0x1000);
 }
+
+/// Base of the TSS of the task gate target task.
+const TASK_GATE_TSS_BASE: u32 = 0x71000;
+/// GDT selector of the TSS of the task gate target task.
+const TASK_GATE_TSS_SEL: u16 = 0x0040;
+/// Initial ESP of the task gate target task.
+const TASK_GATE_TASK_ESP: u32 = 0x1000;
+/// Value below the initial stack of the target task that the error code push replaces.
+const TASK_GATE_STACK_SENTINEL: u32 = 0xA5A5_A5A5;
+
+/// Builds a CPL 0 paged state whose `MOV DS, 1234h` raises #GP(1234h) through a task
+/// gate to a CPL 3 task. The new task's stack page gets `stack_pte_flags`. The GDT, IDT
+/// and both TSS pages stay supervisor pages.
+fn setup_task_gate_error_code_push(
+    bus: &mut TestBus,
+    is_386_tss: bool,
+    stack_pte_flags: u32,
+) -> cpu::I386State {
+    let mut state = setup_paged_protected_mode(bus);
+
+    let pde = read_dword_at(bus, PG_PAGE_DIR);
+    write_dword_at(bus, PG_PAGE_DIR, pde | PTE_US);
+    let code_pte_index = PG_RING3_CODE_BASE >> 12;
+    write_dword_at(
+        bus,
+        PG_PAGE_TABLE_0 + code_pte_index * 4,
+        PG_RING3_CODE_BASE | PTE_P | PTE_RW | PTE_US,
+    );
+    let stack_pte_index = PG_RING3_STACK_BASE >> 12;
+    write_dword_at(
+        bus,
+        PG_PAGE_TABLE_0 + stack_pte_index * 4,
+        PG_RING3_STACK_BASE | stack_pte_flags,
+    );
+
+    if is_386_tss {
+        write_gdt_entry16(bus, PG_GDT_BASE, 8, TASK_GATE_TSS_BASE, 103, 0x89);
+        write_dword_at(bus, TASK_GATE_TSS_BASE + 0x04, 0xFFF0);
+        write_word_at(bus, TASK_GATE_TSS_BASE + 0x08, PG_SS_SEL);
+        write_dword_at(bus, TASK_GATE_TSS_BASE + 0x1C, PG_PAGE_DIR);
+        write_dword_at(bus, TASK_GATE_TSS_BASE + 0x20, 0);
+        write_dword_at(bus, TASK_GATE_TSS_BASE + 0x24, 0x0002);
+        write_dword_at(bus, TASK_GATE_TSS_BASE + 0x38, TASK_GATE_TASK_ESP);
+        write_word_at(bus, TASK_GATE_TSS_BASE + 0x48, PG_RING3_DS_SEL);
+        write_word_at(bus, TASK_GATE_TSS_BASE + 0x4C, PG_RING3_CS_SEL);
+        write_word_at(bus, TASK_GATE_TSS_BASE + 0x50, PG_RING3_SS_SEL);
+        write_word_at(bus, TASK_GATE_TSS_BASE + 0x54, PG_RING3_DS_SEL);
+        write_word_at(bus, TASK_GATE_TSS_BASE + 0x66, 104);
+    } else {
+        write_gdt_entry16(bus, PG_GDT_BASE, 8, TASK_GATE_TSS_BASE, 43, 0x81);
+        write_word_at(bus, TASK_GATE_TSS_BASE + 0x02, 0xFFF0);
+        write_word_at(bus, TASK_GATE_TSS_BASE + 0x04, PG_SS_SEL);
+        write_word_at(bus, TASK_GATE_TSS_BASE + 0x0E, 0);
+        write_word_at(bus, TASK_GATE_TSS_BASE + 0x10, 0x0002);
+        write_word_at(bus, TASK_GATE_TSS_BASE + 0x1A, TASK_GATE_TASK_ESP as u16);
+        write_word_at(bus, TASK_GATE_TSS_BASE + 0x22, PG_RING3_DS_SEL);
+        write_word_at(bus, TASK_GATE_TSS_BASE + 0x24, PG_RING3_CS_SEL);
+        write_word_at(bus, TASK_GATE_TSS_BASE + 0x26, PG_RING3_SS_SEL);
+        write_word_at(bus, TASK_GATE_TSS_BASE + 0x28, PG_RING3_DS_SEL);
+    }
+    state.gdt_limit = 9 * 8 - 1;
+
+    write_idt_gate(bus, PG_IDT_BASE, 13, 0, TASK_GATE_TSS_SEL, 5, 0);
+
+    write_dword_at(
+        bus,
+        PG_RING3_STACK_BASE + TASK_GATE_TASK_ESP - 4,
+        TASK_GATE_STACK_SENTINEL,
+    );
+    place_at(bus, PG_RING3_CODE_BASE, &[0x90]);
+    place_at(bus, PG_CODE_BASE, &[0xB8, 0x34, 0x12, 0x8E, 0xD8]);
+
+    state
+}
+
+/// Runs the task gate fault of `setup_task_gate_error_code_push` up to the end of the
+/// faulting MOV DS.
+fn run_task_gate_error_code_push(is_386_tss: bool, stack_pte_flags: u32) -> (I386, TestBus) {
+    let mut cpu: I386 = I386::new();
+    let mut bus = TestBus::new();
+    let state = setup_task_gate_error_code_push(&mut bus, is_386_tss, stack_pte_flags);
+    cpu.load_state(&state);
+    cpu.step(&mut bus);
+    cpu.step(&mut bus);
+    (cpu, bus)
+}
+
+/// Checks that the error code push of the new CPL 3 task raised #PF with a user write
+/// error code, left the task stack untouched and reached the CPL 0 #PF handler.
+fn assert_task_gate_error_code_push_page_fault(mut cpu: I386, mut bus: TestBus, push_address: u32) {
+    cpu.step(&mut bus);
+
+    assert!(cpu.halted());
+    assert_eq!(cpu.ip(), PG_PF_HANDLER_IP as u32 + 1);
+    assert_eq!(cpu.state.tr, TASK_GATE_TSS_SEL);
+    assert_eq!(cpu.cr2, push_address);
+    assert_eq!(
+        read_dword_at(&bus, PG_RING3_STACK_BASE + TASK_GATE_TASK_ESP - 4),
+        TASK_GATE_STACK_SENTINEL,
+        "the faulting push must not write the task stack"
+    );
+
+    let frame = PG_STACK_BASE + cpu.esp();
+    assert_eq!(cpu.esp(), 0xFFF0 - 24);
+    assert_eq!(
+        read_dword_at(&bus, frame),
+        0x0007,
+        "error code: present, write, user"
+    );
+    assert_eq!(
+        read_dword_at(&bus, frame + 4),
+        0,
+        "faulting EIP is the task entry"
+    );
+    assert_eq!(read_word_at(&bus, frame + 8), PG_RING3_CS_SEL);
+    assert_eq!(
+        read_dword_at(&bus, frame + 16),
+        TASK_GATE_TASK_ESP,
+        "the task ESP must not be decremented"
+    );
+    assert_eq!(read_word_at(&bus, frame + 20), PG_RING3_SS_SEL);
+}
+
+/// 80486 PRM 9.7.2: a task gate pushes the error code onto the stack of the new CPL 3
+/// task. A user R/W stack page takes the push.
+#[test]
+fn paging_task_gate_error_code_push_to_user_stack() {
+    let (cpu, bus) = run_task_gate_error_code_push(true, PTE_P | PTE_RW | PTE_US);
+
+    assert!(!cpu.halted());
+    assert_eq!(cpu.state.tr, TASK_GATE_TSS_SEL);
+    assert_eq!(cpu.cs(), PG_RING3_CS_SEL);
+    assert_eq!(cpu.esp(), TASK_GATE_TASK_ESP - 4);
+    assert_eq!(cpu.ip(), 0);
+    assert_eq!(
+        read_dword_at(&bus, PG_RING3_STACK_BASE + TASK_GATE_TASK_ESP - 4),
+        0x1234
+    );
+}
+
+/// 80486 PRM 6.8.3 lists no privilege level 0 override for the task gate error code
+/// push. A CPL 3 task stack in a supervisor page raises #PF in the new task.
+#[test]
+fn paging_task_gate_error_code_push_to_supervisor_stack_page_faults() {
+    let (cpu, bus) = run_task_gate_error_code_push(true, PTE_P | PTE_RW);
+    assert_task_gate_error_code_push_page_fault(
+        cpu,
+        bus,
+        PG_RING3_STACK_BASE + TASK_GATE_TASK_ESP - 4,
+    );
+}
+
+/// The task gate error code push of a CPL 3 task to a read-only user page raises #PF
+/// in the new task.
+#[test]
+fn paging_task_gate_error_code_push_to_read_only_user_stack_page_faults() {
+    let (cpu, bus) = run_task_gate_error_code_push(true, PTE_P | PTE_US);
+    assert_task_gate_error_code_push_page_fault(
+        cpu,
+        bus,
+        PG_RING3_STACK_BASE + TASK_GATE_TASK_ESP - 4,
+    );
+}
+
+/// A task gate to a 286 TSS pushes the word error code onto the user R/W stack of the
+/// new CPL 3 task.
+#[test]
+fn paging_task_gate_286_tss_error_code_push_to_user_stack() {
+    let (cpu, bus) = run_task_gate_error_code_push(false, PTE_P | PTE_RW | PTE_US);
+
+    assert!(!cpu.halted());
+    assert_eq!(cpu.state.tr, TASK_GATE_TSS_SEL);
+    assert_eq!(cpu.cs(), PG_RING3_CS_SEL);
+    assert_eq!(cpu.esp() & 0xFFFF, TASK_GATE_TASK_ESP - 2);
+    assert_eq!(
+        read_word_at(&bus, PG_RING3_STACK_BASE + TASK_GATE_TASK_ESP - 2),
+        0x1234
+    );
+}
+
+/// A task gate to a 286 TSS pushes the word error code at the CPL of the new task. A
+/// CPL 3 task stack in a supervisor page raises #PF in the new task.
+#[test]
+fn paging_task_gate_286_tss_error_code_push_to_supervisor_stack_page_faults() {
+    let (cpu, bus) = run_task_gate_error_code_push(false, PTE_P | PTE_RW);
+    assert_task_gate_error_code_push_page_fault(
+        cpu,
+        bus,
+        PG_RING3_STACK_BASE + TASK_GATE_TASK_ESP - 2,
+    );
+}

@@ -248,7 +248,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         } else {
             // 80486 PRM 6.8.3: the IDT, descriptor and TSS reads and the inner stack of a
             // privilege change are privilege level 0 accesses. The same-privilege frame
-            // drops the override for its pushes.
+            // and the error code push of a task gate drop the override.
             let saved_supervisor_override = self.supervisor_override;
             self.supervisor_override = true;
             let result = self.interrupt_protected(
@@ -327,12 +327,17 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
                 let new_cpl = self.cpl();
                 self.flags.load_flags(flags_val, new_cpl, true);
                 if let Some(code) = error_code {
+                    // 80486 PRM 9.7.2: the error code goes onto the stack of the handler
+                    // at its privilege level. 6.8.3 lists no override for this push.
                     let is_386_tss = (self.tr_rights & 0x0F) >= 0x09;
-                    if is_386_tss {
-                        self.push_dword(bus, code as u32)?;
+                    self.supervisor_override = false;
+                    let pushed = if is_386_tss {
+                        self.push_dword(bus, code as u32)
                     } else {
-                        self.push(bus, code)?;
-                    }
+                        self.push(bus, code)
+                    };
+                    self.supervisor_override = true;
+                    pushed?;
                 }
                 return Ok(());
             }
