@@ -8,12 +8,49 @@ use device::disk::{
     format::{PartitionTableType, format_hdd_image},
     load_hdd_image,
 };
+use machine_factory::config::{Target, target_symbol_name};
 
 use super::{ActiveMachine, AutomationSession, OpError};
 use crate::{
     capabilities::resolve_within,
     media::{MediaKind, MediaMount, MediaRequest},
 };
+
+/// Returns the partition table the BIOS and DOS of the machine family
+/// `target` read from a hard disk, or `None` for a family whose table
+/// `format_hdd_image` does not write.
+fn machine_partition_table(target: Target) -> Option<PartitionTableType> {
+    match target {
+        #[cfg(feature = "pc98")]
+        Target::Pc98 => Some(PartitionTableType::Pc98),
+        #[cfg(feature = "pc88")]
+        Target::Pc88 => None,
+        #[cfg(feature = "pc88va")]
+        Target::Pc88Va => None,
+        #[cfg(feature = "pc60")]
+        Target::Pc60 => None,
+        #[cfg(feature = "msx")]
+        Target::Msx => None,
+        #[cfg(feature = "towns")]
+        Target::Towns => None,
+        #[cfg(feature = "x1")]
+        Target::X1 => None,
+        #[cfg(feature = "fm7")]
+        Target::Fm7 => None,
+        #[cfg(feature = "x68k")]
+        Target::X68k => None,
+        #[cfg(feature = "at")]
+        Target::At => Some(PartitionTableType::At),
+    }
+}
+
+/// Returns the Scheme symbol name of a partition table type.
+fn partition_table_symbol(table: PartitionTableType) -> &'static str {
+    match table {
+        PartitionTableType::Pc98 => "pc98",
+        PartitionTableType::At => "at",
+    }
+}
 
 impl AutomationSession {
     /// Returns a mount request for every currently mounted media entry.
@@ -316,11 +353,34 @@ impl AutomationSession {
         self.mount(&request, None)
     }
 
-    /// Formats the hard disk mounted in `slot` in place, writing the partition
-    /// table and an empty FAT volume, then re-mounts the formatted image
-    /// RAM-backed. Intended to run before the guest boots.
-    pub fn format_hdd(&mut self, slot: usize, table: PartitionTableType) -> Result<(), OpError> {
+    /// Formats the hard disk mounted in `slot` in place with
+    /// `format_hdd_image` and the partition table of the machine family, then
+    /// re-mounts the formatted image RAM-backed. A `table` that differs from
+    /// the table of the machine family is an argument error. Intended to run
+    /// before the guest boots.
+    pub fn format_hdd(
+        &mut self,
+        slot: usize,
+        table: Option<PartitionTableType>,
+    ) -> Result<(), OpError> {
         let active = self.active.as_mut().ok_or(OpError::NoMachine)?;
+        let target = active.startup_spec.target;
+        let machine_table = machine_partition_table(target).ok_or_else(|| {
+            OpError::Unsupported(format!(
+                "hard disks of the {} machine family cannot be formatted",
+                target_symbol_name(target)
+            ))
+        })?;
+        if let Some(table) = table
+            && table != machine_table
+        {
+            return Err(OpError::Argument(format!(
+                "the {} machine family takes the {} partition table, got {}",
+                target_symbol_name(target),
+                partition_table_symbol(machine_table),
+                partition_table_symbol(table)
+            )));
+        }
         let mount = active
             .mounts
             .get(&(MediaKind::Hdd, slot))
@@ -333,7 +393,7 @@ impl AutomationSession {
         let name = format!("disk.{}", mount.format.to_ascii_lowercase());
         let mut image = load_hdd_image(Path::new(&name), &bytes)
             .map_err(|error| OpError::Io(format!("cannot parse hard disk image: {error}")))?;
-        format_hdd_image(&mut image, table)
+        format_hdd_image(&mut image, machine_table)
             .map_err(|error| OpError::Io(format!("cannot format hard disk: {error}")))?;
         let formatted = image.to_bytes();
 
@@ -346,6 +406,19 @@ impl AutomationSession {
             .insert_hdd(slot, media, MediaBacking::Ram)
             .map_err(OpError::Io)?;
         Ok(())
+    }
+
+    /// Returns the current image bytes of the hard disk mounted in `slot`.
+    pub fn hdd_image_bytes(&self, slot: usize) -> Result<Vec<u8>, OpError> {
+        let active = self.active.as_ref().ok_or(OpError::NoMachine)?;
+        if !active.mounts.contains_key(&(MediaKind::Hdd, slot)) {
+            return Err(OpError::Argument(format!(
+                "no hard disk is mounted in slot {slot}"
+            )));
+        }
+        active.machine.hdd_image_bytes(slot).ok_or_else(|| {
+            OpError::Argument(format!("hard disk in slot {slot} cannot be read back"))
+        })
     }
 
     /// Ejects mounted media from a slot.

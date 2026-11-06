@@ -32,6 +32,7 @@ mt32 = ["machine_factory/mt32"]
 sc55 = ["machine_factory/sc55"]
 
 [dev-dependencies]
+dos = { workspace = true }
 machine_98 = { workspace = true }
 machine_fm7 = { workspace = true }
 machine_msx = { workspace = true }
@@ -58,7 +59,7 @@ required-features = ["pc98"]
 
 [[test]]
 name = "hdd"
-required-features = ["pc98"]
+required-features = ["pc98", "at", "towns"]
 
 [[test]]
 name = "input"

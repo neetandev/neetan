@@ -483,12 +483,12 @@
       (%require-count "format-hdd!" slot)
       (let ((table
               (cond
-                ((null? optional-table) 'pc98)
+                ((null? optional-table) #f)
                 ((null? (cdr optional-table)) (car optional-table))
                 (else
                  (error "format-hdd!: expected three or four arguments"
                         'neetan/argument)))))
-        (%require-symbol "format-hdd!" table)
+        (if table (%require-symbol "format-hdd!" table))
         (%raise-if-error
           (%format-hdd (%machine-token "format-hdd!" machine)
                        type slot table))))
