@@ -516,6 +516,7 @@ impl<T: TraceSink> common::Machine for Pc8801Machine<T> {
             HostKey::Comma => 0x3C,
             HostKey::Period => 0x3D,
             HostKey::Slash => 0x3E,
+            HostKey::International1 => 0x3F,
             HostKey::Home => 0x40,
             HostKey::Up => 0x41,
             HostKey::Right => 0x42,

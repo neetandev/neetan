@@ -33,9 +33,15 @@ sc55 = ["machine_factory/sc55"]
 
 [dev-dependencies]
 dos = { workspace = true }
+machine_60 = { workspace = true }
+machine_88 = { workspace = true }
+machine_88va = { workspace = true }
 machine_98 = { workspace = true }
+machine_at = { workspace = true }
 machine_fm7 = { workspace = true }
 machine_msx = { workspace = true }
+machine_towns = { workspace = true }
+machine_x1 = { workspace = true }
 machine_x68k = { workspace = true }
 
 [[test]]
@@ -92,3 +98,7 @@ required-features = ["pc98", "msx"]
 [[test]]
 name = "tracing"
 required-features = ["pc98"]
+
+[[test]]
+name = "type_text"
+required-features = ["all-machines"]

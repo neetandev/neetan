@@ -104,6 +104,7 @@ fn subid_to_virtual_key(subid: u8) -> u8 {
         0x0E => 0xDD,
         0x0F => 0xDE,
         0x16 => 0xE8,
+        0x17 => 0xE2,
         other => other,
     }
 }

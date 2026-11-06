@@ -431,6 +431,7 @@ impl<T: TraceSink> common::Machine for X1Machine<T> {
             HostKey::RightBracket => 0x0E,
             HostKey::Backslash => 0x0C,
             HostKey::Equals => 0x0F,
+            HostKey::NonUsBackslash => 0x17,
             HostKey::LeftShift => 0x10,
             HostKey::RightShift => 0x10,
             HostKey::LeftControl => 0x11,

@@ -3,7 +3,10 @@
 use common::{HostKey, JoystickState, KeyModifiers, RunOutcome, RunTarget};
 
 use super::{AutomationSession, INPUT_DRAIN_INTERVAL_TICKS, OpError, TrackedControls};
-use crate::input::{MouseButton, apply_joystick_control, char_to_stroke};
+use crate::input::{
+    CharStroke, KeyboardLayout, MouseButton, apply_joystick_control, char_to_stroke,
+    is_text_character,
+};
 
 impl AutomationSession {
     /// Presses a host key and records it as held.
@@ -54,6 +57,10 @@ impl AutomationSession {
     }
 
     /// Types a run of text, validating every character before injecting any.
+    ///
+    /// Each character is typed with the key and shift state of the keyboard
+    /// layout of the active machine. The shift state reaches a matrix machine
+    /// as its Shift key and a pre-composing machine as the key modifiers.
     pub fn type_text(
         &mut self,
         text: &str,
@@ -61,39 +68,59 @@ impl AutomationSession {
         max_ticks_per_char: u64,
     ) -> Result<(), OpError> {
         let machine = &self.active.as_ref().ok_or(OpError::NoMachine)?.machine;
+        let layout = KeyboardLayout::for_target(machine.automation_descriptor().target)
+            .ok_or_else(|| OpError::Unsupported("this machine has no text layout".to_owned()))?;
+        let has_shift_key = machine.supports_host_key(HostKey::LeftShift);
         let mut strokes = Vec::new();
         for character in text.chars() {
-            let stroke = char_to_stroke(character).ok_or_else(|| {
-                OpError::Argument(format!(
+            if !is_text_character(character) {
+                return Err(OpError::Argument(format!(
                     "character {character:?} is not in the supported set"
-                ))
-            })?;
-            if stroke.shift && !machine.supports_host_key(HostKey::LeftShift) {
-                return Err(OpError::Unsupported(
-                    "this machine cannot produce shifted characters".to_owned(),
-                ));
-            }
-            if !machine.supports_host_key(stroke.key) {
-                return Err(OpError::Unsupported(format!(
-                    "character {character:?} is not supported by this machine"
                 )));
             }
+            let stroke = char_to_stroke(layout, character)
+                .filter(|stroke| {
+                    machine
+                        .translate_host_key(stroke.key, stroke_modifiers(*stroke))
+                        .is_some()
+                })
+                .ok_or_else(|| {
+                    OpError::Unsupported(format!(
+                        "character {character:?} cannot be typed on the keyboard of this machine"
+                    ))
+                })?;
             strokes.push(stroke);
         }
         for stroke in strokes {
-            if stroke.shift {
+            let press_shift = stroke.shift && has_shift_key;
+            if press_shift {
                 self.key_down(HostKey::LeftShift)?;
             }
-            self.key_down(stroke.key)?;
+            self.push_stroke_key(stroke, true)?;
             let _ = self.run(
                 RunTarget::Frames(spacing_frames),
                 max_ticks_per_char,
                 INPUT_DRAIN_INTERVAL_TICKS,
             );
-            self.key_up(stroke.key)?;
-            if stroke.shift {
+            self.push_stroke_key(stroke, false)?;
+            if press_shift {
                 self.key_up(HostKey::LeftShift)?;
             }
+        }
+        Ok(())
+    }
+
+    /// Presses or releases the key of a text stroke with the stroke modifiers
+    /// and tracks it as held while pressed.
+    fn push_stroke_key(&mut self, stroke: CharStroke, pressed: bool) -> Result<(), OpError> {
+        let active = self.active.as_mut().ok_or(OpError::NoMachine)?;
+        active
+            .machine
+            .push_host_key(stroke.key, pressed, stroke_modifiers(stroke));
+        if pressed {
+            active.tracked.keys_down.insert(stroke.key);
+        } else {
+            active.tracked.keys_down.remove(&stroke.key);
         }
         Ok(())
     }
@@ -210,5 +237,13 @@ impl AutomationSession {
             active.machine.set_mouse_buttons(false, false, false);
             active.tracked = TrackedControls::default();
         }
+    }
+}
+
+/// The key modifiers that carry the shift state of a text stroke.
+fn stroke_modifiers(stroke: CharStroke) -> KeyModifiers {
+    KeyModifiers {
+        shift: stroke.shift,
+        ..KeyModifiers::default()
     }
 }
