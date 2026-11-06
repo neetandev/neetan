@@ -398,13 +398,6 @@ impl DoubleF64 {
         let low = (value - high as i128) as f64;
         DoubleF64::from_parts(high * scale, low * scale)
     }
-
-    /// Build a DoubleF64 representing `significand × 2^(-63)`.
-    /// The significand may or may not have the J-bit set (normalization is handled internally).
-    /// Used by compute_log2 to convert a raw 64-bit significand to a DoubleF64 mantissa.
-    pub(crate) fn from_significand(sig: u64) -> DoubleF64 {
-        sig_exp_to_dd(sig, 0)
-    }
 }
 
 /// Splits the finite `value` with a magnitude below 2^126 into its integer part rounded down
