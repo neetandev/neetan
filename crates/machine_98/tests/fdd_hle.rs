@@ -243,24 +243,19 @@ fn fdd_hle_init_sets_disk_equip_high_nibble() {
 }
 
 #[test]
-fn fdd_hle_init_unmasks_master_pic_irq_0() {
+fn fdd_hle_init_leaves_master_imr_unchanged() {
     let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801F, CpuMode::High, 48000);
     bus.insert_floppy(0, make_test_2dd_floppy(), None);
 
-    // Mask all IRQs on the master PIC (port 0x02 = master IMR).
-    bus.io_write_byte(0x02, 0xFF);
+    bus.io_write_byte(0x02, 0xA5);
     let (_, imr_before, _) = bus.pic_debug();
-    assert_eq!(imr_before & 0x01, 0x01, "IRQ 0 masked before init");
+    assert_eq!(imr_before, 0xA5, "master IMR before init");
 
     let frame = Fdd640kTestFrame::new(&mut bus, 0x0370, 0, 0, 0, 0, 0);
     bus.execute_fdd640k_hle(frame.ss_base, frame.sp);
 
     let (_, imr_after, _) = bus.pic_debug();
-    assert_eq!(
-        imr_after & 0x01,
-        0x00,
-        "IRQ 0 should be unmasked after init"
-    );
+    assert_eq!(imr_after, 0xA5, "init must leave the master IMR unchanged");
 }
 
 #[test]
