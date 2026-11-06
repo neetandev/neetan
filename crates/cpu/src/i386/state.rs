@@ -429,6 +429,16 @@ impl I386State {
         self.ip_upper | self.ip as u32
     }
 
+    /// Returns whether the CPU waits in HLT for an interrupt.
+    pub fn halted(&self) -> bool {
+        self.internal.halted
+    }
+
+    /// Returns whether the CPU is in the shutdown state after a triple fault.
+    pub fn shutdown(&self) -> bool {
+        self.internal.shutdown
+    }
+
     /// Sets the full 32-bit EIP.
     pub fn set_eip(&mut self, v: u32) {
         self.ip = v as u16;
