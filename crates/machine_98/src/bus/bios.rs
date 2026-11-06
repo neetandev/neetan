@@ -917,6 +917,41 @@ mod tests {
     }
 
     #[test]
+    fn timer_handlers_request_ir0_mask_change_through_flags() {
+        /// FLAGS carry and zero bits that encode the IR0 mask change.
+        const CARRY_AND_ZERO: u16 = 0x0041;
+        let mut bus = test_bus();
+        bus.pic.state.chips[0].imr = 0xA5;
+        let mut cpu = TestCpu::default();
+        cpu.set_sp(0x7000);
+        write_bus_word(&mut bus, 0x7004, 0x0202);
+
+        let mut run = |bus: &mut Pc9801Bus<NoTrace>, ah: u8, vector: u8| {
+            cpu.set_flags(0x0202 | CARRY_AND_ZERO);
+            cpu.set_ax(u16::from(ah) << 8);
+            cpu.set_bx(0x0600);
+            cpu.set_cx(5);
+            if vector == 0x08 {
+                bus.hle_int08h(&mut cpu);
+            } else {
+                bus.hle_int1ch(&mut cpu);
+            }
+            cpu.flags()
+        };
+
+        assert_eq!(run(&mut bus, 0x00, 0x08) & CARRY_AND_ZERO, 0x0000);
+        assert_eq!(run(&mut bus, 0x00, 0x1C) & CARRY_AND_ZERO, 0x0000);
+        assert_eq!(run(&mut bus, 0x02, 0x1C) & CARRY_AND_ZERO, 0x0001);
+        assert_eq!(run(&mut bus, 0x03, 0x1C) & CARRY_AND_ZERO, 0x0001);
+        assert_eq!(run(&mut bus, 0x00, 0x08) & CARRY_AND_ZERO, 0x0001);
+        bus.ram_write_u16(0x058A, 1);
+        let flags = run(&mut bus, 0x00, 0x08);
+        assert_eq!(flags & CARRY_AND_ZERO, 0x0041);
+        assert_eq!(flags & !CARRY_AND_ZERO, 0x0202);
+        assert_eq!(bus.pic.state.chips[0].imr, 0xA5);
+    }
+
+    #[test]
     fn hle_int09h_returns_key_interrupt_vector_in_al() {
         let mut bus = test_bus();
         let mut cpu = TestCpu::default();

@@ -6,10 +6,50 @@ use device::i8253_pit::PIT_FLAG_I;
 use super::{super::Pc9801Bus, PIT_CLOCK_8MHZ_LINEAGE, iret_stack_base};
 use crate::TraceSink;
 
+/// FLAGS carry bit. Set, it requests a change of the IR0 mask bit.
+const FLAGS_CARRY: u16 = 0x0001;
+
+/// FLAGS zero bit. Set together with the carry bit, it requests the IR0 mask.
+/// Clear with the carry bit set, it requests the IR0 unmask.
+const FLAGS_ZERO: u16 = 0x0040;
+
+/// Requested change of the IR0 bit in the master PIC IMR (I/O port 0002h).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TimerMaskChange {
+    /// Leaves the IMR unchanged.
+    Keep,
+    /// Sets the IR0 mask bit.
+    Mask,
+    /// Clears the IR0 mask bit.
+    Unmask,
+}
+
+/// Encodes the IR0 mask change in CF and ZF. CF clear keeps the IMR, CF set
+/// with ZF clear unmasks IR0 and CF set with ZF set masks IR0.
+fn request_timer_mask_change(cpu: &mut impl Cpu, change: TimerMaskChange) {
+    let flags = cpu.flags() & !(FLAGS_CARRY | FLAGS_ZERO);
+    let flags = match change {
+        TimerMaskChange::Keep => flags,
+        TimerMaskChange::Mask => flags | FLAGS_CARRY | FLAGS_ZERO,
+        TimerMaskChange::Unmask => flags | FLAGS_CARRY,
+    };
+    cpu.set_flags(flags);
+}
+
 impl<T: TraceSink> Pc9801Bus<T> {
+    /// INT 08h timer tick. Counts down the interval timer and returns the IR0
+    /// mask change in CF and ZF: CF clear keeps the IMR, CF set with ZF clear
+    /// unmasks IR0 and CF set with ZF set masks IR0.
     pub(super) fn hle_int08h(&mut self, cpu: &mut impl Cpu) {
+        let change = self.int08h_interval_timer_tick(cpu);
+        request_timer_mask_change(cpu, change);
+    }
+
+    /// Counts down the interval timer. Chains the INT 07h callback on expiry
+    /// and reloads the timer on every other tick.
+    fn int08h_interval_timer_tick(&mut self, cpu: &mut impl Cpu) -> TimerMaskChange {
         if !self.bios_interval_timer_active {
-            return;
+            return TimerMaskChange::Keep;
         }
 
         // IRET frame layout at SS:SP: [IP +0] [CS +2] [FLAGS +4].
@@ -21,16 +61,8 @@ impl<T: TraceSink> Pc9801Bus<T> {
 
         if new_count == 0 && count > 0 {
             self.bios_interval_timer_active = false;
-            // Timer expired (decremented from 1 to 0).
-            // Mask IRQ 0 in master PIC. The real BIOS masks the timer
-            // before calling the callback, preventing re-entrant timer
-            // interrupts. The game's callback (or subsequent code) will
-            // call INT 1CH AH=02H to restart the interval timer.
-            self.pic.state.chips[0].imr |= 0x01;
-            self.pic.invalidate_irq_cache();
-
-            // The ROM stub sends EOI before entering HLE so protected/V86
-            // monitors can see the guest PIC write.
+            // The real BIOS masks IR0 before it calls the callback. The ROM
+            // stub masks it with guest I/O before its IRET enters the callback.
 
             // Fire the user callback by chaining the IRET frame.
             // The real BIOS invokes `INT 07H` which pushes FLAGS and
@@ -46,25 +78,36 @@ impl<T: TraceSink> Pc9801Bus<T> {
                 self.write_mem_word(callback_base + 0x04, orig_flags & !0x0200);
                 cpu.set_sp(cpu.sp().wrapping_sub(6));
             }
-            return;
+            return TimerMaskChange::Mask;
         }
 
         // Non-zero result: reload PIT counter via INT 1CH AH=03H. The real BIOS
         // issues `MOV AH,03H; INT 1CH` so software hooks on INT 1CH can intercept.
         // We call the handler directly since the IVT points to our stub.
         if new_count != 0 {
-            self.int1ch_continue_interval_timer();
+            return self.int1ch_continue_interval_timer();
         }
+        TimerMaskChange::Keep
     }
 
+    /// INT 1Ch timer and calendar service. Returns the IR0 mask change in CF
+    /// and ZF: CF clear keeps the IMR, CF set with ZF clear unmasks IR0 and CF
+    /// set with ZF set masks IR0.
     pub(super) fn hle_int1ch(&mut self, cpu: &mut impl Cpu) {
-        match cpu.ah() {
-            0x00 => self.int1ch_get_datetime(cpu),
-            0x01 => self.int1ch_set_datetime(cpu),
+        let change = match cpu.ah() {
+            0x00 => {
+                self.int1ch_get_datetime(cpu);
+                TimerMaskChange::Keep
+            }
+            0x01 => {
+                self.int1ch_set_datetime(cpu);
+                TimerMaskChange::Keep
+            }
             0x02 => self.int1ch_set_interval_timer(cpu),
             0x03 => self.int1ch_continue_interval_timer(),
-            _ => {}
-        }
+            _ => TimerMaskChange::Keep,
+        };
+        request_timer_mask_change(cpu, change);
     }
 
     fn int1ch_get_datetime(&mut self, cpu: &mut impl Cpu) {
@@ -92,7 +135,9 @@ impl<T: TraceSink> Pc9801Bus<T> {
         self.rtc.load_shift_register(&buf);
     }
 
-    fn int1ch_set_interval_timer(&mut self, cpu: &mut impl Cpu) {
+    /// AH=02h: stores the INT 07h callback and the count, starts the 10 ms
+    /// interval timer and requests the IR0 unmask.
+    fn int1ch_set_interval_timer(&mut self, cpu: &mut impl Cpu) -> TimerMaskChange {
         let callback_seg = cpu.es();
         let callback_off = cpu.bx();
         let count = cpu.cx();
@@ -130,14 +175,11 @@ impl<T: TraceSink> Pc9801Bus<T> {
         self.scheduler
             .schedule(Event98::PitTimer0, self.current_cycle + cpu_cycles);
         self.update_next_event_cycle();
-
-        // Unmask IRQ 0 (system timer) in master PIC.
-        self.pic.state.chips[0].imr &= !0x01;
-        self.pic.invalidate_irq_cache();
+        TimerMaskChange::Unmask
     }
 
-    fn int1ch_continue_interval_timer(&mut self) {
-        // Reload PIT ch0 counter and unmask IRQ 0.
+    /// AH=03h: reloads the 10 ms interval timer and requests the IR0 unmask.
+    fn int1ch_continue_interval_timer(&mut self) -> TimerMaskChange {
         // The real BIOS calls this on every non-expired INT 08H tick.
         let divider: u16 = if self.clocks.pit_clock_hz == PIT_CLOCK_8MHZ_LINEAGE {
             0x4E00
@@ -155,8 +197,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
         self.scheduler
             .schedule(Event98::PitTimer0, self.current_cycle + cpu_cycles);
         self.update_next_event_cycle();
-        self.pic.state.chips[0].imr &= !0x01;
-        self.pic.invalidate_irq_cache();
+        TimerMaskChange::Unmask
     }
 }
 use crate::scheduler::Event98;

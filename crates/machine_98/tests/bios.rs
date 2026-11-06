@@ -297,6 +297,9 @@ mod hw_vectors;
 #[path = "bios/timer_tick.rs"]
 mod timer_tick;
 
+#[path = "bios/timer_mask.rs"]
+mod timer_mask;
+
 #[path = "bios/post_bios_state.rs"]
 mod post_bios_state;
 
