@@ -1,10 +1,14 @@
 //! Floating-point comparison operations.
 
-use crate::{ExceptionFlags, Fp80, FpOrdering};
+use crate::{ExceptionFlags, Fp80, FpOrdering, flag_unsupported_operands};
 
 impl Fp80 {
-    /// Ordered comparison (FCOM). Raises IE on any NaN (quiet or signaling).
+    /// Ordered comparison (FCOM). Raises IE on any NaN (quiet or signaling) and on an
+    /// unsupported encoding.
     pub fn compare(self, other: Fp80, ef: &mut ExceptionFlags) -> FpOrdering {
+        if flag_unsupported_operands(&[self, other], ef) {
+            return FpOrdering::Unordered;
+        }
         if self.is_nan() || other.is_nan() {
             ef.invalid = true;
             return FpOrdering::Unordered;
@@ -19,8 +23,12 @@ impl Fp80 {
         self.compare_values(other)
     }
 
-    /// Unordered comparison (FUCOM). Raises IE only on signaling NaN, not on quiet NaN.
+    /// Unordered comparison (FUCOM). Raises IE on a signaling NaN and on an unsupported
+    /// encoding, not on a quiet NaN.
     pub fn compare_quiet(self, other: Fp80, ef: &mut ExceptionFlags) -> FpOrdering {
+        if flag_unsupported_operands(&[self, other], ef) {
+            return FpOrdering::Unordered;
+        }
         if self.is_signaling_nan() || other.is_signaling_nan() {
             ef.invalid = true;
         }

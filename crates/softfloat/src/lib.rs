@@ -410,6 +410,22 @@ impl Fp80 {
 }
 
 impl Fp80 {
+    /// Returns the value with a pseudo-denormal rewritten with the exponent field 1, the
+    /// encoding of the same value the 486 delivers as a result. The 486 reads a pseudo-denormal
+    /// operand with the exponent 00..01 and never generates one (80486 PRM 16.1.7).
+    pub(crate) const fn canonical(self) -> Fp80 {
+        if self.is_pseudo_denormal() {
+            Fp80 {
+                sign_exponent: self.sign_exponent | 0x0001,
+                significand: self.significand,
+            }
+        } else {
+            self
+        }
+    }
+}
+
+impl Fp80 {
     /// Flip sign bit (FCHS). Works on any value including NaN and zero.
     pub const fn negate(self) -> Fp80 {
         Fp80 {
@@ -672,6 +688,15 @@ pub(crate) fn round_to_format(
         biased: (kept >> (precision_bits - 1) != 0) as i32,
         significand: kept as u64,
     }
+}
+
+/// Sets IE when one of `operands` has an unsupported encoding: an unnormal, a pseudo-NaN or
+/// a pseudo-infinity. An arithmetic operation on such an operand returns the QNaN indefinite
+/// (80486 PRM 16.1.7 and table 16-11). Returns whether an operand is unsupported.
+pub(crate) fn flag_unsupported_operands(operands: &[Fp80], ef: &mut ExceptionFlags) -> bool {
+    let unsupported = operands.iter().any(|operand| operand.is_unsupported());
+    ef.invalid |= unsupported;
+    unsupported
 }
 
 /// Sets DE when one of `operands` is a denormal or a pseudo-denormal.
@@ -1331,5 +1356,199 @@ mod tests {
             // UP significand is exactly 1 more than DOWN.
             assert_eq!(up.significand(), down.significand() + 1);
         }
+    }
+
+    /// An unnormal with a zero significand.
+    const UNNORMAL_ZERO_SIGNIFICAND: Fp80 = Fp80::from_bits(0x4000, 0x0000_0000_0000_0000);
+    /// A pseudo-NaN with the quiet bit set.
+    const QUIET_PSEUDO_NAN: Fp80 = Fp80::from_bits(0x7FFF, 0x4000_0000_0000_0000);
+    /// Every unsupported encoding class.
+    const UNSUPPORTED_OPERANDS: [Fp80; 7] = [
+        UNNORMAL,
+        UNNORMAL_MAX_EXP,
+        UNNORMAL_ZERO_SIGNIFICAND,
+        PSEUDO_INFINITY,
+        NEGATIVE_PSEUDO_INFINITY,
+        PSEUDO_NAN,
+        QUIET_PSEUDO_NAN,
+    ];
+    /// One or more encodings of every class, with the extremes of the finite range.
+    const ENCODING_CLASSES: [Fp80; 23] = [
+        Fp80::ZERO,
+        Fp80::NEG_ZERO,
+        Fp80::ONE,
+        NEGATIVE_ONE,
+        Fp80::INFINITY,
+        Fp80::NEG_INFINITY,
+        Fp80::INDEFINITE,
+        POSITIVE_QNAN,
+        POSITIVE_SNAN,
+        NEGATIVE_SNAN,
+        POSITIVE_DENORMAL,
+        NEGATIVE_DENORMAL,
+        MAX_DENORMAL,
+        POSITIVE_PSEUDO_DENORMAL,
+        NEGATIVE_PSEUDO_DENORMAL,
+        SMALLEST_NORMAL,
+        LARGEST_NORMAL,
+        UNNORMAL,
+        UNNORMAL_MAX_EXP,
+        UNNORMAL_ZERO_SIGNIFICAND,
+        PSEUDO_INFINITY,
+        NEGATIVE_PSEUDO_INFINITY,
+        QUIET_PSEUDO_NAN,
+    ];
+    /// Every rounding mode.
+    const ROUNDING_MODES: [RoundingMode; 4] = [
+        RoundingMode::NearestEven,
+        RoundingMode::Down,
+        RoundingMode::Up,
+        RoundingMode::Zero,
+    ];
+    /// Every precision control setting.
+    const PRECISIONS: [Precision; 3] = [Precision::Single, Precision::Double, Precision::Extended];
+
+    #[test]
+    fn unsupported_operand_raises_invalid_in_every_arithmetic_operation() {
+        for unsupported in UNSUPPORTED_OPERANDS {
+            for other in [Fp80::ONE, POSITIVE_SNAN, POSITIVE_DENORMAL, Fp80::ZERO] {
+                let binary: [fn(Fp80, Fp80, &mut ExceptionFlags) -> Fp80; 10] = [
+                    |a, b, ef| a.add(b, RoundingMode::NearestEven, Precision::Extended, ef),
+                    |a, b, ef| a.sub(b, RoundingMode::NearestEven, Precision::Extended, ef),
+                    |a, b, ef| a.mul(b, RoundingMode::NearestEven, Precision::Extended, ef),
+                    |a, b, ef| a.div(b, RoundingMode::NearestEven, Precision::Extended, ef),
+                    |a, b, ef| a.scale(b, RoundingMode::NearestEven, ef),
+                    |a, b, ef| a.partial_remainder(b, ef).0,
+                    |a, b, ef| a.ieee_remainder(b, ef).0,
+                    |a, b, ef| a.fyl2x(b, ef),
+                    |a, b, ef| a.fyl2xp1(b, ef),
+                    |a, b, ef| a.fpatan(b, ef),
+                ];
+                for (index, operation) in binary.iter().enumerate() {
+                    for (a, b) in [(unsupported, other), (other, unsupported)] {
+                        let mut ef = no_exceptions();
+                        let result = operation(a, b, &mut ef);
+                        assert_eq!(result, Fp80::INDEFINITE, "{index} {a:?} {b:?}");
+                        assert!(ef.invalid && !ef.denormal, "{index} {a:?} {b:?}");
+                    }
+                }
+                for (a, b) in [(unsupported, other), (other, unsupported)] {
+                    let mut ef = no_exceptions();
+                    assert_eq!(a.compare(b, &mut ef), FpOrdering::Unordered);
+                    assert!(ef.invalid);
+                    let mut ef = no_exceptions();
+                    assert_eq!(a.compare_quiet(b, &mut ef), FpOrdering::Unordered);
+                    assert!(ef.invalid);
+                }
+            }
+
+            let unary: [fn(Fp80, &mut ExceptionFlags) -> Fp80; 8] = [
+                |a, ef| a.sqrt(RoundingMode::NearestEven, Precision::Extended, ef),
+                |a, ef| a.round_to_int(RoundingMode::NearestEven, ef),
+                |a, ef| a.f2xm1(ef),
+                |a, ef| a.fsin(ef).0,
+                |a, ef| a.fcos(ef).0,
+                |a, ef| a.fptan(ef).0,
+                |a, ef| a.fsincos(ef).1,
+                |a, ef| a.extract(ef).1,
+            ];
+            for (index, operation) in unary.iter().enumerate() {
+                let mut ef = no_exceptions();
+                assert_eq!(operation(unsupported, &mut ef), Fp80::INDEFINITE, "{index}");
+                assert!(ef.invalid, "{index} {unsupported:?}");
+            }
+
+            let rc = RoundingMode::NearestEven;
+            let mut ef = no_exceptions();
+            assert_eq!(unsupported.to_i16(rc, &mut ef), i16::MIN);
+            assert_eq!(unsupported.to_i32(rc, &mut ef), i32::MIN);
+            assert_eq!(unsupported.to_i64(rc, &mut ef), i64::MIN);
+            assert_eq!(unsupported.to_f32(rc, &mut ef).to_bits(), 0xFFC0_0000);
+            assert_eq!(
+                unsupported.to_f64(rc, &mut ef).to_bits(),
+                0xFFF8_0000_0000_0000
+            );
+            assert_eq!(
+                unsupported.to_bcd(rc, &mut ef),
+                [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0xFF, 0xFF]
+            );
+            assert_eq!(
+                ef,
+                ExceptionFlags {
+                    invalid: true,
+                    ..no_exceptions()
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn every_operation_accepts_every_encoding_class() {
+        for a in ENCODING_CLASSES {
+            for rc in ROUNDING_MODES {
+                let mut ef = no_exceptions();
+                for pc in PRECISIONS {
+                    a.sqrt(rc, pc, &mut ef);
+                }
+                a.round_to_int(rc, &mut ef);
+                a.to_i16(rc, &mut ef);
+                a.to_i32(rc, &mut ef);
+                a.to_i64(rc, &mut ef);
+                a.to_f32(rc, &mut ef);
+                a.to_f64(rc, &mut ef);
+                a.to_bcd(rc, &mut ef);
+            }
+            let mut ef = no_exceptions();
+            a.f2xm1(&mut ef);
+            a.fsin(&mut ef);
+            a.fcos(&mut ef);
+            a.fptan(&mut ef);
+            a.fsincos(&mut ef);
+            a.extract(&mut ef);
+            for b in ENCODING_CLASSES {
+                for rc in ROUNDING_MODES {
+                    let mut ef = no_exceptions();
+                    for pc in PRECISIONS {
+                        a.add(b, rc, pc, &mut ef);
+                        a.sub(b, rc, pc, &mut ef);
+                        a.mul(b, rc, pc, &mut ef);
+                        a.div(b, rc, pc, &mut ef);
+                    }
+                    a.scale(b, rc, &mut ef);
+                }
+                let mut ef = no_exceptions();
+                a.compare(b, &mut ef);
+                a.compare_quiet(b, &mut ef);
+                a.partial_remainder(b, &mut ef);
+                a.ieee_remainder(b, &mut ef);
+                a.fyl2x(b, &mut ef);
+                a.fyl2xp1(b, &mut ef);
+                a.fpatan(b, &mut ef);
+            }
+        }
+    }
+
+    #[test]
+    fn pseudo_denormal_result_takes_the_exponent_field_one() {
+        let canonical = Fp80::from_bits(0x0001, 0x8000_0000_0000_0000);
+        assert_eq!(POSITIVE_PSEUDO_DENORMAL.canonical(), canonical);
+        assert_eq!(NEGATIVE_PSEUDO_DENORMAL.canonical(), canonical.negate());
+        assert_eq!(POSITIVE_DENORMAL.canonical(), POSITIVE_DENORMAL);
+
+        let mut ef = no_exceptions();
+        let sum = POSITIVE_PSEUDO_DENORMAL.add(
+            Fp80::ZERO,
+            RoundingMode::NearestEven,
+            Precision::Extended,
+            &mut ef,
+        );
+        assert_eq!(sum, canonical);
+        assert!(ef.denormal);
+
+        let mut ef = no_exceptions();
+        let (remainder, quotient, complete) =
+            POSITIVE_PSEUDO_DENORMAL.partial_remainder(Fp80::ONE, &mut ef);
+        assert_eq!((remainder, quotient, complete), (canonical, 0, true));
+        assert!(ef.denormal);
     }
 }

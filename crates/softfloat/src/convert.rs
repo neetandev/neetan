@@ -1,6 +1,9 @@
 //! Conversions between Fp80 and integer/float/BCD formats.
 
-use crate::{ExceptionFlags, Fp80, Rounded, RoundingMode, flag_denormal_operands, round_to_format};
+use crate::{
+    ExceptionFlags, Fp80, Rounded, RoundingMode, flag_denormal_operands, flag_unsupported_operands,
+    round_to_format,
+};
 
 impl Fp80 {
     /// Convert a signed 16-bit integer to Fp80. Exact, no rounding needed.
@@ -45,26 +48,32 @@ impl Fp80 {
 }
 
 impl Fp80 {
-    /// Convert to signed 16-bit integer. Returns 0x8000 (integer indefinite) on overflow/NaN/∞.
+    /// Convert to signed 16-bit integer. Returns 0x8000 (integer indefinite) on
+    /// overflow, a NaN, an infinity or an unsupported encoding.
     pub fn to_i16(self, rc: RoundingMode, ef: &mut ExceptionFlags) -> i16 {
         let result = self.to_integer_generic(rc, ef, 15);
         result as i16
     }
 
-    /// Convert to signed 32-bit integer. Returns 0x80000000 (integer indefinite) on overflow/NaN/∞.
+    /// Convert to signed 32-bit integer. Returns 0x80000000 (integer indefinite) on
+    /// overflow, a NaN, an infinity or an unsupported encoding.
     pub fn to_i32(self, rc: RoundingMode, ef: &mut ExceptionFlags) -> i32 {
         let result = self.to_integer_generic(rc, ef, 31);
         result as i32
     }
 
     /// Convert to signed 64-bit integer. Returns 0x8000000000000000 (integer indefinite) on
-    /// overflow/NaN/∞.
+    /// overflow, a NaN, an infinity or an unsupported encoding.
     pub fn to_i64(self, rc: RoundingMode, ef: &mut ExceptionFlags) -> i64 {
         self.to_integer_generic(rc, ef, 63)
     }
 
     fn to_integer_generic(self, rc: RoundingMode, ef: &mut ExceptionFlags, max_bit: u32) -> i64 {
         let indefinite = i64::MIN >> (63 - max_bit);
+
+        if flag_unsupported_operands(&[self], ef) {
+            return indefinite;
+        }
 
         if self.is_nan() || self.is_infinity() {
             ef.invalid = true;
@@ -244,9 +253,12 @@ impl Fp80 {
 }
 
 impl Fp80 {
-    /// Narrowing conversion to f32. May raise OE, UE, PE, IE (for SNaN) or DE (for a
-    /// denormal or pseudo-denormal source, 80486 PRM FST).
+    /// Narrowing conversion to f32. May raise OE, UE, PE, IE (for SNaN and an unsupported
+    /// encoding) or DE (for a denormal or pseudo-denormal source, 80486 PRM FST).
     pub fn to_f32(self, rc: RoundingMode, ef: &mut ExceptionFlags) -> f32 {
+        if flag_unsupported_operands(&[self], ef) {
+            return Fp80::INDEFINITE.to_f32(rc, ef);
+        }
         let sign = self.sign();
         let sign_bit: u32 = if sign { 1u32 << 31 } else { 0 };
 
@@ -274,9 +286,12 @@ impl Fp80 {
         f32::from_bits(bits as u32)
     }
 
-    /// Narrowing conversion to f64. May raise OE, UE, PE, IE (for SNaN) or DE (for a
-    /// denormal or pseudo-denormal source, 80486 PRM FST).
+    /// Narrowing conversion to f64. May raise OE, UE, PE, IE (for SNaN and an unsupported
+    /// encoding) or DE (for a denormal or pseudo-denormal source, 80486 PRM FST).
     pub fn to_f64(self, rc: RoundingMode, ef: &mut ExceptionFlags) -> f64 {
+        if flag_unsupported_operands(&[self], ef) {
+            return Fp80::INDEFINITE.to_f64(rc, ef);
+        }
         let sign = self.sign();
         let sign_bit: u64 = if sign { 1u64 << 63 } else { 0 };
 
@@ -397,6 +412,10 @@ impl Fp80 {
         const INDEFINITE_BCD: [u8; 10] =
             [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0xFF, 0xFF];
         const MAX_BCD: u64 = 999_999_999_999_999_999;
+
+        if flag_unsupported_operands(&[self], ef) {
+            return INDEFINITE_BCD;
+        }
 
         if self.is_nan() || self.is_infinity() {
             ef.invalid = true;

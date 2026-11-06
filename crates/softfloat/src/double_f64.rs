@@ -18,7 +18,7 @@
 
 use core::cmp::Ordering;
 
-use crate::{ExceptionFlags, Fp80, Precision, RoundingMode};
+use crate::{ExceptionFlags, Fp80, Precision, RoundingMode, shift_right_sticky};
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct DoubleF64 {
@@ -224,6 +224,12 @@ impl DoubleF64 {
 
     /// Convert an Fp80 value to DoubleF64 with full 64-bit significand preserved.
     pub(crate) fn from_fp80(v: Fp80) -> DoubleF64 {
+        DoubleF64::from_fp80_scaled(v, 0)
+    }
+
+    /// Converts the finite value `v` multiplied by 2^-`scale` to DoubleF64. The scaled value
+    /// must lie in the exponent range of f64.
+    pub(crate) fn from_fp80_scaled(v: Fp80, scale: i32) -> DoubleF64 {
         if v.is_zero() {
             return if v.sign() {
                 DoubleF64::new(-0.0)
@@ -234,7 +240,7 @@ impl DoubleF64 {
 
         let sign = v.sign();
         let mut sig = v.significand();
-        let mut exp = v.true_exponent();
+        let mut exp = v.true_exponent() - scale;
 
         // Normalize denormals
         if v.exponent() == 0 && sig != 0 {
@@ -249,6 +255,30 @@ impl DoubleF64 {
 
     /// Convert DoubleF64 back to Fp80 with correct rounding.
     pub(crate) fn to_fp80(self, ef: &mut ExceptionFlags) -> Fp80 {
+        self.to_fp80_scaled(0, ef)
+    }
+
+    /// Rounds the value multiplied by 2^`scale` to Fp80 to nearest. The scale applies before
+    /// the rounding, so a result out of the f64 exponent range rounds once.
+    pub(crate) fn to_fp80_scaled(self, scale: i32, ef: &mut ExceptionFlags) -> Fp80 {
+        self.round_scaled(scale, 0, ef)
+    }
+
+    /// Rounds the nonzero value multiplied by 2^`scale` to Fp80 to nearest, as the leading
+    /// part of an exact value whose remainder lies below every bit of the value. `below` tells
+    /// whether the remainder reduces the magnitude. The result is inexact.
+    pub(crate) fn to_fp80_with_remainder(
+        self,
+        scale: i32,
+        below: bool,
+        ef: &mut ExceptionFlags,
+    ) -> Fp80 {
+        self.round_scaled(scale, if below { -1 } else { 1 }, ef)
+    }
+
+    /// Rounds the value multiplied by 2^`scale` to Fp80 to nearest. A nonzero `remainder`
+    /// adds a sticky unit of that sign to the magnitude below every bit of the value.
+    fn round_scaled(self, scale: i32, remainder: i8, ef: &mut ExceptionFlags) -> Fp80 {
         let val = quick_two_sum(self.high, self.low);
 
         if val.high == 0.0 {
@@ -285,26 +315,25 @@ impl DoubleF64 {
             let biased_l = ((bits_l >> 52) & 0x7FF) as i32;
             let frac_l = bits_l & ((1u64 << 52) - 1);
 
-            if biased_l != 0 {
+            let shifted = if biased_l != 0 {
                 let exp_l = biased_l - 1023;
                 let sig_l = (1u128 << 52) | frac_l as u128;
                 let sig_l_at_127 = sig_l << 75;
-
-                let shift = (exp - exp_l) as u32;
-                if shift < 128 {
-                    let shifted = sig_l_at_127 >> shift;
-                    if abs_low >= 0.0 {
-                        combined = combined.wrapping_add(shifted);
-                    } else {
-                        combined = combined.wrapping_sub(shifted);
-                    }
-                }
+                shift_right_sticky(sig_l_at_127, (exp - exp_l) as u32)
+            } else {
+                1
+            };
+            if abs_low >= 0.0 {
+                combined = combined.wrapping_add(shifted);
+            } else {
+                combined = combined.wrapping_sub(shifted);
             }
         }
+        combined = combined.wrapping_add_signed(i128::from(remainder));
 
         Fp80::round_and_pack(
             sign,
-            exp,
+            exp + scale,
             combined,
             RoundingMode::NearestEven,
             Precision::Extended,

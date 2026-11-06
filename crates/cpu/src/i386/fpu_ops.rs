@@ -1338,11 +1338,18 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         self.fpu_push(second);
     }
 
+    /// Replaces ST(0) with its tangent and pushes 1.0 (80486 PRM, FPTAN). Observed
+    /// behaviour: an unsupported operand pushes the QNaN indefinite in place of 1.0.
     pub(super) fn fpu_fptan(&mut self) {
         self.fpu_two_results(
             |value, ef| {
                 let (tangent, out_of_range) = value.fptan(ef);
-                (tangent, Fp80::ONE, out_of_range)
+                let pushed = if value.is_unsupported() {
+                    Fp80::INDEFINITE
+                } else {
+                    Fp80::ONE
+                };
+                (tangent, pushed, out_of_range)
             },
             Fp80::ONE,
             191,
