@@ -303,6 +303,9 @@ mod timer_tick;
 #[path = "bios/timer_mask.rs"]
 mod timer_mask;
 
+#[path = "bios/timer_countdown.rs"]
+mod timer_countdown;
+
 #[path = "bios/rs232c_mask.rs"]
 mod rs232c_mask;
 

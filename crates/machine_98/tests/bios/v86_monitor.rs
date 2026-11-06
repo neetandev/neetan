@@ -1,6 +1,7 @@
 //! V86 monitor harness. It enters V86 mode with an I/O permission bitmap that
 //! traps the master PIC IMR port 0002h. Its #GP handler emulates and logs each
-//! trapped access.
+//! trapped access. Its optional IRQ0 handler logs the interval timer count and
+//! reflects the interrupt to the V86 INT 08h handler.
 
 use common::{Bus, Cpu as _};
 
@@ -39,6 +40,14 @@ const GP_LOG: u32 = 0x0700;
 const V86_RETURNED: u32 = 0x0650;
 /// I/O port of the master PIC IMR.
 const MASTER_IMR_PORT: u16 = 0x02;
+/// IDT vector of IRQ0 with the PC-98 master PIC base 08h.
+const IRQ0_VECTOR: u32 = 0x08;
+/// Linear address of the monitor IRQ0 reflection handler.
+const MONITOR_IRQ0_HANDLER: u32 = 0x1200;
+/// Number of logged IRQ0 entries.
+pub(super) const TICK_COUNT: u32 = 0x0680;
+/// Interval timer count at each IRQ0 entry in 2 byte entries.
+pub(super) const TICK_LOG: u32 = 0x0690;
 
 /// Real mode entry: sets the master IMR, enters protected mode and IRETDs
 /// into V86 mode at 0300:0000 with IOPL=3, IF=0, SS:SP=0000:5000 and the
@@ -114,6 +123,43 @@ const MONITOR_HANDLER_CODE: &[u8] = &[
     0x5B,                                           // POP EBX
     0x58,                                           // POP EAX
     0x83, 0xC4, 0x04,                               // ADD ESP, 4
+    0xCF,                                           // IRETD
+];
+
+/// Monitor IRQ0 handler. It logs the interval timer count at 058Ah, pushes
+/// FLAGS, CS and IP on the V86 stack, clears IF and TF and IRETDs into the
+/// handler of IVT vector 08h.
+#[rustfmt::skip]
+const MONITOR_IRQ0_HANDLER_CODE: &[u8] = &[
+    0x50,                                           // 1200: PUSH EAX
+    0x53,                                           // PUSH EBX
+    0x52,                                           // PUSH EDX
+    0x66, 0xB8, 0x10, 0x00,                         // MOV AX, 0x10
+    0x8E, 0xD8,                                     // MOV DS, AX
+    0x0F, 0xB6, 0x1D, 0x80, 0x06, 0x00, 0x00,       // MOVZX EBX, BYTE [0x0680]
+    0x66, 0xA1, 0x8A, 0x05, 0x00, 0x00,             // MOV AX, [0x058A]
+    0x66, 0x89, 0x84, 0x1B, 0x90, 0x06, 0x00, 0x00, // MOV [EBX*2+0x0690], AX
+    0xFE, 0x05, 0x80, 0x06, 0x00, 0x00,             // INC BYTE [0x0680]
+    0x0F, 0xB7, 0x5C, 0x24, 0x1C,                   // MOVZX EBX, WORD [ESP+0x1C] (SS)
+    0xC1, 0xE3, 0x04,                               // SHL EBX, 4
+    0x0F, 0xB7, 0x54, 0x24, 0x18,                   // MOVZX EDX, WORD [ESP+0x18] (ESP)
+    0x83, 0xEA, 0x06,                               // SUB EDX, 6
+    0x89, 0x54, 0x24, 0x18,                         // MOV [ESP+0x18], EDX
+    0x01, 0xD3,                                     // ADD EBX, EDX
+    0x66, 0x8B, 0x44, 0x24, 0x0C,                   // MOV AX, [ESP+0x0C] (EIP)
+    0x66, 0x89, 0x03,                               // MOV [EBX], AX
+    0x66, 0x8B, 0x44, 0x24, 0x10,                   // MOV AX, [ESP+0x10] (CS)
+    0x66, 0x89, 0x43, 0x02,                         // MOV [EBX+2], AX
+    0x66, 0x8B, 0x44, 0x24, 0x14,                   // MOV AX, [ESP+0x14] (EFLAGS)
+    0x66, 0x89, 0x43, 0x04,                         // MOV [EBX+4], AX
+    0x0F, 0xB7, 0x05, 0x20, 0x00, 0x00, 0x00,       // MOVZX EAX, WORD [0x0020]
+    0x89, 0x44, 0x24, 0x0C,                         // MOV [ESP+0x0C], EAX
+    0x0F, 0xB7, 0x05, 0x22, 0x00, 0x00, 0x00,       // MOVZX EAX, WORD [0x0022]
+    0x89, 0x44, 0x24, 0x10,                         // MOV [ESP+0x10], EAX
+    0x81, 0x64, 0x24, 0x14, 0xFF, 0xFC, 0xFF, 0xFF, // AND DWORD [ESP+0x14], ~0x300
+    0x5A,                                           // POP EDX
+    0x5B,                                           // POP EBX
+    0x58,                                           // POP EAX
     0xCF,                                           // IRETD
 ];
 
@@ -200,8 +246,9 @@ pub(super) fn make_rom_entry_call(
 }
 
 /// Writes the GDT, the TSS with an I/O permission bitmap that traps only
-/// port 0002h, the IDT and the descriptor table register images.
-fn write_monitor_tables(bus: &mut impl Bus) {
+/// port 0002h, the IDT and the descriptor table register images. The IRQ0
+/// gate points to the reflection handler when `reflect_irq0` is set.
+fn write_monitor_tables(bus: &mut impl Bus, reflect_irq0: bool) {
     let gdt: [u64; 4] = [
         0,
         0x00CF_9A00_0000_FFFF,
@@ -232,6 +279,8 @@ fn write_monitor_tables(bus: &mut impl Bus) {
     for vector in 0..IDT_GATES {
         let handler = if vector == 0x0D {
             MONITOR_GP_HANDLER
+        } else if reflect_irq0 && vector == IRQ0_VECTOR {
+            MONITOR_IRQ0_HANDLER
         } else {
             MONITOR_HANDLERS
         };
@@ -279,11 +328,36 @@ pub(super) fn run_under_v86_monitor(
     imr: u8,
     v86_code: &[u8],
 ) -> Vec<TrappedAccess> {
+    run_monitor(machine, imr, v86_code, false)
+}
+
+/// Runs `v86_code` under the monitor like `run_under_v86_monitor` and
+/// reflects every IRQ0 to the V86 INT 08h handler.
+pub(super) fn run_under_v86_monitor_reflecting_irq0(
+    machine: &mut machine_98::Pc9801Ra,
+    imr: u8,
+    v86_code: &[u8],
+) -> Vec<TrappedAccess> {
+    run_monitor(machine, imr, v86_code, true)
+}
+
+/// Runs `v86_code` under the monitor and returns the trapped port accesses.
+fn run_monitor(
+    machine: &mut machine_98::Pc9801Ra,
+    imr: u8,
+    v86_code: &[u8],
+    reflect_irq0: bool,
+) -> Vec<TrappedAccess> {
     for address in GP_LOG_COUNT..GP_LOG + 0x100 {
         machine.bus.write_byte(address, 0);
     }
-    write_monitor_tables(&mut machine.bus);
+    write_monitor_tables(&mut machine.bus, reflect_irq0);
     write_bytes(&mut machine.bus, MONITOR_HANDLERS, MONITOR_HANDLER_CODE);
+    write_bytes(
+        &mut machine.bus,
+        MONITOR_IRQ0_HANDLER,
+        MONITOR_IRQ0_HANDLER_CODE,
+    );
     write_bytes(&mut machine.bus, u32::from(V86_CODE_SEGMENT) << 4, v86_code);
     run_real_mode(machine, &make_monitor_entry_code(imr));
 

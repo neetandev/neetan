@@ -337,7 +337,6 @@ pub(crate) struct Pc9801BusState {
     sdip: device::sdip::SdipState,
     bios: device::bios::BiosControllerState,
     bios_interval_timer_active: bool,
-    current_cpu_protected_mode: bool,
     a20_enabled: bool,
     reset_pending: bool,
     shutdown_requested: bool,
@@ -441,8 +440,6 @@ pub struct Pc9801Bus<T: TraceSink = NoTrace> {
     bios: device::bios::BiosController,
     /// Whether the BIOS interval timer single-shot service is currently armed.
     bios_interval_timer_active: bool,
-    /// Cached CPU mode for deciding whether PIT IRQ0 still flows through BIOS INT 08h HLE.
-    current_cpu_protected_mode: bool,
     a20_enabled: bool,
     machine_model: MachineModel,
     reset_pending: bool,
@@ -550,11 +547,6 @@ pub struct Pc9801Bus<T: TraceSink = NoTrace> {
 }
 
 impl<T: TraceSink> Pc9801Bus<T> {
-    /// Updates the cached CPU mode used for IRQ0 / BIOS interval-timer routing.
-    pub(crate) fn set_cpu_protected_mode_enabled(&mut self, enabled: bool) {
-        self.current_cpu_protected_mode = enabled;
-    }
-
     /// Sets the boot device for the HLE bootstrap.
     pub fn set_boot_device(&mut self, device: BootDevice) {
         self.boot_device = device;
@@ -1982,7 +1974,6 @@ impl<T: TraceSink> Pc9801Bus<T> {
             sdip: self.sdip.state.clone(),
             bios: self.bios.capture_state(),
             bios_interval_timer_active: self.bios_interval_timer_active,
-            current_cpu_protected_mode: self.current_cpu_protected_mode,
             a20_enabled: self.a20_enabled,
             reset_pending: self.reset_pending,
             shutdown_requested: self.shutdown_requested,
@@ -2159,7 +2150,6 @@ impl<T: TraceSink> Pc9801Bus<T> {
             self.sdip.state = state.sdip;
             self.bios.restore_state(state.bios);
             self.bios_interval_timer_active = state.bios_interval_timer_active;
-            self.current_cpu_protected_mode = state.current_cpu_protected_mode;
             self.a20_enabled = state.a20_enabled;
             self.reset_pending = state.reset_pending;
             self.shutdown_requested = state.shutdown_requested;
@@ -2675,9 +2665,6 @@ impl<T: TraceSink> Pc9801Bus<T> {
                     self.scheduler
                         .schedule(Event98::PitTimer0, self.current_cycle + cpu_cycles);
                     if raise_irq {
-                        if self.current_cpu_protected_mode {
-                            self.handle_bios_interval_timer_tick();
-                        }
                         self.raise_pic_irq(0);
                     }
                 }

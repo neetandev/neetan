@@ -197,20 +197,6 @@ fn reverse_bits(b: u8) -> u8 {
 }
 
 impl<T: TraceSink> Pc9801Bus<T> {
-    pub(crate) fn handle_bios_interval_timer_tick(&mut self) {
-        if !self.bios_interval_timer_active {
-            return;
-        }
-
-        let count = self.ram_read_u16(0x058A);
-        let new_count = count.wrapping_sub(1);
-        self.ram_write_u16(0x058A, new_count);
-
-        if count > 0 && new_count == 0 {
-            self.bios_interval_timer_active = false;
-        }
-    }
-
     /// Configures paging state used by HLE BIOS routines (SASI, INT 1Fh, etc.).
     /// When paging is active (CR0.PG + CR0.PE), HLE memory accesses translate
     /// linear addresses through the page tables rooted at CR3.

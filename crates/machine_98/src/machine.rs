@@ -653,11 +653,7 @@ impl<C: Cpu, T: TraceSink> Pc98Machine<C, T> {
                 target_cycle
             };
 
-            self.bus
-                .set_cpu_protected_mode_enabled(self.cpu.cr0() & 1 != 0);
             let ran_cycles = self.cpu.run_for(slice_end - current_cycle, &mut self.bus);
-            self.bus
-                .set_cpu_protected_mode_enabled(self.cpu.cr0() & 1 != 0);
 
             if let Some(warm_ctx) = self.bus.take_reset_pending() {
                 std::hint::cold_path();
@@ -866,9 +862,6 @@ impl<C: Pc98RuntimeCpu, T: TraceSink> Pc98Machine<C, T> {
             |machine, state| {
                 machine.cpu.restore_runtime_state(state.cpu)?;
                 machine.bus.restore_runtime_state(state.bus)?;
-                machine
-                    .bus
-                    .set_cpu_protected_mode_enabled(machine.cpu.cr0() & 1 != 0);
                 Ok(())
             },
         )
