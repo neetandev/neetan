@@ -263,29 +263,33 @@ unused_irq_return:
     pop  ax
     iret
 
-; --- Interval timer mask tail ---
-; The INT 08h and INT 1Ch stubs jump here after the HLE trap. The HLE handler
-; selects the change of the IR0 mask bit in the master PIC IMR (undoc98
-; io_pic.txt, I/O 0002h) with the flags. CF clear keeps the IMR. CF set with ZF
-; clear unmasks IR0. CF set with ZF set masks IR0. The read-modify-write runs
-; with interrupts disabled and keeps the other mask bits. A protected-mode or
-; V86 monitor that traps the PIC ports observes both accesses. IRET restores
-; the flags of the caller.
-timer_mask_iret:
-    jnc  .done
+; --- Interrupt mask tails ---
+; The INT 08h, 19h and 1Ch stubs jump to a mask tail after the HLE trap. The
+; HLE handler selects the change of the mask bit of the IR line of its service
+; in the master PIC IMR (undoc98 io_pic.txt, I/O 0002h) with the flags. CF
+; clear keeps the IMR. CF set with ZF clear unmasks the line. CF set with ZF
+; set masks the line. The read-modify-write runs with interrupts disabled and
+; keeps the other mask bits. A protected-mode or V86 monitor that traps the PIC
+; ports observes both accesses. IRET restores the flags of the caller.
+%macro imr_mask_tail 1          ; %1 = IR line bit
+    jnc  %%done
     push ax
     cli
     in   al, 0x02                   ; Master IMR
-    jz   .mask
-    and  al, 0xFE                   ; Unmask IR0
-    jmp  short .write
-.mask:
-    or   al, 0x01                   ; Mask IR0
-.write:
+    jz   %%mask
+    and  al, ~%1 & 0xFF             ; Unmask the line
+    jmp  short %%write
+%%mask:
+    or   al, %1                     ; Mask the line
+%%write:
     out  0x02, al
     pop  ax
-.done:
+%%done:
     iret
+%endmacro
+
+timer_mask_iret:    imr_mask_tail 0x01  ; IR0, interval timer
+rs232c_mask_iret:   imr_mask_tail 0x10  ; IR4, RS-232C receive
 
 ; --- HLE-dispatched interrupt handler stubs ---
 
@@ -294,8 +298,8 @@ timer_mask_iret:
 ; INT 09h stub writes it with a guest OUT after HLE dispatch. The INT 0Ch, 12h
 ; and 13h stubs end the interrupt with an EOI tail after HLE dispatch.
 ; Protected-mode or V86 monitors that trap the PIC ports observe every EOI of
-; these handlers on the bus. The INT 08h and INT 1Ch stubs change the timer
-; mask in the master IMR in the timer mask tail.
+; these handlers on the bus. The INT 08h, 19h and 1Ch stubs change the mask
+; of their IR line in the master IMR in a mask tail.
 int_08h_handler:
     push ax
     mov al, 0x20
@@ -344,7 +348,7 @@ int_0ch_handler:    hle_stub_tail 0x0C, master_eoi_iret ; Serial receive (IRQ 4)
 int_12h_handler:    hle_stub_tail 0x12, slave_eoi_iret ; FDC 640KB (slave IR2)
 int_13h_handler:    hle_stub_tail 0x13, slave_eoi_iret ; FDC 1MB (slave IR3)
 int_18h_handler:    hle_stub 0x18            ; CRT/KB/Graphics
-int_19h_handler:    hle_stub 0x19            ; RS-232C
+int_19h_handler:    hle_stub_tail 0x19, rs232c_mask_iret ; RS-232C
 int_1ah_handler:    hle_stub_chainable 0x1A  ; Printer/CMT (chainable at +25)
 int_1bh_handler:    hle_stub 0x1B            ; Disk BIOS
 int_1ch_handler:    hle_stub_tail 0x1C, timer_mask_iret ; Timer/Calendar

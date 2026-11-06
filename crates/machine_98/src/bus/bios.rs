@@ -32,6 +32,37 @@ const PAGE_PRESENT: u32 = 0x01;
 const PAGE_ACCESSED: u32 = 0x20;
 const PAGE_DIRTY: u32 = 0x40;
 
+/// FLAGS carry bit. Set, it requests a change of an IR mask bit.
+const FLAGS_CARRY: u16 = 0x0001;
+
+/// FLAGS zero bit. Set together with the carry bit, it requests the IR mask.
+/// Clear with the carry bit set, it requests the IR unmask.
+const FLAGS_ZERO: u16 = 0x0040;
+
+/// Requested change of the mask bit of one IR line in the master PIC IMR
+/// (I/O port 0002h).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum InterruptMaskChange {
+    /// Leaves the IMR unchanged.
+    Keep,
+    /// Sets the mask bit.
+    Mask,
+    /// Clears the mask bit.
+    Unmask,
+}
+
+/// Encodes the IR mask change in CF and ZF. CF clear keeps the IMR, CF set
+/// with ZF clear unmasks the line and CF set with ZF set masks the line.
+pub(super) fn request_interrupt_mask_change(cpu: &mut impl Cpu, change: InterruptMaskChange) {
+    let flags = cpu.flags() & !(FLAGS_CARRY | FLAGS_ZERO);
+    let flags = match change {
+        InterruptMaskChange::Keep => flags,
+        InterruptMaskChange::Mask => flags | FLAGS_CARRY | FLAGS_ZERO,
+        InterruptMaskChange::Unmask => flags | FLAGS_CARRY,
+    };
+    cpu.set_flags(flags);
+}
+
 fn iret_stack_base(cpu: &impl Cpu) -> u32 {
     cpu.segment_base(SegmentRegister::SS)
         .wrapping_add(u32::from(cpu.sp()))
