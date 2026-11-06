@@ -23,7 +23,7 @@
 //!
 //! 1. Reduction: Compute {N, r} such that x = N·(p/2) + r exactly, with |r| < p/4.
 //!    This uses 106-bit intermediate arithmetic for precision.
-//! 2. Approximation: Evaluate sin(r·π/p) and cos(r·π/p) via odd/even polynomial
+//! 2. Approximation: Evaluate sin(r) and cos(r) via odd/even polynomial
 //!    series (SIN_ARR: 11-term, COS_ARR: 11-term) on the reduced argument.
 //! 3. Reconstruction: Use N mod 4 to select the correct quadrant combination:
 //!
