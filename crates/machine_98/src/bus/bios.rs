@@ -917,35 +917,33 @@ mod tests {
     }
 
     #[test]
-    fn hle_int09h_chains_copy_vector_on_paged_stack() {
+    fn hle_int09h_returns_key_interrupt_vector_in_al() {
         let mut bus = test_bus();
-        setup_hle_page_tables(&mut bus);
         let mut cpu = TestCpu::default();
-        cpu.set_sp(0);
-        cpu.set_segment_base_for_test(SegmentRegister::SS, 0x0002_0000);
+        cpu.set_sp(0x7000);
+        write_bus_word(&mut bus, 0x7000, 0x1111);
+        write_bus_word(&mut bus, 0x7002, 0x2222);
+        write_bus_word(&mut bus, 0x7004, 0x0202);
 
-        bus.keyboard_chained_raw_code = Some(0x60);
-        bus.ram_write_u16(0x0018, 0x4321);
-        bus.ram_write_u16(0x001A, 0x8765);
+        for (raw_code, expected_ax) in [
+            (Some(0x60), 0x1206),
+            (Some(0x61), 0x1205),
+            (Some(0xE0), 0x1200),
+            (Some(0xE1), 0x1200),
+            (Some(0x1C), 0x1200),
+            (None, 0x1200),
+        ] {
+            cpu.set_ax(0x1234);
+            bus.keyboard_chained_raw_code = raw_code;
 
-        write_bus_word(&mut bus, 0x0002_0000, 0xAAAA);
-        write_bus_word(&mut bus, 0x0002_0002, 0xBBBB);
-        write_bus_word(&mut bus, 0x0002_0004, 0xCCCC);
-        write_bus_word(&mut bus, 0x0003_0000, 0x1111);
-        write_bus_word(&mut bus, 0x0003_0002, 0x2222);
-        write_bus_word(&mut bus, 0x0003_0004, 0x0202);
+            bus.hle_int09h(&mut cpu);
 
-        bus.hle_int09h(&mut cpu);
-
-        assert_eq!(read_bus_word(&mut bus, 0x0003_0000), 0x4321);
-        assert_eq!(read_bus_word(&mut bus, 0x0003_0002), 0x8765);
-        assert_eq!(read_bus_word(&mut bus, 0x0003_0004), 0x0002);
-        assert_eq!(read_bus_word(&mut bus, 0x0003_0006), 0x1111);
-        assert_eq!(read_bus_word(&mut bus, 0x0003_0008), 0x2222);
-        assert_eq!(read_bus_word(&mut bus, 0x0003_000A), 0x0202);
-        assert_eq!(read_bus_word(&mut bus, 0x0002_0000), 0xAAAA);
-        assert_eq!(read_bus_word(&mut bus, 0x0002_0002), 0xBBBB);
-        assert_eq!(read_bus_word(&mut bus, 0x0002_0004), 0xCCCC);
+            assert_eq!(cpu.ax(), expected_ax, "raw code {raw_code:02X?}");
+            assert_eq!(cpu.sp(), 0x7000);
+            assert_eq!(read_bus_word(&mut bus, 0x7000), 0x1111);
+            assert_eq!(read_bus_word(&mut bus, 0x7002), 0x2222);
+            assert_eq!(read_bus_word(&mut bus, 0x7004), 0x0202);
+        }
     }
 
     #[test]

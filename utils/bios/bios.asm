@@ -158,8 +158,8 @@ iret_stub:
     iret
 
 ; --- Interrupt EOI tails ---
-; The INT 09h, 0Ch, 12h and 13h stubs and the unclaimed interrupt handlers
-; end their interrupt here with guest OUT instructions, so a protected-mode
+; The INT 0Ch, 12h and 13h stubs and the unclaimed interrupt handlers end
+; their interrupt here with guest OUT instructions, so a protected-mode
 ; or V86 monitor that virtualizes the PIC observes the EOI. PC-98 handlers
 ; use the non-specific EOI (undoc98 io_pic.txt, I/O 0000h and 0008h). A
 ; slave interrupt sends the EOI to the slave, reads the slave ISR and sends
@@ -267,16 +267,48 @@ unused_irq_return:
 
 ; The INT 08h and INT 0Ah stubs write the master PIC non-specific EOI
 ; (undoc98 io_pic.txt, I/O 0000h) with a guest OUT before HLE dispatch. The
-; INT 09h, 0Ch, 12h and 13h stubs end the interrupt with an EOI tail after
-; HLE dispatch. Protected-mode or V86 monitors that trap the PIC ports
-; observe every EOI of these handlers on the bus.
+; INT 09h stub writes it with a guest OUT after HLE dispatch. The INT 0Ch, 12h
+; and 13h stubs end the interrupt with an EOI tail after HLE dispatch.
+; Protected-mode or V86 monitors that trap the PIC ports observe every EOI of
+; these handlers on the bus.
 int_08h_handler:
     push ax
     mov al, 0x20
     out 0x00, al
     pop ax
     hle_stub 0x08                            ; Timer tick (IRQ 0)
-int_09h_handler:    hle_stub_eoi 0x09, master_eoi_iret ; Keyboard (IRQ 1)
+
+; Keyboard (IRQ 1). The stub keeps the interrupted AX on the stack across the
+; HLE trap. The HLE handler returns AL = 06h after a STOP make code, 05h after
+; a COPY make code and 00h otherwise. After the EOI the stub restores AX and
+; executes INT 06h or INT 05h. A handler of these vectors finds the INT
+; instruction before its return address and tells the key interrupt from a
+; CPU exception (undoc98 int00t17.txt).
+int_09h_handler:
+    push ax                         ; Interrupted AX
+    push ax
+    push dx
+    mov  dx, TRAP_PORT
+    mov  al, 0x09
+    out  dx, al                     ; AL = key interrupt vector
+    mov  ah, al
+    mov  al, 0x20                   ; Non-specific EOI
+    out  0x00, al
+    cmp  ah, 0x06
+    je   .stop_key
+    cmp  ah, 0x05
+    je   .copy_key
+    pop  ax
+    iret
+.stop_key:
+    pop  ax
+    int  0x06                       ; STOP key interrupt
+    iret
+.copy_key:
+    pop  ax
+    int  0x05                       ; COPY key interrupt
+    iret
+
 int_0ah_handler:
     push ax
     mov al, 0x20
@@ -336,8 +368,8 @@ vector_table:
     dw 0x02, iret_stub       - BIOS_BASE_OFF   ; INT 02h - NMI
     dw 0x03, iret_stub       - BIOS_BASE_OFF   ; INT 03h - Breakpoint
     dw 0x04, iret_stub       - BIOS_BASE_OFF   ; INT 04h - Overflow
-    dw 0x05, iret_stub       - BIOS_BASE_OFF   ; INT 05h - STOP key IRQ
-    dw 0x06, iret_stub       - BIOS_BASE_OFF   ; INT 06h - COPY key
+    dw 0x05, iret_stub       - BIOS_BASE_OFF   ; INT 05h - COPY key
+    dw 0x06, iret_stub       - BIOS_BASE_OFF   ; INT 06h - STOP key
     dw 0x07, iret_stub       - BIOS_BASE_OFF   ; INT 07h - Timer callback
     dw 0x08, int_08h_handler - BIOS_BASE_OFF   ; INT 08h - Timer tick
     dw 0x09, int_09h_handler - BIOS_BASE_OFF   ; INT 09h - Keyboard
