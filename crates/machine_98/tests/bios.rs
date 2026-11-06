@@ -300,6 +300,15 @@ mod timer_tick;
 #[path = "bios/timer_mask.rs"]
 mod timer_mask;
 
+#[path = "bios/rs232c_mask.rs"]
+mod rs232c_mask;
+
+#[path = "bios/disk_init_mask.rs"]
+mod disk_init_mask;
+
+#[path = "bios/v86_monitor.rs"]
+mod v86_monitor;
+
 #[path = "bios/post_bios_state.rs"]
 mod post_bios_state;
 

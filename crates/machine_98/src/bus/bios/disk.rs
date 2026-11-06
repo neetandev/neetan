@@ -59,10 +59,6 @@ impl<T: TraceSink> Pc9801Bus<T> {
                 }
                 self.ram_write_u16(0x055C, disk_equip);
 
-                // Match SASI/IDE init: unmask master IRQ 0 (system timer).
-                self.pic.state.chips[0].imr &= !0x01;
-                self.pic.invalidate_irq_cache();
-
                 0x00
             }
             0x04 => {
@@ -356,8 +352,6 @@ impl<T: TraceSink> Pc9801Bus<T> {
                 let disk_equip = self.sasi.execute_init(current_equip);
                 self.memory.write_byte(0x055C, disk_equip as u8);
                 self.memory.write_byte(0x055D, (disk_equip >> 8) as u8);
-                self.pic.state.chips[0].imr &= !0x01;
-                self.pic.invalidate_irq_cache();
                 0x00
             }
             0x04 => match function_code {
@@ -445,8 +439,6 @@ impl<T: TraceSink> Pc9801Bus<T> {
                     let disk_equip = self.ide.execute_init(current_equip);
                     self.memory.write_byte(0x055C, disk_equip as u8);
                     self.memory.write_byte(0x055D, (disk_equip >> 8) as u8);
-                    self.pic.state.chips[0].imr &= !0x01;
-                    self.pic.invalidate_irq_cache();
                     0x00
                 }
                 0x04 => match function_code {

@@ -7,14 +7,13 @@ use common::Cpu;
 
 use super::{
     super::Pc9801Bus,
-    real_mode_address,
+    InterruptMaskChange, real_mode_address, request_interrupt_mask_change,
     serial_rs232c::{
         BLOCK_BASIC_FLAG, BLOCK_COMMAND, BLOCK_COUNT, BLOCK_FLAG, BLOCK_GET_POINTER,
         BLOCK_HEAD_POINTER, BLOCK_INTERFACE, BLOCK_PUT_POINTER, BLOCK_RECEIVE_TIMEOUT,
         BLOCK_RESUME_LEVEL, BLOCK_SEND_TIMEOUT, BLOCK_SIZE, BLOCK_STOP_LEVEL, BLOCK_TAIL_POINTER,
         CONTROL_RESUME, ENTRY_SIZE, FLAG_BUFFER_FULL, FLAG_FLOW_CONTROL, FLAG_INITIALIZED,
         FLAG_OVERFLOW, FLAG_STOP_SENT, RS_BUFFER_OFFSET_ADDRESS, RS_BUFFER_SEGMENT_ADDRESS,
-        RS232C_IRQ,
     },
 };
 use crate::TraceSink;
@@ -84,18 +83,27 @@ const PPI_TRANSMIT_EMPTY_INTERRUPT_OFF: u8 = 0x02;
 const PPI_TRANSMIT_READY_INTERRUPT_OFF: u8 = 0x04;
 
 impl<T: TraceSink> Pc9801Bus<T> {
-    /// INT 19h: RS-232C BIOS entry.
+    /// INT 19h: RS-232C BIOS entry. Returns the IR4 mask change in CF and ZF:
+    /// CF clear keeps the IMR, CF set with ZF clear unmasks IR4 and CF set with
+    /// ZF set masks IR4.
     pub(super) fn hle_int19h(&mut self, cpu: &mut impl Cpu) {
+        let change = self.int19h_dispatch(cpu);
+        request_interrupt_mask_change(cpu, change);
+    }
+
+    /// Runs the INT 19h function in AH and returns the IR4 mask change.
+    fn int19h_dispatch(&mut self, cpu: &mut impl Cpu) -> InterruptMaskChange {
         let function = cpu.ah();
         match function {
             FUNCTION_INITIALIZE | FUNCTION_INITIALIZE_FLOW => {
-                self.int19h_initialize(cpu, function == FUNCTION_INITIALIZE_FLOW);
+                self.int19h_initialize(cpu, function == FUNCTION_INITIALIZE_FLOW)
             }
             FUNCTION_RECEIVED_COUNT..=FUNCTION_STATUS => {
                 let Some(block) = self.int19h_initialized_block() else {
                     cpu.set_ah(RESULT_NOT_INITIALIZED);
-                    return;
+                    return InterruptMaskChange::Keep;
                 };
+                let mut change = InterruptMaskChange::Keep;
                 let result = match function {
                     FUNCTION_RECEIVED_COUNT => {
                         cpu.set_cx(self.read_mem_word(block + BLOCK_COUNT));
@@ -107,7 +115,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
                     }
                     FUNCTION_RECEIVE => self.int19h_receive(cpu, block),
                     FUNCTION_COMMAND => {
-                        self.int19h_command(block, cpu.al());
+                        change = self.int19h_command(block, cpu.al());
                         RESULT_OK
                     }
                     _ => {
@@ -117,8 +125,12 @@ impl<T: TraceSink> Pc9801Bus<T> {
                     }
                 };
                 cpu.set_ah(self.int19h_report_overflow(block, result));
+                change
             }
-            _ => cpu.set_ah(RESULT_OK),
+            _ => {
+                cpu.set_ah(RESULT_OK);
+                InterruptMaskChange::Keep
+            }
         }
     }
 
@@ -139,8 +151,9 @@ impl<T: TraceSink> Pc9801Bus<T> {
         RESULT_OVERFLOW
     }
 
-    /// Functions 00h and 01h: programs the 8251A and the PIT and builds the control block.
-    fn int19h_initialize(&mut self, cpu: &mut impl Cpu, flow_control: bool) {
+    /// Functions 00h and 01h: programs the 8251A and the PIT, builds the
+    /// control block and returns the IR4 mask change.
+    fn int19h_initialize(&mut self, cpu: &mut impl Cpu, flow_control: bool) -> InterruptMaskChange {
         let mode = cpu.ch();
         let command = cpu.cl();
         let segment = cpu.es();
@@ -195,9 +208,8 @@ impl<T: TraceSink> Pc9801Bus<T> {
             .write_control(PPI_TRANSMIT_READY_INTERRUPT_OFF);
         let receive_enabled =
             command & (COMMAND_RECEIVE_ENABLE | COMMAND_INTERNAL_RESET) == COMMAND_RECEIVE_ENABLE;
-        self.int19h_set_receive_interrupt(receive_enabled);
-
         cpu.set_ah(RESULT_OK);
+        self.int19h_set_receive_interrupt(receive_enabled)
     }
 
     /// Loads PIT counter 2 with the divisor for the requested transfer rate.
@@ -234,16 +246,15 @@ impl<T: TraceSink> Pc9801Bus<T> {
         self.serial.write_command(command);
     }
 
-    /// Enables or disables the receive ready interrupt in the system port and the PIC.
-    fn int19h_set_receive_interrupt(&mut self, enabled: bool) {
-        let irq_bit = 1u8 << RS232C_IRQ;
-        let mask = self.pic.read_port2(0);
+    /// Enables or disables the receive ready interrupt in the system port and
+    /// returns the matching IR4 mask change of the PIC.
+    fn int19h_set_receive_interrupt(&mut self, enabled: bool) -> InterruptMaskChange {
         if enabled {
             self.system_ppi.write_control(PPI_RECEIVE_INTERRUPT_ON);
-            self.pic.write_port2(0, mask & !irq_bit);
+            InterruptMaskChange::Unmask
         } else {
             self.system_ppi.write_control(PPI_RECEIVE_INTERRUPT_OFF);
-            self.pic.write_port2(0, mask | irq_bit);
+            InterruptMaskChange::Mask
         }
     }
 
@@ -277,8 +288,9 @@ impl<T: TraceSink> Pc9801Bus<T> {
         RESULT_OK
     }
 
-    /// Function 05h: writes a command word and follows it with the interrupt enables.
-    fn int19h_command(&mut self, block: u32, command: u8) {
+    /// Function 05h: writes a command word, follows it with the interrupt
+    /// enables and returns the IR4 mask change.
+    fn int19h_command(&mut self, block: u32, command: u8) -> InterruptMaskChange {
         self.serial.write_command(command);
         self.write_mem_byte(block + BLOCK_COMMAND, command);
         if command & COMMAND_INTERNAL_RESET != 0 {
@@ -287,6 +299,6 @@ impl<T: TraceSink> Pc9801Bus<T> {
         }
         let receive_enabled =
             command & (COMMAND_RECEIVE_ENABLE | COMMAND_INTERNAL_RESET) == COMMAND_RECEIVE_ENABLE;
-        self.int19h_set_receive_interrupt(receive_enabled);
+        self.int19h_set_receive_interrupt(receive_enabled)
     }
 }
