@@ -1,7 +1,8 @@
 //! Logical key and text mapping for the automation frontend.
 //!
-//! Maps the Scheme-facing key names and ASCII characters onto the neutral
-//! [`HostKey`] identity. This layer is SDL-free: it never references an
+//! Maps the Scheme-facing key names onto the neutral [`HostKey`] identity, and
+//! the ASCII characters onto the host keys of the keyboard layout of each
+//! machine family. This layer is SDL-free: it never references an
 //! SDL scan code. Each machine translates the resulting host key into its own
 //! native scan code.
 
@@ -141,15 +142,230 @@ pub struct CharStroke {
     pub key: HostKey,
 }
 
-/// Converts a Version-1 text character into a host-key stroke.
+/// The character layout of a machine keyboard.
 ///
-/// The supported set is printable ASCII plus carriage return, tab, and
-/// backspace. The punctuation mapping follows a US layout. Returns `None` for a
-/// character outside the supported set.
-pub fn char_to_stroke(character: char) -> Option<CharStroke> {
+/// A layout names the host key and the shift state that type a printable ASCII
+/// character on the keyboard of one machine family. The host key is the key
+/// that the family translates into the native key carrying the character.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyboardLayout {
+    /// PC-9801 keyboard with the key data of the built-in BIOS. The yen key
+    /// types `\` and Shift + `@` types `~`. It has no `` ` ``.
+    Pc98,
+    /// PC-8801 key matrix. It has no `` ` `` and no `~`.
+    Pc88,
+    /// PC-88VA keyboard: the PC-98 key codes with the PC-8801 character set.
+    Pc88Va,
+    /// PC-6001 sub-controller. A letter key types the capital letter and
+    /// Shift selects the small letter.
+    Pc6000,
+    /// JIS keyboard of the MSX, FM-7, FM Towns and X68000. Shift + `@` types
+    /// `` ` `` and Shift + `^` types `~`.
+    Jis,
+    /// Sharp X1 keyboard. Shift + `^` types `` ` `` and Shift + `@` types `~`.
+    X1,
+    /// OADG 106-key keyboard of a DOS/V PC/AT.
+    At106,
+}
+
+impl KeyboardLayout {
+    /// Returns the keyboard layout of an automation target, or `None` for a
+    /// target without a known layout.
+    pub fn for_target(target: &str) -> Option<Self> {
+        let layout = match target {
+            "pc98" => Self::Pc98,
+            "pc88" => Self::Pc88,
+            "pc88va" => Self::Pc88Va,
+            "pc60" => Self::Pc6000,
+            "msx" | "fm7" | "towns" | "x68k" => Self::Jis,
+            "x1" => Self::X1,
+            "at" => Self::At106,
+            _ => return None,
+        };
+        Some(layout)
+    }
+
+    /// Whether Shift selects the capital letters.
+    fn shift_types_capitals(self) -> bool {
+        !matches!(self, Self::Pc6000)
+    }
+
+    /// The symbol strokes of this layout as `(character, shift, key)` entries.
+    fn symbols(self) -> &'static [(char, bool, HostKey)] {
+        match self {
+            Self::Pc98 => PC98_SYMBOLS,
+            Self::X1 => X1_SYMBOLS,
+            Self::Pc88 => PC88_SYMBOLS,
+            Self::Pc88Va => PC88VA_SYMBOLS,
+            Self::Pc6000 => PC6000_SYMBOLS,
+            Self::Jis => JIS_SYMBOLS,
+            Self::At106 => AT106_SYMBOLS,
+        }
+    }
+}
+
+/// Symbol strokes of the PC-98 keyboard.
+const PC98_SYMBOLS: &[(char, bool, HostKey)] = &[
+    ('-', false, HostKey::Minus),
+    ('=', true, HostKey::Minus),
+    ('^', false, HostKey::Equals),
+    ('\\', false, HostKey::Backslash),
+    ('|', true, HostKey::Backslash),
+    ('@', false, HostKey::Grave),
+    ('~', true, HostKey::Grave),
+    ('[', false, HostKey::LeftBracket),
+    ('{', true, HostKey::LeftBracket),
+    (';', false, HostKey::Semicolon),
+    ('+', true, HostKey::Semicolon),
+    (':', false, HostKey::Apostrophe),
+    ('*', true, HostKey::Apostrophe),
+    (']', false, HostKey::RightBracket),
+    ('}', true, HostKey::RightBracket),
+    ('<', true, HostKey::Comma),
+    ('>', true, HostKey::Period),
+    ('_', true, HostKey::NonUsBackslash),
+];
+
+/// Symbol strokes of the X1 keyboard.
+const X1_SYMBOLS: &[(char, bool, HostKey)] = &[
+    ('-', false, HostKey::Minus),
+    ('=', true, HostKey::Minus),
+    ('^', false, HostKey::Equals),
+    ('`', true, HostKey::Equals),
+    ('\\', false, HostKey::Backslash),
+    ('|', true, HostKey::Backslash),
+    ('@', false, HostKey::Grave),
+    ('~', true, HostKey::Grave),
+    ('[', false, HostKey::LeftBracket),
+    ('{', true, HostKey::LeftBracket),
+    (';', false, HostKey::Semicolon),
+    ('+', true, HostKey::Semicolon),
+    (':', false, HostKey::Apostrophe),
+    ('*', true, HostKey::Apostrophe),
+    (']', false, HostKey::RightBracket),
+    ('}', true, HostKey::RightBracket),
+    ('<', true, HostKey::Comma),
+    ('>', true, HostKey::Period),
+    ('_', true, HostKey::NonUsBackslash),
+];
+
+/// Symbol strokes of the PC-88VA keyboard.
+const PC88VA_SYMBOLS: &[(char, bool, HostKey)] = &[
+    ('-', false, HostKey::Minus),
+    ('=', true, HostKey::Minus),
+    ('^', false, HostKey::Equals),
+    ('\\', false, HostKey::Backslash),
+    ('|', true, HostKey::Backslash),
+    ('@', false, HostKey::Grave),
+    ('[', false, HostKey::LeftBracket),
+    ('{', true, HostKey::LeftBracket),
+    (';', false, HostKey::Semicolon),
+    ('+', true, HostKey::Semicolon),
+    (':', false, HostKey::Apostrophe),
+    ('*', true, HostKey::Apostrophe),
+    (']', false, HostKey::RightBracket),
+    ('}', true, HostKey::RightBracket),
+    ('<', true, HostKey::Comma),
+    ('>', true, HostKey::Period),
+    ('_', true, HostKey::NonUsBackslash),
+];
+
+/// Symbol strokes of the JIS keyboards of the MSX, FM-7, FM Towns and X68000.
+const JIS_SYMBOLS: &[(char, bool, HostKey)] = &[
+    ('-', false, HostKey::Minus),
+    ('=', true, HostKey::Minus),
+    ('^', false, HostKey::Equals),
+    ('~', true, HostKey::Equals),
+    ('\\', false, HostKey::Backslash),
+    ('|', true, HostKey::Backslash),
+    ('@', false, HostKey::Grave),
+    ('`', true, HostKey::Grave),
+    ('[', false, HostKey::LeftBracket),
+    ('{', true, HostKey::LeftBracket),
+    (';', false, HostKey::Semicolon),
+    ('+', true, HostKey::Semicolon),
+    (':', false, HostKey::Apostrophe),
+    ('*', true, HostKey::Apostrophe),
+    (']', false, HostKey::RightBracket),
+    ('}', true, HostKey::RightBracket),
+    ('<', true, HostKey::Comma),
+    ('>', true, HostKey::Period),
+    ('_', true, HostKey::NonUsBackslash),
+];
+
+/// Symbol strokes of the PC-8801 key matrix, whose host keys follow the key
+/// positions of a JIS host keyboard.
+const PC88_SYMBOLS: &[(char, bool, HostKey)] = &[
+    ('-', false, HostKey::Minus),
+    ('=', true, HostKey::Minus),
+    ('^', false, HostKey::Equals),
+    ('\\', false, HostKey::NonUsBackslash),
+    ('|', true, HostKey::NonUsBackslash),
+    ('@', false, HostKey::LeftBracket),
+    ('[', false, HostKey::RightBracket),
+    ('{', true, HostKey::RightBracket),
+    (';', false, HostKey::Semicolon),
+    ('+', true, HostKey::Semicolon),
+    (':', false, HostKey::Apostrophe),
+    ('*', true, HostKey::Apostrophe),
+    (']', false, HostKey::Backslash),
+    ('}', true, HostKey::Backslash),
+    ('<', true, HostKey::Comma),
+    ('>', true, HostKey::Period),
+    ('_', true, HostKey::International1),
+];
+
+/// Symbol strokes of the PC-6001 sub-controller codes.
+const PC6000_SYMBOLS: &[(char, bool, HostKey)] = &[
+    ('-', false, HostKey::Minus),
+    ('=', true, HostKey::Digit0),
+    ('^', false, HostKey::Equals),
+    ('[', false, HostKey::LeftBracket),
+    (']', false, HostKey::RightBracket),
+    (';', false, HostKey::Semicolon),
+    (':', true, HostKey::Period),
+];
+
+/// Symbol strokes of the OADG 106-key keyboard, whose set-1 scan codes follow
+/// the key positions of the host keyboard.
+const AT106_SYMBOLS: &[(char, bool, HostKey)] = &[
+    ('-', false, HostKey::Minus),
+    ('=', true, HostKey::Minus),
+    ('^', false, HostKey::Equals),
+    ('~', true, HostKey::Equals),
+    ('\\', false, HostKey::International3),
+    ('|', true, HostKey::International3),
+    ('@', false, HostKey::LeftBracket),
+    ('`', true, HostKey::LeftBracket),
+    ('[', false, HostKey::RightBracket),
+    ('{', true, HostKey::RightBracket),
+    (']', false, HostKey::Backslash),
+    ('}', true, HostKey::Backslash),
+    (';', false, HostKey::Semicolon),
+    ('+', true, HostKey::Semicolon),
+    (':', false, HostKey::Apostrophe),
+    ('*', true, HostKey::Apostrophe),
+    ('<', true, HostKey::Comma),
+    ('>', true, HostKey::Period),
+    ('_', true, HostKey::International1),
+];
+
+/// Whether a character belongs to the Version-1 text set: printable ASCII plus
+/// carriage return, line feed, tab and backspace.
+pub fn is_text_character(character: char) -> bool {
+    matches!(character, ' '..='~' | '\r' | '\n' | '\t' | '\u{8}')
+}
+
+/// Converts a Version-1 text character into a host-key stroke on `layout`.
+///
+/// Returns `None` for a character outside the text set and for a character
+/// that the keyboard of the layout cannot type.
+pub fn char_to_stroke(layout: KeyboardLayout, character: char) -> Option<CharStroke> {
+    if let Some(key) = letter_key(character.to_ascii_lowercase()) {
+        let shift = character.is_ascii_uppercase() == layout.shift_types_capitals();
+        return Some(CharStroke { shift, key });
+    }
     let (shift, key) = match character {
-        'a'..='z' => (false, letter_key(character)),
-        'A'..='Z' => (true, letter_key(character.to_ascii_lowercase())),
         '0' => (false, HostKey::Digit0),
         '1' => (false, HostKey::Digit1),
         '2' => (false, HostKey::Digit2),
@@ -160,34 +376,30 @@ pub fn char_to_stroke(character: char) -> Option<CharStroke> {
         '7' => (false, HostKey::Digit7),
         '8' => (false, HostKey::Digit8),
         '9' => (false, HostKey::Digit9),
-        ' ' => (false, HostKey::Space),
-        '\r' | '\n' => (false, HostKey::Return),
-        '\t' => (false, HostKey::Tab),
-        '\u{8}' => (false, HostKey::Backspace),
-        '-' => (false, HostKey::Minus),
-        '=' => (false, HostKey::Equals),
-        '[' => (false, HostKey::LeftBracket),
-        ']' => (false, HostKey::RightBracket),
-        ';' => (false, HostKey::Semicolon),
-        '\'' => (false, HostKey::Apostrophe),
-        ',' => (false, HostKey::Comma),
-        '.' => (false, HostKey::Period),
-        '/' => (false, HostKey::Slash),
-        '@' => (false, HostKey::Grave),
-        '^' => (false, HostKey::Equals),
         '!' => (true, HostKey::Digit1),
         '"' => (true, HostKey::Digit2),
         '#' => (true, HostKey::Digit3),
         '$' => (true, HostKey::Digit4),
         '%' => (true, HostKey::Digit5),
         '&' => (true, HostKey::Digit6),
+        '\'' => (true, HostKey::Digit7),
         '(' => (true, HostKey::Digit8),
         ')' => (true, HostKey::Digit9),
-        '+' => (true, HostKey::Semicolon),
-        '*' => (true, HostKey::Apostrophe),
-        ':' => (false, HostKey::Apostrophe),
-        '_' => (true, HostKey::NonUsBackslash),
-        _ => return None,
+        ',' => (false, HostKey::Comma),
+        '.' => (false, HostKey::Period),
+        '/' => (false, HostKey::Slash),
+        '?' => (true, HostKey::Slash),
+        ' ' => (false, HostKey::Space),
+        '\r' | '\n' => (false, HostKey::Return),
+        '\t' => (false, HostKey::Tab),
+        '\u{8}' => (false, HostKey::Backspace),
+        _ => {
+            return layout
+                .symbols()
+                .iter()
+                .find(|(symbol, _, _)| *symbol == character)
+                .map(|&(_, shift, key)| CharStroke { shift, key });
+        }
     };
     Some(CharStroke { shift, key })
 }
@@ -234,9 +446,10 @@ pub fn mouse_button_from_name(name: &str) -> Option<MouseButton> {
     }
 }
 
-/// Maps a lowercase ASCII letter to its host key.
-fn letter_key(character: char) -> HostKey {
-    match character {
+/// Maps a lowercase ASCII letter to its host key, or `None` for any other
+/// character.
+fn letter_key(character: char) -> Option<HostKey> {
+    let key = match character {
         'a' => HostKey::A,
         'b' => HostKey::B,
         'c' => HostKey::C,
@@ -262,6 +475,8 @@ fn letter_key(character: char) -> HostKey {
         'w' => HostKey::W,
         'x' => HostKey::X,
         'y' => HostKey::Y,
-        _ => HostKey::Z,
-    }
+        'z' => HostKey::Z,
+        _ => return None,
+    };
+    Some(key)
 }
