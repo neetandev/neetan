@@ -119,11 +119,6 @@ impl<T: TraceSink> Pc9801Bus<T> {
         self.write_byte_with_access_page(0x055D, (disk_equip >> 8) as u8);
         self.write_byte_with_access_page(0x0494, (equipped & 0x03) << 6);
         self.write_byte_with_access_page(0x05CA, 0xFF);
-
-        // Match SASI/IDE init: unmask master IRQ 0 (system timer).
-        self.pic.state.chips[0].imr &= !0x01;
-        self.pic.invalidate_irq_cache();
-
         0x00
     }
 
