@@ -2878,6 +2878,189 @@ fn fprem_qnan() {
     assert!(!r.ie());
 }
 
+/// The significand of pi, the dividend significand of the remainder guest loop tests.
+const PI_SIGNIFICAND: u64 = 0xC90F_DAA2_2168_C234;
+/// The second opcode byte of FPREM (D9 F8).
+const FPREM_OPCODE: u8 = 0xF8;
+/// The second opcode byte of FPREM1 (D9 F5).
+const FPREM1_OPCODE: u8 = 0xF5;
+/// The offset of the HLT behind the remainder guest loop.
+const REMAINDER_LOOP_END: u32 = 7;
+/// The most remainder executions a guest loop test allows.
+const REMAINDER_LOOP_LIMIT: u32 = 1000;
+/// The C0, C1 and C3 bits of the status word.
+const QUOTIENT_CONDITION_BITS: u16 = 0x4300;
+
+/// Runs the guest loop `L: FPREM or FPREM1; FNSTSW AX; SAHF; JP L; HLT` with ST(0) =
+/// `dividend` and ST(1) = `divisor` until it reaches the HLT. SAHF copies C2 into PF.
+/// Returns the number of remainder executions and the final x87 state.
+fn run_remainder_loop(opcode: u8, dividend: Fp80, divisor: Fp80) -> (u32, X87Result) {
+    let code = [0xD9, opcode, 0xDF, 0xE0, 0x9E, 0x7A, 0xF9, 0xF4];
+    let mut cpu = I386::<{ CPU_MODEL_486_DX }>::new();
+    let mut bus = TestBus::new();
+    place_code(&mut bus, 0x1000, 0x0000, &code);
+    cpu.load_state(&build_state(&[dividend, divisor], CW_NEAREST_EXT));
+    let mut count = 0;
+    loop {
+        match cpu.state.eip() {
+            0 => {
+                count += 1;
+                assert!(
+                    count <= REMAINDER_LOOP_LIMIT,
+                    "the remainder loop does not end"
+                );
+            }
+            REMAINDER_LOOP_END => return (count, extract_result(&cpu)),
+            _ => {}
+        }
+        cpu.step(&mut bus);
+    }
+}
+
+/// Returns the exponent field of `value` with a field of 0 read as 1.
+fn effective_exponent(value: Fp80) -> i32 {
+    i32::from((value.exponent() & 0x7FFF).max(1))
+}
+
+/// Returns |`dividend`| modulo `modulus` in units of the lowest significand bit of
+/// `divisor`. The dividend exponent must not be below the divisor exponent.
+fn dividend_modulo(dividend: Fp80, divisor: Fp80, modulus: u128) -> u128 {
+    let mut value = u128::from(dividend.significand()) % modulus;
+    for _ in 0..effective_exponent(dividend) - effective_exponent(divisor) {
+        value = (value << 1) % modulus;
+    }
+    value
+}
+
+/// Returns the value `sign` x `magnitude` in units of the lowest significand bit of
+/// `divisor`, with a zero magnitude giving a zero of that sign.
+fn pack_at_divisor_scale(sign: bool, magnitude: u64, divisor: Fp80) -> Fp80 {
+    let sign_bit = if sign { 0x8000 } else { 0x0000 };
+    if magnitude == 0 {
+        return Fp80::from_bits(sign_bit, 0);
+    }
+    let divisor_exponent = effective_exponent(divisor);
+    let shift = (magnitude.leading_zeros() as i32).min(divisor_exponent - 1);
+    let significand = magnitude << shift;
+    let exponent = if significand >> 63 == 0 {
+        0
+    } else {
+        divisor_exponent - shift
+    };
+    Fp80::from_bits(sign_bit | exponent as u16, significand)
+}
+
+/// Returns the exact remainder of the positive `dividend` divided by `divisor` with the
+/// quotient chopped toward zero. The dividend exponent must not be below the divisor
+/// exponent.
+fn exact_remainder(dividend: Fp80, divisor: Fp80) -> Fp80 {
+    let modulus = u128::from(divisor.significand());
+    let remainder = dividend_modulo(dividend, divisor, modulus) as u64;
+    pack_at_divisor_scale(false, remainder, divisor)
+}
+
+/// Returns the exact IEEE remainder of `dividend` divided by `divisor` with the quotient
+/// rounded to the nearest even integer, and the C0, C1 and C3 bits of the quotient
+/// magnitude: C0 = Q2, C3 = Q1 and C1 = Q0. A zero remainder takes the dividend sign. The
+/// dividend exponent must not be below the divisor exponent.
+fn exact_ieee_remainder(dividend: Fp80, divisor: Fp80) -> (Fp80, u16) {
+    let divisor_significand = u128::from(divisor.significand());
+    let modulo_eight = dividend_modulo(dividend, divisor, divisor_significand * 8);
+    let mut quotient = (modulo_eight / divisor_significand) as u16;
+    let mut remainder = modulo_eight % divisor_significand;
+    let mut sign = dividend.sign();
+    if remainder * 2 > divisor_significand
+        || (remainder * 2 == divisor_significand && quotient & 1 != 0)
+    {
+        remainder = divisor_significand - remainder;
+        quotient += 1;
+        sign = !sign;
+    }
+    if remainder == 0 {
+        sign = dividend.sign();
+    }
+    let condition_bits = ((quotient & 4) << 6) | ((quotient & 2) << 13) | ((quotient & 1) << 9);
+    (
+        pack_at_divisor_scale(sign, remainder as u64, divisor),
+        condition_bits,
+    )
+}
+
+/// Returns the remainder loop test operands: pi x 2^k by 3.0 with exponent differences of
+/// 63 to 16000 and the expected FPREM count of each.
+fn pi_by_three_cases() -> Vec<(Fp80, Fp80, u32)> {
+    [
+        (63, 1),
+        (64, 2),
+        (100, 2),
+        (127, 3),
+        (128, 3),
+        (200, 4),
+        (1000, 16),
+        (16000, 251),
+    ]
+    .into_iter()
+    .map(|(exponent_difference, count)| {
+        (
+            Fp80::from_bits(0x4000 + exponent_difference, PI_SIGNIFICAND),
+            THREE,
+            count,
+        )
+    })
+    .collect()
+}
+
+/// The FPREM guest loop reduces an exponent difference of 64 or more in steps of 32 to 63
+/// bits and ends with the exact remainder and C2 clear (80486 PRM, FPREM).
+#[test]
+fn fprem_guest_loop_ends_with_the_exact_remainder() {
+    let mut cases = pi_by_three_cases();
+    cases.push((Fp80::from_bits(0x40C7, 0x8000_0000_0000_0000), Fp80::ONE, 2));
+    cases.push((
+        Fp80::ONE,
+        Fp80::from_bits(0x0000, 0x8000_0000_0000_0001),
+        261,
+    ));
+    for (dividend, divisor, expected_count) in cases {
+        let (count, result) = run_remainder_loop(FPREM_OPCODE, dividend, divisor);
+        let label = format!("{dividend:?} by {divisor:?}");
+        assert_eq!(count, expected_count, "{label}");
+        assert_eq!(result.st(0), exact_remainder(dividend, divisor), "{label}");
+        assert!(!result.c2(), "{label}");
+    }
+}
+
+/// The FPREM1 guest loop ends with the exact IEEE remainder, the dividend sign on a zero
+/// and the quotient bits of the whole quotient in C0, C3 and C1 (80486 PRM, FPREM1).
+#[test]
+fn fprem1_guest_loop_ends_with_the_exact_remainder_and_quotient_bits() {
+    let mut cases: Vec<(Fp80, Fp80)> = pi_by_three_cases()
+        .into_iter()
+        .flat_map(|(dividend, divisor, _)| {
+            let negative_dividend = Fp80::from_bits(dividend.exponent() | 0x8000, PI_SIGNIFICAND);
+            [(dividend, divisor), (negative_dividend, NEGATIVE_THREE)]
+        })
+        .collect();
+    cases.push((
+        Fp80::from_bits(0x61EB, 0xFA84_BABF_F680_42BC),
+        Fp80::from_bits(0xAF11, 0x8000_0000_0000_0000),
+    ));
+    cases.push((Fp80::from_bits(0x40C7, 0x8000_0000_0000_0000), Fp80::ONE));
+    for (dividend, divisor) in cases {
+        let (_, result) = run_remainder_loop(FPREM1_OPCODE, dividend, divisor);
+        let label = format!("{dividend:?} by {divisor:?}");
+        let (expected, condition_bits) = exact_ieee_remainder(dividend, divisor);
+        assert_eq!(result.st(0), expected, "{label}");
+        assert_eq!(result.st(0).sign(), expected.sign(), "{label}");
+        assert_eq!(
+            result.status_word & QUOTIENT_CONDITION_BITS,
+            condition_bits,
+            "{label}"
+        );
+        assert!(!result.c2(), "{label}");
+    }
+}
+
 #[test]
 fn fprem1_basic() {
     // FPREM1 = D9 F5. IEEE remainder.

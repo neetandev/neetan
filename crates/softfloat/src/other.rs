@@ -9,6 +9,11 @@ use crate::{
 /// more gives the same infinity or zero, also after the bias of the unmasked responses.
 const SCALE_LIMIT: i64 = 0x10_0000;
 
+/// The smallest quotient width N of an incomplete FPREM or FPREM1 step. The 80486 PRM
+/// gives N as a number between 32 and 63. Observed behaviour: a step with an exponent
+/// difference of 64 or more takes N = 32 + (difference mod 32).
+const PARTIAL_QUOTIENT_MIN_WIDTH: i32 = 32;
+
 impl Fp80 {
     /// Compute self * 2^trunc(scale) (FSCALE). The result takes the rounding mode `rc` at
     /// the extended precision for an overflow (80486 PRM table 16-12) and a denormal result.
@@ -230,39 +235,12 @@ fn remainder_impl(
     }
 
     if exp_diff >= 64 {
-        let mut current_sig = dividend_sig as u128;
+        let quotient_width = PARTIAL_QUOTIENT_MIN_WIDTH + exp_diff % PARTIAL_QUOTIENT_MIN_WIDTH;
         let divisor_128 = divisor_sig as u128;
-        let current_exp = dividend_exp;
-
-        let reduce_bits = 63i32.min(exp_diff);
-
-        for i in (0..reduce_bits).rev() {
-            let target_exp = divisor_exp + i;
-            let shift = current_exp - target_exp;
-            if !(0..128).contains(&shift) {
-                continue;
-            }
-            let shifted_divisor = divisor_128 << (shift as u32);
-            if current_sig >= shifted_divisor {
-                current_sig -= shifted_divisor;
-            }
-        }
-
-        if current_sig == 0 {
-            let result = if dividend_sign {
-                Fp80::NEG_ZERO
-            } else {
-                Fp80::ZERO
-            };
-            return (result, 0, true);
-        }
-
-        let sig64 = current_sig as u64;
-        let leading = sig64.leading_zeros();
-        let norm_sig = sig64 << leading;
-        let new_exp = current_exp - leading as i32;
-
-        let result = pack_remainder_u64(dividend_sign, new_exp, norm_sig);
+        let scaled_dividend = (dividend_sig as u128) << quotient_width;
+        let remainder_u64 = (scaled_dividend % divisor_128) as u64;
+        let result =
+            pack_remainder_u64(dividend_sign, dividend_exp - quotient_width, remainder_u64);
         return (result, 0, false);
     }
 
@@ -348,6 +326,12 @@ mod tests {
     const ONE_AND_HALF: Fp80 = Fp80::from_bits(0x3FFF, 0xC000_0000_0000_0000);
     // 2^100: exponent = 0x3FFF + 100 = 0x4063.
     const TWO_POW_100: Fp80 = Fp80::from_bits(0x4063, 0x8000_0000_0000_0000);
+    /// 2^200.
+    const TWO_POW_200: Fp80 = Fp80::from_bits(0x40C7, 0x8000_0000_0000_0000);
+    /// The significand of pi.
+    const PI_SIGNIFICAND: u64 = 0xC90F_DAA2_2168_C234;
+    /// The pseudo-denormal with the lowest significand bit set.
+    const PSEUDO_DENORMAL_ONE: Fp80 = Fp80::from_bits(0x0000, 0x8000_0000_0000_0001);
 
     fn no_exceptions() -> ExceptionFlags {
         ExceptionFlags::default()
@@ -710,6 +694,62 @@ mod tests {
         // Large exponent difference (>= 64): should return complete=false (C2=1).
         let mut ef = no_exceptions();
         let (_, _, complete) = TWO_POW_100.partial_remainder(Fp80::ONE, &mut ef);
+        assert!(!complete);
+    }
+
+    /// FPREM with an exponent difference of 64 or more reduces the dividend by a quotient of
+    /// 32 + (difference mod 32) bits, clears the quotient bits and reports C2.
+    #[test]
+    fn test_partial_remainder_reduces_by_the_quotient_width() {
+        for (exponent_difference, expected) in [
+            (64, Fp80::from_bits(0x4020, 0xA168_C234_0000_0000)),
+            (100, Fp80::from_bits(0x403F, 0xAD18_4680_0000_0000)),
+            (127, Fp80::from_bits(0x4040, 0x8000_0000_0000_0000)),
+            (128, Fp80::from_bits(0x4060, 0xA168_C234_0000_0000)),
+            (200, Fp80::from_bits(0x409E, 0xA308_D000_0000_0000)),
+            (1000, Fp80::from_bits(0x43BE, 0xA308_D000_0000_0000)),
+            (16000, Fp80::from_bits(0x7E60, 0xA168_C234_0000_0000)),
+        ] {
+            let dividend = Fp80::from_bits(0x4000 + exponent_difference, PI_SIGNIFICAND);
+            let mut ef = no_exceptions();
+            let (rem, q_bits, complete) = dividend.partial_remainder(THREE, &mut ef);
+            assert_eq!(rem, expected, "exponent difference {exponent_difference}");
+            assert_eq!(q_bits, 0);
+            assert!(!complete);
+            assert_eq!(ef, no_exceptions());
+        }
+    }
+
+    /// An exact zero of an incomplete FPREM step still reports C2.
+    #[test]
+    fn test_partial_remainder_exact_zero_is_incomplete() {
+        let mut ef = no_exceptions();
+        let (rem, q_bits, complete) = TWO_POW_200.partial_remainder(Fp80::ONE, &mut ef);
+        assert_eq!(rem, Fp80::ZERO);
+        assert_eq!(q_bits, 0);
+        assert!(!complete);
+    }
+
+    /// FPREM by a pseudo-denormal reads the divisor exponent as 1 and reports DE.
+    #[test]
+    fn test_partial_remainder_by_pseudo_denormal_reduces_the_exponent() {
+        let mut ef = no_exceptions();
+        let (rem, q_bits, complete) = Fp80::ONE.partial_remainder(PSEUDO_DENORMAL_ONE, &mut ef);
+        assert_eq!(rem, Fp80::from_bits(0x3FC0, 0x8000_0000_0000_0002));
+        assert_eq!(q_bits, 0);
+        assert!(!complete);
+        assert!(ef.denormal);
+    }
+
+    /// An incomplete FPREM1 step chops the quotient toward zero and keeps the dividend sign.
+    /// The quotient bits of the final step then identify the octant (80486 PRM, FPREM1).
+    #[test]
+    fn test_ieee_remainder_incomplete_chops_the_quotient() {
+        let dividend = Fp80::from_bits(0x4040, PI_SIGNIFICAND);
+        let mut ef = no_exceptions();
+        let (rem, q_bits, complete) = dividend.ieee_remainder(THREE, &mut ef);
+        assert_eq!(rem, Fp80::from_bits(0x4020, 0xA168_C234_0000_0000));
+        assert_eq!(q_bits, 0);
         assert!(!complete);
     }
 
