@@ -61,8 +61,56 @@ use crate::{
         ATAN_ARR, DD_LN2, DD_LN2INV2, DD_PI, DD_PI2, DD_PI4, DD_PI6, DD_SQRT3, DoubleF64, EXP_ARR,
         LN_ARR, cos_poly, dd_3pi4, eval_poly, odd_poly, sin_poly, trig_reduce,
     },
-    flag_denormal_operands,
+    flag_denormal_operands, flag_unsupported_operands,
 };
+
+/// An operand of FSIN, FCOS, FPTAN or FSINCOS with a leading exponent below this limit takes
+/// the first term of the series of the function, and FPATAN with an exponent difference
+/// below it takes the quotient or a multiple of pi/2. The second term then lies below bit 0
+/// of the 128-bit value the result rounds from.
+const FIRST_TERM_EXPONENT_LIMIT: i32 = -67;
+
+/// An operand of F2XM1 or FYL2XP1 with a leading exponent below this limit takes the first
+/// term of the series of the function. The second term, about x/2 of the first, then lies
+/// below bit 0 of the 128-bit value the result rounds from.
+const F2XM1_FYL2XP1_FIRST_TERM_LIMIT: i32 = -128;
+
+/// Returns the exponent of the leading significand bit of the finite nonzero `value`. A
+/// pseudo-denormal reads with the exponent 00..01 (80486 PRM 16.1.7).
+fn leading_exponent(value: Fp80) -> i32 {
+    value.true_exponent() - value.significand().leading_zeros() as i32
+}
+
+/// Rounds the series with the first term `term`, multiplied by 2^`scale`. The remaining
+/// terms lie below the rounding of a 64-bit significand, and `below` tells whether they
+/// reduce the magnitude of the result. A nonzero result is inexact: PE is set, UE for a tiny
+/// result, and C1 reports the direction of the rounding (80486 PRM table 15-1). A zero term
+/// is the exact result.
+fn first_term_result(term: DoubleF64, below: bool, scale: i32, ef: &mut ExceptionFlags) -> Fp80 {
+    if term.is_zero() {
+        return term.to_fp80_scaled(scale, ef);
+    }
+    term.to_fp80_with_remainder(scale, below, ef)
+}
+
+/// Returns the result of a function that equals its finite nonzero operand `value` to the
+/// first term, such as the sine of a tiny operand. `below` tells whether the remaining terms
+/// reduce the magnitude.
+fn identity_result(value: Fp80, below: bool, ef: &mut ExceptionFlags) -> Fp80 {
+    let exponent = leading_exponent(value);
+    first_term_result(
+        DoubleF64::from_fp80_scaled(value, exponent),
+        below,
+        exponent,
+        ef,
+    )
+}
+
+/// Returns whether the finite nonzero `value` takes the first term of a series with the
+/// leading exponent limit `limit`.
+fn is_first_term_operand(value: Fp80, limit: i32) -> bool {
+    leading_exponent(value) < limit
+}
 
 fn handle_single_nan(v: Fp80, ef: &mut ExceptionFlags) -> Option<Fp80> {
     if v.is_signaling_nan() {
@@ -124,6 +172,9 @@ fn compute_3pi4_f80(sign: bool, ef: &mut ExceptionFlags) -> Fp80 {
 impl Fp80 {
     /// Compute 2^self − 1 (F2XM1). Domain: −1.0 ≤ self ≤ +1.0.
     pub fn f2xm1(self, ef: &mut ExceptionFlags) -> Fp80 {
+        if flag_unsupported_operands(&[self], ef) {
+            return Fp80::INDEFINITE;
+        }
         if let Some(nan) = handle_single_nan(self, ef) {
             return nan;
         }
@@ -140,6 +191,12 @@ impl Fp80 {
             return self;
         }
 
+        if is_first_term_operand(self, F2XM1_FYL2XP1_FIRST_TERM_LIMIT) {
+            let exponent = leading_exponent(self);
+            let term = DoubleF64::from_fp80_scaled(self, exponent) * DD_LN2;
+            return first_term_result(term, self.sign(), exponent, ef);
+        }
+
         let x = DoubleF64::from_fp80(self);
         let y = x * DD_LN2;
 
@@ -151,6 +208,9 @@ impl Fp80 {
 
     /// Compute y × log₂(self) (FYL2X). self = x (ST0), y = ST1.
     pub fn fyl2x(self, y: Fp80, ef: &mut ExceptionFlags) -> Fp80 {
+        if flag_unsupported_operands(&[self, y], ef) {
+            return Fp80::INDEFINITE;
+        }
         if let Some(nan) = handle_two_nans(self, y, ef) {
             return nan;
         }
@@ -214,14 +274,18 @@ impl Fp80 {
         }
 
         let log2_x = compute_log2(x);
-        let y_dd = DoubleF64::from_fp80(y);
+        let y_exponent = leading_exponent(y);
+        let y_dd = DoubleF64::from_fp80_scaled(y, y_exponent);
         let result = y_dd * log2_x;
-        result.to_fp80(ef)
+        result.to_fp80_scaled(y_exponent, ef)
     }
 
     /// Compute y × log₂(self + 1) (FYL2XP1). self = x (ST0), y = ST1. An operand more
     /// negative than -1 is an invalid operation (80486 PRM table 16-11).
     pub fn fyl2xp1(self, y: Fp80, ef: &mut ExceptionFlags) -> Fp80 {
+        if flag_unsupported_operands(&[self, y], ef) {
+            return Fp80::INDEFINITE;
+        }
         if let Some(nan) = handle_two_nans(self, y, ef) {
             return nan;
         }
@@ -243,18 +307,29 @@ impl Fp80 {
             };
         }
 
+        let y_exponent = leading_exponent(y);
+        let y_dd = DoubleF64::from_fp80_scaled(y, y_exponent);
+
+        if is_first_term_operand(self, F2XM1_FYL2XP1_FIRST_TERM_LIMIT) {
+            let x_exponent = leading_exponent(self);
+            let term = DoubleF64::from_fp80_scaled(self, x_exponent) * y_dd * DD_LN2INV2;
+            return first_term_result(term, !self.sign(), x_exponent + y_exponent - 1, ef);
+        }
+
         let x_dd = DoubleF64::from_fp80(self);
         let two = DoubleF64::ONE + DoubleF64::ONE;
         let u = x_dd / (x_dd + two);
         let log2_1px = odd_poly(u, &LN_ARR) * DD_LN2INV2;
 
-        let y_dd = DoubleF64::from_fp80(y);
         let result = y_dd * log2_1px;
-        result.to_fp80(ef)
+        result.to_fp80_scaled(y_exponent, ef)
     }
 
     /// Compute sin(self) (FSIN). Returns (result, out_of_range).
     pub fn fsin(self, ef: &mut ExceptionFlags) -> (Fp80, bool) {
+        if flag_unsupported_operands(&[self], ef) {
+            return (Fp80::INDEFINITE, false);
+        }
         if let Some(nan) = handle_single_nan(self, ef) {
             return (nan, false);
         }
@@ -265,6 +340,9 @@ impl Fp80 {
         flag_denormal_operands(&[self], ef);
         if self.is_zero() {
             return (self, false);
+        }
+        if is_first_term_operand(self, FIRST_TERM_EXPONENT_LIMIT) {
+            return (identity_result(self, true, ef), false);
         }
         if is_trig_out_of_range(self) {
             return (self, true);
@@ -287,6 +365,9 @@ impl Fp80 {
 
     /// Compute cos(self) (FCOS). Returns (result, out_of_range).
     pub fn fcos(self, ef: &mut ExceptionFlags) -> (Fp80, bool) {
+        if flag_unsupported_operands(&[self], ef) {
+            return (Fp80::INDEFINITE, false);
+        }
         if let Some(nan) = handle_single_nan(self, ef) {
             return (nan, false);
         }
@@ -297,6 +378,9 @@ impl Fp80 {
         flag_denormal_operands(&[self], ef);
         if self.is_zero() {
             return (Fp80::ONE, false);
+        }
+        if is_first_term_operand(self, FIRST_TERM_EXPONENT_LIMIT) {
+            return (first_term_result(DoubleF64::ONE, true, 0, ef), false);
         }
         if is_trig_out_of_range(self) {
             return (self, true);
@@ -319,6 +403,9 @@ impl Fp80 {
 
     /// Compute (sin(self), cos(self)) simultaneously (FSINCOS).
     pub fn fsincos(self, ef: &mut ExceptionFlags) -> (Fp80, Fp80, bool) {
+        if flag_unsupported_operands(&[self], ef) {
+            return (Fp80::INDEFINITE, Fp80::INDEFINITE, false);
+        }
         if let Some(nan) = handle_single_nan(self, ef) {
             return (nan, nan, false);
         }
@@ -329,6 +416,10 @@ impl Fp80 {
         flag_denormal_operands(&[self], ef);
         if self.is_zero() {
             return (self, Fp80::ONE, false);
+        }
+        if is_first_term_operand(self, FIRST_TERM_EXPONENT_LIMIT) {
+            let cosine = first_term_result(DoubleF64::ONE, true, 0, ef);
+            return (identity_result(self, true, ef), cosine, false);
         }
         if is_trig_out_of_range(self) {
             return (self, Fp80::ONE, true);
@@ -360,6 +451,9 @@ impl Fp80 {
 
     /// Compute tan(self) (FPTAN). Returns (tan, out_of_range).
     pub fn fptan(self, ef: &mut ExceptionFlags) -> (Fp80, bool) {
+        if flag_unsupported_operands(&[self], ef) {
+            return (Fp80::INDEFINITE, false);
+        }
         if let Some(nan) = handle_single_nan(self, ef) {
             return (nan, false);
         }
@@ -370,6 +464,9 @@ impl Fp80 {
         flag_denormal_operands(&[self], ef);
         if self.is_zero() {
             return (self, false);
+        }
+        if is_first_term_operand(self, FIRST_TERM_EXPONENT_LIMIT) {
+            return (identity_result(self, false, ef), false);
         }
         if is_trig_out_of_range(self) {
             return (self, true);
@@ -398,6 +495,9 @@ impl Fp80 {
     pub fn fpatan(self, x: Fp80, ef: &mut ExceptionFlags) -> Fp80 {
         let y = self;
 
+        if flag_unsupported_operands(&[y, x], ef) {
+            return Fp80::INDEFINITE;
+        }
         if let Some(nan) = handle_two_nans(y, x, ef) {
             return nan;
         }
@@ -442,8 +542,23 @@ impl Fp80 {
             return if y_sign { Fp80::NEG_ZERO } else { Fp80::ZERO };
         }
 
-        let y_dd = DoubleF64::from_fp80(y.abs());
-        let x_dd = DoubleF64::from_fp80(x.abs());
+        let y_exponent = leading_exponent(y);
+        let x_exponent = leading_exponent(x);
+        if y_exponent - x_exponent < FIRST_TERM_EXPONENT_LIMIT {
+            if x_sign {
+                return compute_pi_f80(y_sign, ef);
+            }
+            let quotient = DoubleF64::from_fp80_scaled(y, y_exponent)
+                / DoubleF64::from_fp80_scaled(x, x_exponent);
+            return first_term_result(quotient, true, y_exponent - x_exponent, ef);
+        }
+        if x_exponent - y_exponent < FIRST_TERM_EXPONENT_LIMIT {
+            return compute_pi2_f80(y_sign, ef);
+        }
+
+        let scale = y_exponent.max(x_exponent);
+        let y_dd = DoubleF64::from_fp80_scaled(y.abs(), scale);
+        let x_dd = DoubleF64::from_fp80_scaled(x.abs(), scale);
 
         let swapped = y_dd.compare_abs(x_dd) == Ordering::Greater;
         let (num, den) = if swapped { (x_dd, y_dd) } else { (y_dd, x_dd) };
@@ -1105,5 +1220,150 @@ mod tests {
         assert!(!result.is_zero());
         assert!(!result.is_negative());
         assert_eq!(result.true_exponent(), -1);
+    }
+
+    /// A pseudo-denormal: exponent field 0 with the J-bit set.
+    const PSEUDO_DENORMAL: Fp80 = Fp80::from_bits(0x0000, 0x8000_0000_0000_0001);
+    /// The value of `PSEUDO_DENORMAL` with the exponent field 1.
+    const PSEUDO_DENORMAL_VALUE: Fp80 = Fp80::from_bits(0x0001, 0x8000_0000_0000_0001);
+    /// A denormal.
+    const DENORMAL: Fp80 = Fp80::from_bits(0x0000, 0x4000_0000_0000_0000);
+    /// 2^-4095, a normal far below the f64 range.
+    const TINY_NORMAL: Fp80 = Fp80::from_bits(0x3000, 0x8000_0000_0000_0000);
+
+    #[test]
+    fn trigonometric_functions_of_a_tiny_operand_take_the_first_term() {
+        let mut ef = no_exceptions();
+        assert_eq!(
+            PSEUDO_DENORMAL.fsin(&mut ef),
+            (PSEUDO_DENORMAL_VALUE, false)
+        );
+        assert!(ef.denormal && ef.precision && !ef.underflow && ef.rounded_up);
+
+        let mut ef = no_exceptions();
+        assert_eq!(PSEUDO_DENORMAL.fcos(&mut ef), (Fp80::ONE, false));
+        assert!(ef.denormal && ef.precision && ef.rounded_up);
+
+        let mut ef = no_exceptions();
+        assert_eq!(
+            PSEUDO_DENORMAL.fptan(&mut ef),
+            (PSEUDO_DENORMAL_VALUE, false)
+        );
+        assert!(ef.denormal && ef.precision && !ef.rounded_up);
+
+        let mut ef = no_exceptions();
+        assert_eq!(
+            PSEUDO_DENORMAL.fsincos(&mut ef),
+            (PSEUDO_DENORMAL_VALUE, Fp80::ONE, false)
+        );
+        assert!(ef.denormal && ef.precision && ef.rounded_up);
+
+        let mut ef = no_exceptions();
+        assert_eq!(DENORMAL.fsin(&mut ef), (DENORMAL, false));
+        assert!(ef.denormal && ef.precision && ef.underflow && ef.rounded_up);
+
+        let mut ef = no_exceptions();
+        let negative = TINY_NORMAL.negate();
+        assert_eq!(negative.fsin(&mut ef), (negative, false));
+        assert!(ef.precision && ef.rounded_up && !ef.denormal && !ef.underflow);
+
+        let mut ef = no_exceptions();
+        assert_eq!(negative.fptan(&mut ef), (negative, false));
+        assert!(ef.precision && !ef.rounded_up);
+    }
+
+    #[test]
+    fn trigonometric_functions_at_the_first_term_limit_report_the_rounding() {
+        for exponent in [0x3FBD, 0x3FBC, 0x3FBB, 0x3F9B] {
+            let operand = Fp80::from_bits(exponent, 0x8000_0000_0000_0000);
+            let mut ef = no_exceptions();
+            assert_eq!(operand.fsin(&mut ef), (operand, false));
+            assert!(ef.precision && ef.rounded_up, "{exponent:04X}");
+
+            let mut ef = no_exceptions();
+            assert_eq!(operand.fcos(&mut ef), (Fp80::ONE, false));
+            assert!(ef.precision && ef.rounded_up, "{exponent:04X}");
+
+            let mut ef = no_exceptions();
+            assert_eq!(operand.fptan(&mut ef), (operand, false));
+            assert!(ef.precision && !ef.rounded_up, "{exponent:04X}");
+
+            let mut ef = no_exceptions();
+            assert_eq!(operand.fsincos(&mut ef), (operand, Fp80::ONE, false));
+            assert!(ef.precision && ef.rounded_up, "{exponent:04X}");
+        }
+    }
+
+    #[test]
+    fn exponential_and_logarithm_above_the_first_term_limit_keep_the_second_term() {
+        let mut ef = no_exceptions();
+        let result = Fp80::from_bits(0xBFBB, 0xB0E7_4E9F_66B6_93E4).f2xm1(&mut ef);
+        assert_eq!(result, Fp80::from_bits(0xBFBA, 0xF53D_89DA_8272_BBC3));
+        assert!(ef.precision && !ef.rounded_up);
+
+        let mut ef = no_exceptions();
+        let x = Fp80::from_bits(0xBFB9, 0x82A0_649A_3B40_0000);
+        let y = Fp80::from_bits(0x4021, 0xFF82_A9C9_B040_0000);
+        let result = x.fyl2xp1(y, &mut ef);
+        assert_eq!(result, Fp80::from_bits(0xBFDC, 0xBC18_05C4_45F3_3A8A));
+        assert!(ef.precision && ef.rounded_up);
+    }
+
+    #[test]
+    fn logarithm_of_a_tiny_operand_times_zero_is_exact() {
+        for x in [TINY_NORMAL, TINY_NORMAL.negate()] {
+            for y in [Fp80::ZERO, Fp80::NEG_ZERO] {
+                let mut ef = no_exceptions();
+                assert!(x.fyl2xp1(y, &mut ef).is_zero(), "{x:?} {y:?}");
+                assert_eq!(ef, no_exceptions(), "{x:?} {y:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn exponential_and_logarithm_of_a_tiny_operand_take_the_first_term() {
+        let mut ef = no_exceptions();
+        let result = PSEUDO_DENORMAL.f2xm1(&mut ef);
+        assert_eq!(result, Fp80::from_bits(0x0000, 0x58B9_0BFB_E8E7_BCD7));
+        assert!(ef.denormal && ef.underflow && ef.precision && ef.rounded_up);
+
+        let mut ef = no_exceptions();
+        let result = TINY_NORMAL.f2xm1(&mut ef);
+        assert_eq!(result, Fp80::from_bits(0x2FFF, 0xB172_17F7_D1CF_79AC));
+        assert!(ef.precision && ef.rounded_up && !ef.underflow);
+
+        let mut ef = no_exceptions();
+        let result = PSEUDO_DENORMAL.fyl2xp1(Fp80::ONE, &mut ef);
+        assert_eq!(result, Fp80::from_bits(0x0001, 0xB8AA_3B29_5C17_F0BD));
+        assert!(ef.denormal && ef.precision && !ef.rounded_up && !ef.underflow);
+
+        let mut ef = no_exceptions();
+        let result = TINY_NORMAL.fyl2xp1(Fp80::ONE, &mut ef);
+        assert_eq!(result, Fp80::from_bits(0x3000, 0xB8AA_3B29_5C17_F0BC));
+        assert!(ef.precision && ef.rounded_up);
+    }
+
+    #[test]
+    fn arctangent_of_operands_out_of_the_f64_range() {
+        let mut ef = no_exceptions();
+        let result = PSEUDO_DENORMAL.fpatan(Fp80::ONE, &mut ef);
+        assert_eq!(result, PSEUDO_DENORMAL_VALUE);
+        assert!(ef.denormal && ef.precision && ef.rounded_up && !ef.underflow);
+
+        let mut ef = no_exceptions();
+        let result = Fp80::ONE.fpatan(PSEUDO_DENORMAL, &mut ef);
+        assert_eq!(result, Fp80::from_bits(0x3FFF, 0xC90F_DAA2_2168_C235));
+        assert!(ef.denormal && ef.precision && ef.rounded_up);
+
+        let mut ef = no_exceptions();
+        let result = PSEUDO_DENORMAL.fpatan(NEGATIVE_ONE, &mut ef);
+        assert_eq!(result, Fp80::PI_UP);
+
+        let mut quarter_flags = no_exceptions();
+        let quarter = Fp80::ONE.fpatan(Fp80::ONE, &mut quarter_flags);
+        let mut ef = no_exceptions();
+        assert_eq!(PSEUDO_DENORMAL.fpatan(PSEUDO_DENORMAL, &mut ef), quarter);
+        let huge = Fp80::from_bits(0x7000, 0x8000_0000_0000_0000);
+        assert_eq!(huge.fpatan(huge, &mut ef), quarter);
     }
 }

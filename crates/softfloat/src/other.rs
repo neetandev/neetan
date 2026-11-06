@@ -1,6 +1,9 @@
 //! Other FPU operations: scale, extract, partial remainder, IEEE remainder.
 
-use crate::{BIAS, ExceptionFlags, Fp80, Precision, RoundingMode, flag_denormal_operands};
+use crate::{
+    BIAS, ExceptionFlags, Fp80, Precision, RoundingMode, flag_denormal_operands,
+    flag_unsupported_operands,
+};
 
 /// The magnitude an FSCALE scale factor is clamped to. Every factor of this magnitude or
 /// more gives the same infinity or zero, also after the bias of the unmasked responses.
@@ -10,6 +13,9 @@ impl Fp80 {
     /// Compute self * 2^trunc(scale) (FSCALE). The result takes the rounding mode `rc` at
     /// the extended precision for an overflow (80486 PRM table 16-12) and a denormal result.
     pub fn scale(self, scale: Fp80, rc: RoundingMode, ef: &mut ExceptionFlags) -> Fp80 {
+        if flag_unsupported_operands(&[self, scale], ef) {
+            return Fp80::INDEFINITE;
+        }
         if self.is_nan() || scale.is_nan() {
             return Fp80::propagate_nan(self, scale, ef);
         }
@@ -63,6 +69,9 @@ impl Fp80 {
     /// Returns (significand with exponent 0x3FFF, exponent as Fp80).
     /// After execution: ST(0) = significand (first element), ST(1) = exponent (second element).
     pub fn extract(self, ef: &mut ExceptionFlags) -> (Fp80, Fp80) {
+        if flag_unsupported_operands(&[self], ef) {
+            return (Fp80::INDEFINITE, Fp80::INDEFINITE);
+        }
         if self.is_nan() {
             if self.is_signaling_nan() {
                 ef.invalid = true;
@@ -154,6 +163,10 @@ fn remainder_impl(
     round_nearest: bool,
     ef: &mut ExceptionFlags,
 ) -> (Fp80, u8, bool) {
+    if flag_unsupported_operands(&[dividend, divisor], ef) {
+        return (Fp80::INDEFINITE, 0, true);
+    }
+
     if dividend.is_nan() || divisor.is_nan() {
         let nan = Fp80::propagate_nan(dividend, divisor, ef);
         return (nan, 0, true);
@@ -176,7 +189,7 @@ fn remainder_impl(
     }
 
     if divisor.is_infinity() {
-        return (dividend, 0, true);
+        return (dividend.canonical(), 0, true);
     }
 
     let dividend_sign = dividend.sign();
@@ -213,7 +226,7 @@ fn remainder_impl(
                 return (result, 1, true);
             }
         }
-        return (dividend, 0, true);
+        return (dividend.canonical(), 0, true);
     }
 
     if exp_diff >= 64 {

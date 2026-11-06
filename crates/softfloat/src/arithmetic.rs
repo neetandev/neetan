@@ -1,6 +1,8 @@
 //! Core arithmetic operations: add, sub, mul, div, sqrt, round_to_int.
 
-use crate::{ExceptionFlags, Fp80, Precision, RoundingMode, shift_right_sticky};
+use crate::{
+    ExceptionFlags, Fp80, Precision, RoundingMode, flag_unsupported_operands, shift_right_sticky,
+};
 
 impl Fp80 {
     /// Compute `self + other`. Respects precision control and rounding mode.
@@ -11,6 +13,10 @@ impl Fp80 {
         pc: Precision,
         ef: &mut ExceptionFlags,
     ) -> Fp80 {
+        if flag_unsupported_operands(&[self, other], ef) {
+            return Fp80::INDEFINITE;
+        }
+
         // NaN handling
         if self.is_nan() || other.is_nan() {
             return Fp80::propagate_nan(self, other, ef);
@@ -52,10 +58,10 @@ impl Fp80 {
             };
         }
         if self.is_zero() {
-            return other;
+            return other.canonical();
         }
         if other.is_zero() {
-            return self;
+            return self.canonical();
         }
 
         // Extract components
@@ -159,6 +165,10 @@ impl Fp80 {
     ) -> Fp80 {
         let result_sign = self.sign() ^ other.sign();
 
+        if flag_unsupported_operands(&[self, other], ef) {
+            return Fp80::INDEFINITE;
+        }
+
         // NaN handling
         if self.is_nan() || other.is_nan() {
             return Fp80::propagate_nan(self, other, ef);
@@ -251,6 +261,10 @@ impl Fp80 {
         ef: &mut ExceptionFlags,
     ) -> Fp80 {
         let result_sign = self.sign() ^ other.sign();
+
+        if flag_unsupported_operands(&[self, other], ef) {
+            return Fp80::INDEFINITE;
+        }
 
         // NaN handling
         if self.is_nan() || other.is_nan() {
@@ -351,6 +365,10 @@ impl Fp80 {
 
     /// Compute `√self`. Respects precision control and rounding mode.
     pub fn sqrt(self, rc: RoundingMode, pc: Precision, ef: &mut ExceptionFlags) -> Fp80 {
+        if flag_unsupported_operands(&[self], ef) {
+            return Fp80::INDEFINITE;
+        }
+
         // NaN handling
         if self.is_signaling_nan() {
             ef.invalid = true;
@@ -417,6 +435,10 @@ impl Fp80 {
     /// Round to integer value, returned as Fp80 (FRNDINT).
     /// Does not respect precision control - always uses full 64-bit significand.
     pub fn round_to_int(self, rc: RoundingMode, ef: &mut ExceptionFlags) -> Fp80 {
+        if flag_unsupported_operands(&[self], ef) {
+            return Fp80::INDEFINITE;
+        }
+
         // NaN handling
         if self.is_signaling_nan() {
             ef.invalid = true;

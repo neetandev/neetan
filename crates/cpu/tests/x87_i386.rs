@@ -4152,3 +4152,104 @@ fn compare_stopped_by_an_unmasked_denormal_sets_the_condition_codes() {
     assert!(!result.c3() && !result.c2() && !result.c0());
     assert_eq!(result.status_word & 0x80FF, 0x8082);
 }
+
+/// An unnormal with a zero significand.
+const UNNORMAL_ZERO_SIGNIFICAND: Fp80 = Fp80::from_bits(0x4000, 0x0000_0000_0000_0000);
+/// A pseudo-NaN with the quiet bit set.
+const QUIET_PSEUDO_NAN: Fp80 = Fp80::from_bits(0x7FFF, 0x4000_0000_0000_0000);
+/// Every unsupported encoding class (80486 PRM 16.1.7).
+const UNSUPPORTED_OPERANDS: [Fp80; 6] = [
+    UNNORMAL,
+    UNNORMAL_ZERO_SIGNIFICAND,
+    PSEUDO_INFINITY,
+    NEGATIVE_PSEUDO_INFINITY,
+    PSEUDO_NAN,
+    QUIET_PSEUDO_NAN,
+];
+
+#[test]
+fn fdiv_by_an_unsupported_encoding_raises_invalid() {
+    for divisor in [PSEUDO_INFINITY, UNNORMAL_ZERO_SIGNIFICAND] {
+        let result = run_x87(&[0xD8, 0xF1], &[Fp80::ONE, divisor]);
+        assert_eq!(result.st(0), Fp80::INDEFINITE, "{divisor:?}");
+        assert_eq!(result.st(1), divisor, "{divisor:?}");
+        assert_eq!(result.status_word & 0x80FF, 0x0001, "{divisor:?}");
+
+        let result = run_x87_with_cw(&[0xD8, 0xF1], &[Fp80::ONE, divisor], CW_INVALID_UNMASKED);
+        assert_eq!(result.st(0), Fp80::ONE, "{divisor:?}");
+        assert_eq!(result.st(1), divisor, "{divisor:?}");
+        assert_eq!(result.status_word & 0x80FF, 0x8081, "{divisor:?}");
+    }
+}
+
+#[test]
+fn arithmetic_on_an_unsupported_encoding_returns_the_indefinite() {
+    let binary: [&[u8]; 11] = [
+        &[0xD8, 0xC1],
+        &[0xD8, 0xE1],
+        &[0xD8, 0xC9],
+        &[0xD8, 0xF1],
+        &[0xD8, 0xF9],
+        &[0xD9, 0xFD],
+        &[0xD9, 0xF8],
+        &[0xD9, 0xF5],
+        &[0xD9, 0xF1],
+        &[0xD9, 0xF3],
+        &[0xD9, 0xF9],
+    ];
+    let unary: [&[u8]; 5] = [
+        &[0xD9, 0xFA],
+        &[0xD9, 0xFC],
+        &[0xD9, 0xFE],
+        &[0xD9, 0xFF],
+        &[0xD9, 0xF0],
+    ];
+    for operand in UNSUPPORTED_OPERANDS {
+        let cases = binary
+            .iter()
+            .flat_map(|program| {
+                [
+                    (*program, [operand, Fp80::ONE]),
+                    (*program, [Fp80::ONE, operand]),
+                ]
+            })
+            .chain(unary.iter().map(|program| (*program, [operand, Fp80::ONE])));
+        for (program, stack) in cases {
+            let result = run_x87(program, &stack);
+            assert_eq!(result.st(0), Fp80::INDEFINITE, "{program:02X?} {stack:?}");
+            assert_eq!(
+                result.status_word & 0x00FF,
+                0x0001,
+                "{program:02X?} {stack:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn compare_with_an_unsupported_encoding_is_not_comparable() {
+    let programs: [&[u8]; 3] = [&[0xD8, 0xD1], &[0xDD, 0xE1], &[0xD9, 0xE4]];
+    for operand in UNSUPPORTED_OPERANDS {
+        for program in programs {
+            let result = run_x87(program, &[operand, Fp80::ONE]);
+            assert!(result.c3() && result.c2() && result.c0(), "{program:02X?}");
+            assert_eq!(result.status_word & 0x00FF, 0x0001, "{program:02X?}");
+        }
+    }
+}
+
+#[test]
+fn pseudo_denormal_result_takes_the_exponent_field_one() {
+    let value = Fp80::from_bits(0x0001, 0x8000_0000_0000_0000);
+    let result = run_x87(&[0xD8, 0xC1], &[POSITIVE_PSEUDO_DENORMAL, Fp80::ZERO]);
+    assert_eq!(result.st(0), value);
+    assert_eq!(result.status_word & 0x00FF, 0x0002);
+
+    let result = run_x87(&[0xD9, 0xF8], &[POSITIVE_PSEUDO_DENORMAL, Fp80::ONE]);
+    assert_eq!(result.st(0), value);
+    assert_eq!(result.status_word & 0x00FF, 0x0002);
+
+    let result = run_x87(&[0xD9, 0xFE], &[POSITIVE_PSEUDO_DENORMAL]);
+    assert_eq!(result.st(0), value);
+    assert_eq!(result.status_word & 0x00FF, 0x0022);
+}
