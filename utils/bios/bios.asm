@@ -28,6 +28,13 @@ VEC_BIOS_INIT   equ 0xF1        ; BIOS init: memory clear, vector setup, BDA, bo
 VEC_BOOTSTRAP   equ 0xF2        ; Bootstrap: load and execute boot sector
 VEC_N88_BASIC   equ 0xF3        ; N88-BASIC ROM entry was invoked
 
+; Boot entry constants.
+IPL_SEG         equ 0x1FC0      ; Segment the bootstrap loads the IPL to
+TEXT_VRAM_SEG   equ 0xA000      ; Text VRAM character plane
+TEXT_COLUMNS    equ 80          ; Text cells in one row
+SYSTEM_DISK_ROW equ 12          ; Text row of the system disk message
+SYSTEM_DISK_COLUMN equ 22       ; Text column of the system disk message
+
 ; --- HLE interrupt stub macros ---
 ;
 ; Each stub saves AX/DX (clobbered by the trap OUT) and writes the vector number
@@ -142,13 +149,14 @@ dos330_probe:
     times BIOS_BASE_OFF - ($ - $$) db 0xFF
 
 ; --- Metadata header at fixed offset 0x15800 ---
-; The Rust side reads these at BIOS_CODE_OFFSET + 0/2/4/6 to find entry points.
+; The Rust side reads these at BIOS_CODE_OFFSET + 0/2/4/6/8 to find entry points.
 
 metadata:
     dw vector_table     - BIOS_BASE_OFF     ; +0: vector table offset
     dw itf_entry        - BIOS_BASE_OFF     ; +2: ITF entry point offset
     dw bios_init_entry  - BIOS_BASE_OFF     ; +4: BIOS init entry offset
     dw bootstrap_entry  - BIOS_BASE_OFF     ; +6: bootstrap entry offset
+    dw ipl_call         - BIOS_BASE_OFF     ; +8: IPL call entry offset
 
 ; --- Shared IRET stub ---
 ; The exception and software vectors without a handler (INT 00h-07h,
@@ -440,6 +448,66 @@ vector_table:
     dw 0x67, int_67h_handler - BIOS_BASE_OFF   ; INT 67h - EMS
     dw 0xDC, int_dch_handler - BIOS_BASE_OFF   ; INT DCh - NEC DOS extension
     dw 0xFFFF                                  ; Sentinel
+
+; --- IPL call ---
+; Far-calls the IPL at 1FC0:0000. An IPL that returns shows the system disk
+; message and halts with interrupts disabled. The screen is set to 80x25 text
+; with the simple graphics attribute mode, cleared with spaces of attribute
+; E1h (white) and the message is written at row 12, column 22. Each kanji
+; fills the left cell of its two cells.
+ipl_call:
+    call IPL_SEG:0x0000
+    mov  ax, 0x0A04                     ; CRT mode: 80x25, simple graphics
+    int  0x18
+    mov  ah, 0x0C                       ; Text display on
+    int  0x18
+    mov  ah, 0x16                       ; Fill the text screen
+    mov  dx, 0xE120                     ; DH = attribute, DL = space
+    int  0x18
+    cli
+    push cs
+    pop  ds
+    mov  ax, TEXT_VRAM_SEG
+    mov  es, ax
+    mov  si, system_disk_message - BIOS_BASE_OFF
+    mov  di, (SYSTEM_DISK_ROW * TEXT_COLUMNS + SYSTEM_DISK_COLUMN) * 2
+    mov  cx, (system_disk_message_end - system_disk_message) / 2
+    cld
+.put_kanji:
+    lodsw
+    stosw
+    add  di, 2                          ; Skip the right cell of the kanji
+    loop .put_kanji
+.halt:
+    hlt
+    jmp  .halt
+
+; Writes one JIS X 0208 character as a text VRAM cell: row code, column code.
+%macro jis_cell 1               ; %1 = JIS code
+    db (%1 >> 8) - 0x20, %1 & 0xFF
+%endmacro
+
+; システムディスクをセットしてください
+system_disk_message:
+    jis_cell 0x2537                     ; シ
+    jis_cell 0x2539                     ; ス
+    jis_cell 0x2546                     ; テ
+    jis_cell 0x2560                     ; ム
+    jis_cell 0x2547                     ; デ
+    jis_cell 0x2523                     ; ィ
+    jis_cell 0x2539                     ; ス
+    jis_cell 0x252F                     ; ク
+    jis_cell 0x2472                     ; を
+    jis_cell 0x253B                     ; セ
+    jis_cell 0x2543                     ; ッ
+    jis_cell 0x2548                     ; ト
+    jis_cell 0x2437                     ; し
+    jis_cell 0x2446                     ; て
+    jis_cell 0x242F                     ; く
+    jis_cell 0x2440                     ; だ
+    jis_cell 0x2435                     ; さ
+    jis_cell 0x2424                     ; い
+system_disk_message_end:
 
 
 ; ===========================================================================

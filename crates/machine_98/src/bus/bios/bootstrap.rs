@@ -12,6 +12,20 @@ use super::{
 };
 use crate::TraceSink;
 
+/// Segment of the BIOS code in the HLE ROM.
+const BIOS_CODE_SEGMENT: u16 = 0xFD80;
+
+/// ROM offset of the BIOS code region and its metadata header.
+const BIOS_CODE_OFFSET: usize = 0x15800;
+
+/// Metadata header slot with the offset of the ROM entry that far-calls the
+/// IPL at 1FC0:0000. When the IPL returns, the entry shows the system disk
+/// message and halts.
+const IPL_CALL_HEADER_SLOT: usize = 8;
+
+/// FLAGS of the IPL call entry: IF and the reserved bit 1.
+const IPL_CALL_FLAGS: u16 = 0x0202;
+
 impl<T: TraceSink> Pc9801Bus<T> {
     fn try_boot_fdd(&mut self, cpu: &mut impl Cpu, drive: usize) -> bool {
         if !self.floppy.has_drive(drive) {
@@ -73,18 +87,25 @@ impl<T: TraceSink> Pc9801Bus<T> {
             self.memory.write_byte(0x1FC00 + i as u32, byte);
         }
         self.memory.state.ram[0x0584] = boot_device;
+        let ipl_call_offset = u16::from_le_bytes([
+            self.memory
+                .rom_byte(BIOS_CODE_OFFSET + IPL_CALL_HEADER_SLOT),
+            self.memory
+                .rom_byte(BIOS_CODE_OFFSET + IPL_CALL_HEADER_SLOT + 1),
+        ]);
         let iret_base = iret_stack_base(cpu);
-        self.write_mem_word(iret_base, 0x0000); // IP
-        self.write_mem_word(iret_base + 2, 0x1FC0); // CS
-        self.write_mem_word(iret_base + 4, 0x0002); // FLAGS (reserved bit 1 set)
+        self.write_mem_word(iret_base, ipl_call_offset);
+        self.write_mem_word(iret_base + 2, BIOS_CODE_SEGMENT);
+        self.write_mem_word(iret_base + 4, IPL_CALL_FLAGS);
         true
     }
 
     pub(super) fn hle_bootstrap(&mut self, cpu: &mut impl Cpu) {
-        // The HLE dispatch uses IRET to transfer control to the boot sector.
-        // We rewrite the IRET frame (6 bytes: IP, CS, FLAGS) at the current
-        // SP to redirect execution. SP is left at its current value (set to
-        // 0x7C00 by the ITF entry stub). After IRET, SP becomes SP+6.
+        // The HLE dispatch uses IRET to transfer control to the ROM entry
+        // that far-calls the boot sector. We rewrite the IRET frame (6 bytes:
+        // IP, CS, FLAGS) at the current SP to redirect execution. SP is left
+        // at its current value (set to 0x7C00 by the ITF entry stub). After
+        // IRET, SP becomes SP+6.
         //
         // The stack must NOT be placed near 0x0600 because boot sectors
         // commonly load program data to segment 0060:0000 (linear 0x0600),
