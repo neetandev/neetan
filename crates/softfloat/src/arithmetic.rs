@@ -58,10 +58,10 @@ impl Fp80 {
             };
         }
         if self.is_zero() {
-            return other.canonical();
+            return other.round_to_precision(rc, pc, ef);
         }
         if other.is_zero() {
-            return self.canonical();
+            return self.round_to_precision(rc, pc, ef);
         }
 
         // Extract components
@@ -142,6 +142,19 @@ impl Fp80 {
         let rp_exp = result_exp + 1 - leading as i32;
 
         Fp80::round_and_pack(result_sign, rp_exp, normalized_sig, rc, pc, ef)
+    }
+
+    /// Returns the finite nonzero `self` rounded to the precision `pc` with the rounding
+    /// mode `rc`. Overflow and underflow take the responses of `round_and_pack`.
+    fn round_to_precision(self, rc: RoundingMode, pc: Precision, ef: &mut ExceptionFlags) -> Fp80 {
+        Fp80::round_and_pack(
+            self.sign(),
+            self.true_exponent(),
+            (self.significand() as u128) << 64,
+            rc,
+            pc,
+            ef,
+        )
     }
 
     /// Compute `self − other`. Equivalent to `add(self, negate(other), rc, pc)`.
@@ -1257,6 +1270,153 @@ mod tests {
         let mut ef = no_exceptions();
         let result = Fp80::ONE.add(HALF, RoundingMode::NearestEven, Precision::Double, &mut ef);
         assert_eq!(result, ONE_AND_HALF);
+    }
+
+    /// A zero addend leaves the other operand rounded to the precision control and the
+    /// rounding mode with PE and the round-up flag (80486 PRM 15.2.4 and 16.2.6).
+    #[test]
+    fn test_add_zero_rounds_to_precision_control() {
+        let one_plus_tiny = Fp80::from_bits(0x3FFF, 0x8000_0000_0000_0010);
+        let below_two = Fp80::from_bits(0x3FFF, 0xFFFF_FFFF_FFFF_FFFF);
+        for (value, rc, pc, expected, rounded_up) in [
+            (
+                one_plus_tiny,
+                RoundingMode::NearestEven,
+                Precision::Single,
+                Fp80::ONE,
+                false,
+            ),
+            (
+                one_plus_tiny,
+                RoundingMode::Up,
+                Precision::Single,
+                Fp80::from_bits(0x3FFF, 0x8000_0100_0000_0000),
+                true,
+            ),
+            (
+                one_plus_tiny.negate(),
+                RoundingMode::Down,
+                Precision::Single,
+                Fp80::from_bits(0xBFFF, 0x8000_0100_0000_0000),
+                true,
+            ),
+            (
+                one_plus_tiny,
+                RoundingMode::Up,
+                Precision::Double,
+                Fp80::from_bits(0x3FFF, 0x8000_0000_0000_0800),
+                true,
+            ),
+            (
+                below_two,
+                RoundingMode::NearestEven,
+                Precision::Double,
+                TWO,
+                true,
+            ),
+            (
+                below_two,
+                RoundingMode::Zero,
+                Precision::Single,
+                Fp80::from_bits(0x3FFF, 0xFFFF_FF00_0000_0000),
+                false,
+            ),
+        ] {
+            for (augend, addend) in [(Fp80::ZERO, value), (value, Fp80::NEG_ZERO)] {
+                let mut ef = no_exceptions();
+                let result = augend.add(addend, rc, pc, &mut ef);
+                assert_eq!(result, expected, "{value:?} {rc:?} {pc:?}");
+                assert!(ef.precision);
+                assert_eq!(ef.rounded_up, rounded_up, "{value:?} {rc:?} {pc:?}");
+            }
+            let mut ef = no_exceptions();
+            let result = Fp80::ZERO.sub(value.negate(), rc, pc, &mut ef);
+            assert_eq!(result, expected, "{value:?} {rc:?} {pc:?}");
+            assert!(ef.precision);
+        }
+    }
+
+    /// A zero addend keeps an exactly representable operand without flags.
+    #[test]
+    fn test_add_zero_keeps_an_exact_operand() {
+        for pc in [Precision::Single, Precision::Double, Precision::Extended] {
+            let mut ef = no_exceptions();
+            let result = Fp80::ZERO.add(ONE_AND_HALF, RoundingMode::Up, pc, &mut ef);
+            assert_eq!(result, ONE_AND_HALF);
+            assert_eq!(ef, no_exceptions());
+        }
+    }
+
+    /// A zero addend with a denormal operand rounds it to the precision control. The masked
+    /// underflow reports UE and PE for an inexact tiny result and the round up sets the
+    /// round-up flag (80486 PRM 16.2.5.2).
+    #[test]
+    fn test_add_zero_rounds_a_denormal_operand() {
+        let mut ef = no_exceptions();
+        let denormal = Fp80::from_bits(0x0000, 0x4000_0000_0000_0123);
+        let result = Fp80::ZERO.add(
+            denormal,
+            RoundingMode::NearestEven,
+            Precision::Single,
+            &mut ef,
+        );
+        assert_eq!(result, Fp80::from_bits(0x0000, 0x4000_0000_0000_0000));
+        assert!(ef.denormal && ef.underflow && ef.precision);
+
+        let mut ef = no_exceptions();
+        let result =
+            POSITIVE_DENORMAL.add(Fp80::ZERO, RoundingMode::Up, Precision::Double, &mut ef);
+        assert_eq!(result, Fp80::from_bits(0x0000, 0x0000_0000_0000_0800));
+        assert!(ef.denormal && ef.underflow && ef.precision && ef.rounded_up);
+
+        let mut ef = no_exceptions();
+        let result = Fp80::ZERO.add(
+            POSITIVE_DENORMAL,
+            RoundingMode::NearestEven,
+            Precision::Extended,
+            &mut ef,
+        );
+        assert_eq!(result, POSITIVE_DENORMAL);
+        assert!(ef.denormal && ef.tiny);
+        assert!(!ef.underflow && !ef.precision);
+    }
+
+    /// A zero addend with the largest normal operand overflows when single precision rounds
+    /// it up (80486 PRM 16.2.5.1).
+    #[test]
+    fn test_add_zero_overflows_at_reduced_precision() {
+        let mut ef = no_exceptions();
+        let result = Fp80::ZERO.add(
+            LARGEST_NORMAL,
+            RoundingMode::NearestEven,
+            Precision::Single,
+            &mut ef,
+        );
+        assert_eq!(result, Fp80::INFINITY);
+        assert!(ef.overflow && ef.precision);
+    }
+
+    /// The sum of two zeros and an exact cancellation give +0, and -0 in round down.
+    #[test]
+    fn test_add_exact_zero_sign() {
+        for rc in [
+            RoundingMode::NearestEven,
+            RoundingMode::Down,
+            RoundingMode::Up,
+            RoundingMode::Zero,
+        ] {
+            let expected = if rc == RoundingMode::Down {
+                Fp80::NEG_ZERO
+            } else {
+                Fp80::ZERO
+            };
+            let mut ef = no_exceptions();
+            let sum = Fp80::ZERO.add(Fp80::NEG_ZERO, rc, Precision::Single, &mut ef);
+            assert_eq!(sum, expected, "{rc:?}");
+            let difference = ONE_AND_HALF.sub(ONE_AND_HALF, rc, Precision::Single, &mut ef);
+            assert_eq!(difference, expected, "{rc:?}");
+            assert_eq!(ef, no_exceptions());
+        }
     }
 
     #[test]
