@@ -22,7 +22,7 @@
 //! Each trigonometric evaluation follows a three-step process:
 //!
 //! 1. Reduction: Compute {N, r} such that x = N·(p/2) + r exactly, with |r| < p/4.
-//!    This uses 106-bit intermediate arithmetic for precision.
+//!    This uses integer arithmetic on the 64-bit significand and the 68-bit significand of p/2.
 //! 2. Approximation: Evaluate sin(r) and cos(r) via odd/even polynomial
 //!    series (SIN_ARR: 11-term, COS_ARR: 11-term) on the reduced argument.
 //! 3. Reconstruction: Use N mod 4 to select the correct quadrant combination:
@@ -59,7 +59,7 @@ use crate::{
     ExceptionFlags, Fp80,
     double_f64::{
         ATAN_ARR, DD_LN2, DD_LN2INV2, DD_PI, DD_PI2, DD_PI4, DD_PI6, DD_SQRT3, DoubleF64, EXP_ARR,
-        LN_ARR, cos_poly, dd_3pi4, eval_poly, odd_poly, sin_poly, trig_reduce,
+        LN_ARR, cos_poly, dd_3pi4, eval_poly, odd_poly, sin_poly,
     },
     flag_denormal_operands, flag_unsupported_operands,
 };
@@ -151,6 +151,59 @@ fn handle_two_nans(a: Fp80, b: Fp80, ef: &mut ExceptionFlags) -> Option<Fp80> {
 fn is_trig_out_of_range(v: Fp80) -> bool {
     let exp = v.true_exponent();
     exp >= 63
+}
+
+/// The significand of p/2, half the 66-bit internal pi p = 4 x 0.C90FDAA22168C234C hex of
+/// the trigonometric argument reduction (80486 PRM 17.5). p/2 is this value x 2^-67.
+const HALF_P_SIGNIFICAND: u128 = 0xC_90FD_AA22_168C_234C;
+
+/// The exponent of the lowest bit of [`HALF_P_SIGNIFICAND`], the unit of the reduction.
+const HALF_P_UNIT_EXPONENT: i32 = -67;
+
+/// The number of fraction bits of an Fp80 significand.
+const SIGNIFICAND_FRACTION_BITS: i32 = 63;
+
+/// The largest shift of one division step of the reduction. A remainder below 2^68 shifted
+/// by it stays below 2^128.
+const REDUCTION_STEP_BITS: i32 = 60;
+
+/// Reduces the finite operand `x` with |`x`| below 2^63 to {r, N} with x = N x p/2 + r
+/// exactly and N the quotient x/(p/2) rounded to nearest with ties to even (80486 PRM
+/// 17.5). An operand below 1/2 is its own remainder with N = 0.
+fn trig_reduce(x: Fp80) -> (DoubleF64, i64) {
+    if leading_exponent(x) < -1 {
+        let significand = i128::from(x.significand());
+        let value = if x.sign() { -significand } else { significand };
+        let exponent = x.true_exponent() - SIGNIFICAND_FRACTION_BITS;
+        return (DoubleF64::from_i128_scaled(value, exponent), 0);
+    }
+    let (units, n) = trig_reduce_units(x);
+    (DoubleF64::from_i128_scaled(units, HALF_P_UNIT_EXPONENT), n)
+}
+
+/// Reduces the finite operand `x` with 1/2 <= |`x`| < 2^63 to {R, N} with x = N x p/2 +
+/// R x 2^-67 exactly and N the quotient x/(p/2) rounded to nearest with ties to even.
+fn trig_reduce_units(x: Fp80) -> (i128, i64) {
+    let mut quotient = 0_u64;
+    let mut remainder = u128::from(x.significand());
+    let mut shift = x.true_exponent() - SIGNIFICAND_FRACTION_BITS - HALF_P_UNIT_EXPONENT;
+    while shift > 0 {
+        let step = shift.min(REDUCTION_STEP_BITS);
+        remainder <<= step;
+        quotient = (quotient << step) | (remainder / HALF_P_SIGNIFICAND) as u64;
+        remainder %= HALF_P_SIGNIFICAND;
+        shift -= step;
+    }
+    let mut units = remainder as i128;
+    let twice_remainder = 2 * remainder;
+    if twice_remainder > HALF_P_SIGNIFICAND
+        || (twice_remainder == HALF_P_SIGNIFICAND && quotient & 1 != 0)
+    {
+        quotient += 1;
+        units -= HALF_P_SIGNIFICAND as i128;
+    }
+    let n = quotient as i64;
+    if x.sign() { (-units, -n) } else { (units, n) }
 }
 
 fn compute_pi_f80(sign: bool, ef: &mut ExceptionFlags) -> Fp80 {
@@ -348,8 +401,7 @@ impl Fp80 {
             return (self, true);
         }
 
-        let x_dd = DoubleF64::from_fp80(self);
-        let (r, n) = trig_reduce(x_dd);
+        let (r, n) = trig_reduce(self);
         let n_mod4 = ((n % 4) + 4) % 4;
 
         let result = match n_mod4 {
@@ -386,8 +438,7 @@ impl Fp80 {
             return (self, true);
         }
 
-        let x_dd = DoubleF64::from_fp80(self);
-        let (r, n) = trig_reduce(x_dd);
+        let (r, n) = trig_reduce(self);
         let n_mod4 = ((n % 4) + 4) % 4;
 
         let result = match n_mod4 {
@@ -425,8 +476,7 @@ impl Fp80 {
             return (self, Fp80::ONE, true);
         }
 
-        let x_dd = DoubleF64::from_fp80(self);
-        let (r, n) = trig_reduce(x_dd);
+        let (r, n) = trig_reduce(self);
         let n_mod4 = ((n % 4) + 4) % 4;
 
         let s = sin_poly(r);
@@ -472,8 +522,7 @@ impl Fp80 {
             return (self, true);
         }
 
-        let x_dd = DoubleF64::from_fp80(self);
-        let (r, n) = trig_reduce(x_dd);
+        let (r, n) = trig_reduce(self);
         let n_mod4 = ((n % 4) + 4) % 4;
 
         let s = sin_poly(r);
@@ -1365,5 +1414,305 @@ mod tests {
         assert_eq!(PSEUDO_DENORMAL.fpatan(PSEUDO_DENORMAL, &mut ef), quarter);
         let huge = Fp80::from_bits(0x7000, 0x8000_0000_0000_0000);
         assert_eq!(huge.fpatan(huge, &mut ef), quarter);
+    }
+
+    /// A wide unsigned integer as its high and low 128 bits.
+    type Wide = (u128, u128);
+
+    /// Returns `significand` x 2^`shift` for a shift of 1 to 127.
+    fn wide_shifted(significand: u64, shift: u32) -> Wide {
+        let value = u128::from(significand);
+        (value >> (128 - shift), value << shift)
+    }
+
+    /// Returns the full product `multiplier` x `multiplicand` for a multiplicand below 2^127.
+    fn wide_product(multiplier: u64, multiplicand: u128) -> Wide {
+        let lower = u128::from(multiplier) * (multiplicand & u128::from(u64::MAX));
+        let upper = u128::from(multiplier) * (multiplicand >> 64);
+        let (low, carry) = lower.overflowing_add(upper << 64);
+        ((upper >> 64) + u128::from(carry), low)
+    }
+
+    /// Returns `minuend` - `subtrahend`, which must fit in an i128.
+    fn wide_difference(minuend: Wide, subtrahend: Wide) -> i128 {
+        let (low, borrow) = minuend.1.overflowing_sub(subtrahend.1);
+        let high = minuend
+            .0
+            .wrapping_sub(subtrahend.0)
+            .wrapping_sub(u128::from(borrow));
+        let difference = low as i128;
+        let sign_extension = if difference < 0 { u128::MAX } else { 0 };
+        assert_eq!(high, sign_extension, "the difference exceeds 128 bits");
+        difference
+    }
+
+    /// Returns `value` / 2^`shift` rounded down for a shift of 1 to 127. The result must fit
+    /// in a u128.
+    fn wide_shifted_down(value: Wide, shift: u32) -> u128 {
+        assert_eq!(value.0 >> shift, 0);
+        (value.1 >> shift) | (value.0 << (128 - shift))
+    }
+
+    /// The shift of a significand with the leading exponent `exponent` to units of 2^-67.
+    fn units_shift(exponent: i32) -> u32 {
+        (exponent - SIGNIFICAND_FRACTION_BITS - HALF_P_UNIT_EXPONENT) as u32
+    }
+
+    /// Checks the reduction of the operand with the sign `sign`, the leading exponent
+    /// `exponent` and the normalized `significand` against the wide integer identity
+    /// |x| x 2^67 = |N| x HALF_P_SIGNIFICAND + R with |R| <= HALF_P_SIGNIFICAND / 2 and N even
+    /// on a tie.
+    fn check_reduction(sign: bool, exponent: i32, significand: u64) {
+        let sign_bit = if sign { 0x8000 } else { 0x0000 };
+        let operand = Fp80::from_bits(sign_bit | (0x3FFF + exponent) as u16, significand);
+        let (units, quotient) = trig_reduce_units(operand);
+        let (units_magnitude, quotient_magnitude) = if sign {
+            (-units, -quotient)
+        } else {
+            (units, quotient)
+        };
+        assert!(quotient_magnitude >= 0, "{operand:?}: N {quotient}");
+        let numerator = wide_shifted(significand, units_shift(exponent));
+        let product = wide_product(quotient_magnitude as u64, HALF_P_SIGNIFICAND);
+        assert_eq!(
+            wide_difference(numerator, product),
+            units_magnitude,
+            "{operand:?}: x - N x p/2 differs from r"
+        );
+        let twice_remainder = 2 * units.unsigned_abs();
+        assert!(
+            twice_remainder <= HALF_P_SIGNIFICAND,
+            "{operand:?}: |r| exceeds p/4"
+        );
+        if twice_remainder == HALF_P_SIGNIFICAND {
+            assert_eq!(quotient % 2, 0, "{operand:?}: N of a tie is odd");
+        }
+        assert_eq!(trig_reduce(operand).1, quotient);
+    }
+
+    /// The seed of the operand generator of the reduction tests.
+    const REDUCTION_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
+    /// The random operands of each exponent of the reduction tests.
+    const REDUCTION_RANDOM_OPERANDS: usize = 64;
+    /// The operands near multiples of p/4 of each exponent of the reduction tests.
+    const REDUCTION_BOUNDARY_TARGETS: usize = 16;
+
+    /// Returns the next value of the xorshift generator `state`.
+    fn next_random(state: &mut u64) -> u64 {
+        *state ^= *state << 13;
+        *state ^= *state >> 7;
+        *state ^= *state << 17;
+        *state
+    }
+
+    #[test]
+    fn trigonometric_reduction_is_exact_from_one_half_to_two_to_63() {
+        let mut state = REDUCTION_SEED;
+        for exponent in -1..=62 {
+            for _ in 0..REDUCTION_RANDOM_OPERANDS {
+                let significand = next_random(&mut state) | (1 << 63);
+                check_reduction(state & 1 != 0, exponent, significand);
+            }
+            let shift = units_shift(exponent);
+            for _ in 0..REDUCTION_BOUNDARY_TARGETS {
+                let significand = next_random(&mut state) | (1 << 63);
+                let quotient = (significand as f64 * 2_f64.powi(shift as i32)
+                    / HALF_P_SIGNIFICAND as f64) as u64;
+                let quarter_multiples = [2 * quotient, 2 * quotient + 1];
+                for multiple in quarter_multiples {
+                    let boundary = wide_product(multiple, HALF_P_SIGNIFICAND);
+                    let nearest = wide_shifted_down(boundary, shift + 1);
+                    for offset in -2_i128..=2 {
+                        let candidate = nearest.wrapping_add_signed(offset);
+                        if candidate >> 63 == 1 {
+                            check_reduction(state & 2 != 0, exponent, candidate as u64);
+                        }
+                    }
+                }
+            }
+        }
+        check_reduction(false, 62, u64::MAX);
+        check_reduction(true, 62, u64::MAX);
+        check_reduction(false, -1, 1 << 63);
+    }
+
+    #[test]
+    fn trigonometric_reduction_below_one_half_keeps_the_operand() {
+        let operand = Fp80::from_bits(0xBFFD, 0xFFFF_FFFF_FFFF_FFFF);
+        let (remainder, quotient) = trig_reduce(operand);
+        assert_eq!(quotient, 0);
+        let mut ef = no_exceptions();
+        assert_eq!(remainder.to_fp80(&mut ef), operand);
+        assert!(!ef.precision);
+    }
+
+    /// An operand of FSIN, FCOS, FSINCOS and FPTAN with the quotient N and the results of the
+    /// 66-bit pi model of 80486 PRM 17.5, each with its C1 bit.
+    struct TrigModelCase {
+        operand: Fp80,
+        quotient: i64,
+        sine: (Fp80, bool),
+        cosine: (Fp80, bool),
+        tangent: (Fp80, bool),
+    }
+
+    /// Operands from 2^30 to 2^62.9 with the results of the 66-bit pi model of 80486 PRM 17.5:
+    /// f(r + N x pi/2) with N = x/(p/2) rounded to nearest with ties to even, r = x - N x p/2
+    /// exact and p/2 = 0xC90FDAA22168C234C x 2^-67. Each result is the exact value of the model
+    /// rounded to nearest at 64 bits, evaluated with 300-bit arithmetic. C1 tells whether the
+    /// rounding increased the magnitude. The last operand, 1.0030 x 2^41, is the smallest
+    /// operand found where an inexact reduction breaks the relative error bound 2^-62.
+    const TRIG_MODEL_CASES: [TrigModelCase; 16] = [
+        TrigModelCase {
+            operand: Fp80::from_bits(0x401D, 0x862F_B283_4C23_2521),
+            quotient: 716602400,
+            sine: (Fp80::from_bits(0xBFFA, 0xB2F1_DA7A_8B25_DC7D), true),
+            cosine: (Fp80::from_bits(0x3FFE, 0xFFC1_6DBE_428D_3FEF), false),
+            tangent: (Fp80::from_bits(0xBFFA, 0xB31D_A1FC_ABCC_DD69), true),
+        },
+        TrigModelCase {
+            operand: Fp80::from_bits(0x4025, 0x9119_40DC_2D3B_12EF),
+            quotient: 198368791790,
+            sine: (Fp80::from_bits(0xBFFC, 0x90A6_45A6_7170_9420), true),
+            cosine: (Fp80::from_bits(0xBFFE, 0xFD6E_D8B7_DFAE_1F79), false),
+            tangent: (Fp80::from_bits(0x3FFC, 0x921D_5964_7FAE_1C4A), false),
+        },
+        TrigModelCase {
+            operand: Fp80::from_bits(0x4028, 0x80FA_3AC0_785C_6E9F),
+            quotient: 1410632196674,
+            sine: (Fp80::from_bits(0x3FFE, 0xA32D_4B17_2383_E275), false),
+            cosine: (Fp80::from_bits(0xBFFE, 0xC541_1F0E_773A_71B2), true),
+            tangent: (Fp80::from_bits(0xBFFE, 0xD3C6_1255_288E_C093), false),
+        },
+        TrigModelCase {
+            operand: Fp80::from_bits(0x402C, 0xECC2_B03B_3C2D_47E9),
+            quotient: 41431361921659,
+            sine: (Fp80::from_bits(0xBFFE, 0xD53E_4726_1A5C_81D6), false),
+            cosine: (Fp80::from_bits(0xBFFE, 0x8DA5_1ED1_FBEC_7C1C), true),
+            tangent: (Fp80::from_bits(0x3FFF, 0xC0B3_774A_913B_17CC), true),
+        },
+        TrigModelCase {
+            operand: Fp80::from_bits(0x4031, 0xB3F2_A96E_A66F_95F9),
+            quotient: 1007666252758902,
+            sine: (Fp80::from_bits(0x3FFD, 0xD866_DAAA_8FA1_FB16), false),
+            cosine: (Fp80::from_bits(0xBFFE, 0xE802_852E_DE2F_82C9), false),
+            tangent: (Fp80::from_bits(0xBFFD, 0xEEC7_2D1D_CF5F_B362), true),
+        },
+        TrigModelCase {
+            operand: Fp80::from_bits(0x4036, 0xA3A7_4EA5_FF02_2BD3),
+            quotient: 29325493478883238,
+            sine: (Fp80::from_bits(0x3FFE, 0x9764_32D8_5737_89F6), false),
+            cosine: (Fp80::from_bits(0xBFFE, 0xCE70_201E_6307_FD46), true),
+            tangent: (Fp80::from_bits(0xBFFE, 0xBBBC_DB8B_ADDD_B08D), true),
+        },
+        TrigModelCase {
+            operand: Fp80::from_bits(0x403B, 0xD5C1_3249_C35B_EBFB),
+            quotient: 1225703742604511255,
+            sine: (Fp80::from_bits(0xBFFE, 0xFBF8_4A49_5B6C_1851), false),
+            cosine: (Fp80::from_bits(0xBFFC, 0xB4FB_A59C_7520_9678), false),
+            tangent: (Fp80::from_bits(0x4001, 0xB234_9458_C933_D1B5), false),
+        },
+        TrigModelCase {
+            operand: Fp80::from_bits(0x403D, 0xEED9_1687_2B02_02F8),
+            quotient: 5478371679124213529,
+            sine: (Fp80::from_bits(0x3FFE, 0xECC8_A33A_ADF0_DDDA), true),
+            cosine: (Fp80::from_bits(0xBFFD, 0xC29F_4F36_1024_3A3A), true),
+            tangent: (Fp80::from_bits(0xC000, 0x9BBA_99C6_69B4_0323), false),
+        },
+        TrigModelCase {
+            operand: Fp80::from_bits(0x4026, 0x8330_3E52_A61F_7F39),
+            quotient: 358703478562,
+            sine: (Fp80::from_bits(0xBFFD, 0xBE9E_865B_6F55_80C0), true),
+            cosine: (Fp80::from_bits(0xBFFE, 0xED98_B16E_5EF2_2BCA), false),
+            tangent: (Fp80::from_bits(0x3FFD, 0xCD62_51B1_950D_BF5B), false),
+        },
+        TrigModelCase {
+            operand: Fp80::from_bits(0x402E, 0x8E7C_AF85_E7BB_8BAD),
+            quotient: 99736782678232,
+            sine: (Fp80::from_bits(0xBFFC, 0x9A93_0F3B_CA23_53D3), true),
+            cosine: (Fp80::from_bits(0x3FFE, 0xFD11_0871_D24E_25B8), true),
+            tangent: (Fp80::from_bits(0xBFFC, 0x9C5D_C11C_D9E6_C746), true),
+        },
+        TrigModelCase {
+            operand: Fp80::from_bits(0x4034, 0xA2E5_C7D7_370E_DF19),
+            quotient: 7297507626696211,
+            sine: (Fp80::from_bits(0xBFFE, 0xFE0A_AFCD_7CB6_29DA), false),
+            cosine: (Fp80::from_bits(0xBFFB, 0xFCD4_4F74_F262_46E9), false),
+            tangent: (Fp80::from_bits(0x4002, 0x809D_2264_96D2_EF93), false),
+        },
+        TrigModelCase {
+            operand: Fp80::from_bits(0x4039, 0x9192_9AA5_F2B6_8F64),
+            quotient: 208684290029722327,
+            sine: (Fp80::from_bits(0xBFFE, 0xE75C_6BAF_5201_2E58), false),
+            cosine: (Fp80::from_bits(0x3FFD, 0xDB29_AAE7_6734_D62A), true),
+            tangent: (Fp80::from_bits(0xC000, 0x871F_D0B3_FAA0_0E4C), true),
+        },
+        TrigModelCase {
+            operand: Fp80::from_bits(0x403C, 0xA792_F176_2BD8_B2BD),
+            quotient: 1921792602070816163,
+            sine: (Fp80::from_bits(0xBFFE, 0xF127_DB9C_1D87_0820), false),
+            cosine: (Fp80::from_bits(0x3FFD, 0xABD0_23F0_7642_E0E6), false),
+            tangent: (Fp80::from_bits(0xC000, 0xB3A8_F47B_997C_19E2), true),
+        },
+        TrigModelCase {
+            operand: Fp80::from_bits(0x403D, 0x9112_8354_941F_A932),
+            quotient: 3327472157289710967,
+            sine: (Fp80::from_bits(0xBFFE, 0xFFEB_1037_BC38_CFA0), false),
+            cosine: (Fp80::from_bits(0x3FF9, 0xCF0D_DAE5_3E28_DBB3), true),
+            tangent: (Fp80::from_bits(0xC004, 0x9E35_2407_8F93_928A), true),
+        },
+        TrigModelCase {
+            operand: Fp80::from_bits(0xC033, 0xF1F0_99A8_56C7_1B74),
+            quotient: -5419226777728039,
+            sine: (Fp80::from_bits(0x3FFE, 0xFEC0_60B9_9672_B68B), true),
+            cosine: (Fp80::from_bits(0x3FFB, 0xCA04_FD2A_4ACF_9A21), false),
+            tangent: (Fp80::from_bits(0x4002, 0xA169_3E37_F299_0733), false),
+        },
+        TrigModelCase {
+            operand: Fp80::from_bits(0x4028, 0x8061_1A9D_A802_833C),
+            quotient: 1404090240677,
+            sine: (Fp80::from_bits(0x3FFE, 0xFFBC_B432_8049_AA91), false),
+            cosine: (Fp80::from_bits(0xBFFA, 0xB993_15F2_FDCD_11E8), true),
+            tangent: (Fp80::from_bits(0xC003, 0xB065_057D_114C_8A6B), true),
+        },
+    ];
+
+    #[test]
+    fn trigonometric_functions_follow_the_66_bit_pi_model() {
+        for case in &TRIG_MODEL_CASES {
+            let operand = case.operand;
+            assert_eq!(trig_reduce(operand).1, case.quotient, "N of {operand:?}");
+
+            let mut ef = no_exceptions();
+            let (sine, out_of_range) = operand.fsin(&mut ef);
+            assert!(!out_of_range);
+            assert_eq!(sine, case.sine.0, "FSIN {operand:?}");
+            assert!(ef.precision);
+            assert_eq!(ef.rounded_up, case.sine.1, "FSIN C1 {operand:?}");
+
+            let mut ef = no_exceptions();
+            let (cosine, out_of_range) = operand.fcos(&mut ef);
+            assert!(!out_of_range);
+            assert_eq!(cosine, case.cosine.0, "FCOS {operand:?}");
+            assert!(ef.precision);
+            assert_eq!(ef.rounded_up, case.cosine.1, "FCOS C1 {operand:?}");
+
+            let mut ef = no_exceptions();
+            let (tangent, out_of_range) = operand.fptan(&mut ef);
+            assert!(!out_of_range);
+            assert_eq!(tangent, case.tangent.0, "FPTAN {operand:?}");
+            assert!(ef.precision);
+            assert_eq!(ef.rounded_up, case.tangent.1, "FPTAN C1 {operand:?}");
+
+            let mut ef = no_exceptions();
+            let (sine, cosine, out_of_range) = operand.fsincos(&mut ef);
+            assert!(!out_of_range);
+            assert_eq!(
+                (sine, cosine),
+                (case.sine.0, case.cosine.0),
+                "FSINCOS {operand:?}"
+            );
+            assert!(ef.precision);
+        }
     }
 }

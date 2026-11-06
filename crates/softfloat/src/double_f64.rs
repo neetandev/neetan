@@ -20,6 +20,9 @@ use core::cmp::Ordering;
 
 use crate::{ExceptionFlags, Fp80, Precision, RoundingMode, shift_right_sticky};
 
+/// The exponent bias of f64.
+const F64_EXPONENT_BIAS: i32 = 1023;
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct DoubleF64 {
     high: f64,
@@ -348,6 +351,15 @@ impl DoubleF64 {
         DoubleF64::from_parts(high, low)
     }
 
+    /// Converts `value` x 2^`exponent` to DoubleF64. The conversion is exact for |`value`| below
+    /// 2^106 and a result with both parts in the normal f64 range.
+    pub(crate) fn from_i128_scaled(value: i128, exponent: i32) -> DoubleF64 {
+        let scale = f64::from_bits(((F64_EXPONENT_BIAS + exponent) as u64) << 52);
+        let high = value as f64;
+        let low = (value - high as i128) as f64;
+        DoubleF64::from_parts(high * scale, low * scale)
+    }
+
     /// Build a DoubleF64 representing `significand × 2^(-63)`.
     /// The significand may or may not have the J-bit set (normalization is handled internally).
     /// Used by compute_log2 to convert a raw 64-bit significand to a DoubleF64 mantissa.
@@ -398,31 +410,6 @@ fn sig_exp_to_dd(mut sig: u64, mut true_exp: i32) -> DoubleF64 {
     DoubleF64::from_parts(high, low)
 }
 
-/// Round a DoubleF64 to the nearest i64 (round half to even).
-pub(crate) fn dd_to_i64_round(x: DoubleF64) -> i64 {
-    if x.is_zero() {
-        return 0;
-    }
-    let sum = x.high + x.low;
-    let truncated = sum as i64;
-    let fraction = (sum - truncated as f64).abs();
-    if fraction < 0.5 {
-        truncated
-    } else if fraction > 0.5 {
-        if sum >= 0.0 {
-            truncated + 1
-        } else {
-            truncated - 1
-        }
-    } else if truncated % 2 == 0 {
-        truncated
-    } else if sum >= 0.0 {
-        truncated + 1
-    } else {
-        truncated - 1
-    }
-}
-
 pub(crate) const DD_LN2: DoubleF64 = DoubleF64::from_parts(
     core::f64::consts::LN_2, // 0x1.62e42fefa39efp-1
     2.3190468138462996e-17,  // 0x1.abc9e3b39803fp-56 (ln2 - high)
@@ -446,13 +433,6 @@ pub(crate) const DD_PI: DoubleF64 = DoubleF64::from_parts(
 pub(crate) const DD_PI2: DoubleF64 = DoubleF64::from_parts(
     core::f64::consts::FRAC_PI_2, // 0x1.921fb54442d18p+0
     6.123233995736766e-17,        // 0x1.1a62633145c07p-54
-);
-
-/// p/2: half the 66-bit x87 internal approximation of pi, used for trig argument
-/// reduction. p = (0.C90FDAA22168C234C)_16 * 2^2; p/2 = 0xC90FDAA22168C234C * 2^-67.
-pub(crate) const DD_P2: DoubleF64 = DoubleF64::from_parts(
-    core::f64::consts::FRAC_PI_2, // 0x1.921fb54442d18p+0 (same high as DD_PI2)
-    6.123031769111886e-17,        // 0x1.1a6p-54 (only 15 extra fraction bits, NOT true pi)
 );
 
 pub(crate) const DD_PI4: DoubleF64 = DoubleF64::from_parts(
@@ -595,10 +575,39 @@ pub(crate) fn cos_poly(r: DoubleF64) -> DoubleF64 {
     even_poly(r, &COS_ARR)
 }
 
-pub(crate) fn trig_reduce(x: DoubleF64) -> (DoubleF64, i64) {
-    let q = x / DD_P2;
-    let n = dd_to_i64_round(q);
-    let n_dd = DoubleF64::from_i64(n);
-    let remainder = x - n_dd * DD_P2;
-    (remainder, n)
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Returns `value` x 2^-`exponent` of an f64 that holds an integer multiple of 2^`exponent`.
+    fn scaled_integer(value: f64, exponent: i32) -> i128 {
+        (value * f64::from_bits(((F64_EXPONENT_BIAS - exponent) as u64) << 52)) as i128
+    }
+
+    #[test]
+    fn integer_conversion_is_exact_up_to_106_bits() {
+        let values = [
+            1_i128,
+            -1,
+            (1 << 53) + 1,
+            (1 << 54) + 2,
+            (1 << 67) - 1,
+            -((1 << 67) - 1),
+            0x6_487E_D511_0B46_11A6,
+            -0x6_487E_D511_0B46_11A5,
+            (1 << 105) + 1,
+            (1 << 106) - 1,
+        ];
+        for value in values {
+            for exponent in [-67, 0, 20] {
+                let result = DoubleF64::from_i128_scaled(value, exponent);
+                assert_eq!(
+                    scaled_integer(result.high, exponent) + scaled_integer(result.low, exponent),
+                    value,
+                    "{value:#X} x 2^{exponent}"
+                );
+                assert_eq!(result.high, result.high + result.low);
+            }
+        }
+    }
 }
