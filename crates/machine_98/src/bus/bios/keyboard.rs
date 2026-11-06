@@ -8,45 +8,37 @@ use super::{
 };
 use crate::TraceSink;
 
+/// Key code of the STOP key.
+const STOP_KEY_CODE: u8 = 0x60;
+
+/// Key code of the COPY key.
+const COPY_KEY_CODE: u8 = 0x61;
+
+/// Vector the INT 09h stub raises for a STOP make code.
+const STOP_KEY_INTERRUPT_VECTOR: u8 = 0x06;
+
+/// Vector the INT 09h stub raises for a COPY make code.
+const COPY_KEY_INTERRUPT_VECTOR: u8 = 0x05;
+
+/// INT 09h stub return value that raises no key interrupt.
+const NO_KEY_INTERRUPT: u8 = 0x00;
+
 impl<T: TraceSink> Pc9801Bus<T> {
+    /// INT 09h keyboard interrupt. Buffers the pending scan code and returns
+    /// in AL the vector the ROM stub raises after the EOI: 06h for a STOP
+    /// make code, 05h for a COPY make code and 00h for every other code.
     pub(super) fn hle_int09h(&mut self, cpu: &mut impl Cpu) {
-        let Some(raw_code) = self
+        let raw_code = self
             .keyboard_chained_raw_code
             .take()
-            .or_else(|| self.read_pending_keyboard_scan_code())
-        else {
-            return;
-        };
-        let (key_code, is_release) = self.buffer_keyboard_scan_code(raw_code);
-
-        // COPY key (0x60) -> INT 06H, STOP key (0x61) -> INT 05H.
-        // The real BIOS dispatches these after EOI via the assembly wrapper.
-        if !is_release {
-            let int_vector = match key_code {
-                0x60 => Some(0x06u8),
-                0x61 => Some(0x05u8),
-                _ => None,
+            .or_else(|| self.read_pending_keyboard_scan_code());
+        let key_interrupt_vector =
+            match raw_code.map(|raw_code| self.buffer_keyboard_scan_code(raw_code)) {
+                Some((STOP_KEY_CODE, false)) => STOP_KEY_INTERRUPT_VECTOR,
+                Some((COPY_KEY_CODE, false)) => COPY_KEY_INTERRUPT_VECTOR,
+                _ => NO_KEY_INTERRUPT,
             };
-            if let Some(vector) = int_vector {
-                let iret_base = iret_stack_base(cpu);
-                let callback_offset = self.ram_read_u16((vector as usize) * 4);
-                let callback_segment = self.ram_read_u16((vector as usize) * 4 + 2);
-                if callback_offset != 0 || callback_segment != 0 {
-                    // Rewrite the IRQ handler's IRET frame so it returns into
-                    // the COPY/STOP vector first, with the original return
-                    // frame stacked behind it.
-                    let orig_ip = self.read_mem_word(iret_base);
-                    let orig_cs = self.read_mem_word(iret_base + 0x02);
-                    let orig_flags = self.read_mem_word(iret_base + 0x04);
-                    self.write_mem_word(iret_base + 0x06, orig_ip);
-                    self.write_mem_word(iret_base + 0x08, orig_cs);
-                    self.write_mem_word(iret_base + 0x0A, orig_flags);
-                    self.write_mem_word(iret_base, callback_offset);
-                    self.write_mem_word(iret_base + 0x02, callback_segment);
-                    self.write_mem_word(iret_base + 0x04, orig_flags & !0x0200);
-                }
-            }
-        }
+        cpu.set_al(key_interrupt_vector);
     }
 
     fn read_pending_keyboard_scan_code(&mut self) -> Option<u8> {
