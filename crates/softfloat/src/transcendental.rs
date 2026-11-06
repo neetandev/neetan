@@ -56,19 +56,37 @@
 use core::cmp::Ordering;
 
 use crate::{
-    ExceptionFlags, Fp80,
+    ExceptionFlags, Fp80, Precision, RoundingMode,
     double_f64::{
-        ATAN_ARR, DD_LN2, DD_LN2INV2, DD_PI, DD_PI2, DD_PI4, DD_PI6, DD_SQRT3, DoubleF64, EXP_ARR,
-        LN_ARR, cos_poly, dd_3pi4, eval_poly, odd_poly, sin_poly,
+        ATAN_ARR, COS_ARR, DD_LN2, DD_LN2INV2, DD_PI, DD_PI2, DD_PI4, DD_PI6, DD_SQRT3, DoubleF64,
+        EXP_ARR, LN_ARR, SIN_ARR, cos_poly, dd_3pi4, eval_poly, odd_poly, sin_poly,
     },
     flag_denormal_operands, flag_unsupported_operands,
 };
 
-/// An operand of FSIN, FCOS, FPTAN or FSINCOS with a leading exponent below this limit takes
-/// the first term of the series of the function, and FPATAN with an exponent difference
-/// below it takes the quotient or a multiple of pi/2. The second term then lies below bit 0
-/// of the 128-bit value the result rounds from.
+/// FPATAN with a negative x and an exponent difference of y and x below this limit takes pi.
+/// FPATAN with an exponent difference of x and y below this limit takes pi/2. The quotient
+/// then lies below 1/16 ulp of the result and cannot change its rounding.
 const FIRST_TERM_EXPONENT_LIMIT: i32 = -67;
+
+/// FPATAN with a positive x and an exponent difference below this limit computes atan(y/x)
+/// from the exact quotient of the significands and the series of the remaining terms, which
+/// lie below 2^-46 of the quotient.
+const FPATAN_SMALL_RATIO_LIMIT: i32 = -24;
+
+/// Below this exponent difference the terms of atan(y/x) beyond the quotient lie below
+/// 2^-64 of the lowest bit of the 127-bit quotient and only decide the sticky remainder.
+const FPATAN_STICKY_TAIL_LIMIT: i32 = -100;
+
+/// The largest shift of one division step of the FPATAN quotient. A remainder below 2^64
+/// shifted by it stays below 2^127.
+const QUOTIENT_STEP_BITS: u32 = 63;
+
+/// An operand of FSIN, FCOS, FPTAN or FSINCOS with a leading exponent below this limit takes
+/// the first term of the series of the function, the operand or 1. The second term then
+/// lies below half the distance from the first term to its neighbors at 64 bits and only
+/// decides the direction of the rounding.
+const TRIG_FIRST_TERM_EXPONENT_LIMIT: i32 = -32;
 
 /// An operand of F2XM1 or FYL2XP1 with a leading exponent below this limit takes the first
 /// term of the series of the function. The second term, about x/2 of the first, then lies
@@ -86,22 +104,29 @@ fn leading_exponent(value: Fp80) -> i32 {
 /// reduce the magnitude of the result. A nonzero result is inexact: PE is set, UE for a tiny
 /// result, and C1 reports the direction of the rounding (80486 PRM table 15-1). A zero term
 /// is the exact result.
-fn first_term_result(term: DoubleF64, below: bool, scale: i32, ef: &mut ExceptionFlags) -> Fp80 {
+fn first_term_result(
+    term: DoubleF64,
+    below: bool,
+    scale: i32,
+    rc: RoundingMode,
+    ef: &mut ExceptionFlags,
+) -> Fp80 {
     if term.is_zero() {
-        return term.to_fp80_scaled(scale, ef);
+        return term.to_fp80_scaled(scale, rc, ef);
     }
-    term.to_fp80_with_remainder(scale, below, ef)
+    term.to_fp80_with_remainder(scale, below, rc, ef)
 }
 
 /// Returns the result of a function that equals its finite nonzero operand `value` to the
 /// first term, such as the sine of a tiny operand. `below` tells whether the remaining terms
 /// reduce the magnitude.
-fn identity_result(value: Fp80, below: bool, ef: &mut ExceptionFlags) -> Fp80 {
+fn identity_result(value: Fp80, below: bool, rc: RoundingMode, ef: &mut ExceptionFlags) -> Fp80 {
     let exponent = leading_exponent(value);
     first_term_result(
         DoubleF64::from_fp80_scaled(value, exponent),
         below,
         exponent,
+        rc,
         ef,
     )
 }
@@ -206,25 +231,141 @@ fn trig_reduce_units(x: Fp80) -> (i128, i64) {
     if x.sign() { (-units, -n) } else { (units, n) }
 }
 
-fn compute_pi_f80(sign: bool, ef: &mut ExceptionFlags) -> Fp80 {
-    DD_PI.with_sign(sign).to_fp80(ef)
+/// Rounds the double-double result `value` of a function in the mode `rc`. A value on a
+/// 64-bit value or halfway between two of them can hide terms below its precision, so the
+/// sign of `residual`, the exact result minus `value`, then decides the rounding as a
+/// remainder below every bit of the value.
+fn round_with_residual(
+    value: DoubleF64,
+    residual: impl FnOnce() -> DoubleF64,
+    rc: RoundingMode,
+    ef: &mut ExceptionFlags,
+) -> Fp80 {
+    if value.is_exact_or_halfway() {
+        let residual = residual();
+        if !residual.is_zero() {
+            let below = residual.is_sign_negative() != value.is_sign_negative();
+            return value.to_fp80_with_remainder(0, below, rc, ef);
+        }
+    }
+    value.to_fp80(rc, ef)
 }
 
-fn compute_pi2_f80(sign: bool, ef: &mut ExceptionFlags) -> Fp80 {
-    DD_PI2.with_sign(sign).to_fp80(ef)
+/// Returns sin(`r`) minus `sine`, a double-double value near sin(`r`), from the exact
+/// leading term `r` and the series of the remaining terms.
+fn sine_residual(r: DoubleF64, sine: DoubleF64) -> DoubleF64 {
+    let square = r * r;
+    (r - sine) + r * square * eval_poly(square, &SIN_ARR[1..])
 }
 
-fn compute_pi4_f80(sign: bool, ef: &mut ExceptionFlags) -> Fp80 {
-    DD_PI4.with_sign(sign).to_fp80(ef)
+/// Returns cos(`r`) minus `cosine`, a double-double value near cos(`r`), from the exact
+/// leading term 1 and the series of the remaining terms.
+fn cosine_residual(r: DoubleF64, cosine: DoubleF64) -> DoubleF64 {
+    let square = r * r;
+    (DoubleF64::ONE - cosine) + square * eval_poly(square, &COS_ARR[1..])
 }
 
-fn compute_3pi4_f80(sign: bool, ef: &mut ExceptionFlags) -> Fp80 {
-    dd_3pi4().with_sign(sign).to_fp80(ef)
+/// Returns tan(`r`) - `r` = (sin(r) - r cos(r)) / cos(r) from the series of sin(r) and
+/// cos(r) beyond their leading terms, with `cosine` near cos(`r`).
+fn tangent_tail(r: DoubleF64, cosine: DoubleF64) -> DoubleF64 {
+    let square = r * r;
+    let difference = eval_poly(square, &SIN_ARR[1..]) - eval_poly(square, &COS_ARR[1..]);
+    r * square * difference / cosine
+}
+
+/// Rounds sin(`r` + `quadrant` x pi/2) in the mode `rc`, with `r` the exactly reduced
+/// argument and `quadrant` in 0 to 3.
+fn sine_in_quadrant(
+    r: DoubleF64,
+    quadrant: i64,
+    rc: RoundingMode,
+    ef: &mut ExceptionFlags,
+) -> Fp80 {
+    let cosine_term = quadrant % 2 == 1;
+    let negative = quadrant >= 2;
+    let term = if cosine_term {
+        cos_poly(r)
+    } else {
+        sin_poly(r)
+    };
+    let value = if negative { term.negate() } else { term };
+    let residual = || {
+        let residual = if cosine_term {
+            cosine_residual(r, term)
+        } else {
+            sine_residual(r, term)
+        };
+        if negative {
+            residual.negate()
+        } else {
+            residual
+        }
+    };
+    round_with_residual(value, residual, rc, ef)
+}
+
+/// Returns atan(`y`/`x`) of the finite nonzero `y` and the positive finite `x` with an
+/// exponent difference below [`FPATAN_SMALL_RATIO_LIMIT`], rounded in the mode `rc`. The
+/// quotient of the significands is exact to 127 bits with its remainder, and the remaining
+/// terms q^3/3 - q^5/5 + ... are subtracted in units of the lowest quotient bit. The
+/// fractional parts of the remainder and of those terms decide the sticky remainder.
+fn small_ratio_arctangent(y: Fp80, x: Fp80, rc: RoundingMode, ef: &mut ExceptionFlags) -> Fp80 {
+    let y_exponent = leading_exponent(y);
+    let x_exponent = leading_exponent(x);
+    let difference = y_exponent - x_exponent;
+    let dividend = u128::from(y.significand() << y.significand().leading_zeros());
+    let divisor = u128::from(x.significand() << x.significand().leading_zeros());
+    let quotient_shift: u32 = if dividend >= divisor { 126 } else { 127 };
+    let mut quotient = dividend / divisor;
+    let mut remainder = dividend % divisor;
+    let mut shift = quotient_shift;
+    while shift > 0 {
+        let step = shift.min(QUOTIENT_STEP_BITS);
+        remainder <<= step;
+        quotient = (quotient << step) | (remainder / divisor);
+        remainder %= divisor;
+        shift -= step;
+    }
+    let (tail_integer, tail_fraction) = if difference < FPATAN_STICKY_TAIL_LIMIT {
+        (0, 0.0)
+    } else {
+        let ratio =
+            DoubleF64::from_fp80_scaled(y, y_exponent) / DoubleF64::from_fp80_scaled(x, x_exponent);
+        let square = ratio * ratio * DoubleF64::from_i128_scaled(1, 2 * difference);
+        let tail_over_quotient = (square * eval_poly(square, &ATAN_ARR[1..])).negate();
+        (DoubleF64::from_i128_scaled(quotient as i128, 0) * tail_over_quotient).floor_and_fraction()
+    };
+    let remainder_fraction = remainder as f64 / divisor as f64;
+    let sticky = if remainder_fraction > tail_fraction {
+        1
+    } else {
+        -1
+    };
+    let combined = ((quotient - tail_integer as u128) << 1).wrapping_add_signed(sticky);
+    let exponent = difference - quotient_shift as i32 + 126;
+    Fp80::round_and_pack(y.sign(), exponent, combined, rc, Precision::Extended, ef)
+}
+
+fn compute_pi_f80(sign: bool, rc: RoundingMode, ef: &mut ExceptionFlags) -> Fp80 {
+    DD_PI.with_sign(sign).to_fp80(rc, ef)
+}
+
+fn compute_pi2_f80(sign: bool, rc: RoundingMode, ef: &mut ExceptionFlags) -> Fp80 {
+    DD_PI2.with_sign(sign).to_fp80(rc, ef)
+}
+
+fn compute_pi4_f80(sign: bool, rc: RoundingMode, ef: &mut ExceptionFlags) -> Fp80 {
+    DD_PI4.with_sign(sign).to_fp80(rc, ef)
+}
+
+fn compute_3pi4_f80(sign: bool, rc: RoundingMode, ef: &mut ExceptionFlags) -> Fp80 {
+    dd_3pi4().with_sign(sign).to_fp80(rc, ef)
 }
 
 impl Fp80 {
     /// Compute 2^self − 1 (F2XM1). Domain: −1.0 ≤ self ≤ +1.0.
-    pub fn f2xm1(self, ef: &mut ExceptionFlags) -> Fp80 {
+    /// The result rounds in the mode `rc` (80486 PRM 15.2.3).
+    pub fn f2xm1(self, rc: RoundingMode, ef: &mut ExceptionFlags) -> Fp80 {
         if flag_unsupported_operands(&[self], ef) {
             return Fp80::INDEFINITE;
         }
@@ -247,7 +388,7 @@ impl Fp80 {
         if is_first_term_operand(self, F2XM1_FYL2XP1_FIRST_TERM_LIMIT) {
             let exponent = leading_exponent(self);
             let term = DoubleF64::from_fp80_scaled(self, exponent) * DD_LN2;
-            return first_term_result(term, self.sign(), exponent, ef);
+            return first_term_result(term, self.sign(), exponent, rc, ef);
         }
 
         let x = DoubleF64::from_fp80(self);
@@ -256,11 +397,12 @@ impl Fp80 {
         let mut result = eval_poly(y, &EXP_ARR);
         result = result * y;
 
-        result.to_fp80(ef)
+        result.to_fp80(rc, ef)
     }
 
     /// Compute y × log₂(self) (FYL2X). self = x (ST0), y = ST1.
-    pub fn fyl2x(self, y: Fp80, ef: &mut ExceptionFlags) -> Fp80 {
+    /// The result rounds in the mode `rc` (80486 PRM 15.2.3).
+    pub fn fyl2x(self, y: Fp80, rc: RoundingMode, ef: &mut ExceptionFlags) -> Fp80 {
         if flag_unsupported_operands(&[self, y], ef) {
             return Fp80::INDEFINITE;
         }
@@ -330,12 +472,13 @@ impl Fp80 {
         let y_exponent = leading_exponent(y);
         let y_dd = DoubleF64::from_fp80_scaled(y, y_exponent);
         let result = y_dd * log2_x;
-        result.to_fp80_scaled(y_exponent, ef)
+        result.to_fp80_scaled(y_exponent, rc, ef)
     }
 
     /// Compute y × log₂(self + 1) (FYL2XP1). self = x (ST0), y = ST1. An operand more
-    /// negative than -1 is an invalid operation (80486 PRM table 16-11).
-    pub fn fyl2xp1(self, y: Fp80, ef: &mut ExceptionFlags) -> Fp80 {
+    /// negative than -1 is an invalid operation (80486 PRM table 16-11). The result rounds in
+    /// the mode `rc` (80486 PRM 15.2.3).
+    pub fn fyl2xp1(self, y: Fp80, rc: RoundingMode, ef: &mut ExceptionFlags) -> Fp80 {
         if flag_unsupported_operands(&[self, y], ef) {
             return Fp80::INDEFINITE;
         }
@@ -366,7 +509,7 @@ impl Fp80 {
         if is_first_term_operand(self, F2XM1_FYL2XP1_FIRST_TERM_LIMIT) {
             let x_exponent = leading_exponent(self);
             let term = DoubleF64::from_fp80_scaled(self, x_exponent) * y_dd * DD_LN2INV2;
-            return first_term_result(term, !self.sign(), x_exponent + y_exponent - 1, ef);
+            return first_term_result(term, !self.sign(), x_exponent + y_exponent - 1, rc, ef);
         }
 
         let x_dd = DoubleF64::from_fp80(self);
@@ -375,11 +518,12 @@ impl Fp80 {
         let log2_1px = odd_poly(u, &LN_ARR) * DD_LN2INV2;
 
         let result = y_dd * log2_1px;
-        result.to_fp80_scaled(y_exponent, ef)
+        result.to_fp80_scaled(y_exponent, rc, ef)
     }
 
-    /// Compute sin(self) (FSIN). Returns (result, out_of_range).
-    pub fn fsin(self, ef: &mut ExceptionFlags) -> (Fp80, bool) {
+    /// Compute sin(self) (FSIN). Returns (result, out_of_range). The result rounds in the mode
+    /// `rc` (80486 PRM 15.2.3).
+    pub fn fsin(self, rc: RoundingMode, ef: &mut ExceptionFlags) -> (Fp80, bool) {
         if flag_unsupported_operands(&[self], ef) {
             return (Fp80::INDEFINITE, false);
         }
@@ -394,29 +538,20 @@ impl Fp80 {
         if self.is_zero() {
             return (self, false);
         }
-        if is_first_term_operand(self, FIRST_TERM_EXPONENT_LIMIT) {
-            return (identity_result(self, true, ef), false);
+        if is_first_term_operand(self, TRIG_FIRST_TERM_EXPONENT_LIMIT) {
+            return (identity_result(self, true, rc, ef), false);
         }
         if is_trig_out_of_range(self) {
             return (self, true);
         }
 
         let (r, n) = trig_reduce(self);
-        let n_mod4 = ((n % 4) + 4) % 4;
-
-        let result = match n_mod4 {
-            0 => sin_poly(r),
-            1 => cos_poly(r),
-            2 => sin_poly(r).negate(),
-            3 => cos_poly(r).negate(),
-            _ => unreachable!(),
-        };
-
-        (result.to_fp80(ef), false)
+        (sine_in_quadrant(r, n.rem_euclid(4), rc, ef), false)
     }
 
-    /// Compute cos(self) (FCOS). Returns (result, out_of_range).
-    pub fn fcos(self, ef: &mut ExceptionFlags) -> (Fp80, bool) {
+    /// Compute cos(self) (FCOS). Returns (result, out_of_range). The result rounds in the mode
+    /// `rc` (80486 PRM 15.2.3).
+    pub fn fcos(self, rc: RoundingMode, ef: &mut ExceptionFlags) -> (Fp80, bool) {
         if flag_unsupported_operands(&[self], ef) {
             return (Fp80::INDEFINITE, false);
         }
@@ -431,29 +566,21 @@ impl Fp80 {
         if self.is_zero() {
             return (Fp80::ONE, false);
         }
-        if is_first_term_operand(self, FIRST_TERM_EXPONENT_LIMIT) {
-            return (first_term_result(DoubleF64::ONE, true, 0, ef), false);
+        if is_first_term_operand(self, TRIG_FIRST_TERM_EXPONENT_LIMIT) {
+            return (first_term_result(DoubleF64::ONE, true, 0, rc, ef), false);
         }
         if is_trig_out_of_range(self) {
             return (self, true);
         }
 
         let (r, n) = trig_reduce(self);
-        let n_mod4 = ((n % 4) + 4) % 4;
-
-        let result = match n_mod4 {
-            0 => cos_poly(r),
-            1 => sin_poly(r).negate(),
-            2 => cos_poly(r).negate(),
-            3 => sin_poly(r),
-            _ => unreachable!(),
-        };
-
-        (result.to_fp80(ef), false)
+        (sine_in_quadrant(r, (n + 1).rem_euclid(4), rc, ef), false)
     }
 
-    /// Compute (sin(self), cos(self)) simultaneously (FSINCOS).
-    pub fn fsincos(self, ef: &mut ExceptionFlags) -> (Fp80, Fp80, bool) {
+    /// Compute (sin(self), cos(self)) simultaneously (FSINCOS). Both results round in the
+    /// mode `rc` (80486 PRM 15.2.3). Observed behaviour: C1 is set when either result rounds
+    /// up.
+    pub fn fsincos(self, rc: RoundingMode, ef: &mut ExceptionFlags) -> (Fp80, Fp80, bool) {
         if flag_unsupported_operands(&[self], ef) {
             return (Fp80::INDEFINITE, Fp80::INDEFINITE, false);
         }
@@ -468,39 +595,28 @@ impl Fp80 {
         if self.is_zero() {
             return (self, Fp80::ONE, false);
         }
-        if is_first_term_operand(self, FIRST_TERM_EXPONENT_LIMIT) {
-            let cosine = first_term_result(DoubleF64::ONE, true, 0, ef);
-            return (identity_result(self, true, ef), cosine, false);
+        if is_first_term_operand(self, TRIG_FIRST_TERM_EXPONENT_LIMIT) {
+            let cosine = first_term_result(DoubleF64::ONE, true, 0, rc, ef);
+            return (identity_result(self, true, rc, ef), cosine, false);
         }
         if is_trig_out_of_range(self) {
             return (self, Fp80::ONE, true);
         }
 
         let (r, n) = trig_reduce(self);
-        let n_mod4 = ((n % 4) + 4) % 4;
-
-        let s = sin_poly(r);
-        let c = cos_poly(r);
-
-        let (sin_result, cos_result) = match n_mod4 {
-            0 => (s, c),
-            1 => (c, s.negate()),
-            2 => (s.negate(), c.negate()),
-            3 => (c.negate(), s),
-            _ => unreachable!(),
-        };
 
         let mut ef_sin = ExceptionFlags::default();
         let mut ef_cos = ExceptionFlags::default();
-        let sin_fp80 = sin_result.to_fp80(&mut ef_sin);
-        let cos_fp80 = cos_result.to_fp80(&mut ef_cos);
+        let sin_fp80 = sine_in_quadrant(r, n.rem_euclid(4), rc, &mut ef_sin);
+        let cos_fp80 = sine_in_quadrant(r, (n + 1).rem_euclid(4), rc, &mut ef_cos);
         ef.merge(&ef_cos);
         ef.merge(&ef_sin);
         (sin_fp80, cos_fp80, false)
     }
 
-    /// Compute tan(self) (FPTAN). Returns (tan, out_of_range).
-    pub fn fptan(self, ef: &mut ExceptionFlags) -> (Fp80, bool) {
+    /// Compute tan(self) (FPTAN). Returns (tan, out_of_range). The result rounds in the mode
+    /// `rc` (80486 PRM 15.2.3).
+    pub fn fptan(self, rc: RoundingMode, ef: &mut ExceptionFlags) -> (Fp80, bool) {
         if flag_unsupported_operands(&[self], ef) {
             return (Fp80::INDEFINITE, false);
         }
@@ -515,33 +631,35 @@ impl Fp80 {
         if self.is_zero() {
             return (self, false);
         }
-        if is_first_term_operand(self, FIRST_TERM_EXPONENT_LIMIT) {
-            return (identity_result(self, false, ef), false);
+        if is_first_term_operand(self, TRIG_FIRST_TERM_EXPONENT_LIMIT) {
+            return (identity_result(self, false, rc, ef), false);
         }
         if is_trig_out_of_range(self) {
             return (self, true);
         }
 
         let (r, n) = trig_reduce(self);
-        let n_mod4 = ((n % 4) + 4) % 4;
+        let c = cos_poly(r);
+        if n.rem_euclid(2) == 0 {
+            let tangent = r + tangent_tail(r, c);
+            let residual = || (r - tangent) + tangent_tail(r, c);
+            return (round_with_residual(tangent, residual, rc, ef), false);
+        }
 
         let s = sin_poly(r);
-        let c = cos_poly(r);
-
-        let (num, den) = match n_mod4 {
-            0 => (s, c),
-            1 => (c, s.negate()),
-            2 => (s.negate(), c.negate()),
-            3 => (c.negate(), s),
-            _ => unreachable!(),
+        let (num, den) = if n.rem_euclid(4) == 1 {
+            (c, s.negate())
+        } else {
+            (c.negate(), s)
         };
-
         let result = num / den;
-        (result.to_fp80(ef), false)
+        let residual = || (num - result * den) / den;
+        (round_with_residual(result, residual, rc, ef), false)
     }
 
-    /// Compute atan2(self, x) (FPATAN). self = y (ST1), x = ST0.
-    pub fn fpatan(self, x: Fp80, ef: &mut ExceptionFlags) -> Fp80 {
+    /// Compute atan2(self, x) (FPATAN). self = y (ST1), x = ST0. The result rounds in the mode
+    /// `rc` (80486 PRM 15.2.3).
+    pub fn fpatan(self, x: Fp80, rc: RoundingMode, ef: &mut ExceptionFlags) -> Fp80 {
         let y = self;
 
         if flag_unsupported_operands(&[y, x], ef) {
@@ -559,50 +677,48 @@ impl Fp80 {
         if y.is_zero() {
             if x.is_zero() {
                 if x_sign {
-                    return compute_pi_f80(y_sign, ef);
+                    return compute_pi_f80(y_sign, rc, ef);
                 }
                 return y;
             }
             if x.is_negative() {
-                return compute_pi_f80(y_sign, ef);
+                return compute_pi_f80(y_sign, rc, ef);
             }
             return y;
         }
 
         if x.is_zero() {
-            return compute_pi2_f80(y_sign, ef);
+            return compute_pi2_f80(y_sign, rc, ef);
         }
 
         if y.is_infinity() && x.is_infinity() {
             if x_sign {
-                return compute_3pi4_f80(y_sign, ef);
+                return compute_3pi4_f80(y_sign, rc, ef);
             }
-            return compute_pi4_f80(y_sign, ef);
+            return compute_pi4_f80(y_sign, rc, ef);
         }
 
         if y.is_infinity() {
-            return compute_pi2_f80(y_sign, ef);
+            return compute_pi2_f80(y_sign, rc, ef);
         }
 
         if x.is_infinity() {
             if x_sign {
-                return compute_pi_f80(y_sign, ef);
+                return compute_pi_f80(y_sign, rc, ef);
             }
             return if y_sign { Fp80::NEG_ZERO } else { Fp80::ZERO };
         }
 
         let y_exponent = leading_exponent(y);
         let x_exponent = leading_exponent(x);
-        if y_exponent - x_exponent < FIRST_TERM_EXPONENT_LIMIT {
-            if x_sign {
-                return compute_pi_f80(y_sign, ef);
-            }
-            let quotient = DoubleF64::from_fp80_scaled(y, y_exponent)
-                / DoubleF64::from_fp80_scaled(x, x_exponent);
-            return first_term_result(quotient, true, y_exponent - x_exponent, ef);
+        if x_sign && y_exponent - x_exponent < FIRST_TERM_EXPONENT_LIMIT {
+            return compute_pi_f80(y_sign, rc, ef);
+        }
+        if !x_sign && y_exponent - x_exponent < FPATAN_SMALL_RATIO_LIMIT {
+            return small_ratio_arctangent(y, x, rc, ef);
         }
         if x_exponent - y_exponent < FIRST_TERM_EXPONENT_LIMIT {
-            return compute_pi2_f80(y_sign, ef);
+            return compute_pi2_f80(y_sign, rc, ef);
         }
 
         let scale = y_exponent.max(x_exponent);
@@ -640,7 +756,7 @@ impl Fp80 {
         }
 
         ef.precision = true;
-        atan_approx.with_sign(y_sign).to_fp80(ef)
+        atan_approx.with_sign(y_sign).to_fp80(rc, ef)
     }
 }
 
@@ -699,12 +815,12 @@ mod tests {
     fn test_f2xm1_basic() {
         // f2xm1(+0) = +0.
         let mut ef = no_exceptions();
-        let result = Fp80::ZERO.f2xm1(&mut ef);
+        let result = Fp80::ZERO.f2xm1(RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, Fp80::ZERO);
 
         // f2xm1(-0) = -0.
         let mut ef = no_exceptions();
-        let result = Fp80::NEG_ZERO.f2xm1(&mut ef);
+        let result = Fp80::NEG_ZERO.f2xm1(RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, Fp80::NEG_ZERO);
     }
 
@@ -712,25 +828,25 @@ mod tests {
     fn test_f2xm1_edge_cases() {
         // f2xm1(-1.0) = -0.5 + PE.
         let mut ef = no_exceptions();
-        let result = NEGATIVE_ONE.f2xm1(&mut ef);
+        let result = NEGATIVE_ONE.f2xm1(RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, NEGATIVE_HALF);
         assert!(ef.precision);
 
         // f2xm1(+1.0) = +1.0 + PE.
         let mut ef = no_exceptions();
-        let result = Fp80::ONE.f2xm1(&mut ef);
+        let result = Fp80::ONE.f2xm1(RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, Fp80::ONE);
         assert!(ef.precision);
 
         // SNaN -> QNaN + IE.
         let mut ef = no_exceptions();
-        let result = POSITIVE_SNAN.f2xm1(&mut ef);
+        let result = POSITIVE_SNAN.f2xm1(RoundingMode::NearestEven, &mut ef);
         assert!(result.is_quiet_nan());
         assert!(ef.invalid);
 
         // QNaN -> QNaN, no IE.
         let mut ef = no_exceptions();
-        let result = POSITIVE_QNAN.f2xm1(&mut ef);
+        let result = POSITIVE_QNAN.f2xm1(RoundingMode::NearestEven, &mut ef);
         assert!(result.is_quiet_nan());
         assert!(!ef.invalid);
     }
@@ -740,12 +856,12 @@ mod tests {
         // fyl2x(x=2, y=1) = 1 * log2(2) = 1.0.
         let two = Fp80::from_bits(0x4000, 0x8000_0000_0000_0000);
         let mut ef = no_exceptions();
-        let result = two.fyl2x(Fp80::ONE, &mut ef);
+        let result = two.fyl2x(Fp80::ONE, RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, Fp80::ONE);
 
         // fyl2x(x=1, y=1) = 1 * log2(1) = 0.
         let mut ef = no_exceptions();
-        let result = Fp80::ONE.fyl2x(Fp80::ONE, &mut ef);
+        let result = Fp80::ONE.fyl2x(Fp80::ONE, RoundingMode::NearestEven, &mut ef);
         assert!(result.is_zero());
     }
 
@@ -753,70 +869,70 @@ mod tests {
     fn test_fyl2x_edge_cases() {
         // x < 0 -> Indefinite + IE.
         let mut ef = no_exceptions();
-        let result = NEGATIVE_ONE.fyl2x(Fp80::ONE, &mut ef);
+        let result = NEGATIVE_ONE.fyl2x(Fp80::ONE, RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, Fp80::INDEFINITE);
         assert!(ef.invalid);
 
         // x = 0, y = 0 -> Indefinite + IE.
         let mut ef = no_exceptions();
-        let result = Fp80::ZERO.fyl2x(Fp80::ZERO, &mut ef);
+        let result = Fp80::ZERO.fyl2x(Fp80::ZERO, RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, Fp80::INDEFINITE);
         assert!(ef.invalid);
 
         // x = 0, y = positive nonzero -> -inf + ZE (sign opposite to y).
         let mut ef = no_exceptions();
-        let result = Fp80::ZERO.fyl2x(Fp80::ONE, &mut ef);
+        let result = Fp80::ZERO.fyl2x(Fp80::ONE, RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, Fp80::NEG_INFINITY);
         assert!(ef.zero_divide);
 
         // x = 0, y = negative nonzero -> +inf + ZE.
         let mut ef = no_exceptions();
-        let result = Fp80::ZERO.fyl2x(NEGATIVE_ONE, &mut ef);
+        let result = Fp80::ZERO.fyl2x(NEGATIVE_ONE, RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, Fp80::INFINITY);
         assert!(ef.zero_divide);
 
         // x = +inf, y = 0 -> Indefinite + IE.
         let mut ef = no_exceptions();
-        let result = Fp80::INFINITY.fyl2x(Fp80::ZERO, &mut ef);
+        let result = Fp80::INFINITY.fyl2x(Fp80::ZERO, RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, Fp80::INDEFINITE);
         assert!(ef.invalid);
 
         // x = 1, y = inf -> Indefinite + IE (0 * inf is indeterminate).
         let mut ef = no_exceptions();
-        let result = Fp80::ONE.fyl2x(Fp80::INFINITY, &mut ef);
+        let result = Fp80::ONE.fyl2x(Fp80::INFINITY, RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, Fp80::INDEFINITE);
         assert!(ef.invalid);
 
         // x = +inf, y = positive -> +inf.
         let mut ef = no_exceptions();
-        let result = Fp80::INFINITY.fyl2x(Fp80::ONE, &mut ef);
+        let result = Fp80::INFINITY.fyl2x(Fp80::ONE, RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, Fp80::INFINITY);
 
         // x = +inf, y = negative -> -inf.
         let mut ef = no_exceptions();
-        let result = Fp80::INFINITY.fyl2x(NEGATIVE_ONE, &mut ef);
+        let result = Fp80::INFINITY.fyl2x(NEGATIVE_ONE, RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, Fp80::NEG_INFINITY);
 
         // SNaN propagation.
         let mut ef = no_exceptions();
-        let result = POSITIVE_SNAN.fyl2x(Fp80::ONE, &mut ef);
+        let result = POSITIVE_SNAN.fyl2x(Fp80::ONE, RoundingMode::NearestEven, &mut ef);
         assert!(result.is_quiet_nan());
         assert!(ef.invalid);
 
         let mut ef = no_exceptions();
-        let result = Fp80::ONE.fyl2x(POSITIVE_SNAN, &mut ef);
+        let result = Fp80::ONE.fyl2x(POSITIVE_SNAN, RoundingMode::NearestEven, &mut ef);
         assert!(result.is_quiet_nan());
         assert!(ef.invalid);
 
         // QNaN propagation: QNaN as x, no IE.
         let mut ef = no_exceptions();
-        let result = POSITIVE_QNAN.fyl2x(Fp80::ONE, &mut ef);
+        let result = POSITIVE_QNAN.fyl2x(Fp80::ONE, RoundingMode::NearestEven, &mut ef);
         assert!(result.is_quiet_nan());
         assert!(!ef.invalid);
 
         // QNaN propagation: QNaN as y, no IE.
         let mut ef = no_exceptions();
-        let result = Fp80::ONE.fyl2x(POSITIVE_QNAN, &mut ef);
+        let result = Fp80::ONE.fyl2x(POSITIVE_QNAN, RoundingMode::NearestEven, &mut ef);
         assert!(result.is_quiet_nan());
         assert!(!ef.invalid);
     }
@@ -825,13 +941,13 @@ mod tests {
     fn test_fyl2xp1_basic() {
         // fyl2xp1(x=+0, y=ONE) = +0 (sign = sign(x) XOR sign(y) = 0 XOR 0 = +0).
         let mut ef = no_exceptions();
-        let result = Fp80::ZERO.fyl2xp1(Fp80::ONE, &mut ef);
+        let result = Fp80::ZERO.fyl2xp1(Fp80::ONE, RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, Fp80::ZERO);
         assert!(!result.sign());
 
         // fyl2xp1(x=-0, y=ONE) = -0 (sign = 1 XOR 0 = 1).
         let mut ef = no_exceptions();
-        let result = Fp80::NEG_ZERO.fyl2xp1(Fp80::ONE, &mut ef);
+        let result = Fp80::NEG_ZERO.fyl2xp1(Fp80::ONE, RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, Fp80::NEG_ZERO);
     }
 
@@ -839,35 +955,35 @@ mod tests {
     fn test_fyl2xp1_edge_cases() {
         // fyl2xp1(x=+0, y=negative) = -0 (sign = 0 XOR 1 = 1).
         let mut ef = no_exceptions();
-        let result = Fp80::ZERO.fyl2xp1(NEGATIVE_ONE, &mut ef);
+        let result = Fp80::ZERO.fyl2xp1(NEGATIVE_ONE, RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, Fp80::NEG_ZERO);
 
         // fyl2xp1(x=-0, y=negative) = +0 (sign = 1 XOR 1 = 0).
         let mut ef = no_exceptions();
-        let result = Fp80::NEG_ZERO.fyl2xp1(NEGATIVE_ONE, &mut ef);
+        let result = Fp80::NEG_ZERO.fyl2xp1(NEGATIVE_ONE, RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, Fp80::ZERO);
         assert!(!result.sign());
 
         // SNaN propagation.
         let mut ef = no_exceptions();
-        let result = POSITIVE_SNAN.fyl2xp1(Fp80::ONE, &mut ef);
+        let result = POSITIVE_SNAN.fyl2xp1(Fp80::ONE, RoundingMode::NearestEven, &mut ef);
         assert!(result.is_quiet_nan());
         assert!(ef.invalid);
 
         let mut ef = no_exceptions();
-        let result = Fp80::ZERO.fyl2xp1(POSITIVE_SNAN, &mut ef);
+        let result = Fp80::ZERO.fyl2xp1(POSITIVE_SNAN, RoundingMode::NearestEven, &mut ef);
         assert!(result.is_quiet_nan());
         assert!(ef.invalid);
 
         // QNaN propagation: QNaN as x, no IE.
         let mut ef = no_exceptions();
-        let result = POSITIVE_QNAN.fyl2xp1(Fp80::ONE, &mut ef);
+        let result = POSITIVE_QNAN.fyl2xp1(Fp80::ONE, RoundingMode::NearestEven, &mut ef);
         assert!(result.is_quiet_nan());
         assert!(!ef.invalid);
 
         // QNaN propagation: QNaN as y, no IE.
         let mut ef = no_exceptions();
-        let result = Fp80::ZERO.fyl2xp1(POSITIVE_QNAN, &mut ef);
+        let result = Fp80::ZERO.fyl2xp1(POSITIVE_QNAN, RoundingMode::NearestEven, &mut ef);
         assert!(result.is_quiet_nan());
         assert!(!ef.invalid);
     }
@@ -876,13 +992,13 @@ mod tests {
     fn test_fsin_basic() {
         // sin(+0) = +0.
         let mut ef = no_exceptions();
-        let (result, out_of_range) = Fp80::ZERO.fsin(&mut ef);
+        let (result, out_of_range) = Fp80::ZERO.fsin(RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, Fp80::ZERO);
         assert!(!out_of_range);
 
         // sin(-0) = -0.
         let mut ef = no_exceptions();
-        let (result, out_of_range) = Fp80::NEG_ZERO.fsin(&mut ef);
+        let (result, out_of_range) = Fp80::NEG_ZERO.fsin(RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, Fp80::NEG_ZERO);
         assert!(!out_of_range);
     }
@@ -891,31 +1007,31 @@ mod tests {
     fn test_fsin_edge_cases() {
         // sin(+inf) = Indefinite + IE.
         let mut ef = no_exceptions();
-        let (result, _) = Fp80::INFINITY.fsin(&mut ef);
+        let (result, _) = Fp80::INFINITY.fsin(RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, Fp80::INDEFINITE);
         assert!(ef.invalid);
 
         // sin(-inf) = Indefinite + IE.
         let mut ef = no_exceptions();
-        let (result, _) = Fp80::NEG_INFINITY.fsin(&mut ef);
+        let (result, _) = Fp80::NEG_INFINITY.fsin(RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, Fp80::INDEFINITE);
         assert!(ef.invalid);
 
         // |x| >= 2^63 -> (x unchanged, C2=true).
         let mut ef = no_exceptions();
-        let (result, out_of_range) = OUT_OF_RANGE.fsin(&mut ef);
+        let (result, out_of_range) = OUT_OF_RANGE.fsin(RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, OUT_OF_RANGE);
         assert!(out_of_range);
 
         // SNaN -> QNaN + IE.
         let mut ef = no_exceptions();
-        let (result, _) = POSITIVE_SNAN.fsin(&mut ef);
+        let (result, _) = POSITIVE_SNAN.fsin(RoundingMode::NearestEven, &mut ef);
         assert!(result.is_quiet_nan());
         assert!(ef.invalid);
 
         // QNaN -> QNaN, no IE.
         let mut ef = no_exceptions();
-        let (result, _) = POSITIVE_QNAN.fsin(&mut ef);
+        let (result, _) = POSITIVE_QNAN.fsin(RoundingMode::NearestEven, &mut ef);
         assert!(result.is_quiet_nan());
         assert!(!ef.invalid);
     }
@@ -924,13 +1040,13 @@ mod tests {
     fn test_fcos_basic() {
         // cos(+0) = +1.0.
         let mut ef = no_exceptions();
-        let (result, out_of_range) = Fp80::ZERO.fcos(&mut ef);
+        let (result, out_of_range) = Fp80::ZERO.fcos(RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, Fp80::ONE);
         assert!(!out_of_range);
 
         // cos(-0) = +1.0.
         let mut ef = no_exceptions();
-        let (result, out_of_range) = Fp80::NEG_ZERO.fcos(&mut ef);
+        let (result, out_of_range) = Fp80::NEG_ZERO.fcos(RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, Fp80::ONE);
         assert!(!out_of_range);
     }
@@ -939,31 +1055,31 @@ mod tests {
     fn test_fcos_edge_cases() {
         // cos(+inf) = Indefinite + IE.
         let mut ef = no_exceptions();
-        let (result, _) = Fp80::INFINITY.fcos(&mut ef);
+        let (result, _) = Fp80::INFINITY.fcos(RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, Fp80::INDEFINITE);
         assert!(ef.invalid);
 
         // cos(-inf) = Indefinite + IE.
         let mut ef = no_exceptions();
-        let (result, _) = Fp80::NEG_INFINITY.fcos(&mut ef);
+        let (result, _) = Fp80::NEG_INFINITY.fcos(RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, Fp80::INDEFINITE);
         assert!(ef.invalid);
 
         // |x| >= 2^63 -> (x unchanged, C2=true).
         let mut ef = no_exceptions();
-        let (result, out_of_range) = OUT_OF_RANGE.fcos(&mut ef);
+        let (result, out_of_range) = OUT_OF_RANGE.fcos(RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, OUT_OF_RANGE);
         assert!(out_of_range);
 
         // SNaN -> QNaN + IE.
         let mut ef = no_exceptions();
-        let (result, _) = POSITIVE_SNAN.fcos(&mut ef);
+        let (result, _) = POSITIVE_SNAN.fcos(RoundingMode::NearestEven, &mut ef);
         assert!(result.is_quiet_nan());
         assert!(ef.invalid);
 
         // QNaN -> QNaN, no IE.
         let mut ef = no_exceptions();
-        let (result, _) = POSITIVE_QNAN.fcos(&mut ef);
+        let (result, _) = POSITIVE_QNAN.fcos(RoundingMode::NearestEven, &mut ef);
         assert!(result.is_quiet_nan());
         assert!(!ef.invalid);
     }
@@ -972,14 +1088,14 @@ mod tests {
     fn test_fsincos_basic() {
         // fsincos(+0) = (sin=+0, cos=+1.0, false).
         let mut ef = no_exceptions();
-        let (sin, cos, out_of_range) = Fp80::ZERO.fsincos(&mut ef);
+        let (sin, cos, out_of_range) = Fp80::ZERO.fsincos(RoundingMode::NearestEven, &mut ef);
         assert_eq!(sin, Fp80::ZERO);
         assert_eq!(cos, Fp80::ONE);
         assert!(!out_of_range);
 
         // fsincos(-0) = (sin=-0, cos=+1.0, false).
         let mut ef = no_exceptions();
-        let (sin, cos, out_of_range) = Fp80::NEG_ZERO.fsincos(&mut ef);
+        let (sin, cos, out_of_range) = Fp80::NEG_ZERO.fsincos(RoundingMode::NearestEven, &mut ef);
         assert_eq!(sin, Fp80::NEG_ZERO);
         assert_eq!(cos, Fp80::ONE);
         assert!(!out_of_range);
@@ -989,31 +1105,31 @@ mod tests {
     fn test_fsincos_edge_cases() {
         // fsincos(+inf) -> Indefinite + IE.
         let mut ef = no_exceptions();
-        let (sin, _, _) = Fp80::INFINITY.fsincos(&mut ef);
+        let (sin, _, _) = Fp80::INFINITY.fsincos(RoundingMode::NearestEven, &mut ef);
         assert_eq!(sin, Fp80::INDEFINITE);
         assert!(ef.invalid);
 
         // Out of range.
         let mut ef = no_exceptions();
-        let (result, _, out_of_range) = OUT_OF_RANGE.fsincos(&mut ef);
+        let (result, _, out_of_range) = OUT_OF_RANGE.fsincos(RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, OUT_OF_RANGE);
         assert!(out_of_range);
 
         // SNaN -> QNaN + IE.
         let mut ef = no_exceptions();
-        let (result, _, _) = POSITIVE_SNAN.fsincos(&mut ef);
+        let (result, _, _) = POSITIVE_SNAN.fsincos(RoundingMode::NearestEven, &mut ef);
         assert!(result.is_quiet_nan());
         assert!(ef.invalid);
 
         // fsincos(-inf) -> Indefinite + IE.
         let mut ef = no_exceptions();
-        let (sin, _, _) = Fp80::NEG_INFINITY.fsincos(&mut ef);
+        let (sin, _, _) = Fp80::NEG_INFINITY.fsincos(RoundingMode::NearestEven, &mut ef);
         assert_eq!(sin, Fp80::INDEFINITE);
         assert!(ef.invalid);
 
         // QNaN -> QNaN, no IE.
         let mut ef = no_exceptions();
-        let (sin, cos, _) = POSITIVE_QNAN.fsincos(&mut ef);
+        let (sin, cos, _) = POSITIVE_QNAN.fsincos(RoundingMode::NearestEven, &mut ef);
         assert!(sin.is_quiet_nan());
         assert!(cos.is_quiet_nan());
         assert!(!ef.invalid);
@@ -1023,13 +1139,13 @@ mod tests {
     fn test_fptan_basic() {
         // fptan(+0) = +0.
         let mut ef = no_exceptions();
-        let (result, out_of_range) = Fp80::ZERO.fptan(&mut ef);
+        let (result, out_of_range) = Fp80::ZERO.fptan(RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, Fp80::ZERO);
         assert!(!out_of_range);
 
         // fptan(-0) = -0.
         let mut ef = no_exceptions();
-        let (result, out_of_range) = Fp80::NEG_ZERO.fptan(&mut ef);
+        let (result, out_of_range) = Fp80::NEG_ZERO.fptan(RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, Fp80::NEG_ZERO);
         assert!(!out_of_range);
     }
@@ -1038,31 +1154,31 @@ mod tests {
     fn test_fptan_edge_cases() {
         // fptan(+inf) = Indefinite + IE.
         let mut ef = no_exceptions();
-        let (result, _) = Fp80::INFINITY.fptan(&mut ef);
+        let (result, _) = Fp80::INFINITY.fptan(RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, Fp80::INDEFINITE);
         assert!(ef.invalid);
 
         // fptan(-inf) = Indefinite + IE.
         let mut ef = no_exceptions();
-        let (result, _) = Fp80::NEG_INFINITY.fptan(&mut ef);
+        let (result, _) = Fp80::NEG_INFINITY.fptan(RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, Fp80::INDEFINITE);
         assert!(ef.invalid);
 
         // |x| >= 2^63 -> (x unchanged, C2=true).
         let mut ef = no_exceptions();
-        let (result, out_of_range) = OUT_OF_RANGE.fptan(&mut ef);
+        let (result, out_of_range) = OUT_OF_RANGE.fptan(RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, OUT_OF_RANGE);
         assert!(out_of_range);
 
         // SNaN -> QNaN + IE.
         let mut ef = no_exceptions();
-        let (result, _) = POSITIVE_SNAN.fptan(&mut ef);
+        let (result, _) = POSITIVE_SNAN.fptan(RoundingMode::NearestEven, &mut ef);
         assert!(result.is_quiet_nan());
         assert!(ef.invalid);
 
         // QNaN -> QNaN, no IE.
         let mut ef = no_exceptions();
-        let (result, _) = POSITIVE_QNAN.fptan(&mut ef);
+        let (result, _) = POSITIVE_QNAN.fptan(RoundingMode::NearestEven, &mut ef);
         assert!(result.is_quiet_nan());
         assert!(!ef.invalid);
     }
@@ -1071,13 +1187,13 @@ mod tests {
     fn test_fpatan_basic() {
         // fpatan(y=+0, x=+ONE) = +0 (atan2(+0, positive) = +0).
         let mut ef = no_exceptions();
-        let result = Fp80::ZERO.fpatan(Fp80::ONE, &mut ef);
+        let result = Fp80::ZERO.fpatan(Fp80::ONE, RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, Fp80::ZERO);
         assert!(!result.sign());
 
         // fpatan(y=-0, x=+ONE) = -0 (atan2(-0, positive) = -0).
         let mut ef = no_exceptions();
-        let result = Fp80::NEG_ZERO.fpatan(Fp80::ONE, &mut ef);
+        let result = Fp80::NEG_ZERO.fpatan(Fp80::ONE, RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, Fp80::NEG_ZERO);
     }
 
@@ -1085,117 +1201,118 @@ mod tests {
     fn test_fpatan_edge_cases() {
         // fpatan(y=+0, x=-ONE) = +pi.
         let mut ef = no_exceptions();
-        let result = Fp80::ZERO.fpatan(NEGATIVE_ONE, &mut ef);
+        let result = Fp80::ZERO.fpatan(NEGATIVE_ONE, RoundingMode::NearestEven, &mut ef);
         assert!(result.is_normal());
         assert!(!result.sign()); // positive pi
 
         // fpatan(y=-0, x=-ONE) = -pi.
         let mut ef = no_exceptions();
-        let result = Fp80::NEG_ZERO.fpatan(NEGATIVE_ONE, &mut ef);
+        let result = Fp80::NEG_ZERO.fpatan(NEGATIVE_ONE, RoundingMode::NearestEven, &mut ef);
         assert!(result.is_normal());
         assert!(result.sign()); // negative pi
 
         // fpatan(y=+ONE, x=+0) = +pi/2.
         let mut ef = no_exceptions();
-        let result = Fp80::ONE.fpatan(Fp80::ZERO, &mut ef);
+        let result = Fp80::ONE.fpatan(Fp80::ZERO, RoundingMode::NearestEven, &mut ef);
         assert!(result.is_normal());
         assert!(!result.sign());
 
         // fpatan(y=-ONE, x=+0) = -pi/2.
         let mut ef = no_exceptions();
-        let result = NEGATIVE_ONE.fpatan(Fp80::ZERO, &mut ef);
+        let result = NEGATIVE_ONE.fpatan(Fp80::ZERO, RoundingMode::NearestEven, &mut ef);
         assert!(result.is_normal());
         assert!(result.sign());
 
         // fpatan(y=+inf, x=+inf) = +pi/4.
         let mut ef = no_exceptions();
-        let result = Fp80::INFINITY.fpatan(Fp80::INFINITY, &mut ef);
+        let result = Fp80::INFINITY.fpatan(Fp80::INFINITY, RoundingMode::NearestEven, &mut ef);
         assert!(result.is_normal());
         assert!(!result.sign());
 
         // fpatan(y=+inf, x=-inf) = +3pi/4.
         let mut ef = no_exceptions();
-        let result = Fp80::INFINITY.fpatan(Fp80::NEG_INFINITY, &mut ef);
+        let result = Fp80::INFINITY.fpatan(Fp80::NEG_INFINITY, RoundingMode::NearestEven, &mut ef);
         assert!(result.is_normal());
         assert!(!result.sign());
 
         // fpatan(y=-inf, x=+inf) = -pi/4.
         let mut ef = no_exceptions();
-        let result = Fp80::NEG_INFINITY.fpatan(Fp80::INFINITY, &mut ef);
+        let result = Fp80::NEG_INFINITY.fpatan(Fp80::INFINITY, RoundingMode::NearestEven, &mut ef);
         assert!(result.is_normal());
         assert!(result.sign());
 
         // fpatan(y=-inf, x=-inf) = -3pi/4.
         let mut ef = no_exceptions();
-        let result = Fp80::NEG_INFINITY.fpatan(Fp80::NEG_INFINITY, &mut ef);
+        let result =
+            Fp80::NEG_INFINITY.fpatan(Fp80::NEG_INFINITY, RoundingMode::NearestEven, &mut ef);
         assert!(result.is_normal());
         assert!(result.sign());
 
         // fpatan(y=+inf, x=finite) = +pi/2.
         let mut ef = no_exceptions();
-        let result = Fp80::INFINITY.fpatan(Fp80::ONE, &mut ef);
+        let result = Fp80::INFINITY.fpatan(Fp80::ONE, RoundingMode::NearestEven, &mut ef);
         assert!(result.is_normal());
         assert!(!result.sign());
 
         // fpatan(y=-inf, x=finite) = -pi/2.
         let mut ef = no_exceptions();
-        let result = Fp80::NEG_INFINITY.fpatan(Fp80::ONE, &mut ef);
+        let result = Fp80::NEG_INFINITY.fpatan(Fp80::ONE, RoundingMode::NearestEven, &mut ef);
         assert!(result.is_normal());
         assert!(result.sign());
 
         // fpatan(y=finite, x=+inf) = +0 (positive y) or -0 (negative y).
         let mut ef = no_exceptions();
-        let result = Fp80::ONE.fpatan(Fp80::INFINITY, &mut ef);
+        let result = Fp80::ONE.fpatan(Fp80::INFINITY, RoundingMode::NearestEven, &mut ef);
         assert!(result.is_zero());
         assert!(!result.sign());
 
         let mut ef = no_exceptions();
-        let result = NEGATIVE_ONE.fpatan(Fp80::INFINITY, &mut ef);
+        let result = NEGATIVE_ONE.fpatan(Fp80::INFINITY, RoundingMode::NearestEven, &mut ef);
         assert!(result.is_zero());
         assert!(result.sign());
 
         // fpatan(y=finite, x=-inf) = +pi (positive y) or -pi (negative y).
         let mut ef = no_exceptions();
-        let result = Fp80::ONE.fpatan(Fp80::NEG_INFINITY, &mut ef);
+        let result = Fp80::ONE.fpatan(Fp80::NEG_INFINITY, RoundingMode::NearestEven, &mut ef);
         assert!(result.is_normal());
         assert!(!result.sign());
 
         let mut ef = no_exceptions();
-        let result = NEGATIVE_ONE.fpatan(Fp80::NEG_INFINITY, &mut ef);
+        let result = NEGATIVE_ONE.fpatan(Fp80::NEG_INFINITY, RoundingMode::NearestEven, &mut ef);
         assert!(result.is_normal());
         assert!(result.sign());
 
         // SNaN propagation.
         let mut ef = no_exceptions();
-        let result = POSITIVE_SNAN.fpatan(Fp80::ONE, &mut ef);
+        let result = POSITIVE_SNAN.fpatan(Fp80::ONE, RoundingMode::NearestEven, &mut ef);
         assert!(result.is_quiet_nan());
         assert!(ef.invalid);
 
         let mut ef = no_exceptions();
-        let result = Fp80::ONE.fpatan(POSITIVE_SNAN, &mut ef);
+        let result = Fp80::ONE.fpatan(POSITIVE_SNAN, RoundingMode::NearestEven, &mut ef);
         assert!(result.is_quiet_nan());
         assert!(ef.invalid);
 
         // QNaN propagation, no IE.
         let mut ef = no_exceptions();
-        let result = POSITIVE_QNAN.fpatan(Fp80::ONE, &mut ef);
+        let result = POSITIVE_QNAN.fpatan(Fp80::ONE, RoundingMode::NearestEven, &mut ef);
         assert!(result.is_quiet_nan());
         assert!(!ef.invalid);
 
         let mut ef = no_exceptions();
-        let result = Fp80::ONE.fpatan(POSITIVE_QNAN, &mut ef);
+        let result = Fp80::ONE.fpatan(POSITIVE_QNAN, RoundingMode::NearestEven, &mut ef);
         assert!(result.is_quiet_nan());
         assert!(!ef.invalid);
 
         // fpatan(y=+ONE, x=-0) = +pi/2.
         let mut ef = no_exceptions();
-        let result = Fp80::ONE.fpatan(Fp80::NEG_ZERO, &mut ef);
+        let result = Fp80::ONE.fpatan(Fp80::NEG_ZERO, RoundingMode::NearestEven, &mut ef);
         assert!(result.is_normal());
         assert!(!result.sign());
 
         // fpatan(y=-ONE, x=-0) = -pi/2.
         let mut ef = no_exceptions();
-        let result = NEGATIVE_ONE.fpatan(Fp80::NEG_ZERO, &mut ef);
+        let result = NEGATIVE_ONE.fpatan(Fp80::NEG_ZERO, RoundingMode::NearestEven, &mut ef);
         assert!(result.is_normal());
         assert!(result.sign());
     }
@@ -1207,7 +1324,7 @@ mod tests {
         // f2xm1(0.5) = sqrt(2) - 1 ≈ 0.4142.
         // Result should be positive, in range [0.25, 0.5), so true_exponent = -2.
         let mut ef = no_exceptions();
-        let result = half.f2xm1(&mut ef);
+        let result = half.f2xm1(RoundingMode::NearestEven, &mut ef);
         assert!(!result.is_zero());
         assert!(!result.is_negative());
         assert_eq!(result.true_exponent(), -2);
@@ -1217,7 +1334,7 @@ mod tests {
         // Result should be negative, in range (-0.5, -0.25], so true_exponent = -2.
         let neg_half = Fp80::from_bits(0xBFFE, 0x8000_0000_0000_0000);
         let mut ef = no_exceptions();
-        let result = neg_half.f2xm1(&mut ef);
+        let result = neg_half.f2xm1(RoundingMode::NearestEven, &mut ef);
         assert!(!result.is_zero());
         assert!(result.is_negative());
         assert_eq!(result.true_exponent(), -2);
@@ -1232,19 +1349,19 @@ mod tests {
         // fyl2x(x=4, y=1) = log2(4) = 2.0.
         let four = Fp80::from_bits(0x4001, 0x8000_0000_0000_0000);
         let mut ef = no_exceptions();
-        let result = four.fyl2x(Fp80::ONE, &mut ef);
+        let result = four.fyl2x(Fp80::ONE, RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, two);
 
         // fyl2x(x=0.5, y=1) = log2(0.5) = -1.0.
         let half = Fp80::from_bits(0x3FFE, 0x8000_0000_0000_0000);
         let mut ef = no_exceptions();
-        let result = half.fyl2x(Fp80::ONE, &mut ef);
+        let result = half.fyl2x(Fp80::ONE, RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, NEGATIVE_ONE);
 
         // fyl2x(x=8, y=1) = log2(8) = 3.0.
         let eight = Fp80::from_bits(0x4002, 0x8000_0000_0000_0000);
         let mut ef = no_exceptions();
-        let result = eight.fyl2x(Fp80::ONE, &mut ef);
+        let result = eight.fyl2x(Fp80::ONE, RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, three);
     }
 
@@ -1255,7 +1372,7 @@ mod tests {
         // Result must be in [1.0, 2.0): true_exponent = 0, positive.
         let three = Fp80::from_bits(0x4000, 0xC000_0000_0000_0000);
         let mut ef = no_exceptions();
-        let result = three.fyl2x(Fp80::ONE, &mut ef);
+        let result = three.fyl2x(Fp80::ONE, RoundingMode::NearestEven, &mut ef);
         assert!(!result.is_zero());
         assert!(!result.is_negative());
         assert_eq!(result.true_exponent(), 0);
@@ -1265,7 +1382,7 @@ mod tests {
         // Result must be in [0.5, 1.0): true_exponent = -1, positive.
         let one_and_half = Fp80::from_bits(0x3FFF, 0xC000_0000_0000_0000);
         let mut ef = no_exceptions();
-        let result = one_and_half.fyl2x(Fp80::ONE, &mut ef);
+        let result = one_and_half.fyl2x(Fp80::ONE, RoundingMode::NearestEven, &mut ef);
         assert!(!result.is_zero());
         assert!(!result.is_negative());
         assert_eq!(result.true_exponent(), -1);
@@ -1284,61 +1401,85 @@ mod tests {
     fn trigonometric_functions_of_a_tiny_operand_take_the_first_term() {
         let mut ef = no_exceptions();
         assert_eq!(
-            PSEUDO_DENORMAL.fsin(&mut ef),
+            PSEUDO_DENORMAL.fsin(RoundingMode::NearestEven, &mut ef),
             (PSEUDO_DENORMAL_VALUE, false)
         );
         assert!(ef.denormal && ef.precision && !ef.underflow && ef.rounded_up);
 
         let mut ef = no_exceptions();
-        assert_eq!(PSEUDO_DENORMAL.fcos(&mut ef), (Fp80::ONE, false));
+        assert_eq!(
+            PSEUDO_DENORMAL.fcos(RoundingMode::NearestEven, &mut ef),
+            (Fp80::ONE, false)
+        );
         assert!(ef.denormal && ef.precision && ef.rounded_up);
 
         let mut ef = no_exceptions();
         assert_eq!(
-            PSEUDO_DENORMAL.fptan(&mut ef),
+            PSEUDO_DENORMAL.fptan(RoundingMode::NearestEven, &mut ef),
             (PSEUDO_DENORMAL_VALUE, false)
         );
         assert!(ef.denormal && ef.precision && !ef.rounded_up);
 
         let mut ef = no_exceptions();
         assert_eq!(
-            PSEUDO_DENORMAL.fsincos(&mut ef),
+            PSEUDO_DENORMAL.fsincos(RoundingMode::NearestEven, &mut ef),
             (PSEUDO_DENORMAL_VALUE, Fp80::ONE, false)
         );
         assert!(ef.denormal && ef.precision && ef.rounded_up);
 
         let mut ef = no_exceptions();
-        assert_eq!(DENORMAL.fsin(&mut ef), (DENORMAL, false));
+        assert_eq!(
+            DENORMAL.fsin(RoundingMode::NearestEven, &mut ef),
+            (DENORMAL, false)
+        );
         assert!(ef.denormal && ef.precision && ef.underflow && ef.rounded_up);
 
         let mut ef = no_exceptions();
         let negative = TINY_NORMAL.negate();
-        assert_eq!(negative.fsin(&mut ef), (negative, false));
+        assert_eq!(
+            negative.fsin(RoundingMode::NearestEven, &mut ef),
+            (negative, false)
+        );
         assert!(ef.precision && ef.rounded_up && !ef.denormal && !ef.underflow);
 
         let mut ef = no_exceptions();
-        assert_eq!(negative.fptan(&mut ef), (negative, false));
+        assert_eq!(
+            negative.fptan(RoundingMode::NearestEven, &mut ef),
+            (negative, false)
+        );
         assert!(ef.precision && !ef.rounded_up);
     }
 
     #[test]
     fn trigonometric_functions_at_the_first_term_limit_report_the_rounding() {
-        for exponent in [0x3FBD, 0x3FBC, 0x3FBB, 0x3F9B] {
+        for exponent in [0x3FDF, 0x3FDE, 0x3FBC, 0x3F9B] {
             let operand = Fp80::from_bits(exponent, 0x8000_0000_0000_0000);
             let mut ef = no_exceptions();
-            assert_eq!(operand.fsin(&mut ef), (operand, false));
+            assert_eq!(
+                operand.fsin(RoundingMode::NearestEven, &mut ef),
+                (operand, false)
+            );
             assert!(ef.precision && ef.rounded_up, "{exponent:04X}");
 
             let mut ef = no_exceptions();
-            assert_eq!(operand.fcos(&mut ef), (Fp80::ONE, false));
+            assert_eq!(
+                operand.fcos(RoundingMode::NearestEven, &mut ef),
+                (Fp80::ONE, false)
+            );
             assert!(ef.precision && ef.rounded_up, "{exponent:04X}");
 
             let mut ef = no_exceptions();
-            assert_eq!(operand.fptan(&mut ef), (operand, false));
+            assert_eq!(
+                operand.fptan(RoundingMode::NearestEven, &mut ef),
+                (operand, false)
+            );
             assert!(ef.precision && !ef.rounded_up, "{exponent:04X}");
 
             let mut ef = no_exceptions();
-            assert_eq!(operand.fsincos(&mut ef), (operand, Fp80::ONE, false));
+            assert_eq!(
+                operand.fsincos(RoundingMode::NearestEven, &mut ef),
+                (operand, Fp80::ONE, false)
+            );
             assert!(ef.precision && ef.rounded_up, "{exponent:04X}");
         }
     }
@@ -1346,14 +1487,15 @@ mod tests {
     #[test]
     fn exponential_and_logarithm_above_the_first_term_limit_keep_the_second_term() {
         let mut ef = no_exceptions();
-        let result = Fp80::from_bits(0xBFBB, 0xB0E7_4E9F_66B6_93E4).f2xm1(&mut ef);
+        let result = Fp80::from_bits(0xBFBB, 0xB0E7_4E9F_66B6_93E4)
+            .f2xm1(RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, Fp80::from_bits(0xBFBA, 0xF53D_89DA_8272_BBC3));
         assert!(ef.precision && !ef.rounded_up);
 
         let mut ef = no_exceptions();
         let x = Fp80::from_bits(0xBFB9, 0x82A0_649A_3B40_0000);
         let y = Fp80::from_bits(0x4021, 0xFF82_A9C9_B040_0000);
-        let result = x.fyl2xp1(y, &mut ef);
+        let result = x.fyl2xp1(y, RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, Fp80::from_bits(0xBFDC, 0xBC18_05C4_45F3_3A8A));
         assert!(ef.precision && ef.rounded_up);
     }
@@ -1363,7 +1505,10 @@ mod tests {
         for x in [TINY_NORMAL, TINY_NORMAL.negate()] {
             for y in [Fp80::ZERO, Fp80::NEG_ZERO] {
                 let mut ef = no_exceptions();
-                assert!(x.fyl2xp1(y, &mut ef).is_zero(), "{x:?} {y:?}");
+                assert!(
+                    x.fyl2xp1(y, RoundingMode::NearestEven, &mut ef).is_zero(),
+                    "{x:?} {y:?}"
+                );
                 assert_eq!(ef, no_exceptions(), "{x:?} {y:?}");
             }
         }
@@ -1372,22 +1517,22 @@ mod tests {
     #[test]
     fn exponential_and_logarithm_of_a_tiny_operand_take_the_first_term() {
         let mut ef = no_exceptions();
-        let result = PSEUDO_DENORMAL.f2xm1(&mut ef);
+        let result = PSEUDO_DENORMAL.f2xm1(RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, Fp80::from_bits(0x0000, 0x58B9_0BFB_E8E7_BCD7));
         assert!(ef.denormal && ef.underflow && ef.precision && ef.rounded_up);
 
         let mut ef = no_exceptions();
-        let result = TINY_NORMAL.f2xm1(&mut ef);
+        let result = TINY_NORMAL.f2xm1(RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, Fp80::from_bits(0x2FFF, 0xB172_17F7_D1CF_79AC));
         assert!(ef.precision && ef.rounded_up && !ef.underflow);
 
         let mut ef = no_exceptions();
-        let result = PSEUDO_DENORMAL.fyl2xp1(Fp80::ONE, &mut ef);
+        let result = PSEUDO_DENORMAL.fyl2xp1(Fp80::ONE, RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, Fp80::from_bits(0x0001, 0xB8AA_3B29_5C17_F0BD));
         assert!(ef.denormal && ef.precision && !ef.rounded_up && !ef.underflow);
 
         let mut ef = no_exceptions();
-        let result = TINY_NORMAL.fyl2xp1(Fp80::ONE, &mut ef);
+        let result = TINY_NORMAL.fyl2xp1(Fp80::ONE, RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, Fp80::from_bits(0x3000, 0xB8AA_3B29_5C17_F0BC));
         assert!(ef.precision && ef.rounded_up);
     }
@@ -1395,25 +1540,31 @@ mod tests {
     #[test]
     fn arctangent_of_operands_out_of_the_f64_range() {
         let mut ef = no_exceptions();
-        let result = PSEUDO_DENORMAL.fpatan(Fp80::ONE, &mut ef);
+        let result = PSEUDO_DENORMAL.fpatan(Fp80::ONE, RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, PSEUDO_DENORMAL_VALUE);
         assert!(ef.denormal && ef.precision && ef.rounded_up && !ef.underflow);
 
         let mut ef = no_exceptions();
-        let result = Fp80::ONE.fpatan(PSEUDO_DENORMAL, &mut ef);
+        let result = Fp80::ONE.fpatan(PSEUDO_DENORMAL, RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, Fp80::from_bits(0x3FFF, 0xC90F_DAA2_2168_C235));
         assert!(ef.denormal && ef.precision && ef.rounded_up);
 
         let mut ef = no_exceptions();
-        let result = PSEUDO_DENORMAL.fpatan(NEGATIVE_ONE, &mut ef);
+        let result = PSEUDO_DENORMAL.fpatan(NEGATIVE_ONE, RoundingMode::NearestEven, &mut ef);
         assert_eq!(result, Fp80::PI_UP);
 
         let mut quarter_flags = no_exceptions();
-        let quarter = Fp80::ONE.fpatan(Fp80::ONE, &mut quarter_flags);
+        let quarter = Fp80::ONE.fpatan(Fp80::ONE, RoundingMode::NearestEven, &mut quarter_flags);
         let mut ef = no_exceptions();
-        assert_eq!(PSEUDO_DENORMAL.fpatan(PSEUDO_DENORMAL, &mut ef), quarter);
+        assert_eq!(
+            PSEUDO_DENORMAL.fpatan(PSEUDO_DENORMAL, RoundingMode::NearestEven, &mut ef),
+            quarter
+        );
         let huge = Fp80::from_bits(0x7000, 0x8000_0000_0000_0000);
-        assert_eq!(huge.fpatan(huge, &mut ef), quarter);
+        assert_eq!(
+            huge.fpatan(huge, RoundingMode::NearestEven, &mut ef),
+            quarter
+        );
     }
 
     /// A wide unsigned integer as its high and low 128 bits.
@@ -1542,7 +1693,10 @@ mod tests {
         let (remainder, quotient) = trig_reduce(operand);
         assert_eq!(quotient, 0);
         let mut ef = no_exceptions();
-        assert_eq!(remainder.to_fp80(&mut ef), operand);
+        assert_eq!(
+            remainder.to_fp80(RoundingMode::NearestEven, &mut ef),
+            operand
+        );
         assert!(!ef.precision);
     }
 
@@ -1684,28 +1838,28 @@ mod tests {
             assert_eq!(trig_reduce(operand).1, case.quotient, "N of {operand:?}");
 
             let mut ef = no_exceptions();
-            let (sine, out_of_range) = operand.fsin(&mut ef);
+            let (sine, out_of_range) = operand.fsin(RoundingMode::NearestEven, &mut ef);
             assert!(!out_of_range);
             assert_eq!(sine, case.sine.0, "FSIN {operand:?}");
             assert!(ef.precision);
             assert_eq!(ef.rounded_up, case.sine.1, "FSIN C1 {operand:?}");
 
             let mut ef = no_exceptions();
-            let (cosine, out_of_range) = operand.fcos(&mut ef);
+            let (cosine, out_of_range) = operand.fcos(RoundingMode::NearestEven, &mut ef);
             assert!(!out_of_range);
             assert_eq!(cosine, case.cosine.0, "FCOS {operand:?}");
             assert!(ef.precision);
             assert_eq!(ef.rounded_up, case.cosine.1, "FCOS C1 {operand:?}");
 
             let mut ef = no_exceptions();
-            let (tangent, out_of_range) = operand.fptan(&mut ef);
+            let (tangent, out_of_range) = operand.fptan(RoundingMode::NearestEven, &mut ef);
             assert!(!out_of_range);
             assert_eq!(tangent, case.tangent.0, "FPTAN {operand:?}");
             assert!(ef.precision);
             assert_eq!(ef.rounded_up, case.tangent.1, "FPTAN C1 {operand:?}");
 
             let mut ef = no_exceptions();
-            let (sine, cosine, out_of_range) = operand.fsincos(&mut ef);
+            let (sine, cosine, out_of_range) = operand.fsincos(RoundingMode::NearestEven, &mut ef);
             assert!(!out_of_range);
             assert_eq!(
                 (sine, cosine),
@@ -1713,6 +1867,504 @@ mod tests {
                 "FSINCOS {operand:?}"
             );
             assert!(ef.precision);
+        }
+    }
+
+    /// The rounding modes in the order of the RC field values 00 to 11 (80486 PRM table 15-5).
+    const ROUNDING_MODES: [RoundingMode; 4] = [
+        RoundingMode::NearestEven,
+        RoundingMode::Down,
+        RoundingMode::Up,
+        RoundingMode::Zero,
+    ];
+
+    /// A transcendental instruction with one result.
+    enum Transcendental {
+        Sine,
+        Cosine,
+        Tangent,
+        TwoToXMinusOne,
+        YLog2X,
+        YLog2XPlusOne,
+        Arctangent,
+    }
+
+    /// An operation with `first` as the receiver and `second` as the argument of the binary
+    /// operations, and the result with its C1 bit in each of the [`ROUNDING_MODES`].
+    struct RoundingCase {
+        function: Transcendental,
+        first: Fp80,
+        second: Fp80,
+        results: [(Fp80, bool); 4],
+    }
+
+    /// The results of the exact functions rounded at 64 bits in each rounding mode (80486 PRM
+    /// table 15-5), evaluated with 320-bit arithmetic or, for an arctangent of a ratio below
+    /// 2^-60, with the exact series. FSIN, FCOS and FPTAN follow the 66-bit pi reduction of
+    /// 80486 PRM 17.5. The flag is C1, set when the rounding increased the magnitude. The last
+    /// seven results have a leading part exact at 64 bits and terms far below it.
+    const ROUNDING_CASES: [RoundingCase; 24] = [
+        RoundingCase {
+            function: Transcendental::Sine,
+            first: Fp80::from_bits(0x3FFE, 0x8000_0000_0000_0000),
+            second: Fp80::ZERO,
+            results: [
+                (Fp80::from_bits(0x3FFD, 0xF577_43A2_582F_7F44), true),
+                (Fp80::from_bits(0x3FFD, 0xF577_43A2_582F_7F43), false),
+                (Fp80::from_bits(0x3FFD, 0xF577_43A2_582F_7F44), true),
+                (Fp80::from_bits(0x3FFD, 0xF577_43A2_582F_7F43), false),
+            ],
+        },
+        RoundingCase {
+            function: Transcendental::Sine,
+            first: Fp80::from_bits(0xBFFE, 0xE666_6666_6666_6800),
+            second: Fp80::ZERO,
+            results: [
+                (Fp80::from_bits(0xBFFE, 0xC888_1CC2_ED42_0723), false),
+                (Fp80::from_bits(0xBFFE, 0xC888_1CC2_ED42_0724), true),
+                (Fp80::from_bits(0xBFFE, 0xC888_1CC2_ED42_0723), false),
+                (Fp80::from_bits(0xBFFE, 0xC888_1CC2_ED42_0723), false),
+            ],
+        },
+        RoundingCase {
+            function: Transcendental::Sine,
+            first: Fp80::from_bits(0x4020, 0x9502_F900_0000_0000),
+            second: Fp80::ZERO,
+            results: [
+                (Fp80::from_bits(0xBFFD, 0xF99A_63C4_9C6F_2B1A), false),
+                (Fp80::from_bits(0xBFFD, 0xF99A_63C4_9C6F_2B1B), true),
+                (Fp80::from_bits(0xBFFD, 0xF99A_63C4_9C6F_2B1A), false),
+                (Fp80::from_bits(0xBFFD, 0xF99A_63C4_9C6F_2B1A), false),
+            ],
+        },
+        RoundingCase {
+            function: Transcendental::Cosine,
+            first: Fp80::from_bits(0x3FFE, 0x8000_0000_0000_0000),
+            second: Fp80::ZERO,
+            results: [
+                (Fp80::from_bits(0x3FFE, 0xE0A9_4032_DBEA_7CEE), true),
+                (Fp80::from_bits(0x3FFE, 0xE0A9_4032_DBEA_7CED), false),
+                (Fp80::from_bits(0x3FFE, 0xE0A9_4032_DBEA_7CEE), true),
+                (Fp80::from_bits(0x3FFE, 0xE0A9_4032_DBEA_7CED), false),
+            ],
+        },
+        RoundingCase {
+            function: Transcendental::Cosine,
+            first: Fp80::from_bits(0xBFFE, 0xE666_6666_6666_6800),
+            second: Fp80::ZERO,
+            results: [
+                (Fp80::from_bits(0x3FFE, 0x9F21_D4B4_9710_E35B), false),
+                (Fp80::from_bits(0x3FFE, 0x9F21_D4B4_9710_E35B), false),
+                (Fp80::from_bits(0x3FFE, 0x9F21_D4B4_9710_E35C), true),
+                (Fp80::from_bits(0x3FFE, 0x9F21_D4B4_9710_E35B), false),
+            ],
+        },
+        RoundingCase {
+            function: Transcendental::Tangent,
+            first: Fp80::from_bits(0x3FFE, 0x8000_0000_0000_0000),
+            second: Fp80::ZERO,
+            results: [
+                (Fp80::from_bits(0x3FFE, 0x8BDA_7ADF_9A3A_5219), true),
+                (Fp80::from_bits(0x3FFE, 0x8BDA_7ADF_9A3A_5218), false),
+                (Fp80::from_bits(0x3FFE, 0x8BDA_7ADF_9A3A_5219), true),
+                (Fp80::from_bits(0x3FFE, 0x8BDA_7ADF_9A3A_5218), false),
+            ],
+        },
+        RoundingCase {
+            function: Transcendental::Tangent,
+            first: Fp80::from_bits(0x3FFF, 0x8CCC_CCCC_CCCC_D000),
+            second: Fp80::ZERO,
+            results: [
+                (Fp80::from_bits(0x3FFF, 0xFB7D_3E94_310A_727C), false),
+                (Fp80::from_bits(0x3FFF, 0xFB7D_3E94_310A_727C), false),
+                (Fp80::from_bits(0x3FFF, 0xFB7D_3E94_310A_727D), true),
+                (Fp80::from_bits(0x3FFF, 0xFB7D_3E94_310A_727C), false),
+            ],
+        },
+        RoundingCase {
+            function: Transcendental::TwoToXMinusOne,
+            first: Fp80::from_bits(0x3FFE, 0x8000_0000_0000_0000),
+            second: Fp80::ZERO,
+            results: [
+                (Fp80::from_bits(0x3FFD, 0xD413_CCCF_E779_9211), false),
+                (Fp80::from_bits(0x3FFD, 0xD413_CCCF_E779_9211), false),
+                (Fp80::from_bits(0x3FFD, 0xD413_CCCF_E779_9212), true),
+                (Fp80::from_bits(0x3FFD, 0xD413_CCCF_E779_9211), false),
+            ],
+        },
+        RoundingCase {
+            function: Transcendental::TwoToXMinusOne,
+            first: Fp80::from_bits(0xBFFE, 0xE666_6666_6666_6800),
+            second: Fp80::ZERO,
+            results: [
+                (Fp80::from_bits(0xBFFD, 0xEDA0_411D_AF99_BECE), true),
+                (Fp80::from_bits(0xBFFD, 0xEDA0_411D_AF99_BECE), true),
+                (Fp80::from_bits(0xBFFD, 0xEDA0_411D_AF99_BECD), false),
+                (Fp80::from_bits(0xBFFD, 0xEDA0_411D_AF99_BECD), false),
+            ],
+        },
+        RoundingCase {
+            function: Transcendental::TwoToXMinusOne,
+            first: Fp80::from_bits(0x3FEE, 0xA7C5_AC47_1B47_8800),
+            second: Fp80::ZERO,
+            results: [
+                (Fp80::from_bits(0x3FED, 0xE895_1885_AF47_98D4), false),
+                (Fp80::from_bits(0x3FED, 0xE895_1885_AF47_98D4), false),
+                (Fp80::from_bits(0x3FED, 0xE895_1885_AF47_98D5), true),
+                (Fp80::from_bits(0x3FED, 0xE895_1885_AF47_98D4), false),
+            ],
+        },
+        RoundingCase {
+            function: Transcendental::YLog2X,
+            first: Fp80::from_bits(0x4000, 0xC000_0000_0000_0000),
+            second: Fp80::from_bits(0x3FFE, 0xB333_3333_3333_3000),
+            results: [
+                (Fp80::from_bits(0x3FFF, 0x8E03_3C61_1824_ACEF), true),
+                (Fp80::from_bits(0x3FFF, 0x8E03_3C61_1824_ACEE), false),
+                (Fp80::from_bits(0x3FFF, 0x8E03_3C61_1824_ACEF), true),
+                (Fp80::from_bits(0x3FFF, 0x8E03_3C61_1824_ACEE), false),
+            ],
+        },
+        RoundingCase {
+            function: Transcendental::YLog2X,
+            first: Fp80::from_bits(0x4000, 0xA000_0000_0000_0000),
+            second: Fp80::from_bits(0x3FFD, 0x9999_9999_9999_9800),
+            results: [
+                (Fp80::from_bits(0x3FFD, 0xCB0C_53E9_1F75_4B78), false),
+                (Fp80::from_bits(0x3FFD, 0xCB0C_53E9_1F75_4B78), false),
+                (Fp80::from_bits(0x3FFD, 0xCB0C_53E9_1F75_4B79), true),
+                (Fp80::from_bits(0x3FFD, 0xCB0C_53E9_1F75_4B78), false),
+            ],
+        },
+        RoundingCase {
+            function: Transcendental::YLog2XPlusOne,
+            first: Fp80::from_bits(0x3FFD, 0x8000_0000_0000_0000),
+            second: Fp80::from_bits(0x3FFF, 0xA666_6666_6666_6800),
+            results: [
+                (Fp80::from_bits(0x3FFD, 0xD646_7CAD_EEB8_0DFE), true),
+                (Fp80::from_bits(0x3FFD, 0xD646_7CAD_EEB8_0DFD), false),
+                (Fp80::from_bits(0x3FFD, 0xD646_7CAD_EEB8_0DFE), true),
+                (Fp80::from_bits(0x3FFD, 0xD646_7CAD_EEB8_0DFD), false),
+            ],
+        },
+        RoundingCase {
+            function: Transcendental::YLog2XPlusOne,
+            first: Fp80::from_bits(0x3FEE, 0xA7C5_AC47_1B47_8800),
+            second: Fp80::from_bits(0x3FFE, 0x8000_0000_0000_0000),
+            results: [
+                (Fp80::from_bits(0x3FED, 0xF20A_F86A_5B0F_A11F), true),
+                (Fp80::from_bits(0x3FED, 0xF20A_F86A_5B0F_A11E), false),
+                (Fp80::from_bits(0x3FED, 0xF20A_F86A_5B0F_A11F), true),
+                (Fp80::from_bits(0x3FED, 0xF20A_F86A_5B0F_A11E), false),
+            ],
+        },
+        RoundingCase {
+            function: Transcendental::Arctangent,
+            first: Fp80::from_bits(0x3FFF, 0x8CCC_CCCC_CCCC_D000),
+            second: Fp80::from_bits(0x4000, 0xC000_0000_0000_0000),
+            results: [
+                (Fp80::from_bits(0x3FFD, 0xB3F0_9271_307E_0A68), true),
+                (Fp80::from_bits(0x3FFD, 0xB3F0_9271_307E_0A67), false),
+                (Fp80::from_bits(0x3FFD, 0xB3F0_9271_307E_0A68), true),
+                (Fp80::from_bits(0x3FFD, 0xB3F0_9271_307E_0A67), false),
+            ],
+        },
+        RoundingCase {
+            function: Transcendental::Arctangent,
+            first: Fp80::from_bits(0xBFFE, 0xE666_6666_6666_6800),
+            second: Fp80::from_bits(0x3FFD, 0x9999_9999_9999_9800),
+            results: [
+                (Fp80::from_bits(0xBFFF, 0x9FE0_BB5B_D42B_0096), false),
+                (Fp80::from_bits(0xBFFF, 0x9FE0_BB5B_D42B_0097), true),
+                (Fp80::from_bits(0xBFFF, 0x9FE0_BB5B_D42B_0096), false),
+                (Fp80::from_bits(0xBFFF, 0x9FE0_BB5B_D42B_0096), false),
+            ],
+        },
+        RoundingCase {
+            function: Transcendental::Arctangent,
+            first: Fp80::from_bits(0x4005, 0xC800_0000_0000_0000),
+            second: Fp80::from_bits(0x3FEE, 0xA7C5_AC47_1B47_8800),
+            results: [
+                (Fp80::from_bits(0x3FFF, 0xC90F_D9CB_61D3_EC4F), false),
+                (Fp80::from_bits(0x3FFF, 0xC90F_D9CB_61D3_EC4F), false),
+                (Fp80::from_bits(0x3FFF, 0xC90F_D9CB_61D3_EC50), true),
+                (Fp80::from_bits(0x3FFF, 0xC90F_D9CB_61D3_EC4F), false),
+            ],
+        },
+        RoundingCase {
+            function: Transcendental::Arctangent,
+            first: Fp80::from_bits(0x3FC3, 0xD3C2_1BCE_CCED_A100),
+            second: Fp80::ONE,
+            results: [
+                (Fp80::from_bits(0x3FC3, 0xD3C2_1BCE_CCED_A100), true),
+                (Fp80::from_bits(0x3FC3, 0xD3C2_1BCE_CCED_A0FF), false),
+                (Fp80::from_bits(0x3FC3, 0xD3C2_1BCE_CCED_A100), true),
+                (Fp80::from_bits(0x3FC3, 0xD3C2_1BCE_CCED_A0FF), false),
+            ],
+        },
+        RoundingCase {
+            function: Transcendental::Arctangent,
+            first: Fp80::from_bits(0xBFC9, 0xA000_0000_0000_0000),
+            second: Fp80::from_bits(0x4005, 0x8000_0000_0000_0000),
+            results: [
+                (Fp80::from_bits(0xBFC3, 0xA000_0000_0000_0000), true),
+                (Fp80::from_bits(0xBFC3, 0xA000_0000_0000_0000), true),
+                (Fp80::from_bits(0xBFC3, 0x9FFF_FFFF_FFFF_FFFF), false),
+                (Fp80::from_bits(0xBFC3, 0x9FFF_FFFF_FFFF_FFFF), false),
+            ],
+        },
+        RoundingCase {
+            function: Transcendental::Arctangent,
+            first: Fp80::from_bits(0x3FAF, 0x8000_0000_0000_0000),
+            second: Fp80::from_bits(0x3FFB, 0xFFFF_FFFF_FFFF_FFFF),
+            results: [
+                (Fp80::from_bits(0x3FB2, 0x8000_0000_0000_0001), true),
+                (Fp80::from_bits(0x3FB2, 0x8000_0000_0000_0000), false),
+                (Fp80::from_bits(0x3FB2, 0x8000_0000_0000_0001), true),
+                (Fp80::from_bits(0x3FB2, 0x8000_0000_0000_0000), false),
+            ],
+        },
+        RoundingCase {
+            function: Transcendental::Arctangent,
+            first: Fp80::from_bits(0x3F37, 0x8000_0000_0000_0000),
+            second: Fp80::ONE,
+            results: [
+                (Fp80::from_bits(0x3F37, 0x8000_0000_0000_0000), true),
+                (Fp80::from_bits(0x3F36, 0xFFFF_FFFF_FFFF_FFFF), false),
+                (Fp80::from_bits(0x3F37, 0x8000_0000_0000_0000), true),
+                (Fp80::from_bits(0x3F36, 0xFFFF_FFFF_FFFF_FFFF), false),
+            ],
+        },
+        RoundingCase {
+            function: Transcendental::Cosine,
+            first: Fp80::from_bits(0x3FE0, 0x8000_0000_0000_0000),
+            second: Fp80::ZERO,
+            results: [
+                (Fp80::from_bits(0x3FFE, 0xFFFF_FFFF_FFFF_FFFE), false),
+                (Fp80::from_bits(0x3FFE, 0xFFFF_FFFF_FFFF_FFFE), false),
+                (Fp80::from_bits(0x3FFE, 0xFFFF_FFFF_FFFF_FFFF), true),
+                (Fp80::from_bits(0x3FFE, 0xFFFF_FFFF_FFFF_FFFE), false),
+            ],
+        },
+        RoundingCase {
+            function: Transcendental::Sine,
+            first: Fp80::from_bits(0x3FE4, 0xC000_0000_0000_0000),
+            second: Fp80::ZERO,
+            results: [
+                (Fp80::from_bits(0x3FE4, 0xBFFF_FFFF_FFFF_FEE0), false),
+                (Fp80::from_bits(0x3FE4, 0xBFFF_FFFF_FFFF_FEE0), false),
+                (Fp80::from_bits(0x3FE4, 0xBFFF_FFFF_FFFF_FEE1), true),
+                (Fp80::from_bits(0x3FE4, 0xBFFF_FFFF_FFFF_FEE0), false),
+            ],
+        },
+        RoundingCase {
+            function: Transcendental::Tangent,
+            first: Fp80::from_bits(0x3FE4, 0xC000_0000_0000_0000),
+            second: Fp80::ZERO,
+            results: [
+                (Fp80::from_bits(0x3FE4, 0xC000_0000_0000_0240), false),
+                (Fp80::from_bits(0x3FE4, 0xC000_0000_0000_0240), false),
+                (Fp80::from_bits(0x3FE4, 0xC000_0000_0000_0241), true),
+                (Fp80::from_bits(0x3FE4, 0xC000_0000_0000_0240), false),
+            ],
+        },
+    ];
+
+    /// The sine, the cosine and C1 of FSINCOS in each of the [`ROUNDING_MODES`].
+    type SineCosineResults = [(Fp80, Fp80, bool); 4];
+
+    /// FSINCOS operands with the sine, the cosine and C1 in each of the [`ROUNDING_MODES`]. The
+    /// results are the exact functions rounded at 64 bits, evaluated with 320-bit arithmetic.
+    /// Observed behaviour: C1 is set when either result rounds up in magnitude.
+    const SINE_COSINE_CASES: [(Fp80, SineCosineResults); 4] = [
+        (
+            Fp80::from_bits(0x3FFF, 0x8CCC_CCCC_CCCC_D000),
+            [
+                (
+                    Fp80::from_bits(0x3FFE, 0xE426_2A61_6B19_BD67),
+                    Fp80::from_bits(0x3FFD, 0xE83D_C036_3B08_872B),
+                    true,
+                ),
+                (
+                    Fp80::from_bits(0x3FFE, 0xE426_2A61_6B19_BD66),
+                    Fp80::from_bits(0x3FFD, 0xE83D_C036_3B08_872A),
+                    false,
+                ),
+                (
+                    Fp80::from_bits(0x3FFE, 0xE426_2A61_6B19_BD67),
+                    Fp80::from_bits(0x3FFD, 0xE83D_C036_3B08_872B),
+                    true,
+                ),
+                (
+                    Fp80::from_bits(0x3FFE, 0xE426_2A61_6B19_BD66),
+                    Fp80::from_bits(0x3FFD, 0xE83D_C036_3B08_872A),
+                    false,
+                ),
+            ],
+        ),
+        (
+            Fp80::from_bits(0x4000, 0xA000_0000_0000_0000),
+            [
+                (
+                    Fp80::from_bits(0x3FFE, 0x9935_786E_7E55_8405),
+                    Fp80::from_bits(0xBFFE, 0xCD17_BF7C_2C5B_E959),
+                    true,
+                ),
+                (
+                    Fp80::from_bits(0x3FFE, 0x9935_786E_7E55_8405),
+                    Fp80::from_bits(0xBFFE, 0xCD17_BF7C_2C5B_E959),
+                    true,
+                ),
+                (
+                    Fp80::from_bits(0x3FFE, 0x9935_786E_7E55_8406),
+                    Fp80::from_bits(0xBFFE, 0xCD17_BF7C_2C5B_E958),
+                    true,
+                ),
+                (
+                    Fp80::from_bits(0x3FFE, 0x9935_786E_7E55_8405),
+                    Fp80::from_bits(0xBFFE, 0xCD17_BF7C_2C5B_E958),
+                    false,
+                ),
+            ],
+        ),
+        (
+            Fp80::from_bits(0x3FE4, 0xC000_0000_0000_0000),
+            [
+                (
+                    Fp80::from_bits(0x3FE4, 0xBFFF_FFFF_FFFF_FEE0),
+                    Fp80::from_bits(0x3FFE, 0xFFFF_FFFF_FFFF_FB80),
+                    false,
+                ),
+                (
+                    Fp80::from_bits(0x3FE4, 0xBFFF_FFFF_FFFF_FEE0),
+                    Fp80::from_bits(0x3FFE, 0xFFFF_FFFF_FFFF_FB80),
+                    false,
+                ),
+                (
+                    Fp80::from_bits(0x3FE4, 0xBFFF_FFFF_FFFF_FEE1),
+                    Fp80::from_bits(0x3FFE, 0xFFFF_FFFF_FFFF_FB81),
+                    true,
+                ),
+                (
+                    Fp80::from_bits(0x3FE4, 0xBFFF_FFFF_FFFF_FEE0),
+                    Fp80::from_bits(0x3FFE, 0xFFFF_FFFF_FFFF_FB80),
+                    false,
+                ),
+            ],
+        ),
+        (
+            Fp80::from_bits(0x3FE0, 0x8000_0000_0000_0000),
+            [
+                (
+                    Fp80::from_bits(0x3FDF, 0xFFFF_FFFF_FFFF_FFFF),
+                    Fp80::from_bits(0x3FFE, 0xFFFF_FFFF_FFFF_FFFE),
+                    false,
+                ),
+                (
+                    Fp80::from_bits(0x3FDF, 0xFFFF_FFFF_FFFF_FFFF),
+                    Fp80::from_bits(0x3FFE, 0xFFFF_FFFF_FFFF_FFFE),
+                    false,
+                ),
+                (
+                    Fp80::from_bits(0x3FE0, 0x8000_0000_0000_0000),
+                    Fp80::from_bits(0x3FFE, 0xFFFF_FFFF_FFFF_FFFF),
+                    true,
+                ),
+                (
+                    Fp80::from_bits(0x3FDF, 0xFFFF_FFFF_FFFF_FFFF),
+                    Fp80::from_bits(0x3FFE, 0xFFFF_FFFF_FFFF_FFFE),
+                    false,
+                ),
+            ],
+        ),
+    ];
+
+    /// Runs the operation of `case` in the rounding mode `rc`.
+    fn run_rounding_case(case: &RoundingCase, rc: RoundingMode, ef: &mut ExceptionFlags) -> Fp80 {
+        match case.function {
+            Transcendental::Sine => case.first.fsin(rc, ef).0,
+            Transcendental::Cosine => case.first.fcos(rc, ef).0,
+            Transcendental::Tangent => case.first.fptan(rc, ef).0,
+            Transcendental::TwoToXMinusOne => case.first.f2xm1(rc, ef),
+            Transcendental::YLog2X => case.first.fyl2x(case.second, rc, ef),
+            Transcendental::YLog2XPlusOne => case.first.fyl2xp1(case.second, rc, ef),
+            Transcendental::Arctangent => case.first.fpatan(case.second, rc, ef),
+        }
+    }
+
+    #[test]
+    fn transcendental_results_follow_the_rounding_control() {
+        for case in &ROUNDING_CASES {
+            for (rc, (expected, rounded_up)) in ROUNDING_MODES.into_iter().zip(case.results) {
+                let mut ef = no_exceptions();
+                let result = run_rounding_case(case, rc, &mut ef);
+                assert_eq!(
+                    result, expected,
+                    "{:?} {:?} {rc:?}",
+                    case.first, case.second
+                );
+                assert!(ef.precision, "{:?} {:?} {rc:?}", case.first, case.second);
+                assert_eq!(
+                    ef.rounded_up, rounded_up,
+                    "C1 {:?} {:?} {rc:?}",
+                    case.first, case.second
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sine_and_cosine_follow_the_rounding_control() {
+        for (operand, results) in SINE_COSINE_CASES {
+            for (rc, (expected_sine, expected_cosine, rounded_up)) in
+                ROUNDING_MODES.into_iter().zip(results)
+            {
+                let mut ef = no_exceptions();
+                let (sine, cosine, out_of_range) = operand.fsincos(rc, &mut ef);
+                assert!(!out_of_range);
+                assert_eq!(
+                    (sine, cosine),
+                    (expected_sine, expected_cosine),
+                    "{operand:?} {rc:?}"
+                );
+                assert!(ef.precision, "{operand:?} {rc:?}");
+                assert_eq!(ef.rounded_up, rounded_up, "C1 {operand:?} {rc:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn first_term_results_follow_the_rounding_control() {
+        let operand = Fp80::from_bits(0x3FDE, 0x8000_0000_0000_0000);
+        let below = Fp80::from_bits(0x3FDD, 0xFFFF_FFFF_FFFF_FFFF);
+        let below_one = Fp80::from_bits(0x3FFE, 0xFFFF_FFFF_FFFF_FFFF);
+        let above = Fp80::from_bits(0x3FDE, 0x8000_0000_0000_0001);
+        let expectations = [
+            (RoundingMode::NearestEven, operand, Fp80::ONE, operand),
+            (RoundingMode::Down, below, below_one, operand),
+            (RoundingMode::Up, operand, Fp80::ONE, above),
+            (RoundingMode::Zero, below, below_one, operand),
+        ];
+        for (rc, sine, cosine, tangent) in expectations {
+            let mut ef = no_exceptions();
+            assert_eq!(operand.fsin(rc, &mut ef), (sine, false), "{rc:?}");
+            assert!(ef.precision);
+            assert_eq!(ef.rounded_up, sine == operand, "{rc:?}");
+
+            let mut ef = no_exceptions();
+            assert_eq!(operand.fcos(rc, &mut ef), (cosine, false), "{rc:?}");
+            assert_eq!(ef.rounded_up, cosine == Fp80::ONE, "{rc:?}");
+
+            let mut ef = no_exceptions();
+            assert_eq!(operand.fptan(rc, &mut ef), (tangent, false), "{rc:?}");
+            assert_eq!(ef.rounded_up, tangent == above, "{rc:?}");
+
+            let mut ef = no_exceptions();
+            assert_eq!(
+                operand.fsincos(rc, &mut ef),
+                (sine, cosine, false),
+                "{rc:?}"
+            );
         }
     }
 }

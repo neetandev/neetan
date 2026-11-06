@@ -1420,9 +1420,9 @@ mod tests {
                     |a, b, ef| a.scale(b, RoundingMode::NearestEven, ef),
                     |a, b, ef| a.partial_remainder(b, ef).0,
                     |a, b, ef| a.ieee_remainder(b, ef).0,
-                    |a, b, ef| a.fyl2x(b, ef),
-                    |a, b, ef| a.fyl2xp1(b, ef),
-                    |a, b, ef| a.fpatan(b, ef),
+                    |a, b, ef| a.fyl2x(b, RoundingMode::NearestEven, ef),
+                    |a, b, ef| a.fyl2xp1(b, RoundingMode::NearestEven, ef),
+                    |a, b, ef| a.fpatan(b, RoundingMode::NearestEven, ef),
                 ];
                 for (index, operation) in binary.iter().enumerate() {
                     for (a, b) in [(unsupported, other), (other, unsupported)] {
@@ -1445,11 +1445,11 @@ mod tests {
             let unary: [fn(Fp80, &mut ExceptionFlags) -> Fp80; 8] = [
                 |a, ef| a.sqrt(RoundingMode::NearestEven, Precision::Extended, ef),
                 |a, ef| a.round_to_int(RoundingMode::NearestEven, ef),
-                |a, ef| a.f2xm1(ef),
-                |a, ef| a.fsin(ef).0,
-                |a, ef| a.fcos(ef).0,
-                |a, ef| a.fptan(ef).0,
-                |a, ef| a.fsincos(ef).1,
+                |a, ef| a.f2xm1(RoundingMode::NearestEven, ef),
+                |a, ef| a.fsin(RoundingMode::NearestEven, ef).0,
+                |a, ef| a.fcos(RoundingMode::NearestEven, ef).0,
+                |a, ef| a.fptan(RoundingMode::NearestEven, ef).0,
+                |a, ef| a.fsincos(RoundingMode::NearestEven, ef).1,
                 |a, ef| a.extract(ef).1,
             ];
             for (index, operation) in unary.iter().enumerate() {
@@ -1499,11 +1499,11 @@ mod tests {
                 a.to_bcd(rc, &mut ef);
             }
             let mut ef = no_exceptions();
-            a.f2xm1(&mut ef);
-            a.fsin(&mut ef);
-            a.fcos(&mut ef);
-            a.fptan(&mut ef);
-            a.fsincos(&mut ef);
+            a.f2xm1(RoundingMode::NearestEven, &mut ef);
+            a.fsin(RoundingMode::NearestEven, &mut ef);
+            a.fcos(RoundingMode::NearestEven, &mut ef);
+            a.fptan(RoundingMode::NearestEven, &mut ef);
+            a.fsincos(RoundingMode::NearestEven, &mut ef);
             a.extract(&mut ef);
             for b in ENCODING_CLASSES {
                 for rc in ROUNDING_MODES {
@@ -1521,9 +1521,9 @@ mod tests {
                 a.compare_quiet(b, &mut ef);
                 a.partial_remainder(b, &mut ef);
                 a.ieee_remainder(b, &mut ef);
-                a.fyl2x(b, &mut ef);
-                a.fyl2xp1(b, &mut ef);
-                a.fpatan(b, &mut ef);
+                a.fyl2x(b, RoundingMode::NearestEven, &mut ef);
+                a.fyl2xp1(b, RoundingMode::NearestEven, &mut ef);
+                a.fpatan(b, RoundingMode::NearestEven, &mut ef);
             }
         }
     }
