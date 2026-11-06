@@ -267,6 +267,9 @@ mod fdd_boot;
 #[path = "bios/cdrom_boot.rs"]
 mod cdrom_boot;
 
+#[path = "bios/ipl_return.rs"]
+mod ipl_return;
+
 #[path = "bios/int18h.rs"]
 mod int18h;
 
