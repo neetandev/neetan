@@ -16,7 +16,7 @@ dependencies = [
 
 [[package]]
 name = "automation"
-version = "2026.10.0"
+version = "2026.11.1"
 dependencies = [
  "blake3",
  "common",
@@ -43,9 +43,9 @@ version = "1.0.0"
 
 [[package]]
 name = "cc"
-version = "1.6.0"
+version = "1.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f74872d07caf508b30a21f6836e7d7016a2eaf7d9ff4f48deaa58cd8a0407630"
+checksum = "4ff2a8126fff0f8c839080d619675a585e61720bb12d2baceae45769fd66f155"
 dependencies = [
  "find-msvc-tools",
  "shlex",
@@ -122,9 +122,9 @@ version = "0.1.0"
 
 [[package]]
 name = "find-msvc-tools"
-version = "0.1.14"
+version = "0.1.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aedcfb3409746eddb02b9e19ebda1c3394f759a152e48ee875a0844d1b955484"
+checksum = "1c66915cc5391097de7a2b0b972e8505aa33c0df401fd3a6811dbdb32881ba48"
 
 [[package]]
 name = "gui"
@@ -144,7 +144,7 @@ dependencies = [
 
 [[package]]
 name = "machine_60"
-version = "2026.10.0"
+version = "2026.11.1"
 dependencies = [
  "common",
  "cpu",
@@ -158,7 +158,7 @@ dependencies = [
 
 [[package]]
 name = "machine_88"
-version = "2026.10.0"
+version = "2026.11.1"
 dependencies = [
  "common",
  "cpu",
@@ -171,7 +171,7 @@ dependencies = [
 
 [[package]]
 name = "machine_88va"
-version = "2026.10.0"
+version = "2026.11.1"
 dependencies = [
  "common",
  "cpu",
@@ -184,7 +184,7 @@ dependencies = [
 
 [[package]]
 name = "machine_98"
-version = "2026.10.0"
+version = "2026.11.1"
 dependencies = [
  "common",
  "cpu",
@@ -199,7 +199,7 @@ dependencies = [
 
 [[package]]
 name = "machine_at"
-version = "2026.10.0"
+version = "2026.11.1"
 dependencies = [
  "common",
  "cpu",
@@ -213,7 +213,7 @@ dependencies = [
 
 [[package]]
 name = "machine_factory"
-version = "2026.10.0"
+version = "2026.11.1"
 dependencies = [
  "common",
  "device",
@@ -232,7 +232,7 @@ dependencies = [
 
 [[package]]
 name = "machine_fm7"
-version = "2026.10.0"
+version = "2026.11.1"
 dependencies = [
  "common",
  "cpu",
@@ -245,7 +245,7 @@ dependencies = [
 
 [[package]]
 name = "machine_msx"
-version = "2026.10.0"
+version = "2026.11.1"
 dependencies = [
  "common",
  "cpu",
@@ -259,7 +259,7 @@ dependencies = [
 
 [[package]]
 name = "machine_towns"
-version = "2026.10.0"
+version = "2026.11.1"
 dependencies = [
  "common",
  "cpu",
@@ -273,7 +273,7 @@ dependencies = [
 
 [[package]]
 name = "machine_x1"
-version = "2026.10.0"
+version = "2026.11.1"
 dependencies = [
  "common",
  "cpu",
@@ -287,7 +287,7 @@ dependencies = [
 
 [[package]]
 name = "machine_x68k"
-version = "2026.10.0"
+version = "2026.11.1"
 dependencies = [
  "common",
  "cpu_68k",
@@ -311,7 +311,7 @@ dependencies = [
 
 [[package]]
 name = "neetan"
-version = "2026.10.0"
+version = "2026.11.1"
 dependencies = [
  "automation",
  "common",
@@ -335,7 +335,7 @@ checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 
 [[package]]
 name = "r7rs"
-version = "2026.10.0"
+version = "2026.11.1"
 dependencies = [
  "common",
 ]
@@ -349,7 +349,7 @@ dependencies = [
 
 [[package]]
 name = "rom_loader"
-version = "2026.10.0"
+version = "2026.11.1"
 dependencies = [
  "blake3",
  "common",
@@ -377,15 +377,15 @@ dependencies = [
 
 [[package]]
 name = "sdl3-src"
-version = "3.4.18"
+version = "3.4.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "400d0fb006a4485fde477cfc56a250c99d7bfb183fefd145c15fe7607db7fc49"
+checksum = "dc5181b85760f18170dbc15b27b00d5aaaa003058bb14333ec7dd280665ef3a4"
 
 [[package]]
 name = "sdl3-sys"
-version = "0.7.2+SDL-3.4.18"
+version = "0.7.3+SDL-3.4.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "82b6a7f3cad40c5b318b3539bb4624389f4a03504cd5f4c65030787b962505ac"
+checksum = "0e68da4d2bcf29a81a1ea71ec27b93bb27151d649c2b186eb5988ad4dcb17d11"
 dependencies = [
  "cc",
  "cmake",
@@ -441,7 +441,7 @@ dependencies = [
 
 [[package]]
 name = "user_interface"
-version = "2026.10.0"
+version = "2026.11.1"
 dependencies = [
  "allocation_counter",
  "audio_engine",
