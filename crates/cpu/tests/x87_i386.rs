@@ -3704,6 +3704,44 @@ fn unmasked_stack_overflow_keeps_top_and_the_registers() {
     }
 }
 
+/// The C2 bit of the status word.
+const CONDITION_C2: u16 = 0x0400;
+
+#[test]
+fn masked_stack_overflow_of_a_two_result_instruction_writes_the_indefinite_twice() {
+    let programs: [(&[u8], u16); 3] = [
+        (&[0xD9, 0xF2], 0),
+        (&[0xD9, 0xFB], 0),
+        (&[0xD9, 0xF4], CONDITION_C2),
+    ];
+    for (program, condition_c2) in programs {
+        for operand in [Fp80::ONE, Fp80::ZERO, OUT_OF_RANGE] {
+            let stack = [operand, TWO, THREE, FOUR, FIVE, SIX, SEVEN, HALF];
+            let (cpu, _) = run_x87_program(program, &stack, &[], 1, |state, _| {
+                state.fpu.status_word |= CONDITION_C2;
+            });
+            let result = extract_result(&cpu);
+            assert_eq!(result.top, 7, "{program:02X?} {operand:?}");
+            assert_eq!(result.st(0), Fp80::INDEFINITE, "{program:02X?} {operand:?}");
+            assert_eq!(result.st(1), Fp80::INDEFINITE, "{program:02X?} {operand:?}");
+            assert_eq!(result.tag(0), 0b10, "{program:02X?} {operand:?}");
+            assert_eq!(result.tag(1), 0b10, "{program:02X?} {operand:?}");
+            for index in 2..8 {
+                assert_eq!(
+                    result.st(index),
+                    stack[index as usize - 1],
+                    "{program:02X?} {operand:?} ST({index})"
+                );
+            }
+            assert_eq!(
+                result.status_word & 0xC7FF,
+                0x0241 | condition_c2,
+                "{program:02X?} {operand:?}"
+            );
+        }
+    }
+}
+
 #[test]
 fn fld_of_a_signaling_nan_with_unmasked_invalid_pushes_nothing() {
     let programs: [(&[u8], &[u8]); 2] = [

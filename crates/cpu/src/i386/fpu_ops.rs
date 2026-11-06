@@ -965,7 +965,7 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             }
             return;
         }
-        if !self.fpu_check_unmasked_overflow() {
+        if !self.fpu_check_unmasked_overflow() || self.fpu_masked_push_overflow() {
             return;
         }
         let a = self.fpu_st(0);
@@ -1285,9 +1285,23 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
         self.fpu_trigonometric(|value, ef| value.fcos(ef), 123, 257);
     }
 
+    /// Handles a stack overflow of an instruction that replaces ST(0) and pushes a second
+    /// result, with the invalid operation exception masked. ST(0) and the pushed register
+    /// both receive the QNaN indefinite before any computation (80486 PRM 16.2.2.1 and
+    /// 25.2.3, FPTAN). Returns true when ST(7) is in use.
+    fn fpu_masked_push_overflow(&mut self) -> bool {
+        if self.fpu_is_empty(7) {
+            return false;
+        }
+        self.fpu_write_st(0, Fp80::INDEFINITE);
+        self.fpu_push(Fp80::INDEFINITE);
+        true
+    }
+
     /// Runs the two-result operation `op` on ST(0): ST(0) receives the first result and
     /// the second result is pushed. An unmasked stack overflow or an unmasked exception
-    /// leaves the stack unchanged. An operand out of range sets C2.
+    /// leaves the stack unchanged. A masked stack overflow leaves the QNaN indefinite in
+    /// ST(1) and ST(0) and clears C2. An operand out of range sets C2.
     fn fpu_two_results(
         &mut self,
         op: impl FnOnce(Fp80, &mut ExceptionFlags) -> (Fp80, Fp80, bool),
@@ -1304,6 +1318,10 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
             return;
         }
         if !self.fpu_check_unmasked_overflow() {
+            return;
+        }
+        if self.fpu_masked_push_overflow() {
+            self.fpu_clear_c2();
             return;
         }
         let mut ef = ExceptionFlags::default();
