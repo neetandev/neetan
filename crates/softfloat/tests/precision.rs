@@ -132,7 +132,7 @@ fn transcendental_sin_pi6() {
     let mut ef = ExceptionFlags::default();
     let six = Fp80::from_f64(6.0, &mut ef);
     let pi_over_6 = Fp80::PI_UP.div(six, RC, PC, &mut ef);
-    let (result, _) = pi_over_6.fsin(&mut ef);
+    let (result, _) = pi_over_6.fsin(RC, &mut ef);
     check("SIN(PI/6)", result, 0x3FFE, 0x8000000000000000, 0);
 }
 
@@ -141,7 +141,7 @@ fn transcendental_cos_pi3() {
     let mut ef = ExceptionFlags::default();
     let three = Fp80::from_f64(3.0, &mut ef);
     let pi_over_3 = Fp80::PI_UP.div(three, RC, PC, &mut ef);
-    let (result, _) = pi_over_3.fcos(&mut ef);
+    let (result, _) = pi_over_3.fcos(RC, &mut ef);
     check("COS(PI/3)", result, 0x3FFE, 0x8000000000000000, 0);
 }
 
@@ -150,7 +150,7 @@ fn transcendental_tan_pi4() {
     let mut ef = ExceptionFlags::default();
     let four = Fp80::from_f64(4.0, &mut ef);
     let pi_over_4 = Fp80::PI_UP.div(four, RC, PC, &mut ef);
-    let (result, _) = pi_over_4.fptan(&mut ef);
+    let (result, _) = pi_over_4.fptan(RC, &mut ef);
     check("TAN(PI/4)", result, 0x3FFF, 0x8000000000000000, 0);
 }
 
@@ -158,7 +158,7 @@ fn transcendental_tan_pi4() {
 fn transcendental_4atan1() {
     let mut ef = ExceptionFlags::default();
     let four = Fp80::from_f64(4.0, &mut ef);
-    let atan1 = Fp80::ONE.fpatan(Fp80::ONE, &mut ef);
+    let atan1 = Fp80::ONE.fpatan(Fp80::ONE, RC, &mut ef);
     let result = atan1.mul(four, RC, PC, &mut ef);
     check("4*ATAN(1)", result, 0x4000, 0xC90FDAA22168C235, 0);
 }
@@ -167,7 +167,7 @@ fn transcendental_4atan1() {
 fn transcendental_f2xm1() {
     let mut ef = ExceptionFlags::default();
     let half = Fp80::from_f64(0.5, &mut ef);
-    let result = half.f2xm1(&mut ef);
+    let result = half.f2xm1(RC, &mut ef);
     check("F2XM1(0.5)", result, 0x3FFD, 0xD413CCCFE7799211, 0);
 }
 
@@ -176,13 +176,13 @@ fn transcendental_f2xm1_near_boundary() {
     let mut ef = ExceptionFlags::default();
     // x = 15/16 = 0.9375 (exact in f64, near the |x| < 1 domain boundary).
     let x = Fp80::from_f64(0.9375, &mut ef);
-    let result = x.f2xm1(&mut ef);
+    let result = x.f2xm1(RC, &mut ef);
     check("F2XM1(0.9375)", result, 0x3FFE, 0xEA4AFA2A490D9859, 0);
 
     let mut ef = ExceptionFlags::default();
     // x = -15/16 = -0.9375.
     let neg_x = Fp80::from_f64(-0.9375, &mut ef);
-    let result = neg_x.f2xm1(&mut ef);
+    let result = neg_x.f2xm1(RC, &mut ef);
     check("F2XM1(-0.9375)", result, 0xBFFD, 0xF4AA7930676F09D6, 0);
 }
 
@@ -190,7 +190,7 @@ fn transcendental_f2xm1_near_boundary() {
 fn transcendental_fyl2x() {
     let mut ef = ExceptionFlags::default();
     let eight = Fp80::from_f64(8.0, &mut ef);
-    let result = eight.fyl2x(Fp80::ONE, &mut ef);
+    let result = eight.fyl2x(Fp80::ONE, RC, &mut ef);
     check("FYL2X(1,8)", result, 0x4000, 0xC000000000000000, 0);
 }
 
@@ -200,7 +200,7 @@ fn transcendental_fyl2xp1() {
     // FYL2XP1(y=2, x=0.25) = 2 * log2(1.25). x=0.25 is within valid domain |x| < 1-sqrt(2)/2.
     let x = Fp80::from_f64(0.25, &mut ef);
     let y = Fp80::from_f64(2.0, &mut ef);
-    let result = x.fyl2xp1(y, &mut ef);
+    let result = x.fyl2xp1(y, RC, &mut ef);
     check("FYL2XP1(2,0.25)", result, 0x3FFE, 0xA4D3C25E68DC57F2, 0);
 }
 
@@ -221,10 +221,10 @@ fn transcendental_machin_pi() {
     let sixteen = Fp80::from_f64(16.0, &mut ef);
     let two_three_nine = Fp80::from_f64(239.0, &mut ef);
 
-    let atan_1_5 = Fp80::ONE.fpatan(five, &mut ef);
+    let atan_1_5 = Fp80::ONE.fpatan(five, RC, &mut ef);
     let term1 = atan_1_5.mul(sixteen, RC, PC, &mut ef);
 
-    let atan_1_239 = Fp80::ONE.fpatan(two_three_nine, &mut ef);
+    let atan_1_239 = Fp80::ONE.fpatan(two_three_nine, RC, &mut ef);
     let term2 = atan_1_239.mul(four, RC, PC, &mut ef);
 
     let result = term1.sub(term2, RC, PC, &mut ef);
@@ -311,7 +311,7 @@ fn golden_fsin() {
     for &((in_exp, in_sig), name, exp_se, exp_sig) in cases {
         let mut ef = ExceptionFlags::default();
         let input = Fp80::from_bits(in_exp, in_sig);
-        let (result, _) = input.fsin(&mut ef);
+        let (result, _) = input.fsin(RC, &mut ef);
         check(name, result, exp_se, exp_sig, 0);
     }
 }
@@ -396,7 +396,7 @@ fn golden_fcos() {
     for &((in_exp, in_sig), name, exp_se, exp_sig) in cases {
         let mut ef = ExceptionFlags::default();
         let input = Fp80::from_bits(in_exp, in_sig);
-        let (result, _) = input.fcos(&mut ef);
+        let (result, _) = input.fcos(RC, &mut ef);
         check(name, result, exp_se, exp_sig, 0);
     }
 }
@@ -481,7 +481,7 @@ fn golden_fptan() {
     for &((in_exp, in_sig), name, exp_se, exp_sig) in cases {
         let mut ef = ExceptionFlags::default();
         let input = Fp80::from_bits(in_exp, in_sig);
-        let (result, _) = input.fptan(&mut ef);
+        let (result, _) = input.fptan(RC, &mut ef);
         check(name, result, exp_se, exp_sig, 1);
     }
 }
@@ -499,7 +499,7 @@ fn golden_fsincos() {
     ) {
         let mut ef = ExceptionFlags::default();
         let input = Fp80::from_bits(in_exp, in_sig);
-        let (sin_result, cos_result, _) = input.fsincos(&mut ef);
+        let (sin_result, cos_result, _) = input.fsincos(RC, &mut ef);
         check(&format!("{name} sin"), sin_result, sin_se, sin_sig, 0);
         check(&format!("{name} cos"), cos_result, cos_se, cos_sig, 0);
     }

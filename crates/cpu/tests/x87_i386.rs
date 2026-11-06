@@ -2524,6 +2524,31 @@ fn fptan_edge_cases() {
     assert!(!r.ie());
 }
 
+/// tan(0.5) rounded at 64 bits down, the exact value of the function with 320-bit arithmetic.
+const TAN_HALF_DOWN: Fp80 = Fp80::from_bits(0x3FFE, 0x8BDA_7ADF_9A3A_5218);
+/// tan(0.5) rounded at 64 bits up, the exact value of the function with 320-bit arithmetic.
+const TAN_HALF_UP: Fp80 = Fp80::from_bits(0x3FFE, 0x8BDA_7ADF_9A3A_5219);
+
+/// FPTAN rounds the tangent in the mode RC selects and pushes 1.0. RC applies to FPTAN
+/// (80486 PRM 15.2.3 and table 16-1) and PC does not (80486 PRM 15.2.4).
+#[test]
+fn fptan_follows_the_rounding_control() {
+    let expectations = [
+        (CW_NEAREST_EXT, TAN_HALF_UP, true),
+        (CW_DOWN_EXT, TAN_HALF_DOWN, false),
+        (CW_UP_EXT, TAN_HALF_UP, true),
+        (CW_ZERO_EXT, TAN_HALF_DOWN, false),
+        (CW_NEAREST_SGL, TAN_HALF_UP, true),
+    ];
+    for (control_word, tangent, rounded_up) in expectations {
+        let r = run_x87_with_cw(&[0xD9, 0xF2], &[HALF], control_word);
+        assert_eq!(r.st(0), Fp80::ONE, "{control_word:04X}");
+        assert_eq!(r.st(1), tangent, "{control_word:04X}");
+        assert_eq!(r.c1(), rounded_up, "{control_word:04X}");
+        assert!(r.pe() && !r.c2(), "{control_word:04X}");
+    }
+}
+
 #[test]
 fn fpatan_basic() {
     // FPATAN = D9 F3. ST(0)=x, ST(1)=y. Computes atan2(y,x). Result in ST(1), pop.

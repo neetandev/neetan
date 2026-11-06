@@ -256,62 +256,110 @@ impl DoubleF64 {
         if sign { dd.negate() } else { dd }
     }
 
-    /// Convert DoubleF64 back to Fp80 with correct rounding.
-    pub(crate) fn to_fp80(self, ef: &mut ExceptionFlags) -> Fp80 {
-        self.to_fp80_scaled(0, ef)
+    /// Rounds the value to Fp80 in the rounding mode `rc`.
+    pub(crate) fn to_fp80(self, rc: RoundingMode, ef: &mut ExceptionFlags) -> Fp80 {
+        self.to_fp80_scaled(0, rc, ef)
     }
 
-    /// Rounds the value multiplied by 2^`scale` to Fp80 to nearest. The scale applies before
-    /// the rounding, so a result out of the f64 exponent range rounds once.
-    pub(crate) fn to_fp80_scaled(self, scale: i32, ef: &mut ExceptionFlags) -> Fp80 {
-        self.round_scaled(scale, 0, ef)
+    /// Rounds the value multiplied by 2^`scale` to Fp80 in the rounding mode `rc`. The scale
+    /// applies before the rounding, so a result out of the f64 exponent range rounds once.
+    pub(crate) fn to_fp80_scaled(
+        self,
+        scale: i32,
+        rc: RoundingMode,
+        ef: &mut ExceptionFlags,
+    ) -> Fp80 {
+        self.round_scaled(scale, 0, rc, ef)
     }
 
-    /// Rounds the nonzero value multiplied by 2^`scale` to Fp80 to nearest, as the leading
-    /// part of an exact value whose remainder lies below every bit of the value. `below` tells
-    /// whether the remainder reduces the magnitude. The result is inexact.
+    /// Rounds the nonzero value multiplied by 2^`scale` to Fp80 in the rounding mode `rc`, as
+    /// the leading part of an exact value whose remainder lies below every bit of the value.
+    /// `below` tells whether the remainder reduces the magnitude. The result is inexact.
     pub(crate) fn to_fp80_with_remainder(
         self,
         scale: i32,
         below: bool,
+        rc: RoundingMode,
         ef: &mut ExceptionFlags,
     ) -> Fp80 {
-        self.round_scaled(scale, if below { -1 } else { 1 }, ef)
+        self.round_scaled(scale, if below { -1 } else { 1 }, rc, ef)
     }
 
-    /// Rounds the value multiplied by 2^`scale` to Fp80 to nearest. A nonzero `remainder`
-    /// adds a sticky unit of that sign to the magnitude below every bit of the value.
-    fn round_scaled(self, scale: i32, remainder: i8, ef: &mut ExceptionFlags) -> Fp80 {
-        let val = quick_two_sum(self.high, self.low);
-
-        if val.high == 0.0 {
-            return if val.high.is_sign_negative() {
+    /// Rounds the value multiplied by 2^`scale` to Fp80 in the rounding mode `rc` at 64 bits.
+    /// A nonzero `remainder` adds a sticky unit of that sign to the magnitude below every bit
+    /// of the value. The bits of the value below the 64-bit significand decide the direction
+    /// of the rounding and C1.
+    fn round_scaled(
+        self,
+        scale: i32,
+        remainder: i8,
+        rc: RoundingMode,
+        ef: &mut ExceptionFlags,
+    ) -> Fp80 {
+        let Some((sign, exp, combined)) = self.combined_significand() else {
+            return if self.high.is_sign_negative() {
                 Fp80::NEG_ZERO
             } else {
                 Fp80::ZERO
             };
+        };
+        let combined = combined.wrapping_add_signed(i128::from(remainder));
+        Fp80::round_and_pack(sign, exp + scale, combined, rc, Precision::Extended, ef)
+    }
+
+    /// Returns whether the nonzero value lies on a 64-bit value or halfway between two 64-bit
+    /// values, the cases where the rounding depends on terms below the value.
+    pub(crate) fn is_exact_or_halfway(self) -> bool {
+        let Some((_, _, combined)) = self.combined_significand() else {
+            return false;
+        };
+        let fraction = (combined << combined.leading_zeros()) as u64;
+        fraction == 0 || fraction == 1 << 63
+    }
+
+    /// Returns whether the value is negative.
+    pub(crate) fn is_sign_negative(self) -> bool {
+        let value = quick_two_sum(self.high, self.low);
+        value.high.is_sign_negative()
+    }
+
+    /// Splits the nonnegative value below 2^126 into its integer part and its fraction.
+    pub(crate) fn floor_and_fraction(self) -> (i128, f64) {
+        let (high_integer, high_fraction) = f64_floor_and_fraction(self.high);
+        let (low_integer, low_fraction) = f64_floor_and_fraction(self.low);
+        let mut integer = high_integer + low_integer;
+        let mut fraction = high_fraction + low_fraction;
+        if fraction >= 1.0 {
+            integer += 1;
+            fraction -= 1.0;
+        }
+        (integer, fraction)
+    }
+
+    /// Returns the sign, the exponent of bit 127 and the 128-bit significand of the nonzero
+    /// value with the J-bit at bit 127 before a normalization. Bits below bit 0 act as a sticky
+    /// bit. Returns None for a zero value or a value below the normal f64 range.
+    fn combined_significand(self) -> Option<(bool, i32, u128)> {
+        let val = quick_two_sum(self.high, self.low);
+        if val.high == 0.0 {
+            return None;
         }
 
         let sign = val.high.is_sign_negative();
         let abs_high = val.high.abs();
         let abs_low = if sign { -val.low } else { val.low };
 
-        // Decompose high f64
         let bits_h = abs_high.to_bits();
         let biased_h = ((bits_h >> 52) & 0x7FF) as i32;
         let frac_h = bits_h & ((1u64 << 52) - 1);
-
         if biased_h == 0 {
-            // Subnormal or zero high - result is too small, just return zero
-            return if sign { Fp80::NEG_ZERO } else { Fp80::ZERO };
+            return None;
         }
 
         let exp = biased_h - 1023;
         let sig_h = (1u128 << 52) | frac_h as u128;
-        // Place integer bit at position 127: shift left by 75 (= 127 - 52)
         let mut combined = sig_h << 75;
 
-        // Add low part
         if abs_low != 0.0 {
             let low_abs = abs_low.abs();
             let bits_l = low_abs.to_bits();
@@ -332,16 +380,7 @@ impl DoubleF64 {
                 combined = combined.wrapping_sub(shifted);
             }
         }
-        combined = combined.wrapping_add_signed(i128::from(remainder));
-
-        Fp80::round_and_pack(
-            sign,
-            exp + scale,
-            combined,
-            RoundingMode::NearestEven,
-            Precision::Extended,
-            ef,
-        )
+        Some((sign, exp, combined))
     }
 
     /// Convert from i64 to DoubleF64, preserving full precision.
@@ -366,6 +405,16 @@ impl DoubleF64 {
     pub(crate) fn from_significand(sig: u64) -> DoubleF64 {
         sig_exp_to_dd(sig, 0)
     }
+}
+
+/// Splits the finite `value` with a magnitude below 2^126 into its integer part rounded down
+/// and the fraction in [0, 1). Both parts are exact.
+fn f64_floor_and_fraction(value: f64) -> (i128, f64) {
+    let mut integer = value as i128;
+    if integer as f64 > value {
+        integer -= 1;
+    }
+    (integer, value - integer as f64)
 }
 
 /// Convert a raw (significand, true_exponent) pair to DoubleF64.

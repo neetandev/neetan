@@ -1212,7 +1212,8 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     pub(super) fn fpu_f2xm1(&mut self) {
-        self.fpu_unary(|value, ef| value.f2xm1(ef), 211, 140);
+        let rc = self.fpu_rounding_mode();
+        self.fpu_unary(|value, ef| value.f2xm1(rc, ef), 211, 140);
     }
 
     /// Computes ST(1) = op(ST(0), ST(1)) and pops. A stack underflow or an unmasked
@@ -1240,15 +1241,18 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     pub(super) fn fpu_fyl2x(&mut self) {
-        self.fpu_binary_pop(|x, y, ef| x.fyl2x(y, ef), 120, 196);
+        let rc = self.fpu_rounding_mode();
+        self.fpu_binary_pop(|x, y, ef| x.fyl2x(y, rc, ef), 120, 196);
     }
 
     pub(super) fn fpu_fyl2xp1(&mut self) {
-        self.fpu_binary_pop(|x, y, ef| x.fyl2xp1(y, ef), 257, 171);
+        let rc = self.fpu_rounding_mode();
+        self.fpu_binary_pop(|x, y, ef| x.fyl2xp1(y, rc, ef), 257, 171);
     }
 
     pub(super) fn fpu_fpatan(&mut self) {
-        self.fpu_binary_pop(|x, y, ef| y.fpatan(x, ef), 314, 218);
+        let rc = self.fpu_rounding_mode();
+        self.fpu_binary_pop(|x, y, ef| y.fpatan(x, rc, ef), 314, 218);
     }
 
     /// Runs the one-result trigonometric operation `op` on ST(0). An operand out of range
@@ -1278,11 +1282,13 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     pub(super) fn fpu_fsin(&mut self) {
-        self.fpu_trigonometric(|value, ef| value.fsin(ef), 122, 257);
+        let rc = self.fpu_rounding_mode();
+        self.fpu_trigonometric(|value, ef| value.fsin(rc, ef), 122, 257);
     }
 
     pub(super) fn fpu_fcos(&mut self) {
-        self.fpu_trigonometric(|value, ef| value.fcos(ef), 123, 257);
+        let rc = self.fpu_rounding_mode();
+        self.fpu_trigonometric(|value, ef| value.fcos(rc, ef), 123, 257);
     }
 
     /// Handles a stack overflow of an instruction that replaces ST(0) and pushes a second
@@ -1341,9 +1347,10 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     /// Replaces ST(0) with its tangent and pushes 1.0 (80486 PRM, FPTAN). Observed
     /// behaviour: an unsupported operand pushes the QNaN indefinite in place of 1.0.
     pub(super) fn fpu_fptan(&mut self) {
+        let rc = self.fpu_rounding_mode();
         self.fpu_two_results(
             |value, ef| {
-                let (tangent, out_of_range) = value.fptan(ef);
+                let (tangent, out_of_range) = value.fptan(rc, ef);
                 let pushed = if value.is_unsupported() {
                     Fp80::INDEFINITE
                 } else {
@@ -1358,7 +1365,13 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     }
 
     pub(super) fn fpu_fsincos(&mut self) {
-        self.fpu_two_results(|value, ef| value.fsincos(ef), Fp80::INDEFINITE, 194, 292);
+        let rc = self.fpu_rounding_mode();
+        self.fpu_two_results(
+            |value, ef| value.fsincos(rc, ef),
+            Fp80::INDEFINITE,
+            194,
+            292,
+        );
     }
 
     /// Returns whether FSTENV, FLDENV, FSAVE and FRSTOR use the protected mode image. Real
