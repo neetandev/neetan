@@ -522,10 +522,7 @@ pub struct Pc9801Bus<T: TraceSink = NoTrace> {
     vram_wait: i64,
     /// Current GRCG VRAM access wait penalty in CPU cycles.
     grcg_wait: i64,
-    /// Whether the one-shot post-BIOS timer fixup has been applied.
-    ///
-    /// On a real PC-98, the BIOS (or the application via INT 1Ch AH=02/03)
-    /// unmasks IRQ 0 in the PIC to start the system timer.
+    /// Trace sink that receives the trace events of the bus and its devices.
     tracer: T,
     /// HLE BIOS: per-drive seek cylinder position.
     fdd_seek_cylinder: [u8; 4],
