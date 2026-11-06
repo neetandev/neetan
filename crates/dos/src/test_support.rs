@@ -386,3 +386,25 @@ impl crate::CdromIo for ImageCdrom {
 
     fn set_audio_channel_info(&mut self, _info: &crate::AudioChannelInfo) {}
 }
+
+/// Returns the device names of the DOS device chain from NUL to its end.
+/// Panics when the chain does not end within 32 devices.
+pub(crate) fn device_chain_names(
+    dos: &crate::NeetanDos,
+    memory: &dyn MemoryAccess,
+) -> Vec<[u8; 8]> {
+    let mut names = Vec::new();
+    let mut address = dos.state.dos_data_address(dos.state.nul_device_offset());
+    for _ in 0..32 {
+        let mut name = [0u8; 8];
+        memory.read_block(address + crate::tables::DEVHDR_OFF_NAME, &mut name);
+        names.push(name);
+        let next_offset = memory.read_word(address + crate::tables::DEVHDR_OFF_NEXT_PTR);
+        let next_segment = memory.read_word(address + crate::tables::DEVHDR_OFF_NEXT_PTR + 2);
+        if next_offset == 0xFFFF {
+            return names;
+        }
+        address = (u32::from(next_segment) << 4) + u32::from(next_offset);
+    }
+    panic!("device chain did not end within 32 devices: {names:?}");
+}

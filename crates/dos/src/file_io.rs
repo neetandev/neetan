@@ -506,7 +506,9 @@ impl NeetanDos {
                 );
                 return Ok(handle);
             }
-            if path_is_cdrom_device(&path, &self.state.mscdex.device_name) {
+            if self.has_builtin_cdrom_device(&*disk)
+                && path_is_cdrom_device(&path, &self.state.mscdex.device_name)
+            {
                 let (handle, sft_index) = self.state.allocate_handle(memory)?;
                 self.write_sft_for_character_device(
                     memory,

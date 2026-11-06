@@ -965,14 +965,17 @@ impl NeetanDos {
         self.state.platform.placement.first_mcb_segment =
             system_data.first_mcb_segment(self.state.dos_data_segment());
 
-        self.write_dos_data_structures(memory, &system_data);
+        let cdrom_device = self.has_builtin_cdrom_device(&*device);
+        self.write_dos_data_structures(memory, &system_data, cdrom_device);
         self.write_iosys_work_area(memory);
         self.guest_call_area().write_stub(memory);
 
         self.install_int24h_stub(memory);
         self.install_int5ch_stub(memory);
         self.install_error_retriever_stub(memory);
-        self.install_cdrom_device_stubs(memory);
+        if cdrom_device {
+            self.install_cdrom_device_stubs(memory);
+        }
 
         self.write_drive_structures(memory, &system_data);
         self.state.stale_parameter_blocks = 0;
@@ -1004,10 +1007,10 @@ impl NeetanDos {
         // Parse CONFIG.SYS if present on the boot drive root.
         let cfg = self.try_parse_config_sys(device);
         self.apply_config(&cfg, memory);
-        self.write_device_chain(memory);
+        self.write_device_chain(memory, cdrom_device);
 
         // Set up CD-ROM drive Q: if the machine has a CD-ROM.
-        if device.cdrom_present() {
+        if cdrom_device {
             self.write_cdrom_drive(memory);
         }
 
@@ -1036,7 +1039,7 @@ impl NeetanDos {
             self.state.memory_manager = Some(mm);
         }
 
-        self.install_native_config_drivers(&cfg, memory, device);
+        self.install_native_config_drivers(&cfg, memory, device, cdrom_device);
 
         // Load AUTOEXEC.BAT if present on any mounted drive.
         let autoexec_lines = self.try_load_autoexec_bat(device);
@@ -1864,6 +1867,7 @@ impl NeetanDos {
         &self,
         mem: &mut dyn MemoryAccess,
         system_data: &system_data::SystemDataArea,
+        cdrom_device: bool,
     ) {
         use tables::*;
 
@@ -1934,7 +1938,7 @@ impl NeetanDos {
         }
 
         // Device chain
-        self.write_device_chain(mem);
+        self.write_device_chain(mem, cdrom_device);
 
         // SFT
         self.write_sft(mem);
@@ -1974,10 +1978,62 @@ impl NeetanDos {
         mem.write_word(fcb_sft + SFT_BLOCK_OFF_COUNT, 0);
     }
 
+    /// Writes the CD-ROM device header and its MSCDEX mirror header. Both
+    /// link to `next_segment:next_offset`.
+    fn write_cdrom_device_headers(
+        &self,
+        mem: &mut dyn MemoryAccess,
+        next_segment: u16,
+        next_offset: u16,
+    ) {
+        use tables::*;
+
+        let mut cdrom_name = [b' '; 8];
+        let name = &self.state.mscdex.device_name;
+        let len = name.len().min(8);
+        cdrom_name[..len].copy_from_slice(&name[..len]);
+        let cdrom_header = self.state.dos_data_address(DEV_CDROM_OFFSET);
+        write_device_header(
+            mem,
+            cdrom_header,
+            next_segment,
+            next_offset,
+            DEVATTR_CHAR | DEVATTR_IOCTL,
+            &cdrom_name,
+        );
+        mem.write_word(
+            cdrom_header + DEVHDR_OFF_STRATEGY,
+            CDROM_STRATEGY_STUB_OFFSET,
+        );
+        mem.write_word(
+            cdrom_header + DEVHDR_OFF_INTERRUPT,
+            CDROM_INTERRUPT_STUB_OFFSET,
+        );
+
+        let mirror_header = self.state.dos_data_address(CDROM_MIRROR_HEADER_OFFSET);
+        write_device_header(
+            mem,
+            mirror_header,
+            next_segment,
+            next_offset,
+            DEVATTR_CHAR | DEVATTR_IOCTL,
+            &cdrom_name,
+        );
+        mem.write_word(
+            mirror_header + DEVHDR_OFF_STRATEGY,
+            CDROM_MIRROR_STRATEGY_OFFSET,
+        );
+        mem.write_word(
+            mirror_header + DEVHDR_OFF_INTERRUPT,
+            CDROM_MIRROR_INTERRUPT_OFFSET,
+        );
+    }
+
     /// Writes the device header chain: NUL -> CON -> $AID#NEC -> CD-ROM
-    /// -> XMSXXXX0 (if enabled) -> EMMXXXX0 (if enabled).
+    /// (if `cdrom_device`) -> XMSXXXX0 (if enabled) -> EMMXXXX0 (if enabled).
     /// CLOCK is separate (not in chain, only referenced by SYSVARS+0x08).
-    fn write_device_chain(&self, mem: &mut dyn MemoryAccess) {
+    /// The CD-ROM device exists only on a machine with a CD-ROM drive.
+    fn write_device_chain(&self, mem: &mut dyn MemoryAccess, cdrom_device: bool) {
         use tables::*;
 
         let dos_data_segment = self.state.dos_data_segment();
@@ -2015,20 +2071,9 @@ impl NeetanDos {
             b"CLOCK   ",
         );
 
-        // $AID#NEC -> CD-ROM driver
-        write_device_header(
-            mem,
-            self.state.dos_data_address(DEV_AID_NEC_OFFSET),
-            dos_data_segment,
-            DEV_CDROM_OFFSET,
-            DEVATTR_CHAR,
-            b"$AID#NEC",
-        );
-
-        // Determine the tail of the chain (after CD-ROM):
-        //   CD-ROM -> XMSXXXX0 -> EMMXXXX0 (end)
-        // Skipping whichever is not enabled.
-        let (cdrom_next_seg, cdrom_next_off) = if xms_in_chain {
+        // Tail of the chain after the built-in character devices:
+        //   XMSXXXX0 -> EMMXXXX0 (end), skipping whichever is not enabled.
+        let (tail_segment, tail_offset) = if xms_in_chain {
             (dos_data_segment, DEV_XMS_OFFSET)
         } else if ems_in_chain {
             (dos_data_segment, DEV_EMS_OFFSET)
@@ -2036,45 +2081,24 @@ impl NeetanDos {
             END_OF_CHAIN
         };
 
-        let mut cdrom_name = [b' '; 8];
-        let name = &self.state.mscdex.device_name;
-        let len = name.len().min(8);
-        cdrom_name[..len].copy_from_slice(&name[..len]);
-        let cdrom_header = self.state.dos_data_address(DEV_CDROM_OFFSET);
+        // $AID#NEC -> CD-ROM driver, or the tail without a CD-ROM drive
+        let (aid_next_segment, aid_next_offset) = if cdrom_device {
+            (dos_data_segment, DEV_CDROM_OFFSET)
+        } else {
+            (tail_segment, tail_offset)
+        };
         write_device_header(
             mem,
-            cdrom_header,
-            cdrom_next_seg,
-            cdrom_next_off,
-            DEVATTR_CHAR | DEVATTR_IOCTL,
-            &cdrom_name,
-        );
-        mem.write_word(
-            cdrom_header + DEVHDR_OFF_STRATEGY,
-            CDROM_STRATEGY_STUB_OFFSET,
-        );
-        mem.write_word(
-            cdrom_header + DEVHDR_OFF_INTERRUPT,
-            CDROM_INTERRUPT_STUB_OFFSET,
+            self.state.dos_data_address(DEV_AID_NEC_OFFSET),
+            aid_next_segment,
+            aid_next_offset,
+            DEVATTR_CHAR,
+            b"$AID#NEC",
         );
 
-        let mirror_header = self.state.dos_data_address(CDROM_MIRROR_HEADER_OFFSET);
-        write_device_header(
-            mem,
-            mirror_header,
-            cdrom_next_seg,
-            cdrom_next_off,
-            DEVATTR_CHAR | DEVATTR_IOCTL,
-            &cdrom_name,
-        );
-        mem.write_word(
-            mirror_header + DEVHDR_OFF_STRATEGY,
-            CDROM_MIRROR_STRATEGY_OFFSET,
-        );
-        mem.write_word(
-            mirror_header + DEVHDR_OFF_INTERRUPT,
-            CDROM_MIRROR_INTERRUPT_OFFSET,
-        );
+        if cdrom_device {
+            self.write_cdrom_device_headers(mem, tail_segment, tail_offset);
+        }
 
         // XMSXXXX0 -> EMMXXXX0 (if EMS active) else end of chain
         if xms_in_chain {
@@ -3281,7 +3305,7 @@ pub(crate) fn adjust_iret_ip(cpu: &dyn CpuAccess, mem: &mut dyn MemoryAccess, de
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::MockMemory;
+    use crate::test_support::{MockMemory, device_chain_names};
 
     #[test]
     fn cdrom_media_change_drops_the_open_files_and_the_search_of_the_disc() {
@@ -3306,6 +3330,28 @@ mod tests {
         dos.invalidate_cdrom_caches(&memory);
         assert!(dos.state.open_iso_files.iter().all(Option::is_none));
         assert!(dos.state.read_find_directory.is_none());
+    }
+
+    #[test]
+    fn device_chain_without_a_cdrom_drive_has_no_cdrom_device() {
+        let mut memory = MockMemory::with_extended_memory(0x10_0000, 0);
+        let dos = NeetanDos::new(DosPlatform::pc98());
+        dos.write_device_chain(&mut memory, false);
+        assert_eq!(
+            device_chain_names(&dos, &memory),
+            [*b"NUL     ", *b"CON     ", *b"$AID#NEC"]
+        );
+    }
+
+    #[test]
+    fn device_chain_with_a_cdrom_drive_links_the_cdrom_device_after_aid_nec() {
+        let mut memory = MockMemory::with_extended_memory(0x10_0000, 0);
+        let dos = NeetanDos::new(DosPlatform::pc98());
+        dos.write_device_chain(&mut memory, true);
+        assert_eq!(
+            device_chain_names(&dos, &memory),
+            [*b"NUL     ", *b"CON     ", *b"$AID#NEC", *b"CD_101  "]
+        );
     }
 
     #[test]
@@ -3491,7 +3537,7 @@ mod tests {
         let system_data = dos.state.system_data_area();
         dos.state.platform.placement.first_mcb_segment =
             system_data.first_mcb_segment(dos.state.dos_data_segment());
-        dos.write_dos_data_structures(&mut memory, &system_data);
+        dos.write_dos_data_structures(&mut memory, &system_data, false);
         dos.write_drive_structures(&mut memory, &system_data);
 
         let list_of_lists = dos.state.list_of_lists_address();

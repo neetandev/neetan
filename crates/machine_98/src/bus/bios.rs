@@ -289,6 +289,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
                             floppy: &mut self.floppy,
                             sasi: &mut self.sasi,
                             ide: &mut self.ide,
+                            cdrom_drive: self.machine_model.has_ide(),
                         };
                         let mut cursor_access = DosCursorAccess(&mut self.gdc_master.state);
                         let mut dos_trace = dos::trace_bridge::TraceSinkBridge {

@@ -111,6 +111,13 @@ fn write_address(memory: &mut dyn MemoryAccess, address: u32, lba: u32, mode: u8
 }
 
 impl crate::NeetanDos {
+    /// Returns true when the built-in CD-ROM device driver exists. The
+    /// platform serves the machine CD-ROM drive without an MSCDEX
+    /// installation, and the machine has a CD-ROM drive.
+    pub(crate) fn has_builtin_cdrom_device(&self, cdrom: &(impl CdromIo + ?Sized)) -> bool {
+        self.state.platform.machine.has_implicit_mscdex() && cdrom.cdrom_present()
+    }
+
     pub(crate) fn cdrom_device_request(
         &mut self,
         memory: &mut dyn MemoryAccess,
