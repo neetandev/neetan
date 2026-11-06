@@ -179,12 +179,14 @@ impl NativeDriverInit {
 impl NeetanDos {
     /// Loads the whitelisted `CONFIG.SYS` drivers, links them into the device
     /// chain and queues their INIT calls as the operation that the boot entry
-    /// starts.
+    /// starts. `cdrom_device` tells whether the built-in CD-ROM device ends the
+    /// built-in character devices of the chain.
     pub(crate) fn install_native_config_drivers(
         &mut self,
         cfg: &config::ConfigSys,
         memory: &mut dyn MemoryAccess,
         disk: &mut impl DriveIo,
+        cdrom_device: bool,
     ) {
         if cfg.devices.is_empty() {
             return;
@@ -223,7 +225,7 @@ impl NeetanDos {
             return;
         }
 
-        link_device_chain(self, memory, &loaded);
+        link_device_chain(self, memory, &loaded, cdrom_device);
 
         let steps: VecDeque<GuestStep> = loaded
             .iter()
@@ -526,15 +528,25 @@ fn write_line_tail(memory: &mut dyn MemoryAccess, address: u32, raw_line: &[u8])
     memory.write_block(address, &buffer);
 }
 
-fn link_device_chain(dos: &NeetanDos, memory: &mut dyn MemoryAccess, drivers: &[LoadedDriverInit]) {
+fn link_device_chain(
+    dos: &NeetanDos,
+    memory: &mut dyn MemoryAccess,
+    drivers: &[LoadedDriverInit],
+    cdrom_device: bool,
+) {
     if drivers.is_empty() {
         return;
     }
 
-    let builtin_tail = cdrom_successor(dos, memory);
+    let builtin_tail = builtin_tail(dos, memory);
+    let last_builtin_header = if cdrom_device {
+        tables::DEV_CDROM_OFFSET
+    } else {
+        tables::DEV_AID_NEC_OFFSET
+    };
     write_far_ptr(
         memory,
-        dos.state.dos_data_address(tables::DEV_CDROM_OFFSET) + tables::DEVHDR_OFF_NEXT_PTR,
+        dos.state.dos_data_address(last_builtin_header) + tables::DEVHDR_OFF_NEXT_PTR,
         drivers[0].segment,
         0x0000,
     );
@@ -554,7 +566,9 @@ fn link_device_chain(dos: &NeetanDos, memory: &mut dyn MemoryAccess, drivers: &[
     }
 }
 
-fn cdrom_successor(dos: &NeetanDos, memory: &dyn MemoryAccess) -> (u16, u16) {
+/// Returns the device header that follows the built-in character devices:
+/// XMSXXXX0, EMMXXXX0 or the end of the chain.
+fn builtin_tail(dos: &NeetanDos, memory: &dyn MemoryAccess) -> (u16, u16) {
     let ext_mem_present = memory.extended_memory_size() > 0;
     let dos_data_segment = dos.state.dos_data_segment();
     if dos.state.xms_enabled && ext_mem_present {
@@ -654,6 +668,53 @@ mod tests {
 
     /// First MCB of the PC-98 UMB chain with EMS.
     const UMB_FIRST_MCB_SEGMENT: u16 = 0xD000;
+
+    /// Segment of the native driver image in the device chain tests.
+    const TEST_DRIVER_SEGMENT: u16 = 0x3000;
+
+    /// Writes the built-in device chain and links one native driver named
+    /// `TESTDRV` into it.
+    fn chain_with_one_native_driver(cdrom_device: bool) -> (NeetanDos, MockMemory) {
+        let mut memory = MockMemory::with_extended_memory(0x100000, 0);
+        let dos = NeetanDos::new(crate::DosPlatform::pc98());
+        dos.write_device_chain(&mut memory, cdrom_device);
+        memory.write_block(
+            (u32::from(TEST_DRIVER_SEGMENT) << 4) + tables::DEVHDR_OFF_NAME,
+            b"TESTDRV ",
+        );
+        let driver = LoadedDriverInit {
+            source_path: b"A:\\TESTDRV.SYS".to_vec(),
+            raw_line: b"A:\\TESTDRV.SYS".to_vec(),
+            image_paragraphs: 1,
+            segment: TEST_DRIVER_SEGMENT,
+        };
+        link_device_chain(&dos, &mut memory, &[driver], cdrom_device);
+        (dos, memory)
+    }
+
+    #[test]
+    fn native_driver_follows_aid_nec_without_a_cdrom_drive() {
+        let (dos, memory) = chain_with_one_native_driver(false);
+        assert_eq!(
+            crate::test_support::device_chain_names(&dos, &memory),
+            [*b"NUL     ", *b"CON     ", *b"$AID#NEC", *b"TESTDRV "]
+        );
+    }
+
+    #[test]
+    fn native_driver_follows_the_cdrom_device_with_a_cdrom_drive() {
+        let (dos, memory) = chain_with_one_native_driver(true);
+        assert_eq!(
+            crate::test_support::device_chain_names(&dos, &memory),
+            [
+                *b"NUL     ",
+                *b"CON     ",
+                *b"$AID#NEC",
+                *b"CD_101  ",
+                *b"TESTDRV "
+            ]
+        );
+    }
 
     /// Returns the first MCB segment of the PC-98 placement.
     fn pc98_first_mcb_segment() -> u16 {

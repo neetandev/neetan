@@ -1647,30 +1647,46 @@ fn test_xmsxxxx0_absent_when_xms_disabled() {
         "XMSXXXX0 should not be in the chain when XMS is disabled"
     );
 
-    // With XMS disabled but EMS enabled (the default), CD-ROM's next_ptr
-    // should link directly to EMMXXXX0 (skipping the absent XMS entry).
+    // With XMS disabled but EMS enabled (the default), $AID#NEC, the last
+    // built-in device of a machine without a CD-ROM drive, links directly to
+    // EMMXXXX0 (skipping the absent XMS entry).
     let (seg, off) = harness::read_far_ptr(
         &machine.bus,
-        harness::dos_data_address(dos::tables::DEV_CDROM_OFFSET),
+        harness::dos_data_address(dos::tables::DEV_AID_NEC_OFFSET),
     );
     assert_eq!(
         (seg, off),
         (harness::dos_data_segment(), dos::tables::DEV_EMS_OFFSET),
-        "CD-ROM next_ptr should point to EMMXXXX0 when XMS disabled but EMS enabled, got {seg:#06X}:{off:#06X}"
+        "$AID#NEC next_ptr should point to EMMXXXX0 when XMS disabled but EMS enabled, got {seg:#06X}:{off:#06X}"
     );
 }
 
 #[test]
-fn test_cdrom_next_ptr_is_end_when_both_xms_and_ems_disabled() {
+fn test_aid_nec_next_ptr_is_end_when_both_xms_and_ems_disabled() {
     let machine = harness::boot_hle_without_xms_and_ems();
 
-    const DOS_DATA_BASE: u32 = 0x2000;
-    const DEV_CDROM_OFFSET: u16 = 0x007E;
-    let (seg, off) = harness::read_far_ptr(&machine.bus, DOS_DATA_BASE + DEV_CDROM_OFFSET as u32);
+    let (seg, off) = harness::read_far_ptr(
+        &machine.bus,
+        harness::dos_data_address(dos::tables::DEV_AID_NEC_OFFSET),
+    );
     assert_eq!(
         (seg, off),
         (0xFFFF, 0xFFFF),
-        "CD-ROM next_ptr should be FFFF:FFFF when both XMS and EMS are disabled, got {seg:#06X}:{off:#06X}"
+        "$AID#NEC next_ptr should be FFFF:FFFF when both XMS and EMS are disabled, got {seg:#06X}:{off:#06X}"
+    );
+}
+
+#[test]
+fn test_cdrom_device_absent_without_a_cdrom_drive() {
+    let machine = harness::boot_hle();
+    let names = walk_device_chain_names(&machine.bus);
+    assert!(
+        !names.iter().any(|n| n == b"CD_101  "),
+        "CD_101 should not be in the chain of a PC-9801RA. Names seen: {:?}",
+        names
+            .iter()
+            .map(|n| String::from_utf8_lossy(n).into_owned())
+            .collect::<Vec<_>>()
     );
 }
 

@@ -312,6 +312,30 @@ fn open_xmsxxxx0_as_character_device() {
 }
 
 #[test]
+fn open_cdrom_device_fails_without_a_cdrom_drive() {
+    let mut machine = harness::boot_hle();
+
+    let (error, flags) = open_file_raw(&mut machine, b"CD_101\0", 0x00);
+    assert_eq!(
+        flags & 0x0001,
+        1,
+        "opening CD_101 on a PC-9801RA should fail, flags={flags:#06X}"
+    );
+    assert_eq!(error, 0x0002, "the error should be file not found");
+}
+
+#[test]
+fn open_cdrom_device_succeeds_with_a_cdrom_drive_and_no_disc() {
+    let mut machine = harness::boot_hle_with_ide_hdd(512);
+
+    let handle = open_file_ap(&mut machine, b"CD_101\0");
+    assert!(
+        handle >= 5,
+        "CD_101 should open as a new handle, got {handle}"
+    );
+}
+
+#[test]
 fn ioctl_read_cdrom_control_channel_device_status() {
     let mut machine = harness::boot_hle_with_cdrom();
 

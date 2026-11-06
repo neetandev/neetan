@@ -152,6 +152,8 @@ pub(super) struct DosDiskIo<'a> {
     pub floppy: &'a mut FloppyController,
     pub sasi: &'a mut SasiController,
     pub ide: &'a mut IdeController,
+    /// Whether the machine has a CD-ROM drive on its IDE channel.
+    pub cdrom_drive: bool,
 }
 
 /// Floppy geometry parameters derived from the device address.
@@ -351,7 +353,7 @@ impl DiskIo for DosDiskIo<'_> {
 
 impl CdromIo for DosDiskIo<'_> {
     fn cdrom_present(&self) -> bool {
-        self.ide.has_cdrom()
+        self.cdrom_drive
     }
 
     fn cdrom_media_loaded(&self) -> bool {
@@ -461,6 +463,7 @@ mod tests {
             floppy: &mut floppy,
             sasi: &mut sasi,
             ide: &mut ide,
+            cdrom_drive: true,
         };
 
         assert_eq!(disk_io.drive_geometry(0x80), Some((7522, 8, 17)));
