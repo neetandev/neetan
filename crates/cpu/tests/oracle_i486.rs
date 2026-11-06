@@ -91,9 +91,12 @@ oracle_cases! {
     x87_fmul_underflow_unmasked,
     x87_fpatan_denormal_unmasked,
     x87_fprem_invalid_unmasked_clears_c2,
+    x87_fptan_stack_overflow_masked,
+    x87_fptan_stack_overflow_masked_out_of_range,
     x87_fscale_denormal_round_up,
     x87_fscale_overflow_round_to_zero,
     x87_fscale_overflow_unmasked,
+    x87_fsincos_stack_overflow_masked,
     x87_fsincos_stack_overflow_unmasked,
     x87_fsqrt_negative_denormal_priority,
     x87_fsqrt_negative_unmasked,
@@ -102,4 +105,5 @@ oracle_cases! {
     x87_fstp_m32_empty_unmasked,
     x87_fstp_m32_overflow_unmasked,
     x87_fstp_st1_empty_unmasked,
+    x87_fxtract_stack_overflow_masked,
 }
