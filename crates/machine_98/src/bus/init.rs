@@ -226,7 +226,6 @@ impl<T: TraceSink> Pc9801Bus<T> {
             sdip: Sdip::new(),
             bios: device::bios::BiosController::new(),
             bios_interval_timer_active: false,
-            current_cpu_protected_mode: false,
             a20_enabled: false,
             machine_model,
             reset_pending: false,
