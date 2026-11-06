@@ -760,26 +760,23 @@ impl Fp80 {
     }
 }
 
+/// Returns log2 of the finite positive `x` as n + log2(f) with x = f x 2^n and f in
+/// [t/2, t), where t = 0xB504_F333_F9DE_6484 x 2^-63 is sqrt(2) truncated to 64 bits. The
+/// scaling by 2^-n is exact and f keeps every significand bit of `x`.
 fn compute_log2(x: Fp80) -> DoubleF64 {
-    let exp = x.true_exponent();
-    let mut significand = x.significand();
-    let mut n = exp;
+    let significand = x.significand();
 
     if significand == 0 {
         return DoubleF64::ZERO;
     }
 
-    let shift = significand.leading_zeros();
-    significand <<= shift;
-    n -= shift as i32;
-
+    let mut n = leading_exponent(x);
     let sqrt2_sig: u64 = 0xB504_F333_F9DE_6484;
-    if significand >= sqrt2_sig {
-        significand >>= 1;
+    if significand << significand.leading_zeros() >= sqrt2_sig {
         n += 1;
     }
 
-    let f = DoubleF64::from_significand(significand);
+    let f = DoubleF64::from_fp80_scaled(x, n);
 
     let f_minus_1 = f - DoubleF64::ONE;
     let f_plus_1 = f + DoubleF64::ONE;
@@ -2170,6 +2167,79 @@ mod tests {
         },
     ];
 
+    /// FYL2X operands x with an odd significand next to the sqrt(2) bound of the normalization,
+    /// 1 - 2^-64 and 2 - 2^-63, with y = 1, and y x log2(x) with its C1 bit in each of the
+    /// [`ROUNDING_MODES`]. The results are the exact function of the full 64-bit significand
+    /// rounded at 64 bits, evaluated with 400-bit arithmetic (80486 PRM 17.5).
+    const LOGARITHM_SIGNIFICAND_CASES: [RoundingCase; 6] = [
+        RoundingCase {
+            function: Transcendental::YLog2X,
+            first: Fp80::from_bits(0x3FFE, 0xFFFF_FFFF_FFFF_FFFF),
+            second: Fp80::ONE,
+            results: [
+                (Fp80::from_bits(0xBFBF, 0xB8AA_3B29_5C17_F0BC), false),
+                (Fp80::from_bits(0xBFBF, 0xB8AA_3B29_5C17_F0BD), true),
+                (Fp80::from_bits(0xBFBF, 0xB8AA_3B29_5C17_F0BC), false),
+                (Fp80::from_bits(0xBFBF, 0xB8AA_3B29_5C17_F0BC), false),
+            ],
+        },
+        RoundingCase {
+            function: Transcendental::YLog2X,
+            first: Fp80::from_bits(0x3FFF, 0xB504_F333_F9DE_6485),
+            second: Fp80::ONE,
+            results: [
+                (Fp80::from_bits(0x3FFE, 0x8000_0000_0000_0001), false),
+                (Fp80::from_bits(0x3FFE, 0x8000_0000_0000_0001), false),
+                (Fp80::from_bits(0x3FFE, 0x8000_0000_0000_0002), true),
+                (Fp80::from_bits(0x3FFE, 0x8000_0000_0000_0001), false),
+            ],
+        },
+        RoundingCase {
+            function: Transcendental::YLog2X,
+            first: Fp80::from_bits(0x3FFF, 0xB504_F333_F9DE_6483),
+            second: Fp80::ONE,
+            results: [
+                (Fp80::from_bits(0x3FFD, 0xFFFF_FFFF_FFFF_FFFA), false),
+                (Fp80::from_bits(0x3FFD, 0xFFFF_FFFF_FFFF_FFFA), false),
+                (Fp80::from_bits(0x3FFD, 0xFFFF_FFFF_FFFF_FFFB), true),
+                (Fp80::from_bits(0x3FFD, 0xFFFF_FFFF_FFFF_FFFA), false),
+            ],
+        },
+        RoundingCase {
+            function: Transcendental::YLog2X,
+            first: Fp80::from_bits(0x3FFE, 0xB504_F333_F9DE_6485),
+            second: Fp80::ONE,
+            results: [
+                (Fp80::from_bits(0xBFFD, 0xFFFF_FFFF_FFFF_FFFD), false),
+                (Fp80::from_bits(0xBFFD, 0xFFFF_FFFF_FFFF_FFFE), true),
+                (Fp80::from_bits(0xBFFD, 0xFFFF_FFFF_FFFF_FFFD), false),
+                (Fp80::from_bits(0xBFFD, 0xFFFF_FFFF_FFFF_FFFD), false),
+            ],
+        },
+        RoundingCase {
+            function: Transcendental::YLog2X,
+            first: Fp80::from_bits(0x3FFE, 0xB504_F333_F9DE_6483),
+            second: Fp80::ONE,
+            results: [
+                (Fp80::from_bits(0xBFFE, 0x8000_0000_0000_0003), true),
+                (Fp80::from_bits(0xBFFE, 0x8000_0000_0000_0003), true),
+                (Fp80::from_bits(0xBFFE, 0x8000_0000_0000_0002), false),
+                (Fp80::from_bits(0xBFFE, 0x8000_0000_0000_0002), false),
+            ],
+        },
+        RoundingCase {
+            function: Transcendental::YLog2X,
+            first: Fp80::from_bits(0x3FFF, 0xFFFF_FFFF_FFFF_FFFF),
+            second: Fp80::ONE,
+            results: [
+                (Fp80::from_bits(0x3FFE, 0xFFFF_FFFF_FFFF_FFFF), true),
+                (Fp80::from_bits(0x3FFE, 0xFFFF_FFFF_FFFF_FFFE), false),
+                (Fp80::from_bits(0x3FFE, 0xFFFF_FFFF_FFFF_FFFF), true),
+                (Fp80::from_bits(0x3FFE, 0xFFFF_FFFF_FFFF_FFFE), false),
+            ],
+        },
+    ];
+
     /// The sine, the cosine and C1 of FSINCOS in each of the [`ROUNDING_MODES`].
     type SineCosineResults = [(Fp80, Fp80, bool); 4];
 
@@ -2292,9 +2362,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn transcendental_results_follow_the_rounding_control() {
-        for case in &ROUNDING_CASES {
+    /// Checks the result, PE and C1 of each of `cases` in each of the [`ROUNDING_MODES`].
+    fn check_rounding_cases(cases: &[RoundingCase]) {
+        for case in cases {
             for (rc, (expected, rounded_up)) in ROUNDING_MODES.into_iter().zip(case.results) {
                 let mut ef = no_exceptions();
                 let result = run_rounding_case(case, rc, &mut ef);
@@ -2311,6 +2381,16 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn transcendental_results_follow_the_rounding_control() {
+        check_rounding_cases(&ROUNDING_CASES);
+    }
+
+    #[test]
+    fn logarithm_keeps_every_significand_bit_of_the_operand() {
+        check_rounding_cases(&LOGARITHM_SIGNIFICAND_CASES);
     }
 
     #[test]
