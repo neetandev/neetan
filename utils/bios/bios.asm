@@ -5,9 +5,9 @@
 ; stack (the trap sequence clobbers them) and writes a single vector number byte
 ; to the emulator trap port 07F0h. The emulator yields on the OUT, restores AX
 ; and DX from the stack, reads and writes the CPU registers directly through the
-; Cpu trait and resumes the CPU. A plain stub then IRETs. A hardware interrupt
-; stub jumps to an EOI tail that ends the interrupt with guest OUTs and IRETs. The BIOS logic
-; is Rust code in crates/machine_98/src/bus/bios.rs.
+; Cpu trait and resumes the CPU. A plain stub then IRETs. Other stubs jump to a
+; tail that finishes the handler with guest I/O instructions and IRETs. The BIOS
+; logic is Rust code in crates/machine_98/src/bus/bios.rs.
 ;
 ; Build: make (assembles bios.rom and builds fonts/font.rom from fonts/*.bit)
 
@@ -31,7 +31,7 @@ VEC_N88_BASIC   equ 0xF3        ; N88-BASIC ROM entry was invoked
 ; --- HLE interrupt stub macros ---
 ;
 ; Each stub saves AX/DX (clobbered by the trap OUT) and writes the vector number
-; to the trap port. hle_stub then IRETs. hle_stub_eoi jumps to an EOI tail. The Rust HLE handler restores the original AX/DX
+; to the trap port. hle_stub then IRETs. hle_stub_tail jumps to a tail. The Rust HLE handler restores the original AX/DX
 ; from the stack before processing, then reads/writes CPU registers directly.
 
 %macro hle_stub 1               ; %1 = vector number
@@ -43,10 +43,10 @@ VEC_N88_BASIC   equ 0xF3        ; N88-BASIC ROM entry was invoked
     iret
 %endmacro
 
-; Variant for hardware interrupt handlers: after the HLE trap the stub jumps
-; to an EOI tail (%2) that ends the interrupt with guest OUT instructions and
-; IRETs. The HLE handler has restored AX/DX and the IRET frame at SS:SP.
-%macro hle_stub_eoi 2           ; %1 = vector number, %2 = EOI tail label
+; Variant that jumps to a tail (%2) after the HLE trap. The tail finishes the
+; handler with guest I/O instructions and IRETs. The HLE handler has restored
+; AX/DX and the IRET frame at SS:SP.
+%macro hle_stub_tail 2          ; %1 = vector number, %2 = tail label
     push ax
     push dx
     mov  dx, TRAP_PORT
@@ -263,6 +263,30 @@ unused_irq_return:
     pop  ax
     iret
 
+; --- Interval timer mask tail ---
+; The INT 08h and INT 1Ch stubs jump here after the HLE trap. The HLE handler
+; selects the change of the IR0 mask bit in the master PIC IMR (undoc98
+; io_pic.txt, I/O 0002h) with the flags. CF clear keeps the IMR. CF set with ZF
+; clear unmasks IR0. CF set with ZF set masks IR0. The read-modify-write runs
+; with interrupts disabled and keeps the other mask bits. A protected-mode or
+; V86 monitor that traps the PIC ports observes both accesses. IRET restores
+; the flags of the caller.
+timer_mask_iret:
+    jnc  .done
+    push ax
+    cli
+    in   al, 0x02                   ; Master IMR
+    jz   .mask
+    and  al, 0xFE                   ; Unmask IR0
+    jmp  short .write
+.mask:
+    or   al, 0x01                   ; Mask IR0
+.write:
+    out  0x02, al
+    pop  ax
+.done:
+    iret
+
 ; --- HLE-dispatched interrupt handler stubs ---
 
 ; The INT 08h and INT 0Ah stubs write the master PIC non-specific EOI
@@ -270,13 +294,14 @@ unused_irq_return:
 ; INT 09h stub writes it with a guest OUT after HLE dispatch. The INT 0Ch, 12h
 ; and 13h stubs end the interrupt with an EOI tail after HLE dispatch.
 ; Protected-mode or V86 monitors that trap the PIC ports observe every EOI of
-; these handlers on the bus.
+; these handlers on the bus. The INT 08h and INT 1Ch stubs change the timer
+; mask in the master IMR in the timer mask tail.
 int_08h_handler:
     push ax
     mov al, 0x20
     out 0x00, al
     pop ax
-    hle_stub 0x08                            ; Timer tick (IRQ 0)
+    hle_stub_tail 0x08, timer_mask_iret      ; Timer tick (IRQ 0)
 
 ; Keyboard (IRQ 1). The stub keeps the interrupted AX on the stack across the
 ; HLE trap. The HLE handler returns AL = 06h after a STOP make code, 05h after
@@ -315,14 +340,14 @@ int_0ah_handler:
     out 0x00, al
     pop ax
     hle_stub 0x0A                            ; VSYNC (IRQ 2)
-int_0ch_handler:    hle_stub_eoi 0x0C, master_eoi_iret ; Serial receive (IRQ 4)
-int_12h_handler:    hle_stub_eoi 0x12, slave_eoi_iret ; FDC 640KB (slave IR2)
-int_13h_handler:    hle_stub_eoi 0x13, slave_eoi_iret ; FDC 1MB (slave IR3)
+int_0ch_handler:    hle_stub_tail 0x0C, master_eoi_iret ; Serial receive (IRQ 4)
+int_12h_handler:    hle_stub_tail 0x12, slave_eoi_iret ; FDC 640KB (slave IR2)
+int_13h_handler:    hle_stub_tail 0x13, slave_eoi_iret ; FDC 1MB (slave IR3)
 int_18h_handler:    hle_stub 0x18            ; CRT/KB/Graphics
 int_19h_handler:    hle_stub 0x19            ; RS-232C
 int_1ah_handler:    hle_stub_chainable 0x1A  ; Printer/CMT (chainable at +25)
 int_1bh_handler:    hle_stub 0x1B            ; Disk BIOS
-int_1ch_handler:    hle_stub 0x1C            ; Timer/Calendar
+int_1ch_handler:    hle_stub_tail 0x1C, timer_mask_iret ; Timer/Calendar
 int_1fh_handler:    hle_stub 0x1F            ; Extended
 int_d2h_handler:    hle_stub 0xD2            ; Sound BIOS
 
