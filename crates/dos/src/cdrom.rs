@@ -160,7 +160,7 @@ impl crate::NeetanDos {
                 self.state.mscdex.open_count = self.state.mscdex.open_count.saturating_sub(1);
                 STATUS_DONE
             }
-            128 => self.read_long(memory, cdrom, request_addr),
+            128 => self.read_long(memory, cdrom, request_addr, transfer_addr),
             130 => STATUS_DONE,
             131 => STATUS_DONE,
             132 => self.play_audio(memory, cdrom, request_addr),
@@ -411,21 +411,27 @@ impl crate::NeetanDos {
         }
     }
 
-    /// Command 128: Read Long.
+    /// Command 128: Read Long. The request holds the addressing mode at +13, the
+    /// transfer far pointer at +14, the sector count at +18, the start sector at +20
+    /// and the data read mode (0 cooked, 1 raw) at +24. `transfer_addr` is the linear
+    /// address that the far pointer at +14 points to. A data read mode above 1 fails as an
+    /// unknown command.
     fn read_long(
         &self,
         memory: &mut dyn MemoryAccess,
         cdrom: &dyn CdromIo,
         request_addr: u32,
+        transfer_addr: u32,
     ) -> u16 {
-        let mode = memory.read_byte(request_addr + 13);
-        let transfer_addr = memory.read_word(request_addr + 14) as u32
-            | ((memory.read_word(request_addr + 16) as u32) << 16);
+        let addressing_mode = memory.read_byte(request_addr + 13);
         let sector_count = memory.read_word(request_addr + 18) as u32;
-        let start_lba = memory.read_word(request_addr + 20) as u32
-            | ((memory.read_word(request_addr + 22) as u32) << 16);
+        let start_lba = read_address(memory, request_addr + 20, addressing_mode);
 
-        let raw = mode != 0;
+        let raw = match memory.read_byte(request_addr + 24) {
+            0 => false,
+            1 => true,
+            _ => return STATUS_DONE | STATUS_ERROR | 0x03,
+        };
         let sector_size: u32 = if raw { 2352 } else { 2048 };
 
         let mut buf = vec![0u8; sector_size as usize];
@@ -511,5 +517,162 @@ mod tests {
     fn redbook_to_lba_saturates_at_zero() {
         // MSF 0:00:00 = frame 0, which is before the 150-frame lead-in.
         assert_eq!(redbook_to_lba(0, 0, 0), 0);
+    }
+
+    /// A CD-ROM drive that reads a loaded disc image.
+    struct DiscCdrom(device::cdrom::CdImage);
+
+    impl CdromIo for DiscCdrom {
+        fn cdrom_present(&self) -> bool {
+            true
+        }
+
+        fn cdrom_media_loaded(&self) -> bool {
+            true
+        }
+
+        fn read_sector_cooked(&self, lba: u32, buf: &mut [u8]) -> Option<usize> {
+            self.0.read_sector(lba, buf)
+        }
+
+        fn read_sector_raw(&self, lba: u32, buf: &mut [u8]) -> Option<usize> {
+            self.0.read_sector_raw(lba, buf)
+        }
+
+        fn track_count(&self) -> u8 {
+            self.0.track_count()
+        }
+
+        fn track_info(&self, _track_number: u8) -> Option<crate::CdromTrackInfo> {
+            None
+        }
+
+        fn leadout_lba(&self) -> u32 {
+            self.0.total_sectors()
+        }
+
+        fn total_sectors(&self) -> u32 {
+            self.0.total_sectors()
+        }
+
+        fn audio_play(&mut self, _start_lba: u32, _sector_count: u32) {}
+
+        fn audio_stop(&mut self) {}
+
+        fn audio_resume(&mut self) {}
+
+        fn audio_state(&self) -> crate::CdAudioStatus {
+            crate::test_support::NoDrives.audio_state()
+        }
+
+        fn audio_channel_info(&self) -> crate::AudioChannelInfo {
+            crate::test_support::NoDrives.audio_channel_info()
+        }
+
+        fn set_audio_channel_info(&mut self, _info: &crate::AudioChannelInfo) {}
+    }
+
+    /// Builds a cooked disc whose LBA 4 holds the user data byte 0x44 and LBA 5 the byte 0x55.
+    fn marked_cooked_disc() -> DiscCdrom {
+        let cue = "FILE \"test.bin\" BINARY\n  TRACK 01 MODE1/2048\n    INDEX 01 00:00:00\n";
+        let mut data = vec![0u8; 10 * 2048];
+        data[4 * 2048..5 * 2048].fill(0x44);
+        data[5 * 2048..6 * 2048].fill(0x55);
+        DiscCdrom(device::cdrom::CdImage::from_cue(cue, data).unwrap())
+    }
+
+    /// Request header address of the READ LONG tests.
+    const REQUEST_ADDRESS: u32 = 0x0100;
+
+    /// Transfer buffer segment of the READ LONG tests.
+    const TRANSFER_SEGMENT: u16 = 0x0200;
+
+    /// Transfer buffer offset of the READ LONG tests.
+    const TRANSFER_OFFSET: u16 = 0x0010;
+
+    /// Linear address of the transfer buffer of the READ LONG tests.
+    const TRANSFER_ADDRESS: u32 = 0x2010;
+
+    /// Sends a raw READ LONG of two sectors with the given addressing mode and start sector
+    /// bytes and returns the request status and the transfer buffer.
+    fn read_long_raw(addressing_mode: u8, start_sector: [u8; 4]) -> (u16, Vec<u8>) {
+        send_read_long(addressing_mode, start_sector, 1)
+    }
+
+    /// Sends a READ LONG of two sectors with the given addressing mode, start sector bytes
+    /// and data read mode and returns the request status and the transfer buffer.
+    fn send_read_long(
+        addressing_mode: u8,
+        start_sector: [u8; 4],
+        data_read_mode: u8,
+    ) -> (u16, Vec<u8>) {
+        let mut cdrom = marked_cooked_disc();
+        let mut memory = crate::test_support::MockMemory::with_extended_memory(0x10000, 0);
+        let mut dos = crate::NeetanDos::new(crate::DosPlatform::pc98());
+
+        memory.write_byte(REQUEST_ADDRESS + 2, 128);
+        memory.write_byte(REQUEST_ADDRESS + 13, addressing_mode);
+        memory.write_word(REQUEST_ADDRESS + 14, TRANSFER_OFFSET);
+        memory.write_word(REQUEST_ADDRESS + 16, TRANSFER_SEGMENT);
+        memory.write_word(REQUEST_ADDRESS + 18, 2);
+        memory.write_block(REQUEST_ADDRESS + 20, &start_sector);
+        memory.write_byte(REQUEST_ADDRESS + 24, data_read_mode);
+        dos.handle_device_request(&mut memory, &mut cdrom, REQUEST_ADDRESS);
+
+        let mut transfer = vec![0u8; 2 * 2352 + 1];
+        memory.read_block(TRANSFER_ADDRESS, &mut transfer);
+        (memory.read_word(REQUEST_ADDRESS + 3), transfer)
+    }
+
+    /// Checks that the transfer holds the frames of LBA 4 and 5 and nothing after them.
+    fn assert_frames_of_lba_4_and_5(transfer: &[u8]) {
+        let cdrom = marked_cooked_disc();
+        let sync = [
+            0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00,
+        ];
+        for (index, (frame, user_byte)) in transfer
+            .as_chunks::<2352>()
+            .0
+            .iter()
+            .zip([0x44u8, 0x55])
+            .enumerate()
+        {
+            assert_eq!(frame[..12], sync, "frame {index}");
+            assert_eq!(frame[12..16], [0x00, 0x02, 0x04 + index as u8, 0x01]);
+            assert!(frame[16..2064].iter().all(|&byte| byte == user_byte));
+            let mut expected = [0u8; 2352];
+            assert_eq!(
+                cdrom.read_sector_raw(4 + index as u32, &mut expected),
+                Some(2352)
+            );
+            assert_eq!(frame, &expected, "frame {index}");
+        }
+        assert_eq!(transfer[2 * 2352], 0);
+    }
+
+    /// Verifies that a raw READ LONG of a cooked disc writes a 2352-byte frame per sector to
+    /// the far pointer of the request.
+    #[test]
+    fn read_long_raw_of_a_cooked_disc() {
+        let (status, transfer) = read_long_raw(0, [4, 0, 0, 0]);
+        assert_eq!(status, STATUS_DONE);
+        assert_frames_of_lba_4_and_5(&transfer);
+    }
+
+    /// Verifies that a raw READ LONG takes a Red Book start address.
+    #[test]
+    fn read_long_raw_with_red_book_address() {
+        let (status, transfer) = read_long_raw(1, [4, 2, 0, 0]);
+        assert_eq!(status, STATUS_DONE);
+        assert_frames_of_lba_4_and_5(&transfer);
+    }
+
+    /// Verifies that a READ LONG with an unknown data read mode fails as an unknown command
+    /// and transfers nothing.
+    #[test]
+    fn read_long_rejects_unknown_data_read_mode() {
+        let (status, transfer) = send_read_long(0, [4, 0, 0, 0], 2);
+        assert_eq!(status, STATUS_DONE | STATUS_ERROR | 0x03);
+        assert!(transfer.iter().all(|&byte| byte == 0));
     }
 }

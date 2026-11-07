@@ -3,13 +3,8 @@
 
 use super::{
     CdError, CueSheet, CueTrack, RAW_MODE1_DATA_OFFSET, RAW_MODE2_DATA_OFFSET, SECTOR_SIZE_COOKED,
-    SECTOR_SIZE_RAW, SectorLayout, TrackType,
+    SECTOR_SIZE_RAW, SectorLayout, TrackType, sector_frame::RAW_SECTOR_SYNC,
 };
-
-/// The 12-byte sync pattern at the start of a raw sector (ECMA-130).
-pub(super) const RAW_SECTOR_SYNC: [u8; 12] = [
-    0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00,
-];
 
 /// Offset of the mode byte within a raw sector.
 const RAW_MODE_BYTE_OFFSET: usize = 15;
@@ -201,7 +196,13 @@ mod tests {
         assert_eq!(buffer.as_slice(), &data[5 * COOKED..6 * COOKED]);
 
         let mut raw_buffer = [0u8; 2352];
-        assert_eq!(image.read_sector_raw(5, &mut raw_buffer), Some(2048));
+        assert_eq!(image.read_sector_raw(5, &mut raw_buffer), Some(2352));
+        assert_eq!(raw_buffer[..RAW_SECTOR_SYNC.len()], RAW_SECTOR_SYNC);
+        assert_eq!(raw_buffer[12..16], [0x00, 0x02, 0x05, 0x01]);
+        assert_eq!(
+            &raw_buffer[RAW_MODE1_DATA_OFFSET..RAW_MODE1_DATA_OFFSET + COOKED],
+            &data[5 * COOKED..6 * COOKED]
+        );
 
         let mut padded = data;
         padded.extend_from_slice(&[0u8; 100]);

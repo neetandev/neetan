@@ -8,16 +8,17 @@
 //! The SCSI command set implemented here covers the MMC (Multi-Media Commands)
 //! subset needed for CD-ROM data access, TOC reading, and media change.
 
+use std::ops::Range;
+
 use super::lle::{self, IdeAction, IdePhase};
 use crate::{
     cd_audio::CdAudioPlayer,
-    cdrom::CdImage,
+    cdrom::{CdImage, EDC_OFFSET, FRAME_SIZE, HEADER_END, HEADER_OFFSET, TrackType, mode1_header},
     scsi::cdrom::{
         CDROM_SECTOR_SIZE, ScsiCdrom, audio_status_byte, decode_msf_byte, medium_type, msf_to_lba,
-        raw_user_data_offset, read_capacity_payload, read_data_sectors,
-        sub_channel_position_payload, toc_format_0_payload, toc_format_1_payload,
-        toc_format_2_payload, write_mode_page_0d, write_mode_page_0e, write_mode_page_01,
-        write_mode_page_2a,
+        read_capacity_payload, read_data_sectors, sub_channel_position_payload,
+        toc_format_0_payload, toc_format_1_payload, toc_format_2_payload, write_mode_page_0d,
+        write_mode_page_0e, write_mode_page_01, write_mode_page_2a,
     },
 };
 
@@ -45,6 +46,7 @@ const ASC_INVALID_FIELD_IN_CDB: u8 = 0x24;
 const ASC_NOT_READY_TO_READY_TRANSITION: u8 = 0x28;
 const ASC_SAVING_PARAMETERS_NOT_SUPPORTED: u8 = 0x39;
 const ASC_MEDIUM_NOT_PRESENT: u8 = 0x3A;
+const ASC_ILLEGAL_MODE_FOR_THIS_TRACK: u8 = 0x64;
 
 // SCSI Additional Sense Code Qualifiers (ASCQ).
 const ASCQ_NO_QUALIFIER: u8 = 0x00;
@@ -839,96 +841,7 @@ impl AtapiState {
             return self.cmd_complete_no_data();
         }
 
-        let count = end_lba - start_lba;
-
-        // MMC-3 header code field (byte 9 bits 6-5).
-        let header_code = (flags >> 5) & 0x03;
-        let want_sync = flags & 0x80 != 0;
-        let want_header = header_code == 0x01 || header_code == 0x03;
-        let want_sub_header = header_code == 0x02 || header_code == 0x03;
-        let want_user_data = flags & 0x10 != 0;
-        let want_edc_ecc = flags & 0x08 != 0;
-
-        // Wuirk: sync is only returned when header is also requested.
-        let want_sync = want_sync && want_header;
-
-        let mut sector_transfer_size: usize = 0;
-        if want_sync {
-            sector_transfer_size += 12;
-        }
-        if want_header {
-            sector_transfer_size += 4;
-        }
-        if want_sub_header {
-            sector_transfer_size += 8;
-        }
-        if want_user_data {
-            sector_transfer_size += CDROM_SECTOR_SIZE;
-        }
-        if want_edc_ecc {
-            sector_transfer_size += 288;
-        }
-        if sector_transfer_size == 0 {
-            sector_transfer_size = CDROM_SECTOR_SIZE;
-        }
-
-        let total_bytes = count as usize * sector_transfer_size;
-        self.data_buffer.clear();
-        self.data_buffer.resize(total_bytes, 0);
-
-        let mut raw_buf = [0u8; 2352];
-        for i in 0..count {
-            let sector_lba = start_lba + i;
-            let out_offset = i as usize * sector_transfer_size;
-
-            if let Some(raw_size) = cdrom.read_sector_raw(sector_lba, &mut raw_buf) {
-                if raw_size == 2352 {
-                    let user_data_offset = raw_user_data_offset(&raw_buf);
-                    let is_mode2 = user_data_offset == 24;
-                    let mut pos = out_offset;
-                    if want_sync {
-                        self.data_buffer[pos..pos + 12].copy_from_slice(&raw_buf[0..12]);
-                        pos += 12;
-                    }
-                    if want_header {
-                        self.data_buffer[pos..pos + 4].copy_from_slice(&raw_buf[12..16]);
-                        pos += 4;
-                    }
-                    if want_sub_header {
-                        if is_mode2 {
-                            self.data_buffer[pos..pos + 8].copy_from_slice(&raw_buf[16..24]);
-                        } else {
-                            self.data_buffer[pos..pos + 8].fill(0);
-                        }
-                        pos += 8;
-                    }
-                    if want_user_data {
-                        self.data_buffer[pos..pos + CDROM_SECTOR_SIZE].copy_from_slice(
-                            &raw_buf[user_data_offset..user_data_offset + CDROM_SECTOR_SIZE],
-                        );
-                        pos += CDROM_SECTOR_SIZE;
-                    }
-                    if want_edc_ecc {
-                        let edc_start = user_data_offset + CDROM_SECTOR_SIZE;
-                        let edc_end = 2352;
-                        let actual = edc_end - edc_start;
-                        self.data_buffer[pos..pos + actual]
-                            .copy_from_slice(&raw_buf[edc_start..edc_end]);
-                    }
-                } else {
-                    self.data_buffer[out_offset..out_offset + raw_size.min(sector_transfer_size)]
-                        .copy_from_slice(&raw_buf[..raw_size.min(sector_transfer_size)]);
-                }
-            } else {
-                return self.cmd_error(
-                    SENSE_ILLEGAL_REQUEST,
-                    ASC_LOGICAL_BLOCK_OUT_OF_RANGE,
-                    ASCQ_NO_QUALIFIER,
-                );
-            }
-        }
-
-        self.cmd_complete_with_data(total_bytes)
+        self.transfer_read_cd(cdrom, start_lba, end_lba - start_lba, flags)
     }
 
     // 0xBD: MECHANISM STATUS
@@ -976,91 +889,73 @@ impl AtapiState {
             return self.cmd_complete_no_data();
         }
 
-        // MMC-3 header code field (byte 9 bits 6-5).
-        let header_code = (flags >> 5) & 0x03;
-        let want_sync = flags & 0x80 != 0;
-        let want_header = header_code == 0x01 || header_code == 0x03;
-        let want_sub_header = header_code == 0x02 || header_code == 0x03;
-        let want_user_data = flags & 0x10 != 0;
-        let want_edc_ecc = flags & 0x08 != 0;
+        self.transfer_read_cd(cdrom, lba, count, flags)
+    }
 
-        // Quirk: sync is only returned when header is also requested.
-        let want_sync = want_sync && want_header;
+    /// Transfers the fields that the READ CD field selection `flags` selects of `count`
+    /// sectors from `start_lba`. The sector type of the first sector sizes the transfer. A
+    /// selection of 0 bytes completes without data. A later sector of another type ends the
+    /// command with ILLEGAL MODE FOR THIS TRACK.
+    fn transfer_read_cd(
+        &mut self,
+        cdrom: &CdImage,
+        start_lba: u32,
+        count: u32,
+        flags: u8,
+    ) -> (bool, bool) {
+        let fields = ReadCdFields::from_flags(flags);
+        let mut frame = [0u8; FRAME_SIZE];
+        let Some(first_type) = read_cd_frame(cdrom, start_lba, fields, &mut frame) else {
+            return self.cmd_error(
+                SENSE_ILLEGAL_REQUEST,
+                ASC_LOGICAL_BLOCK_OUT_OF_RANGE,
+                ASCQ_NO_QUALIFIER,
+            );
+        };
 
-        let mut sector_transfer_size: usize = 0;
-        if want_sync {
-            sector_transfer_size += 12;
-        }
-        if want_header {
-            sector_transfer_size += 4;
-        }
-        if want_sub_header {
-            sector_transfer_size += 8;
-        }
-        if want_user_data {
-            sector_transfer_size += CDROM_SECTOR_SIZE;
-        }
-        if want_edc_ecc {
-            sector_transfer_size += 288;
+        let last_lba = start_lba.checked_add(count - 1);
+        if last_lba.is_none_or(|last_lba| last_lba >= cdrom.total_sectors()) {
+            return self.cmd_error(
+                SENSE_ILLEGAL_REQUEST,
+                ASC_LOGICAL_BLOCK_OUT_OF_RANGE,
+                ASCQ_NO_QUALIFIER,
+            );
         }
 
+        let ranges = first_type.selected_ranges(fields);
+        let sector_transfer_size: usize = ranges.iter().map(|range| range.len()).sum();
         if sector_transfer_size == 0 {
-            sector_transfer_size = CDROM_SECTOR_SIZE;
+            return self.cmd_complete_no_data();
         }
-
         let total_bytes = count as usize * sector_transfer_size;
         self.data_buffer.clear();
         self.data_buffer.resize(total_bytes, 0);
 
-        let mut raw_buf = [0u8; 2352];
-        for i in 0..count {
-            let sector_lba = lba + i;
-            let out_offset = i as usize * sector_transfer_size;
-
-            if let Some(raw_size) = cdrom.read_sector_raw(sector_lba, &mut raw_buf) {
-                if raw_size == 2352 {
-                    let user_data_offset = raw_user_data_offset(&raw_buf);
-                    let is_mode2 = user_data_offset == 24;
-                    let mut pos = out_offset;
-                    if want_sync {
-                        self.data_buffer[pos..pos + 12].copy_from_slice(&raw_buf[0..12]);
-                        pos += 12;
-                    }
-                    if want_header {
-                        self.data_buffer[pos..pos + 4].copy_from_slice(&raw_buf[12..16]);
-                        pos += 4;
-                    }
-                    if want_sub_header {
-                        if is_mode2 {
-                            self.data_buffer[pos..pos + 8].copy_from_slice(&raw_buf[16..24]);
-                        } else {
-                            self.data_buffer[pos..pos + 8].fill(0);
-                        }
-                        pos += 8;
-                    }
-                    if want_user_data {
-                        self.data_buffer[pos..pos + CDROM_SECTOR_SIZE].copy_from_slice(
-                            &raw_buf[user_data_offset..user_data_offset + CDROM_SECTOR_SIZE],
+        for index in 0..count {
+            if index > 0 {
+                match read_cd_frame(cdrom, start_lba + index, fields, &mut frame) {
+                    None => {
+                        return self.cmd_error(
+                            SENSE_ILLEGAL_REQUEST,
+                            ASC_LOGICAL_BLOCK_OUT_OF_RANGE,
+                            ASCQ_NO_QUALIFIER,
                         );
-                        pos += CDROM_SECTOR_SIZE;
                     }
-                    if want_edc_ecc {
-                        let edc_start = user_data_offset + CDROM_SECTOR_SIZE;
-                        let edc_end = 2352;
-                        let actual = edc_end - edc_start;
-                        self.data_buffer[pos..pos + actual]
-                            .copy_from_slice(&raw_buf[edc_start..edc_end]);
+                    Some(sector_type) if sector_type != first_type => {
+                        return self.cmd_error(
+                            SENSE_ILLEGAL_REQUEST,
+                            ASC_ILLEGAL_MODE_FOR_THIS_TRACK,
+                            ASCQ_NO_QUALIFIER,
+                        );
                     }
-                } else {
-                    self.data_buffer[out_offset..out_offset + raw_size.min(sector_transfer_size)]
-                        .copy_from_slice(&raw_buf[..raw_size.min(sector_transfer_size)]);
+                    Some(_) => {}
                 }
-            } else {
-                return self.cmd_error(
-                    SENSE_ILLEGAL_REQUEST,
-                    ASC_LOGICAL_BLOCK_OUT_OF_RANGE,
-                    ASCQ_NO_QUALIFIER,
-                );
+            }
+            let mut position = index as usize * sector_transfer_size;
+            for range in ranges.iter().cloned() {
+                let length = range.len();
+                self.data_buffer[position..position + length].copy_from_slice(&frame[range]);
+                position += length;
             }
         }
 
@@ -1074,6 +969,153 @@ impl AtapiState {
             ASCQ_NO_QUALIFIER,
         )
     }
+}
+
+/// End of the Mode 2 sub-header and start of the Mode 2 user data in a frame.
+const MODE2_SUB_HEADER_END: usize = 24;
+
+/// End of the Mode 2 Form 1 user data and start of its EDC and ECC in a frame.
+const MODE2_FORM1_USER_DATA_END: usize = 2072;
+
+/// End of the Mode 2 Form 2 user data and start of its EDC in a frame.
+const MODE2_FORM2_USER_DATA_END: usize = 2348;
+
+/// Offset of the mode byte in a frame.
+const FRAME_MODE_OFFSET: usize = 15;
+
+/// Offset of the submode byte of the Mode 2 sub-header in a frame.
+const MODE2_SUBMODE_OFFSET: usize = 18;
+
+/// Submode bit of a Mode 2 Form 2 sector.
+const SUBMODE_FORM2: u8 = 0x20;
+
+/// Frame fields that the field selection byte of READ CD and READ CD MSF selects.
+#[derive(Debug, Clone, Copy)]
+struct ReadCdFields {
+    /// The 12-byte sync pattern.
+    sync: bool,
+    /// The 4-byte header with the address and the mode.
+    header: bool,
+    /// The 8-byte sub-header of a Mode 2 sector.
+    sub_header: bool,
+    /// The user data.
+    user_data: bool,
+    /// The EDC and ECC bytes after the user data.
+    edc_ecc: bool,
+}
+
+impl ReadCdFields {
+    /// Decodes byte 9 of a READ CD or READ CD MSF packet. The sync pattern only returns
+    /// together with the header.
+    fn from_flags(flags: u8) -> Self {
+        let header_code = (flags >> 5) & 0x03;
+        let header = header_code & 0x01 != 0;
+        Self {
+            sync: flags & 0x80 != 0 && header,
+            header,
+            sub_header: header_code & 0x02 != 0,
+            user_data: flags & 0x10 != 0,
+            edc_ecc: flags & 0x08 != 0,
+        }
+    }
+}
+
+/// Sector type of a frame read by READ CD (MMC-3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReadCdSectorType {
+    /// A CD-DA sector of 2352 audio bytes.
+    Audio,
+    /// A Mode 1 sector with 2048 bytes of user data.
+    Mode1,
+    /// A Mode 2 Form 1 sector with 2048 bytes of user data.
+    Mode2Form1,
+    /// A Mode 2 Form 2 sector with 2324 bytes of user data.
+    Mode2Form2,
+}
+
+impl ReadCdSectorType {
+    /// Returns the sector type of a data frame. A Mode 2 sector takes its form from bit 0x20
+    /// of the submode byte of its sub-header. A mode byte other than 2 counts as Mode 1.
+    fn of_data_frame(frame: &[u8; FRAME_SIZE]) -> Self {
+        match frame[FRAME_MODE_OFFSET] {
+            2 if frame[MODE2_SUBMODE_OFFSET] & SUBMODE_FORM2 != 0 => Self::Mode2Form2,
+            2 => Self::Mode2Form1,
+            _ => Self::Mode1,
+        }
+    }
+
+    /// Returns the frame ranges of the sync pattern, header, sub-header, user data and EDC/ECC
+    /// of this sector type. An absent field has an empty range.
+    fn field_ranges(self) -> [Range<usize>; 5] {
+        let sync = 0..HEADER_OFFSET;
+        let header = HEADER_OFFSET..HEADER_END;
+        match self {
+            Self::Audio => [0..0, 0..0, 0..0, 0..FRAME_SIZE, 0..0],
+            Self::Mode1 => [
+                sync,
+                header,
+                HEADER_END..HEADER_END,
+                HEADER_END..EDC_OFFSET,
+                EDC_OFFSET..FRAME_SIZE,
+            ],
+            Self::Mode2Form1 => [
+                sync,
+                header,
+                HEADER_END..MODE2_SUB_HEADER_END,
+                MODE2_SUB_HEADER_END..MODE2_FORM1_USER_DATA_END,
+                MODE2_FORM1_USER_DATA_END..FRAME_SIZE,
+            ],
+            Self::Mode2Form2 => [
+                sync,
+                header,
+                HEADER_END..MODE2_SUB_HEADER_END,
+                MODE2_SUB_HEADER_END..MODE2_FORM2_USER_DATA_END,
+                MODE2_FORM2_USER_DATA_END..FRAME_SIZE,
+            ],
+        }
+    }
+
+    /// Returns the frame ranges of the selected fields in transfer order. An unselected field
+    /// has an empty range.
+    fn selected_ranges(self, fields: ReadCdFields) -> [Range<usize>; 5] {
+        let selection = [
+            fields.sync,
+            fields.header,
+            fields.sub_header,
+            fields.user_data,
+            fields.edc_ecc,
+        ];
+        let mut ranges = self.field_ranges();
+        for (range, selected) in ranges.iter_mut().zip(selection) {
+            if !selected {
+                *range = 0..0;
+            }
+        }
+        ranges
+    }
+}
+
+/// Reads the sector at `lba` into `frame` and returns its sector type. The frame holds at
+/// least the selected fields. A cooked sector without selected sync and EDC/ECC gets its
+/// header and user data only.
+fn read_cd_frame(
+    cdrom: &CdImage,
+    lba: u32,
+    fields: ReadCdFields,
+    frame: &mut [u8; FRAME_SIZE],
+) -> Option<ReadCdSectorType> {
+    let track = cdrom.track_for_lba(lba)?;
+    if track.track_type == TrackType::Audio {
+        cdrom.read_sector_raw(lba, frame)?;
+        return Some(ReadCdSectorType::Audio);
+    }
+    if usize::from(track.sector_size) == CDROM_SECTOR_SIZE && !fields.sync && !fields.edc_ecc {
+        frame[HEADER_OFFSET..HEADER_END].copy_from_slice(&mode1_header(lba));
+        cdrom.read_sector(lba, &mut frame[HEADER_END..EDC_OFFSET])?;
+        return Some(ReadCdSectorType::Mode1);
+    }
+    cdrom.read_sector_raw(lba, frame)?;
+    Some(ReadCdSectorType::of_data_frame(frame))
 }
 
 /// Builds the 512-byte IDENTIFY PACKET DEVICE response for an ATAPI CD-ROM.
@@ -2341,6 +2383,192 @@ mod tests {
         // Sector 42 marker.
         assert_eq!(state.data_buffer[0], 0);
         assert_eq!(state.data_buffer[1], 42);
+    }
+
+    /// Verifies that READ CD of a cooked sector returns the sync, the header, the user data
+    /// and the built EDC and ECC.
+    #[test]
+    fn read_cd_with_sync_and_header_on_cooked_track() {
+        let mut state = AtapiState::new();
+        state.media_loaded = true;
+        let cdrom = make_test_cdimage();
+
+        state.packet = [0xBE, 0, 0, 0, 0, 16, 0, 0, 1, 0xF8, 0, 0];
+        let (has_data, is_error) = state.cmd_read_cd(Some(&cdrom));
+        assert!(has_data);
+        assert!(!is_error);
+        assert_eq!(state.data_size, 2352);
+
+        let mut frame = [0u8; 2352];
+        assert_eq!(cdrom.read_sector_raw(16, &mut frame), Some(2352));
+        assert_eq!(state.data_buffer.as_slice(), frame.as_slice());
+        assert_eq!(
+            state.data_buffer[..12],
+            [
+                0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00
+            ]
+        );
+        assert_eq!(state.data_buffer[12..16], [0x00, 0x02, 0x16, 0x01]);
+        assert_eq!(state.data_buffer[16], 0);
+        assert_eq!(state.data_buffer[17], 16);
+        assert!(state.data_buffer[2068..2076].iter().all(|&byte| byte == 0));
+        assert!(state.data_buffer[2076..2352].iter().any(|&byte| byte != 0));
+    }
+
+    /// Builds a raw Mode 2 frame at the given LBA with the given submode and user data byte.
+    fn make_mode2_frame(lba: u32, submode: u8, user_byte: u8) -> [u8; 2352] {
+        let mut frame = [0u8; 2352];
+        frame[1..11].fill(0xFF);
+        frame[12..16].copy_from_slice(&mode1_header(lba));
+        frame[15] = 2;
+        frame[16..24].copy_from_slice(&[0, 0, submode, 0, 0, 0, submode, 0]);
+        frame[24..].fill(user_byte);
+        frame
+    }
+
+    /// Builds a raw Mode 2 image whose sectors 0 to 19 are Form 1 and sector 20 is Form 2.
+    fn make_mode2_cdimage() -> CdImage {
+        let cue = "FILE \"test.bin\" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n";
+        let mut bin_data = Vec::new();
+        for lba in 0..20 {
+            bin_data.extend_from_slice(&make_mode2_frame(lba, 0x08, 0x21));
+        }
+        bin_data.extend_from_slice(&make_mode2_frame(20, 0x20, 0x22));
+        CdImage::from_cue(cue, bin_data).unwrap()
+    }
+
+    /// Verifies that READ CD MSF of a cooked sector returns the sync, the header and the EDC
+    /// and ECC of the built frame.
+    #[test]
+    fn read_cd_msf_with_sync_header_and_edc_ecc_on_cooked_track() {
+        let mut state = AtapiState::new();
+        state.media_loaded = true;
+        let cdrom = make_test_cdimage();
+
+        state.packet = [0xB9, 0, 0, 0, 2, 16, 0, 2, 17, 0xA8, 0, 0];
+        let (has_data, is_error) = state.cmd_read_cd_msf(Some(&cdrom));
+        assert!(has_data);
+        assert!(!is_error);
+        assert_eq!(state.data_size, 304);
+
+        let mut frame = [0u8; 2352];
+        assert_eq!(cdrom.read_sector_raw(16, &mut frame), Some(2352));
+        assert_eq!(state.data_buffer[..16], frame[..16]);
+        assert_eq!(state.data_buffer[16..], frame[2064..]);
+    }
+
+    /// Verifies that READ CD with all fields of a raw Mode 2 Form 1 sector returns its frame.
+    #[test]
+    fn read_cd_all_fields_on_mode2_form1_track() {
+        let mut state = AtapiState::new();
+        state.media_loaded = true;
+        let cdrom = make_mode2_cdimage();
+
+        state.packet = [0xBE, 0, 0, 0, 0, 5, 0, 0, 1, 0xF8, 0, 0];
+        let (has_data, is_error) = state.cmd_read_cd(Some(&cdrom));
+        assert!(has_data);
+        assert!(!is_error);
+        assert_eq!(state.data_size, 2352);
+        assert_eq!(
+            state.data_buffer.as_slice(),
+            make_mode2_frame(5, 0x08, 0x21)
+        );
+    }
+
+    /// Verifies that READ CD with the user data of a Mode 2 Form 2 sector returns 2324 bytes.
+    #[test]
+    fn read_cd_user_data_on_mode2_form2_sector() {
+        let mut state = AtapiState::new();
+        state.media_loaded = true;
+        let cdrom = make_mode2_cdimage();
+
+        state.packet = [0xBE, 0, 0, 0, 0, 20, 0, 0, 1, 0x10, 0, 0];
+        let (has_data, is_error) = state.cmd_read_cd(Some(&cdrom));
+        assert!(has_data);
+        assert!(!is_error);
+        assert_eq!(state.data_size, 2324);
+        assert!(state.data_buffer.iter().all(|&byte| byte == 0x22));
+    }
+
+    /// Verifies that READ CD with the user data of an audio sector returns 2352 bytes.
+    #[test]
+    fn read_cd_user_data_on_audio_track() {
+        let mut state = AtapiState::new();
+        state.media_loaded = true;
+        let cdrom = make_multi_track_cdimage();
+
+        state.packet = [0xBE, 0, 0, 0, 0, 160, 0, 0, 1, 0x10, 0, 0];
+        let (has_data, is_error) = state.cmd_read_cd(Some(&cdrom));
+        assert!(has_data);
+        assert!(!is_error);
+        assert_eq!(state.data_size, 2352);
+        assert!(state.data_buffer.iter().all(|&byte| byte == 0xAA));
+    }
+
+    /// Verifies that READ CD of the header and user data of a cooked sector equals the
+    /// matching part of the built frame.
+    #[test]
+    fn read_cd_header_and_user_data_on_cooked_track() {
+        let mut state = AtapiState::new();
+        state.media_loaded = true;
+        let cdrom = make_test_cdimage();
+
+        state.packet = [0xBE, 0, 0, 0, 0, 16, 0, 0, 1, 0x30, 0, 0];
+        let (has_data, is_error) = state.cmd_read_cd(Some(&cdrom));
+        assert!(has_data);
+        assert!(!is_error);
+        assert_eq!(state.data_size, 2052);
+
+        let mut frame = [0u8; 2352];
+        assert_eq!(cdrom.read_sector_raw(16, &mut frame), Some(2352));
+        assert_eq!(state.data_buffer.as_slice(), &frame[12..2064]);
+    }
+
+    /// Verifies that READ CD of the sub-header of a Mode 1 sector completes without data.
+    #[test]
+    fn read_cd_sub_header_of_mode1_sector_has_no_data() {
+        let mut state = AtapiState::new();
+        state.media_loaded = true;
+        let cdrom = make_test_cdimage();
+
+        state.packet = [0xBE, 0, 0, 0, 0, 16, 0, 0, 1, 0x40, 0, 0];
+        let (has_data, is_error) = state.cmd_read_cd(Some(&cdrom));
+        assert!(!has_data);
+        assert!(!is_error);
+        assert_eq!(state.data_size, 0);
+    }
+
+    /// Verifies that READ CD of a range past the end of the disc fails before it allocates
+    /// the transfer.
+    #[test]
+    fn read_cd_range_past_the_disc_fails() {
+        let mut state = AtapiState::new();
+        state.media_loaded = true;
+        let cdrom = make_test_cdimage();
+
+        state.packet = [0xBE, 0, 0, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0x10, 0, 0];
+        let (has_data, is_error) = state.cmd_read_cd(Some(&cdrom));
+        assert!(!has_data);
+        assert!(is_error);
+        assert_eq!(state.sense_key, SENSE_ILLEGAL_REQUEST);
+        assert_eq!(state.asc, ASC_LOGICAL_BLOCK_OUT_OF_RANGE);
+        assert!(state.data_buffer.len() < 2352);
+    }
+
+    /// Verifies that READ CD across a data and an audio sector ends with ILLEGAL MODE FOR
+    /// THIS TRACK.
+    #[test]
+    fn read_cd_across_sector_types_fails() {
+        let mut state = AtapiState::new();
+        state.media_loaded = true;
+        let cdrom = make_multi_track_cdimage();
+
+        state.packet = [0xBE, 0, 0, 0, 0, 149, 0, 0, 2, 0x10, 0, 0];
+        let (has_data, is_error) = state.cmd_read_cd(Some(&cdrom));
+        assert!(!has_data);
+        assert!(is_error);
+        assert_eq!(state.sense_key, SENSE_ILLEGAL_REQUEST);
+        assert_eq!(state.asc, ASC_ILLEGAL_MODE_FOR_THIS_TRACK);
     }
 
     #[test]
