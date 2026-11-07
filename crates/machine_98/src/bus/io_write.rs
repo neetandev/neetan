@@ -182,11 +182,14 @@ impl<T: TraceSink> Pc9801Bus<T> {
             // Border color.
             0x6C => self.display_control.write_border_color(value),
             // Display line count (CRT frequency select).
-            0x6E => {
+            0x6E if !self.machine_model.is_pc9821() => {
                 self.display_control.write_display_line_count(value);
                 self.apply_gdc_dot_clock();
                 self.reschedule_gdc_events();
             }
+            // PC-9821 extended attribute mode F/F register (undoc98 io_disp.txt, I/O 006Eh).
+            // Its flip-flops keep the dot clock. Port 09A8h selects the scan frequency.
+            0x6E => {}
 
             // CRTC uPD52611 text line counter registers.
             0x70 | 0x72 | 0x74 | 0x76 | 0x78 | 0x7A => {
@@ -1497,6 +1500,23 @@ mod tests {
 
         bus.io_write_byte(0x01D8, 0x22);
         assert_eq!(bus.tracer().writes, vec![(0x01D8, 0x22)]);
+    }
+
+    #[test]
+    fn pc9821_mode_ff_writes_to_port_6eh_keep_the_gdc_dot_clocks() {
+        let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9821AP, CpuMode::High, 48000);
+        bus.io_write_byte(0x6A, 0x83);
+        bus.io_write_byte(0x6A, 0x85);
+        let master_dot_clock = bus.gdc_master.state.dot_clock_hz;
+        let slave_dot_clock = bus.gdc_slave.state.dot_clock_hz;
+
+        for value in [0x03, 0x20, 0x02] {
+            bus.io_write_byte(0x6E, value);
+            assert_eq!(bus.gdc_master.state.dot_clock_hz, master_dot_clock);
+            assert_eq!(bus.gdc_slave.state.dot_clock_hz, slave_dot_clock);
+        }
+        assert_eq!(master_dot_clock, DOT_CLOCK_400LINE);
+        assert_eq!(slave_dot_clock, DOT_CLOCK_400LINE * 2);
     }
 
     #[test]
