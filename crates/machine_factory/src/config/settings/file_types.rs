@@ -66,7 +66,7 @@ pub(super) const FLOPPY_FILES: &[FileTypes] = &[FileTypes {
 pub(super) const CDROM_FILES: &[FileTypes] = &[FileTypes {
     id: CDROM_ID,
     families: CDROM_FAMILIES,
-    extensions: &["cue", "ccd"],
+    extensions: device::cdrom::CDROM_EXTENSIONS,
     icon: ImageIcon::Disc,
 }];
 
@@ -177,6 +177,13 @@ mod tests {
         assert!(floppy.matches(Path::new("games/98/os2-warp-v3/Disk 1.fdi")));
         assert!(!floppy.matches(Path::new("disk.cue")));
         assert!(!floppy.matches(Path::new("d88")));
+        let cdrom = CDROM_FILES[0];
+        assert!(cdrom.matches(Path::new("games/98/os2-warp-v3/disc.iso")));
+        assert!(cdrom.matches(Path::new("DISC.ISO")));
+        assert!(cdrom.matches(Path::new("disc.cue")));
+        assert!(cdrom.matches(Path::new("disc.ccd")));
+        assert!(!cdrom.matches(Path::new("disc.img")));
+        assert!(!cdrom.matches(Path::new("disc.bin")));
         let extensions: Vec<&str> = HARD_DISK_FILES
             .iter()
             .flat_map(|types| types.extensions.iter().copied())

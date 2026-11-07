@@ -1,6 +1,6 @@
 //! CD-ROM disc image abstraction.
 //!
-//! Supports CUE/BIN and CloneCD (CCD/IMG/SUB) disc images. CUE sheets and
+//! Supports CUE/BIN, CloneCD (CCD/IMG/SUB) and ISO disc images. CUE sheets and
 //! CCD control files describe the disc layout (tracks, indices, sector sizes)
 //! while the BIN/IMG file contains raw sector data. The optional SUB file
 //! that accompanies a CCD image carries 96 bytes of raw P-W interleaved
@@ -11,7 +11,9 @@
 //! - 2352 bytes: raw sector (sync + header + user data + EDC/ECC for data;
 //!   raw audio for CDDA tracks, typical for MODE1/2352 and AUDIO)
 
-use std::fmt;
+use std::{fmt, path::Path};
+
+mod iso;
 
 /// CD-ROM sector sizes.
 const SECTOR_SIZE_COOKED: u16 = 2048;
@@ -475,7 +477,7 @@ impl CdImage {
         );
     }
 
-    fn assign_source_identity(&mut self, path: &std::path::Path) {
+    fn assign_source_identity(&mut self, path: &Path) {
         let source_path = save_state::MediaSourcePath::from_path(path);
         self.identity = crate::media_identity::path_identity(
             "neetan-cdrom-source-v1",
@@ -527,6 +529,13 @@ impl CdImage {
         Ok(image)
     }
 
+    /// Builds a one-track data disc from the sectors of an ISO image.
+    pub fn from_iso(data: Vec<u8>) -> Result<Self, CdError> {
+        let layout = iso::detect_iso_layout(&data)?;
+        Self::build_from_sheet(iso::iso_sheet(layout), vec![data])
+    }
+
+    /// Builds the tracks of a parsed sheet and takes over the data of its files.
     fn build_from_sheet(cue_sheet: CueSheet, bin_files: Vec<Vec<u8>>) -> Result<Self, CdError> {
         if cue_sheet.file_names.len() != bin_files.len() {
             return Err(CdError::ParseError(format!(
@@ -534,14 +543,6 @@ impl CdImage {
                 cue_sheet.file_names.len(),
                 bin_files.len()
             )));
-        }
-
-        let mut file_offsets = Vec::with_capacity(bin_files.len());
-        let total_bytes = bin_files.iter().map(Vec::len).sum();
-        let mut data = Vec::with_capacity(total_bytes);
-        for file_data in &bin_files {
-            file_offsets.push(data.len() as u64);
-            data.extend_from_slice(file_data);
         }
 
         let file_sector_counts: Vec<u32> = cue_sheet
@@ -552,6 +553,19 @@ impl CdImage {
                 (file_data.len() / track.sector_size as usize) as u32
             })
             .collect();
+
+        let (data, file_offsets) = if bin_files.len() == 1 {
+            (bin_files.into_iter().next().unwrap_or_default(), vec![0u64])
+        } else {
+            let mut file_offsets = Vec::with_capacity(bin_files.len());
+            let total_bytes = bin_files.iter().map(Vec::len).sum();
+            let mut data = Vec::with_capacity(total_bytes);
+            for file_data in &bin_files {
+                file_offsets.push(data.len() as u64);
+                data.extend_from_slice(file_data);
+            }
+            (data, file_offsets)
+        };
 
         let mut tracks = Vec::with_capacity(cue_sheet.tracks.len());
         let mut next_disc_lba = 0u32;
@@ -728,27 +742,42 @@ impl CdImage {
     }
 }
 
-/// Loads a CD-ROM disc image (`.cue` or `.ccd`) with its companion data
+/// The file extensions of the CD-ROM disc images in lowercase without the dot.
+pub const CDROM_EXTENSIONS: &[&str] = &["cue", "ccd", "iso"];
+
+/// Loads a CD-ROM disc image (`.cue`, `.ccd` or `.iso`) with its companion data
 /// files, returning the image and a short description of the loaded disc.
-pub fn load_cd_image(path: &std::path::Path) -> Result<(CdImage, String), String> {
+pub fn load_cd_image(path: &Path) -> Result<(CdImage, String), String> {
     let extension = path
         .extension()
         .and_then(|extension| extension.to_str())
         .map(|extension| extension.to_ascii_lowercase());
 
-    if extension.as_deref() == Some("ccd") {
-        load_cd_image_ccd(path)
-    } else {
-        load_cd_image_cue(path)
+    match extension.as_deref() {
+        Some("cue") => load_cd_image_cue(path),
+        Some("ccd") => load_cd_image_ccd(path),
+        Some("iso") => load_cd_image_iso(path),
+        _ => {
+            let extensions: Vec<String> = CDROM_EXTENSIONS
+                .iter()
+                .map(|extension| format!(".{extension}"))
+                .collect();
+            Err(format!(
+                "Unsupported CD-ROM image {}. The supported extensions are {}",
+                path.display(),
+                extensions.join(" ")
+            ))
+        }
     }
 }
 
-fn load_cd_image_cue(path: &std::path::Path) -> Result<(CdImage, String), String> {
+/// Loads a CUE sheet with its BIN files and describes the disc.
+fn load_cd_image_cue(path: &Path) -> Result<(CdImage, String), String> {
     let cue_content = std::fs::read_to_string(path)
         .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
     let bin_filenames = extract_bin_filenames(&cue_content)
         .map_err(|error| format!("Failed to parse {}: {error}", path.display()))?;
-    let base_path = path.parent().unwrap_or(std::path::Path::new("."));
+    let base_path = path.parent().unwrap_or(Path::new("."));
     let mut bin_files = Vec::with_capacity(bin_filenames.len());
     for bin_filename in &bin_filenames {
         let bin_path = base_path.join(bin_filename);
@@ -768,7 +797,8 @@ fn load_cd_image_cue(path: &std::path::Path) -> Result<(CdImage, String), String
     Ok((image, description))
 }
 
-fn load_cd_image_ccd(path: &std::path::Path) -> Result<(CdImage, String), String> {
+/// Loads a CloneCD control file with its IMG and optional SUB file and describes the disc.
+fn load_cd_image_ccd(path: &Path) -> Result<(CdImage, String), String> {
     let ccd_content = std::fs::read_to_string(path)
         .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
     let img_path = path.with_extension("img");
@@ -800,6 +830,25 @@ fn load_cd_image_ccd(path: &std::path::Path) -> Result<(CdImage, String), String
     Ok((image, description))
 }
 
+/// Loads an ISO image file and describes the disc.
+fn load_cd_image_iso(path: &Path) -> Result<(CdImage, String), String> {
+    let data = std::fs::read(path)
+        .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
+    let mut image = CdImage::from_iso(data)
+        .map_err(|error| format!("Failed to parse {}: {error}", path.display()))?;
+    image.assign_source_identity(path);
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("image.iso");
+    let description = format!(
+        "{} (1 track, {} sectors, ISO)",
+        file_name,
+        image.total_sectors()
+    );
+    Ok((image, description))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -812,19 +861,19 @@ mod tests {
 "#;
         let mut first = CdImage::from_cue(cue, vec![0x11; 2048 * 300]).unwrap();
         let mut second = CdImage::from_cue(cue, vec![0x22; 2048 * 300]).unwrap();
-        first.assign_source_identity(std::path::Path::new("media/disc.cue"));
-        second.assign_source_identity(std::path::Path::new("./media/disc.cue"));
+        first.assign_source_identity(Path::new("media/disc.cue"));
+        second.assign_source_identity(Path::new("./media/disc.cue"));
 
         assert_eq!(first.identity(), second.identity());
         assert_eq!(first.clone().identity(), first.identity());
         assert_eq!(
             first.source_path(),
-            Some(&save_state::MediaSourcePath::from_path(
-                std::path::Path::new("media/disc.cue")
-            ))
+            Some(&save_state::MediaSourcePath::from_path(Path::new(
+                "media/disc.cue"
+            )))
         );
 
-        second.assign_source_identity(std::path::Path::new("media/other.cue"));
+        second.assign_source_identity(Path::new("media/other.cue"));
         assert_ne!(first.identity(), second.identity());
     }
 
@@ -852,7 +901,8 @@ mod tests {
         assert!(parse_msf("").is_err());
     }
 
-    fn make_raw_data_sector(user_data_byte: u8) -> Vec<u8> {
+    /// Builds a raw Mode 1 sector whose user data holds `user_data_byte`.
+    pub(super) fn make_raw_data_sector(user_data_byte: u8) -> Vec<u8> {
         let mut sector = vec![0u8; 2352];
         // Sync pattern (12 bytes).
         sector[0] = 0x00;
@@ -1208,7 +1258,8 @@ FILE "test.bin" BINARY
         assert_eq!(buf[6], 0x01);
     }
 
-    fn make_raw_mode2_sector(user_byte: u8) -> Vec<u8> {
+    /// Builds a raw Mode 2 sector whose user data holds `user_byte`.
+    pub(super) fn make_raw_mode2_sector(user_byte: u8) -> Vec<u8> {
         let mut sector = vec![0u8; 2352];
         sector[0] = 0x00;
         for b in &mut sector[1..11] {
@@ -1397,5 +1448,70 @@ FILE "test.bin" BINARY
         let image = CdImage::from_cue(cue, vec![0u8; 2048 * 5]).unwrap();
         assert!(!image.has_subchannel());
         assert!(image.read_subchannel_q(0).is_none());
+    }
+
+    /// Verifies that a one-file sheet keeps the file vector as the disc data and that a
+    /// two-file sheet reads the sectors of both files.
+    #[test]
+    fn single_file_sheet_keeps_the_data() {
+        let single_cue = r#"FILE "test.bin" BINARY
+  TRACK 01 MODE1/2048
+    INDEX 01 00:00:00
+"#;
+        let single_data: Vec<u8> = (0..8u8).flat_map(|index| [index; 2048]).collect();
+        let single_pointer = single_data.as_ptr();
+        let single = CdImage::from_cue(single_cue, single_data).unwrap();
+        assert_eq!(single.data.as_ptr(), single_pointer);
+        assert_eq!(single.total_sectors(), 8);
+        let mut buffer = [0u8; 2048];
+        for lba in 0..8u32 {
+            assert_eq!(single.read_sector(lba, &mut buffer), Some(2048));
+            assert!(buffer.iter().all(|&byte| byte == lba as u8));
+        }
+
+        let double_cue = r#"FILE "track01.bin" BINARY
+  TRACK 01 MODE1/2048
+    INDEX 01 00:00:00
+FILE "track02.bin" BINARY
+  TRACK 02 MODE1/2048
+    INDEX 01 00:00:00
+"#;
+        let first_file = vec![0x11u8; 3 * 2048];
+        let second_file = vec![0x22u8; 2 * 2048];
+        let double = CdImage::from_cue_files(double_cue, vec![first_file, second_file]).unwrap();
+        assert_eq!(double.total_sectors(), 5);
+        for (lba, expected) in [(0, 0x11), (2, 0x11), (3, 0x22), (4, 0x22)] {
+            assert_eq!(double.read_sector(lba, &mut buffer), Some(2048));
+            assert!(buffer.iter().all(|&byte| byte == expected));
+        }
+    }
+
+    /// Verifies that `load_cd_image` loads an ISO file by its extension in any case.
+    #[test]
+    fn load_cd_image_reads_iso_file() {
+        let folder = common::temporary::TemporaryFolder::new("cdrom_iso");
+        let mut data = vec![0u8; 20 * 2048];
+        data[16 * 2048..16 * 2048 + 7].copy_from_slice(b"\x01CD001\x01");
+        let path = folder.write_file("disc.ISO", &data);
+
+        let (image, description) = load_cd_image(&path).unwrap();
+        assert_eq!(description, "disc.ISO (1 track, 20 sectors, ISO)");
+        assert_eq!(
+            image.source_path(),
+            Some(&save_state::MediaSourcePath::from_path(&path))
+        );
+    }
+
+    /// Verifies that `load_cd_image` rejects an unknown or a missing extension and lists the
+    /// known ones.
+    #[test]
+    fn load_cd_image_rejects_unknown_extension() {
+        let error = load_cd_image(Path::new("disc.bin")).unwrap_err();
+        assert!(error.contains("Unsupported CD-ROM image"), "{error}");
+        assert!(error.contains(".cue .ccd .iso"), "{error}");
+
+        let error = load_cd_image(Path::new("disc")).unwrap_err();
+        assert!(error.contains("Unsupported CD-ROM image"), "{error}");
+        assert!(error.contains(".cue .ccd .iso"), "{error}");
     }
 }
