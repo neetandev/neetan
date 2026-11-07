@@ -269,7 +269,7 @@ pub trait CdromIo {
     fn cdrom_media_loaded(&self) -> bool;
     /// Reads 2048 bytes of user data (cooked) from the given LBA.
     fn read_sector_cooked(&self, lba: u32, buf: &mut [u8]) -> Option<usize>;
-    /// Reads a full raw sector (2352 bytes) from the given LBA.
+    /// Reads the 2352-byte frame of the sector at the given LBA.
     fn read_sector_raw(&self, lba: u32, buf: &mut [u8]) -> Option<usize>;
     /// Returns the number of tracks on the disc.
     fn track_count(&self) -> u8;

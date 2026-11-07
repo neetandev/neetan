@@ -32,7 +32,7 @@
 
 use crate::{
     cd_audio::{CdAudioPlayer, CdAudioPlayerState},
-    cdrom::{CdImage, TrackType},
+    cdrom::{CdImage, HEADER_END, TrackType},
 };
 
 /// Cooked Mode 1 user-data sector size.
@@ -1454,27 +1454,20 @@ impl TownsCdController {
             }
             CDCMD_MODE2READ => {
                 let mut raw = vec![0u8; RAW_BYTES];
-                if image
-                    .read_sector_raw(lba, &mut raw)
-                    .is_some_and(|copied| copied >= RAW_BYTES)
-                {
-                    let mut out = vec![0u8; RAW_BYTES];
-                    out[..MODE2_BYTES].copy_from_slice(&raw[16..16 + MODE2_BYTES]);
-                    out
+                if image.read_sector_raw(lba, &mut raw).is_some() {
+                    raw.copy_within(HEADER_END.., 0);
+                    raw[MODE2_BYTES..].fill(0);
+                    raw
                 } else {
                     Vec::new()
                 }
             }
             _ => {
                 let mut raw = vec![0u8; RAW_BYTES];
-                match image.read_sector_raw(lba, &mut raw) {
-                    Some(RAW_BYTES) => raw,
-                    Some(MODE1_BYTES) => {
-                        let mut out = vec![0u8; RAW_BYTES];
-                        out[4..4 + MODE1_BYTES].copy_from_slice(&raw[..MODE1_BYTES]);
-                        out
-                    }
-                    _ => Vec::new(),
+                if image.read_sector_raw(lba, &mut raw).is_some() {
+                    raw
+                } else {
+                    Vec::new()
                 }
             }
         }
@@ -1677,6 +1670,84 @@ mod tests {
         now = cdc.next_task_cycle().expect("read-done task");
         cdc.run_task(now, false);
         assert_eq!(cdc.io_read(PORT_COMMAND_STATUS, now), 0x06);
+    }
+
+    /// Builds a cooked single data-track disc whose LBA 3 holds the user data byte 0xCD.
+    fn build_marked_disc() -> CdImage {
+        let cue = "FILE \"test.bin\" BINARY\n  TRACK 01 MODE1/2048\n    INDEX 01 00:00:00\n";
+        let mut data = vec![0u8; 10 * MODE1_BYTES];
+        data[3 * MODE1_BYTES..4 * MODE1_BYTES].fill(0xCD);
+        CdImage::from_cue(cue, data).expect("build disc")
+    }
+
+    /// Verifies that MODE2READ of a cooked sector returns the frame after its header.
+    #[test]
+    fn mode2_read_of_a_cooked_sector_returns_the_frame_after_the_header() {
+        let mut cdc = build_controller();
+        let disc = build_marked_disc();
+        let mut frame = [0u8; RAW_BYTES];
+        assert_eq!(disc.read_sector_raw(3, &mut frame), Some(RAW_BYTES));
+        cdc.insert(disc);
+        cdc.command = CDCMD_MODE2READ;
+
+        let sector = cdc.read_data_sector(3);
+        assert_eq!(sector.len(), RAW_BYTES);
+        assert!(sector[..MODE1_BYTES].iter().all(|&byte| byte == 0xCD));
+        assert_eq!(sector[..MODE2_BYTES], frame[HEADER_END..]);
+        assert!(sector[MODE2_BYTES..].iter().all(|&byte| byte == 0));
+    }
+
+    /// Verifies that MODE2READ of a raw Mode 2 ISO image returns the stored frame after its
+    /// header.
+    #[test]
+    fn mode2_read_of_a_raw_mode2_iso_returns_the_frame_after_the_header() {
+        let mut data = vec![0u8; 3 * RAW_BYTES];
+        for (index, frame) in data.as_chunks_mut::<RAW_BYTES>().0.iter_mut().enumerate() {
+            frame[1..11].fill(0xFF);
+            frame[12..16].copy_from_slice(&[0x00, 0x02, dec_to_bcd(index as u8), 0x02]);
+            frame[16..24].copy_from_slice(&[0, 0, 0x08, 0, 0, 0, 0x08, 0]);
+            frame[24..].fill(0x30 + index as u8);
+        }
+        let disc = CdImage::from_iso(data.clone()).expect("build disc");
+        let mut cdc = build_controller();
+        cdc.insert(disc);
+        cdc.command = CDCMD_MODE2READ;
+
+        let sector = cdc.read_data_sector(1);
+        assert_eq!(sector.len(), RAW_BYTES);
+        assert_eq!(
+            sector[..MODE2_BYTES],
+            data[RAW_BYTES + HEADER_END..2 * RAW_BYTES]
+        );
+        assert_eq!(sector[2..3], [0x08]);
+        assert!(sector[8..MODE2_BYTES].iter().all(|&byte| byte == 0x31));
+        assert!(sector[MODE2_BYTES..].iter().all(|&byte| byte == 0));
+    }
+
+    /// Verifies that RAWREAD of a cooked sector returns the built Mode 1 frame.
+    #[test]
+    fn raw_read_of_a_cooked_sector_returns_the_frame() {
+        let mut cdc = build_controller();
+        let disc = build_marked_disc();
+        let mut frame = [0u8; RAW_BYTES];
+        assert_eq!(disc.read_sector_raw(3, &mut frame), Some(RAW_BYTES));
+        cdc.insert(disc);
+        cdc.command = CDCMD_RAWREAD;
+
+        let sector = cdc.read_data_sector(3);
+        assert_eq!(sector.as_slice(), frame.as_slice());
+        assert_eq!(
+            sector[..12],
+            [
+                0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00
+            ]
+        );
+        assert_eq!(sector[12..16], [0x00, 0x02, 0x03, 0x01]);
+        assert!(
+            sector[16..16 + MODE1_BYTES]
+                .iter()
+                .all(|&byte| byte == 0xCD)
+        );
     }
 
     #[test]

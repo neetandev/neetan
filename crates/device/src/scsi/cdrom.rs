@@ -29,16 +29,6 @@ pub struct ScsiCdromState {
 /// CD-ROM sector size for data reads.
 pub(crate) const CDROM_SECTOR_SIZE: usize = 2048;
 
-/// Returns the user-data offset inside a raw 2352-byte sector (mode 2 uses a
-/// sub-header before the user data).
-pub(crate) fn raw_user_data_offset(raw_sector: &[u8]) -> usize {
-    if raw_sector.get(15) == Some(&0x02) {
-        24
-    } else {
-        16
-    }
-}
-
 /// Converts a binary value to BCD (Binary-Coded Decimal).
 pub(crate) fn hex_to_bcd(val: u8) -> u8 {
     ((val / 10) % 10) << 4 | (val % 10)

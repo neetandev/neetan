@@ -14,6 +14,9 @@
 use std::{fmt, path::Path};
 
 mod iso;
+mod sector_frame;
+
+pub(crate) use sector_frame::{EDC_OFFSET, FRAME_SIZE, HEADER_END, HEADER_OFFSET, mode1_header};
 
 /// CD-ROM sector sizes.
 const SECTOR_SIZE_COOKED: u16 = 2048;
@@ -717,9 +720,12 @@ impl CdImage {
         Some(copy_size)
     }
 
-    /// Reads a raw sector at the given LBA at the track's native sector size.
+    /// Reads the 2352-byte frame of the sector at the given LBA. A cooked sector gets a
+    /// Mode 1 frame with sync, header, EDC and ECC.
     ///
-    /// Returns the number of bytes copied, or `None` if the LBA is out of range.
+    /// Returns the number of bytes copied. Returns `None` when the LBA lies outside every
+    /// track, when the buffer is shorter than 2352 bytes or when the image misses the data of
+    /// the sector.
     pub fn read_sector_raw(&self, lba: u32, buf: &mut [u8]) -> Option<usize> {
         let track = self.track_for_lba(lba)?;
         let sector_offset = lba - track.start_lba;
@@ -727,18 +733,21 @@ impl CdImage {
             track.file_offset + u64::from(sector_offset) * u64::from(track.sector_size);
         let byte_offset = byte_offset as usize;
 
-        let copy_size = track.sector_size as usize;
-        if buf.len() < copy_size {
-            return None;
-        }
+        let frame = buf.first_chunk_mut::<{ sector_frame::FRAME_SIZE }>()?;
+        let stored = self
+            .data
+            .get(byte_offset..byte_offset + usize::from(track.sector_size))?;
 
-        let end = byte_offset + copy_size;
-        if end > self.data.len() {
-            return None;
+        match track.sector_layout {
+            SectorLayout::Cooked => {
+                let user_data = stored.first_chunk::<{ sector_frame::USER_DATA_SIZE }>()?;
+                sector_frame::build_mode1_frame(lba, user_data, frame);
+            }
+            SectorLayout::RawMode1 | SectorLayout::RawMode2 | SectorLayout::Audio => {
+                frame.copy_from_slice(stored.first_chunk::<{ sector_frame::FRAME_SIZE }>()?);
+            }
         }
-
-        buf[..copy_size].copy_from_slice(&self.data[byte_offset..end]);
-        Some(copy_size)
+        Some(sector_frame::FRAME_SIZE)
     }
 }
 
@@ -851,7 +860,7 @@ fn load_cd_image_iso(path: &Path) -> Result<(CdImage, String), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{sector_frame::RAW_SECTOR_SYNC, *};
 
     #[test]
     fn path_identity_uses_layout_without_hashing_disc_content() {
@@ -904,12 +913,7 @@ mod tests {
     /// Builds a raw Mode 1 sector whose user data holds `user_data_byte`.
     pub(super) fn make_raw_data_sector(user_data_byte: u8) -> Vec<u8> {
         let mut sector = vec![0u8; 2352];
-        // Sync pattern (12 bytes).
-        sector[0] = 0x00;
-        for b in &mut sector[1..11] {
-            *b = 0xFF;
-        }
-        sector[11] = 0x00;
+        sector[..RAW_SECTOR_SYNC.len()].copy_from_slice(&RAW_SECTOR_SYNC);
         // Header (4 bytes): minute, second, frame, mode.
         sector[12] = 0x00;
         sector[13] = 0x02;
@@ -946,6 +950,29 @@ mod tests {
         let n = image.read_sector(0, &mut buf).unwrap();
         assert_eq!(n, 2048);
         assert!(buf.iter().all(|&b| b == 0xAB));
+    }
+
+    /// Verifies that a raw read of a cooked sector returns a built Mode 1 frame.
+    #[test]
+    fn raw_read_of_a_cooked_sector_builds_a_frame() {
+        let cue = "FILE \"test.bin\" BINARY\n  TRACK 01 MODE1/2048\n    INDEX 01 00:00:00\n";
+        let mut bin_data = vec![0u8; 5 * 2048];
+        bin_data[3 * 2048..4 * 2048].fill(0xCD);
+        let image = CdImage::from_cue(cue, bin_data).unwrap();
+
+        let mut frame = [0u8; 2352];
+        assert_eq!(image.read_sector_raw(3, &mut frame), Some(2352));
+        assert_eq!(frame[..12], RAW_SECTOR_SYNC);
+        assert_eq!(frame[12..16], [0x00, 0x02, 0x03, 0x01]);
+        assert!(frame[16..2064].iter().all(|&byte| byte == 0xCD));
+        assert_eq!(
+            u32::from_le_bytes(frame[2064..2068].try_into().unwrap()),
+            sector_frame::edc(&frame[..2064])
+        );
+        assert!(frame[2068..2076].iter().all(|&byte| byte == 0));
+
+        let mut short_buffer = [0u8; 2048];
+        assert_eq!(image.read_sector_raw(3, &mut short_buffer), None);
     }
 
     #[test]
@@ -1261,11 +1288,7 @@ FILE "test.bin" BINARY
     /// Builds a raw Mode 2 sector whose user data holds `user_byte`.
     pub(super) fn make_raw_mode2_sector(user_byte: u8) -> Vec<u8> {
         let mut sector = vec![0u8; 2352];
-        sector[0] = 0x00;
-        for b in &mut sector[1..11] {
-            *b = 0xFF;
-        }
-        sector[11] = 0x00;
+        sector[..RAW_SECTOR_SYNC.len()].copy_from_slice(&RAW_SECTOR_SYNC);
         sector[12] = 0x00;
         sector[13] = 0x02;
         sector[14] = 0x00;

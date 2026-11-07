@@ -1773,10 +1773,23 @@ mod tests {
         }
     }
 
+    /// Builds a raw Mode 2 Form 1 image of 4 sectors.
+    fn make_mode2_cdimage() -> CdImage {
+        let cue = "FILE \"test.bin\" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n";
+        let mut bin_data = vec![0u8; 4 * 2352];
+        for sector in bin_data.as_chunks_mut::<2352>().0 {
+            sector[1..11].fill(0xFF);
+            sector[15] = 2;
+            sector[18] = 0x08;
+            sector[22] = 0x08;
+        }
+        CdImage::from_cue(cue, bin_data).unwrap()
+    }
+
     #[test]
     fn read_cd_sub_header_only() {
         let mut ide = IdeController::new(44100);
-        ide.insert_cdrom(make_test_cdimage());
+        ide.insert_cdrom(make_mode2_cdimage());
         ide.atapi_state.media_loaded = true;
         ide.atapi_state.media_changed = false;
 
