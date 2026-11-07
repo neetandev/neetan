@@ -28,6 +28,9 @@ headerless X68000 `.hdf` files (created with `./neetan create-hdd`) supplied
 with `--hdd1` / `--hdd2`, and CD-ROM disc images use `--cdrom` (SUPER/XVI only,
 repeatable).
 
+`neetan copy` reads and writes the files of Human68k floppy images in the D88, DIM,
+XDF and 2HD formats. See [copy](disk-images.md#copy).
+
 The X68000 targets have no HLE firmware and require a real ROM set (see
 [ROM set](#rom-set)).
 

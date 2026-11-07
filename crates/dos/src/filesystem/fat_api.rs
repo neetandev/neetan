@@ -104,6 +104,11 @@ impl Metadata {
     pub fn is_volume_label(&self) -> bool {
         self.attributes & ATTR_VOLUME_ID != 0
     }
+
+    /// Returns the first cluster of the entry. The root directory has cluster 0.
+    pub fn start_cluster(&self) -> u16 {
+        self.start_cluster
+    }
 }
 
 /// A mounted FAT12/FAT16 volume.

@@ -7,13 +7,25 @@ use device::{
     disk::HddSizeType,
     floppy::{
         FddType,
-        d88::{D88Disk, D88MediaType, D88Sector},
+        d88::{D88Disk, D88Sector},
+        fdi,
     },
 };
 use machine_factory::config::settings::blank_images::{
-    AT_HDD_EXTENSIONS, BlankFormat, D88_EXTENSIONS, HDF_EXTENSIONS, HDI_EXTENSIONS,
+    AT_HDD_EXTENSIONS, BlankFormat, D88_EXTENSIONS, FDI_EXTENSIONS, HDF_EXTENSIONS, HDI_EXTENSIONS,
     TOWNS_SCSI_EXTENSIONS,
 };
+
+/// The container of a blank floppy disk image file.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum FloppyContainer {
+    /// The D88 container with a track table.
+    D88,
+    /// The Anex86 FDI geometry header followed by the sectors.
+    Fdi,
+    /// The headerless sectors.
+    Raw,
+}
 
 /// Returns the raw extensions of a floppy disk of `fdd_type` in lowercase without the dot.
 fn raw_floppy_extensions(fdd_type: FddType) -> &'static [&'static str] {
@@ -23,6 +35,36 @@ fn raw_floppy_extensions(fdd_type: FddType) -> &'static [&'static str] {
         FddType::Dd2Fmt720 => &["dsk", "img", "ima"],
         FddType::Dd2 | FddType::D2 => &[],
     }
+}
+
+/// Returns the container of a floppy disk of `fdd_type` with the extension `extension`, given
+/// without the dot and compared ignoring the case, or `None` for an extension the type does not
+/// take.
+fn floppy_container(fdd_type: FddType, extension: &str) -> Option<FloppyContainer> {
+    let matches = |extensions: &[&str]| {
+        extensions
+            .iter()
+            .any(|known| known.eq_ignore_ascii_case(extension))
+    };
+    if matches(D88_EXTENSIONS) {
+        Some(FloppyContainer::D88)
+    } else if matches(FDI_EXTENSIONS) {
+        Some(FloppyContainer::Fdi)
+    } else if matches(raw_floppy_extensions(fdd_type)) {
+        Some(FloppyContainer::Raw)
+    } else {
+        None
+    }
+}
+
+/// Returns every extension of a floppy disk of `fdd_type` in lowercase without the dot.
+fn accepted_floppy_extensions(fdd_type: FddType) -> Vec<&'static str> {
+    D88_EXTENSIONS
+        .iter()
+        .chain(FDI_EXTENSIONS)
+        .chain(raw_floppy_extensions(fdd_type))
+        .copied()
+        .collect()
 }
 
 /// Returns the extensions of a hard disk of `hdd_type` in lowercase without the dot.
@@ -43,10 +85,7 @@ fn hard_disk_extensions(hdd_type: HddSizeType) -> &'static [&'static str] {
 #[must_use]
 pub fn accepts_extension(format: BlankFormat, extension: &str) -> bool {
     match format {
-        BlankFormat::Floppy(fdd_type) => D88_EXTENSIONS
-            .iter()
-            .chain(raw_floppy_extensions(fdd_type))
-            .any(|known| known.eq_ignore_ascii_case(extension)),
+        BlankFormat::Floppy(fdd_type) => floppy_container(fdd_type, extension).is_some(),
         BlankFormat::HardDisk(hdd_type) => hard_disk_extensions(hdd_type)
             .iter()
             .any(|known| known.eq_ignore_ascii_case(extension)),
@@ -91,71 +130,64 @@ fn write_new_file(path: &Path, bytes: &[u8]) -> crate::Result<()> {
 }
 
 /// Creates a blank floppy disk image of `fdd_type` at `path`. A `.d88` path writes the D88
-/// container. A raw extension of the type writes the headerless sectors.
+/// container. A `.fdi` path writes the Anex86 FDI header and the sectors. A raw extension of the
+/// type writes the headerless sectors.
 pub fn create_fdd_image(path: &Path, fdd_type: FddType) -> crate::Result<()> {
-    let extension = extension_of(path);
-    if !accepts_extension(BlankFormat::Floppy(fdd_type), extension) {
-        let mut accepted = D88_EXTENSIONS.to_vec();
-        accepted.extend_from_slice(raw_floppy_extensions(fdd_type));
+    let Some(container) = floppy_container(fdd_type, extension_of(path)) else {
         bail!(
             "output path of this floppy type must have a {} extension",
-            extension_list(&accepted)
+            extension_list(&accepted_floppy_extensions(fdd_type))
         );
-    }
-    let raw = !D88_EXTENSIONS
-        .iter()
-        .any(|d88| d88.eq_ignore_ascii_case(extension));
-
-    let (media_type, cylinders, heads, sectors_per_track, sector_size, size_code) = match fdd_type {
-        FddType::Hd2 => (D88MediaType::Disk2HD, 77, 2, 8, 1024, 3u8),
-        FddType::Hd2Fmt144 => (D88MediaType::Disk2HD, 80, 2, 18, 512, 2u8),
-        FddType::Dd2 => (D88MediaType::Disk2DD, 80, 2, 16, 256, 1u8),
-        FddType::Dd2Fmt720 => (D88MediaType::Disk2DD, 80, 2, 9, 512, 2u8),
-        FddType::D2 => (D88MediaType::Disk2D, 40, 2, 16, 256, 1u8),
     };
 
-    if raw {
-        let bytes = vec![0u8; cylinders * heads * sectors_per_track * sector_size];
-        let size_kb = bytes.len() / 1024;
-        write_new_file(path, &bytes)?;
-        info!("Created {} KB floppy image: {}", size_kb, path.display());
-        return Ok(());
-    }
+    let geometry = fdd_type.geometry();
+    let sector_size = usize::from(geometry.sector_size);
+    let sectors_per_track = usize::from(geometry.sectors_per_track);
+    let track_count = usize::from(geometry.cylinders) * usize::from(geometry.heads);
+    let data_size = track_count * sectors_per_track * sector_size;
 
-    let total_tracks = cylinders * heads;
-    let mut track_sectors: Vec<Option<Vec<D88Sector>>> = Vec::with_capacity(total_tracks);
-
-    for track_index in 0..total_tracks {
-        let cylinder = (track_index / heads) as u8;
-        let head = (track_index % heads) as u8;
-        let mut sectors = Vec::with_capacity(sectors_per_track);
-
-        for record in 1..=sectors_per_track as u8 {
-            sectors.push(D88Sector {
-                cylinder,
-                head,
-                record,
-                size_code,
-                sector_count: sectors_per_track as u16,
-                mfm_flag: 0x00,
-                deleted: 0x00,
-                status: 0x00,
-                reserved: [0u8; 5],
-                data: vec![0u8; sector_size],
-                source_offset: None,
-            });
+    let bytes = match container {
+        FloppyContainer::Raw => vec![0u8; data_size],
+        FloppyContainer::Fdi => {
+            let mut bytes = fdi::header(fdi::media_code(fdd_type), &geometry);
+            bytes.resize(bytes.len() + data_size, 0);
+            bytes
         }
-
-        track_sectors.push(Some(sectors));
-    }
-
-    let disk = D88Disk::from_tracks(String::new(), false, media_type, track_sectors);
-    let bytes = disk.to_bytes();
-    let size_kb = bytes.len() / 1024;
+        FloppyContainer::D88 => {
+            let heads = usize::from(geometry.heads);
+            let track_sectors = (0..track_count)
+                .map(|track_index| {
+                    let cylinder = (track_index / heads) as u8;
+                    let head = (track_index % heads) as u8;
+                    let sectors = (1..=geometry.sectors_per_track)
+                        .map(|record| D88Sector {
+                            cylinder,
+                            head,
+                            record,
+                            size_code: geometry.size_code(),
+                            sector_count: u16::from(geometry.sectors_per_track),
+                            mfm_flag: 0x00,
+                            deleted: 0x00,
+                            status: 0x00,
+                            reserved: [0u8; 5],
+                            data: vec![0u8; sector_size],
+                            source_offset: None,
+                        })
+                        .collect();
+                    Some(sectors)
+                })
+                .collect();
+            D88Disk::from_tracks(String::new(), false, fdd_type.media_type(), track_sectors)
+                .to_bytes()
+        }
+    };
 
     write_new_file(path, &bytes)?;
-
-    info!("Created {} KB floppy image: {}", size_kb, path.display());
+    info!(
+        "Created {} KB floppy image: {}",
+        bytes.len() / 1024,
+        path.display()
+    );
     Ok(())
 }
 
@@ -220,6 +252,11 @@ mod tests {
         assert!(accepts_extension(BlankFormat::Floppy(FddType::D2), "d88"));
         assert!(!accepts_extension(BlankFormat::Floppy(FddType::D2), "xdf"));
         assert!(!accepts_extension(BlankFormat::Floppy(FddType::Hd2), "img"));
+        assert!(accepts_extension(BlankFormat::Floppy(FddType::D2), "FDI"));
+        assert!(accepts_extension(
+            BlankFormat::Floppy(FddType::Hd2Fmt144),
+            "fdi"
+        ));
         assert!(accepts_extension(
             BlankFormat::Floppy(FddType::Dd2Fmt720),
             "dsk"
@@ -238,5 +275,15 @@ mod tests {
         ));
         assert_eq!(extension_list(&["d88"]), ".d88");
         assert_eq!(extension_list(&["d88", "xdf", "2hd"]), ".d88, .xdf or .2hd");
+        assert_eq!(
+            accepted_floppy_extensions(FddType::Hd2),
+            ["d88", "fdi", "xdf", "2hd"]
+        );
+        assert_eq!(accepted_floppy_extensions(FddType::D2), ["d88", "fdi"]);
+        assert_eq!(
+            floppy_container(FddType::Dd2Fmt720, "IMA"),
+            Some(FloppyContainer::Raw)
+        );
+        assert_eq!(floppy_container(FddType::Dd2, "img"), None);
     }
 }
