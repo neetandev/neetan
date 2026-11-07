@@ -30,7 +30,7 @@ use crate::{
     bus::{
         BootDevice, DMA_ACCESS_CTRL_20BIT, GRCG_WAIT_CYCLES, KEYBOARD_ROM_OFFSET_F,
         KEYBOARD_ROM_OFFSET_VM, MOUSE_TIMER_DEFAULT_SETTING, MOUSE_TIMER_IRQ_LINE,
-        TRAM_WAIT_CYCLES, VRAM_WAIT_CYCLES,
+        TRAM_WAIT_CYCLES, VRAM_WAIT_CYCLES, bios::PORT_WRITE_CAPACITY,
     },
     memory::Pc9801Memory,
     scheduler::{Event98, Pc98Scheduler},
@@ -274,6 +274,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
             fdd_read_id_index: [0; 4],
             hle_cr0: 0,
             hle_cr3: 0,
+            bios_port_writes: Vec::with_capacity(PORT_WRITE_CAPACITY),
             boot_device: BootDevice::default(),
             dos: None,
             ems_enabled: true,

@@ -526,6 +526,9 @@ pub struct Pc9801Bus<T: TraceSink = NoTrace> {
     hle_cr0: u32,
     /// Cached CR3 from the CPU, set before HLE dispatch.
     hle_cr3: u32,
+    /// Port writes of the running HLE BIOS call, one word each with the port table index in
+    /// the high byte and the value in the low byte. The ROM stub executes them after the trap.
+    bios_port_writes: Vec<u16>,
     /// NEETAN DOS HLE DOS instance. `None` when running with real DOS media.
     boot_device: BootDevice,
     dos: Option<dos::NeetanDos>,

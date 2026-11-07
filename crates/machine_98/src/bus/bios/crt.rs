@@ -9,6 +9,10 @@ use super::{
     super::Pc9801Bus,
     cgrom_kanji_offset,
     extended_screen::{LINES_400, LINES_480, ROWS_20, ROWS_25, ROWS_30},
+    port_writes::{
+        BiosGdc, BiosPort, GDC_CURSOR_FORM, GDC_CURSOR_WRITE, GDC_DISPLAY_OFF, GDC_DISPLAY_ON,
+        GDC_PARAMETER_RAM, display_area_parameters,
+    },
     real_mode_address,
 };
 use crate::TraceSink;
@@ -76,22 +80,23 @@ const SCREEN_LINES_200_LINE: u16 = 200;
 /// Shift of the line count inside the SCROLL parameter word.
 const SCROLL_LINE_COUNT_SHIFT: u16 = 4;
 
-/// Line counter register PL (port 70h): two's complement of the first character raster.
-const LINE_COUNTER_PL: usize = 0;
-/// Line counter register BL (port 72h): body face rasters minus one.
-const LINE_COUNTER_BL: usize = 1;
-/// Line counter register CL (port 74h): character rasters.
-const LINE_COUNTER_CL: usize = 2;
-/// Line counter register SSL (port 76h): smooth scroll rasters.
-const LINE_COUNTER_SSL: usize = 3;
-
 /// Number of text GDC display areas.
 const DISPLAY_AREA_COUNT: usize = 4;
+/// PRAM bytes of one display area.
+const DISPLAY_AREA_PARAMETER_BYTES: usize = 4;
 /// Size of one AH=0Fh display area list entry in bytes.
 const DISPLAY_AREA_ENTRY_SIZE: u16 = 4;
 
 /// AH=10h value that selects a steady cursor.
 const CURSOR_STEADY: u8 = 0x01;
+/// CSRFORM P1 bit that shows the cursor.
+const CURSOR_FORM_DISPLAY: u8 = 0x80;
+/// CSRFORM P2 bit of a steady cursor.
+const CURSOR_FORM_STEADY: u8 = 0x20;
+/// CSRFORM field mask of a raster number.
+const CURSOR_FORM_RASTER_MASK: u8 = 0x1F;
+/// Cursor blink rate of the CRT BIOS in the CSRFORM BR field.
+const CURSOR_BLINK_RATE: u8 = 12;
 
 /// AH=14h DH value for the 6x7 dot (8x8 cell) ANK font.
 const FONT_ANK_8X8: u8 = 0x00;
@@ -160,14 +165,14 @@ impl<T: TraceSink> Pc9801Bus<T> {
             0x05 => self.int18h_key_code_read(cpu),
             0x0A => self.crt_set_mode(cpu.al()),
             0x0B => cpu.set_al(self.memory.state.ram[CRT_STATUS_ADDRESS]),
-            0x0C => self.gdc_master.state.display_enabled = true,
-            0x0D => self.gdc_master.state.display_enabled = false,
+            0x0C => self.bios_gdc_command(BiosGdc::Text, GDC_DISPLAY_ON, &[]),
+            0x0D => self.bios_gdc_command(BiosGdc::Text, GDC_DISPLAY_OFF, &[]),
             0x0E => self.crt_set_single_area(cpu.dx()),
             0x0F => self.crt_set_display_areas(cpu.bx(), cpu.cx(), cpu.dh(), cpu.dl()),
             0x10 => self.crt_set_cursor_form(cpu.al() & CURSOR_STEADY != 0),
-            0x11 => self.gdc_master.state.cursor_display = true,
-            0x12 => self.gdc_master.state.cursor_display = false,
-            0x13 => self.gdc_master.state.ead = u32::from(cpu.dx() >> 1),
+            0x11 => self.crt_set_cursor_display(true),
+            0x12 => self.crt_set_cursor_display(false),
+            0x13 => self.crt_set_cursor_position(cpu.dx()),
             0x14 => self.crt_read_font_pattern(cpu.bx(), cpu.cx(), cpu.dx()),
             0x16 => self.crt_fill_text_vram(cpu.dl(), cpu.dh()),
             0x17 => self.crt_set_buzzer(true),
@@ -236,7 +241,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
             ),
         ];
         for command in mode_commands {
-            self.display_control.write_video_mode(command);
+            self.bios_out(BiosPort::ModeFlipFlop1, command);
         }
 
         if is_480_line {
@@ -248,9 +253,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
                 ROWS_25
             };
             let is_31khz = self.display_control.is_crt_31khz_enabled();
-            self.extended_screen_set_text(is_31khz, true, rows);
-            self.apply_gdc_dot_clock();
-            self.reschedule_gdc_events();
+            self.extended_screen_set_text(is_31khz, true, rows, false);
             return;
         }
 
@@ -274,24 +277,39 @@ impl<T: TraceSink> Pc9801Bus<T> {
         self.memory.state.ram[CRT_RASTER_ADDRESS] = row_rasters - 1;
 
         let top_margin = (row_rasters - cell_rasters) / 2;
-        self.crtc
-            .write_register(LINE_COUNTER_PL, top_margin.wrapping_neg());
-        self.crtc
-            .write_register(LINE_COUNTER_BL, row_rasters - top_margin - 1);
-        self.crtc.write_register(LINE_COUNTER_CL, cell_rasters);
-        self.crtc.write_register(LINE_COUNTER_SSL, 0);
+        self.bios_out(BiosPort::LineCounterPl, top_margin.wrapping_neg());
+        self.bios_out(BiosPort::LineCounterBl, row_rasters - top_margin - 1);
+        self.bios_out(BiosPort::LineCounterCl, cell_rasters);
+        self.bios_out(BiosPort::LineCounterSsl, 0);
     }
 
     /// AH=10h: issues CSRFORM for a full row cursor and hides the cursor.
     pub(super) fn crt_set_cursor_form(&mut self, steady: bool) {
         self.memory.state.ram[CRT_STATUS_ADDRESS] &= !STATUS_VSYNC_WAIT;
-        let last_raster = self.memory.state.ram[CRT_RASTER_ADDRESS];
-        let gdc = &mut self.gdc_master.state;
-        gdc.lines_per_row = (last_raster & 0x1F) + 1;
-        gdc.cursor_display = false;
-        gdc.cursor_blink = steady;
-        gdc.cursor_top = 0;
-        gdc.cursor_bottom = last_raster & 0x1F;
+        let last_raster = self.memory.state.ram[CRT_RASTER_ADDRESS] & CURSOR_FORM_RASTER_MASK;
+        let steady_bit = if steady { CURSOR_FORM_STEADY } else { 0 };
+        self.bios_gdc_command(
+            BiosGdc::Text,
+            GDC_CURSOR_FORM,
+            &[
+                last_raster,
+                steady_bit | ((CURSOR_BLINK_RATE & 0x03) << 6),
+                (CURSOR_BLINK_RATE >> 2) | (last_raster << 3),
+            ],
+        );
+    }
+
+    /// AH=11h and AH=12h: shows or hides the cursor with the first CSRFORM parameter.
+    fn crt_set_cursor_display(&mut self, visible: bool) {
+        let last_raster = self.memory.state.ram[CRT_RASTER_ADDRESS] & CURSOR_FORM_RASTER_MASK;
+        let display_bit = if visible { CURSOR_FORM_DISPLAY } else { 0 };
+        self.bios_gdc_command(BiosGdc::Text, GDC_CURSOR_FORM, &[last_raster | display_bit]);
+    }
+
+    /// AH=13h: sets the cursor position to the text VRAM byte offset `vram_offset` with CSRW.
+    fn crt_set_cursor_position(&mut self, vram_offset: u16) {
+        let gdc_address = vram_offset >> 1;
+        self.bios_gdc_command(BiosGdc::Text, GDC_CURSOR_WRITE, &gdc_address.to_le_bytes());
     }
 
     /// Returns the display lines of the whole text screen.
@@ -309,29 +327,41 @@ impl<T: TraceSink> Pc9801Bus<T> {
     pub(super) fn crt_set_single_area(&mut self, vram_offset: u16) {
         let gdc_address = vram_offset >> 1;
         let lines = self.crt_screen_lines();
-        let area = &mut self.gdc_master.state.scroll[0];
-        area.start_address = u32::from(gdc_address);
-        area.line_count = lines;
+        self.bios_gdc_command(
+            BiosGdc::Text,
+            GDC_PARAMETER_RAM,
+            &display_area_parameters(u32::from(gdc_address), lines, false),
+        );
         self.ram_write_u16(CRT_SCROLL_ADDRESS_ADDRESS, gdc_address);
         self.ram_write_u16(CRT_SCROLL_LINES_ADDRESS, lines << SCROLL_LINE_COUNT_SHIFT);
     }
 
-    /// AH=0Fh: loads `count` display areas from the list at `segment:offset`.
+    /// AH=0Fh: loads `count` display areas from the list at `segment:offset`. The entries
+    /// wrap over the four display areas. Only the last entry of each area reaches the GDC.
     fn crt_set_display_areas(&mut self, segment: u16, offset: u16, first: u8, count: u8) {
         self.ram_write_u16(CRT_LIST_OFFSET_ADDRESS, offset);
         self.ram_write_u16(CRT_LIST_SEGMENT_ADDRESS, segment);
         self.memory.state.ram[CRT_WINDOW_COUNT_ADDRESS] = count;
 
         let row_rasters = u16::from(self.crt_row_rasters());
-        let mut entry_offset = offset;
-        for index in 0..usize::from(count) {
+        let first_shown = usize::from(count).saturating_sub(DISPLAY_AREA_COUNT);
+        let mut entry_offset =
+            offset.wrapping_add(DISPLAY_AREA_ENTRY_SIZE.wrapping_mul(first_shown as u16));
+        for index in first_shown..usize::from(count) {
             let entry = real_mode_address(segment, entry_offset);
             let vram_offset = self.read_mem_word(entry);
             let rows = self.read_mem_word(entry + 2);
             let area_index = (usize::from(first) + index) % DISPLAY_AREA_COUNT;
-            let area = &mut self.gdc_master.state.scroll[area_index];
-            area.start_address = u32::from(vram_offset >> 1);
-            area.line_count = rows.wrapping_mul(row_rasters);
+            let first_parameter = (area_index * DISPLAY_AREA_PARAMETER_BYTES) as u8;
+            self.bios_gdc_command(
+                BiosGdc::Text,
+                GDC_PARAMETER_RAM | first_parameter,
+                &display_area_parameters(
+                    u32::from(vram_offset >> 1),
+                    rows.wrapping_mul(row_rasters),
+                    false,
+                ),
+            );
             entry_offset = entry_offset.wrapping_add(DISPLAY_AREA_ENTRY_SIZE);
         }
     }
@@ -403,8 +433,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
     /// AH=17h and AH=18h: switches the buzzer through system port C bit 3.
     fn crt_set_buzzer(&mut self, on: bool) {
         let command = if on { PPI_BUZZER_ON } else { PPI_BUZZER_OFF };
-        self.system_ppi.write_control(command);
-        self.beeper.set_buzzer_enabled(on, self.current_cycle);
+        self.bios_out(BiosPort::SystemPpiControl, command);
     }
 
     /// AH=1Ah: writes a 16x16 user character pattern into the KCG.
@@ -453,7 +482,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
         } else {
             *status &= !STATUS_KCG_DOT_ACCESS;
         }
-        self.display_control.write_video_mode(command);
+        self.bios_out(BiosPort::ModeFlipFlop1, command);
     }
 }
 

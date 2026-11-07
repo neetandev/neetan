@@ -1,9 +1,11 @@
 //! V86 monitor harness. It enters V86 mode with an I/O permission bitmap that
-//! traps the master PIC IMR port 0002h. Its #GP handler emulates and logs each
-//! trapped access. Its optional IRQ0 handler logs the interval timer count and
-//! reflects the interrupt to the V86 INT 08h handler.
+//! traps a set of ports, by default the master PIC IMR port 0002h. Its #GP
+//! handler emulates and logs each trapped access. Its optional IRQ0 handler
+//! logs the interval timer count and reflects the interrupt to the V86 INT 08h
+//! handler.
 
 use common::{Bus, Cpu as _};
+use machine_98::Pc98Machine;
 
 use super::{TEST_CODE, write_bytes};
 
@@ -14,8 +16,8 @@ const MONITOR_BUDGET: u64 = 2_000_000;
 const GDT_BASE: u32 = 0x0800;
 /// Linear address of the 32-bit TSS of the V86 monitor.
 const TSS_BASE: u32 = 0x0900;
-/// TSS limit: the 68h byte TSS and an I/O permission bitmap for ports 0000h-07FFh.
-const TSS_LIMIT: u32 = 0x0168;
+/// TSS limit: the 68h byte TSS and an I/O permission bitmap for ports 0000h-09FFh.
+const TSS_LIMIT: u32 = 0x01A8;
 /// Offset of the I/O permission bitmap inside the TSS.
 const TSS_IOPB_OFFSET: u32 = 0x0068;
 /// Linear address of the IDT of the V86 monitor.
@@ -32,10 +34,14 @@ const MONITOR_HANDLERS: u32 = 0x1100;
 const MONITOR_GP_HANDLER: u32 = 0x1104;
 /// Real mode segment of the V86 code.
 const V86_CODE_SEGMENT: u16 = 0x0300;
-/// Number of logged port accesses.
+/// Number of logged port accesses as a word.
 const GP_LOG_COUNT: u32 = 0x0610;
-/// Port access log: port, value and kind (1 = OUT, 2 = IN) in 4 byte entries.
-const GP_LOG: u32 = 0x0700;
+/// Port access log: port word, value and kind (1 = OUT, 2 = IN) in 4 byte entries.
+const GP_LOG: u32 = 0x6000;
+/// Port accesses the log holds.
+const GP_LOG_CAPACITY: u32 = 0x200;
+/// End of the monitor data block that each run clears.
+const MONITOR_DATA_END: u32 = 0x0700;
 /// Marker the V86 code writes after the call returned.
 const V86_RETURNED: u32 = 0x0650;
 /// I/O port of the master PIC IMR.
@@ -85,8 +91,9 @@ fn make_monitor_entry_code(imr: u8) -> Vec<u8> {
 }
 
 /// Monitor handlers. Every exception halts. The #GP handler emulates a
-/// trapped `IN AL,imm8` or `OUT imm8,AL` of the V86 code, logs it and skips
-/// it. Any other #GP, the HLT at the end of the V86 code included, halts.
+/// trapped `IN AL,imm8`, `OUT imm8,AL` or `OUT DX,AL` of the V86 code, logs it
+/// and skips it. Any other #GP, the HLT at the end of the V86 code included,
+/// halts.
 #[rustfmt::skip]
 const MONITOR_HANDLER_CODE: &[u8] = &[
     0xFA,                                           // 1100: CLI
@@ -94,32 +101,45 @@ const MONITOR_HANDLER_CODE: &[u8] = &[
     0xEB, 0xFC,                                     // 1102: JMP 0x1100
     0x50,                                           // 1104: PUSH EAX
     0x53,                                           // PUSH EBX
+    0x51,                                           // PUSH ECX
     0x52,                                           // PUSH EDX
     0x66, 0xB8, 0x10, 0x00,                         // MOV AX, 0x10
     0x8E, 0xD8,                                     // MOV DS, AX
-    0x0F, 0xB7, 0x5C, 0x24, 0x14,                   // MOVZX EBX, WORD [ESP+0x14] (CS)
+    0x0F, 0xB7, 0x5C, 0x24, 0x18,                   // MOVZX EBX, WORD [ESP+0x18] (CS)
     0xC1, 0xE3, 0x04,                               // SHL EBX, 4
-    0x03, 0x5C, 0x24, 0x10,                         // ADD EBX, [ESP+0x10] (EIP)
-    0x0F, 0xB6, 0x53, 0x01,                         // MOVZX EDX, BYTE [EBX+1] (port)
+    0x03, 0x5C, 0x24, 0x14,                         // ADD EBX, [ESP+0x14] (EIP)
     0x8A, 0x03,                                     // MOV AL, [EBX] (opcode)
     0x3C, 0xE4,                                     // CMP AL, 0xE4
-    0x74, 0x0D,                                     // JZ 0x1130
+    0x74, 0x26,                                     // JZ 0x1146
     0x3C, 0xE6,                                     // CMP AL, 0xE6
-    0x75, 0xD9,                                     // JNZ 0x1100
-    0x8B, 0x44, 0x24, 0x08,                         // MOV EAX, [ESP+0x08] (V86 EAX)
+    0x74, 0x13,                                     // JZ 0x1137
+    0x3C, 0xEE,                                     // CMP AL, 0xEE
+    0x75, 0xD8,                                     // JNZ 0x1100
+    0x0F, 0xB7, 0x14, 0x24,                         // MOVZX EDX, WORD [ESP] (V86 DX)
+    0x8B, 0x44, 0x24, 0x0C,                         // MOV EAX, [ESP+0x0C] (V86 EAX)
     0xEE,                                           // OUT DX, AL
     0xB4, 0x01,                                     // MOV AH, 1
-    0xEB, 0x07,                                     // JMP 0x1137
-    0xEC,                                           // 1130: IN AL, DX
-    0x88, 0x44, 0x24, 0x08,                         // MOV [ESP+0x08], AL (V86 AL)
+    0xB1, 0x01,                                     // MOV CL, 1
+    0xEB, 0x1C,                                     // JMP 0x1153
+    0x0F, 0xB6, 0x53, 0x01,                         // 1137: MOVZX EDX, BYTE [EBX+1] (port)
+    0x8B, 0x44, 0x24, 0x0C,                         // MOV EAX, [ESP+0x0C] (V86 EAX)
+    0xEE,                                           // OUT DX, AL
+    0xB4, 0x01,                                     // MOV AH, 1
+    0xB1, 0x02,                                     // MOV CL, 2
+    0xEB, 0x0D,                                     // JMP 0x1153
+    0x0F, 0xB6, 0x53, 0x01,                         // 1146: MOVZX EDX, BYTE [EBX+1] (port)
+    0xEC,                                           // IN AL, DX
+    0x88, 0x44, 0x24, 0x0C,                         // MOV [ESP+0x0C], AL (V86 AL)
     0xB4, 0x02,                                     // MOV AH, 2
-    0x0F, 0xB6, 0x1D, 0x10, 0x06, 0x00, 0x00,       // 1137: MOVZX EBX, BYTE [0x0610]
-    0x88, 0x14, 0x9D, 0x00, 0x07, 0x00, 0x00,       // MOV [EBX*4+0x0700], DL
-    0x88, 0x04, 0x9D, 0x01, 0x07, 0x00, 0x00,       // MOV [EBX*4+0x0701], AL
-    0x88, 0x24, 0x9D, 0x02, 0x07, 0x00, 0x00,       // MOV [EBX*4+0x0702], AH
-    0xFE, 0x05, 0x10, 0x06, 0x00, 0x00,             // INC BYTE [0x0610]
-    0x83, 0x44, 0x24, 0x10, 0x02,                   // ADD DWORD [ESP+0x10], 2
+    0xB1, 0x02,                                     // MOV CL, 2
+    0x0F, 0xB7, 0x1D, 0x10, 0x06, 0x00, 0x00,       // 1153: MOVZX EBX, WORD [0x0610]
+    0x66, 0x89, 0x14, 0x9D, 0x00, 0x60, 0x00, 0x00, // MOV [EBX*4+0x6000], DX
+    0x66, 0x89, 0x04, 0x9D, 0x02, 0x60, 0x00, 0x00, // MOV [EBX*4+0x6002], AX
+    0x66, 0xFF, 0x05, 0x10, 0x06, 0x00, 0x00,       // INC WORD [0x0610]
+    0x0F, 0xB6, 0xC9,                               // MOVZX ECX, CL
+    0x01, 0x4C, 0x24, 0x14,                         // ADD [ESP+0x14], ECX (EIP)
     0x5A,                                           // POP EDX
+    0x59,                                           // POP ECX
     0x5B,                                           // POP EBX
     0x58,                                           // POP EAX
     0x83, 0xC4, 0x04,                               // ADD ESP, 4
@@ -245,10 +265,10 @@ pub(super) fn make_rom_entry_call(
     code
 }
 
-/// Writes the GDT, the TSS with an I/O permission bitmap that traps only
-/// port 0002h, the IDT and the descriptor table register images. The IRQ0
+/// Writes the GDT, the TSS with an I/O permission bitmap that traps
+/// `trapped_ports`, the IDT and the descriptor table register images. The IRQ0
 /// gate points to the reflection handler when `reflect_irq0` is set.
-fn write_monitor_tables(bus: &mut impl Bus, reflect_irq0: bool) {
+fn write_monitor_tables(bus: &mut impl Bus, reflect_irq0: bool, trapped_ports: &[u16]) {
     let gdt: [u64; 4] = [
         0,
         0x00CF_9A00_0000_FFFF,
@@ -270,10 +290,15 @@ fn write_monitor_tables(bus: &mut impl Bus, reflect_irq0: bool) {
         &(TSS_IOPB_OFFSET as u16).to_le_bytes(),
     );
     let iopb = TSS_BASE + TSS_IOPB_OFFSET;
-    bus.write_byte(
-        iopb + u32::from(MASTER_IMR_PORT / 8),
-        1 << (MASTER_IMR_PORT % 8),
-    );
+    for &port in trapped_ports {
+        let address = iopb + u32::from(port / 8);
+        assert!(
+            address < TSS_BASE + TSS_LIMIT,
+            "port {port:04X}h is beyond the IOPB"
+        );
+        let bits = bus.read_byte(address);
+        bus.write_byte(address, bits | (1 << (port % 8)));
+    }
     bus.write_byte(TSS_BASE + TSS_LIMIT, 0xFF);
 
     for vector in 0..IDT_GATES {
@@ -299,7 +324,10 @@ fn write_monitor_tables(bus: &mut impl Bus, reflect_irq0: bool) {
 }
 
 /// Runs real mode code at TEST_CODE until the budget is spent.
-pub(super) fn run_real_mode(machine: &mut machine_98::Pc9801Ra, code: &[u8]) {
+pub(super) fn run_real_mode<const CPU_MODEL: u8>(
+    machine: &mut Pc98Machine<cpu::I386<CPU_MODEL>>,
+    code: &[u8],
+) {
     write_bytes(&mut machine.bus, TEST_CODE, code);
     machine.cpu.load_state(&{
         let mut state = cpu::I386State {
@@ -322,13 +350,13 @@ pub(super) enum TrappedAccess {
 }
 
 /// Runs `v86_code` under the monitor with the master IMR set to `imr` and
-/// returns the trapped port accesses.
+/// returns the trapped accesses of the master IMR port.
 pub(super) fn run_under_v86_monitor(
     machine: &mut machine_98::Pc9801Ra,
     imr: u8,
     v86_code: &[u8],
 ) -> Vec<TrappedAccess> {
-    run_monitor(machine, imr, v86_code, false)
+    run_monitor(machine, imr, v86_code, false, &[MASTER_IMR_PORT])
 }
 
 /// Runs `v86_code` under the monitor like `run_under_v86_monitor` and
@@ -338,20 +366,32 @@ pub(super) fn run_under_v86_monitor_reflecting_irq0(
     imr: u8,
     v86_code: &[u8],
 ) -> Vec<TrappedAccess> {
-    run_monitor(machine, imr, v86_code, true)
+    run_monitor(machine, imr, v86_code, true, &[MASTER_IMR_PORT])
+}
+
+/// Runs `v86_code` under the monitor with the master IMR set to `imr` and
+/// returns the trapped accesses of `trapped_ports`.
+pub(super) fn run_under_v86_monitor_trapping<const CPU_MODEL: u8>(
+    machine: &mut Pc98Machine<cpu::I386<CPU_MODEL>>,
+    imr: u8,
+    v86_code: &[u8],
+    trapped_ports: &[u16],
+) -> Vec<TrappedAccess> {
+    run_monitor(machine, imr, v86_code, false, trapped_ports)
 }
 
 /// Runs `v86_code` under the monitor and returns the trapped port accesses.
-fn run_monitor(
-    machine: &mut machine_98::Pc9801Ra,
+fn run_monitor<const CPU_MODEL: u8>(
+    machine: &mut Pc98Machine<cpu::I386<CPU_MODEL>>,
     imr: u8,
     v86_code: &[u8],
     reflect_irq0: bool,
+    trapped_ports: &[u16],
 ) -> Vec<TrappedAccess> {
-    for address in GP_LOG_COUNT..GP_LOG + 0x100 {
+    for address in (GP_LOG_COUNT..MONITOR_DATA_END).chain(GP_LOG..GP_LOG + GP_LOG_CAPACITY * 4) {
         machine.bus.write_byte(address, 0);
     }
-    write_monitor_tables(&mut machine.bus, reflect_irq0);
+    write_monitor_tables(&mut machine.bus, reflect_irq0, trapped_ports);
     write_bytes(&mut machine.bus, MONITOR_HANDLERS, MONITOR_HANDLER_CODE);
     write_bytes(
         &mut machine.bus,
@@ -368,13 +408,16 @@ fn run_monitor(
         "the V86 call did not return"
     );
 
-    let count = u32::from(machine.bus.read_byte(GP_LOG_COUNT));
+    let count = u32::from(machine.bus.read_byte(GP_LOG_COUNT))
+        | (u32::from(machine.bus.read_byte(GP_LOG_COUNT + 1)) << 8);
+    assert!(count <= GP_LOG_CAPACITY, "the port access log overflowed");
     (0..count)
         .map(|index| {
             let entry = GP_LOG + index * 4;
-            let port = u16::from(machine.bus.read_byte(entry));
-            let value = machine.bus.read_byte(entry + 1);
-            match machine.bus.read_byte(entry + 2) {
+            let port = u16::from(machine.bus.read_byte(entry))
+                | (u16::from(machine.bus.read_byte(entry + 1)) << 8);
+            let value = machine.bus.read_byte(entry + 2);
+            match machine.bus.read_byte(entry + 3) {
                 1 => TrappedAccess::Out { port, value },
                 2 => TrappedAccess::In { port, value },
                 kind => panic!("unknown access kind {kind}"),

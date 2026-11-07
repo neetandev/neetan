@@ -273,6 +273,9 @@ mod ipl_return;
 #[path = "bios/int18h.rs"]
 mod int18h;
 
+#[path = "bios/int18h_port_writes.rs"]
+mod int18h_port_writes;
+
 #[path = "bios/int09h.rs"]
 mod int09h;
 

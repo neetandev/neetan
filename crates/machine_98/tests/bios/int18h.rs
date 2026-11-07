@@ -4373,29 +4373,21 @@ fn display_area_set_400line_preserves_slave_sync_ra() {
 
 #[test]
 fn draw_mode_set_sync_mode_byte_f() {
-    // AH=4Ah writes CH as the SYNC P1 mode byte to the GDC slave.
-    // CH=0x02 -> param_buffer[0] = 0x02, display_mode=0x02.
+    // AH=4Ah issues SYNC to the GDC slave with CH as the P1 mode byte.
+    // CH=0x02 selects the graphics display mode.
     let code = make_int18h_call_ch(0x4A, 0x02);
     let machine = boot_inject_run_f(&[], &code, INT18H_BUDGET);
     let state = machine.inspection_state();
-    assert_eq!(
-        state.gdc_slave.param_buffer[0], 0x02,
-        "AH=4Ah CH=0x02 should write 0x02 as SYNC P1 mode byte"
-    );
     assert_eq!(state.gdc_slave.display_mode, DISPLAY_MODE_GRAPHICS);
 }
 
 #[test]
 fn draw_mode_set_sync_mode_byte_vm() {
-    // AH=4Ah writes CH as the SYNC P1 mode byte to the GDC slave.
-    // CH=0x02 -> param_buffer[0] = 0x02, display_mode=0x02.
+    // AH=4Ah issues SYNC to the GDC slave with CH as the P1 mode byte.
+    // CH=0x02 selects the graphics display mode.
     let code = make_int18h_call_ch(0x4A, 0x02);
     let machine = boot_inject_run_vm(&[], &code, INT18H_BUDGET);
     let state = machine.inspection_state();
-    assert_eq!(
-        state.gdc_slave.param_buffer[0], 0x02,
-        "AH=4Ah CH=0x02 should write 0x02 as SYNC P1 mode byte"
-    );
     assert_eq!(state.gdc_slave.display_mode, DISPLAY_MODE_GRAPHICS);
 }
 
@@ -4404,7 +4396,6 @@ fn draw_mode_set_sync_mode_byte_vx() {
     let code = make_int18h_call_ch(0x4A, 0x02);
     let machine = boot_inject_run_vx(&[], &code, INT18H_BUDGET);
     let state = machine.inspection_state();
-    assert_eq!(state.gdc_slave.param_buffer[0], 0x02);
     assert_eq!(state.gdc_slave.display_mode, DISPLAY_MODE_GRAPHICS);
 }
 
@@ -4413,7 +4404,6 @@ fn draw_mode_set_sync_mode_byte_ra() {
     let code = make_int18h_call_ch(0x4A, 0x02);
     let machine = boot_inject_run_ra(&[], &code, INT18H_BUDGET);
     let state = machine.inspection_state();
-    assert_eq!(state.gdc_slave.param_buffer[0], 0x02);
     assert_eq!(state.gdc_slave.display_mode, DISPLAY_MODE_GRAPHICS);
 }
 
@@ -4458,7 +4448,6 @@ fn draw_mode_set_sync_draw_on_retrace_f() {
     let code = make_int18h_call_ch(0x4A, 0x12);
     let machine = boot_inject_run_f(&[], &code, INT18H_BUDGET);
     let state = machine.inspection_state();
-    assert_eq!(state.gdc_slave.param_buffer[0], 0x12);
     assert!(
         state.gdc_slave.draw_on_retrace,
         "AH=4Ah CH=0x12 (bit 4 set) should set draw_on_retrace"
@@ -4471,7 +4460,6 @@ fn draw_mode_set_sync_draw_on_retrace_vm() {
     let code = make_int18h_call_ch(0x4A, 0x12);
     let machine = boot_inject_run_vm(&[], &code, INT18H_BUDGET);
     let state = machine.inspection_state();
-    assert_eq!(state.gdc_slave.param_buffer[0], 0x12);
     assert!(
         state.gdc_slave.draw_on_retrace,
         "AH=4Ah CH=0x12 (bit 4 set) should set draw_on_retrace"
@@ -4483,7 +4471,6 @@ fn draw_mode_set_sync_draw_on_retrace_vx() {
     let code = make_int18h_call_ch(0x4A, 0x12);
     let machine = boot_inject_run_vx(&[], &code, INT18H_BUDGET);
     let state = machine.inspection_state();
-    assert_eq!(state.gdc_slave.param_buffer[0], 0x12);
     assert!(state.gdc_slave.draw_on_retrace);
 }
 
@@ -4492,7 +4479,6 @@ fn draw_mode_set_sync_draw_on_retrace_ra() {
     let code = make_int18h_call_ch(0x4A, 0x12);
     let machine = boot_inject_run_ra(&[], &code, INT18H_BUDGET);
     let state = machine.inspection_state();
-    assert_eq!(state.gdc_slave.param_buffer[0], 0x12);
     assert!(state.gdc_slave.draw_on_retrace);
 }
 

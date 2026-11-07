@@ -15,11 +15,13 @@ mod floppy_interrupt;
 mod graphics;
 mod keyboard;
 mod pmode;
+mod port_writes;
 mod serial_rs232c;
 mod timer;
 
 use common::{Cpu, CpuAccess, SegmentRegister, inspect::capture_x86_snapshot, warn};
 use device::upd765a_fdc::{UPD765_PLATFORM_STANDARD, Upd765aFdc};
+pub(super) use port_writes::PORT_WRITE_CAPACITY;
 
 use super::{
     Pc9801Bus,
@@ -233,7 +235,10 @@ impl<T: TraceSink> Pc9801Bus<T> {
             0x0C => self.hle_int0ch(cpu),
             0x12 => self.hle_int12h(cpu),
             0x13 => self.hle_int13h(cpu),
-            0x18 => self.hle_int18h(cpu),
+            0x18 => {
+                self.hle_int18h(cpu);
+                self.push_bios_port_writes(cpu);
+            }
             0x19 => self.hle_int19h(cpu),
             0x1A => self.hle_int1ah(cpu),
             0x1B => self.hle_int1bh(cpu),
@@ -450,7 +455,7 @@ mod tests {
     use crate::{Pc9801Bus, memory::Pc9801Memory};
 
     #[derive(Default)]
-    struct TestCpu {
+    pub(super) struct TestCpu {
         ax: u16,
         bx: u16,
         cx: u16,
@@ -472,7 +477,7 @@ mod tests {
     }
 
     impl TestCpu {
-        fn set_segment_base_for_test(&mut self, seg: SegmentRegister, base: u32) {
+        pub(super) fn set_segment_base_for_test(&mut self, seg: SegmentRegister, base: u32) {
             match seg {
                 SegmentRegister::ES => self.es_base = base,
                 SegmentRegister::CS => self.cs_base = base,
@@ -670,7 +675,7 @@ mod tests {
         bus.write_byte(address + 1, (value >> 8) as u8);
     }
 
-    fn read_bus_word(bus: &mut Pc9801Bus<NoTrace>, address: u32) -> u16 {
+    pub(super) fn read_bus_word(bus: &mut Pc9801Bus<NoTrace>, address: u32) -> u16 {
         u16::from(bus.read_byte(address)) | (u16::from(bus.read_byte(address + 1)) << 8)
     }
 
@@ -767,16 +772,41 @@ mod tests {
         write_bus_word(&mut bus, 0x0002_0000, 0xAAAA);
         write_bus_word(&mut bus, 0x0002_0002, 0xBBBB);
         write_bus_word(&mut bus, 0x0003_0000, 0x5678);
-        write_bus_word(&mut bus, 0x0003_0002, 0x0200);
-        bus.bios.write_trap_port(0x18);
+        write_bus_word(&mut bus, 0x0003_0002, 0x0500);
+        bus.bios.write_trap_port(0x1C);
 
         bus.execute_bios_hle(&mut cpu);
 
         assert_eq!(cpu.dx(), 0x5678);
-        assert_eq!(cpu.ax(), 0x0200);
+        assert_eq!(cpu.ax(), 0x0500);
         assert_eq!(cpu.sp(), 0x0004);
         assert_eq!(read_bus_word(&mut bus, 0x0002_0000), 0xAAAA);
         assert_eq!(read_bus_word(&mut bus, 0x0002_0002), 0xBBBB);
+    }
+
+    #[test]
+    fn execute_bios_hle_pushes_the_int18h_port_write_frame_on_the_paged_stack() {
+        let mut bus = test_bus();
+        setup_hle_page_tables(&mut bus);
+        let mut cpu = TestCpu::default();
+        cpu.set_sp(0x0010);
+        cpu.set_bx(0x2222);
+        cpu.set_cx(0x3333);
+        cpu.set_segment_base_for_test(SegmentRegister::SS, 0x0002_0000);
+
+        write_bus_word(&mut bus, 0x0003_0010, 0x5678);
+        write_bus_word(&mut bus, 0x0003_0012, 0x4000);
+        bus.bios.write_trap_port(0x18);
+
+        bus.execute_bios_hle(&mut cpu);
+
+        assert_eq!(cpu.sp(), 0x0008);
+        let frame: Vec<u16> = (0..6)
+            .map(|index| read_bus_word(&mut bus, 0x0003_0008 + 2 * index))
+            .collect();
+        assert_eq!(frame, [1, 0x0A0D, 0x2222, 0x3333, 0x5678, 0x4000]);
+        assert_eq!(read_bus_word(&mut bus, 0x0002_0008), 0);
+        assert_eq!(read_bus_word(&mut bus, 0x0002_000A), 0);
     }
 
     #[test]
@@ -1042,6 +1072,7 @@ mod tests {
         write_bus_word(&mut bus, 0x0003_0002, 0x0001);
 
         bus.hle_int18h(&mut cpu);
+        bus.apply_bios_port_writes();
 
         assert_eq!(bus.gdc_master.state.scroll[0].start_address, 0x0040);
         assert_ne!(bus.gdc_master.state.scroll[0].line_count, 0);
