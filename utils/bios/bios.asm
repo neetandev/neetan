@@ -52,7 +52,7 @@ SYSTEM_DISK_COLUMN equ 22       ; Text column of the system disk message
 
 ; Variant that jumps to a tail (%2) after the HLE trap. The tail finishes the
 ; handler with guest I/O instructions and IRETs. The HLE handler has restored
-; AX/DX and the IRET frame at SS:SP.
+; AX/DX. SS:SP holds the frame that the tail expects, and the IRET frame follows it.
 %macro hle_stub_tail 2          ; %1 = vector number, %2 = tail label
     push ax
     push dx
@@ -149,7 +149,8 @@ dos330_probe:
     times BIOS_BASE_OFF - ($ - $$) db 0xFF
 
 ; --- Metadata header at fixed offset 0x15800 ---
-; The Rust side reads these at BIOS_CODE_OFFSET + 0/2/4/6/8 to find entry points.
+; The Rust side reads these at BIOS_CODE_OFFSET + 0/2/4/6/8/10 to find entry
+; points and the port table.
 
 metadata:
     dw vector_table     - BIOS_BASE_OFF     ; +0: vector table offset
@@ -157,6 +158,7 @@ metadata:
     dw bios_init_entry  - BIOS_BASE_OFF     ; +4: BIOS init entry offset
     dw bootstrap_entry  - BIOS_BASE_OFF     ; +6: bootstrap entry offset
     dw ipl_call         - BIOS_BASE_OFF     ; +8: IPL call entry offset
+    dw port_table       - BIOS_BASE_OFF     ; +10: port table offset
 
 ; --- Shared IRET stub ---
 ; The exception and software vectors without a handler (INT 00h-07h,
@@ -299,6 +301,55 @@ unused_irq_return:
 timer_mask_iret:    imr_mask_tail 0x01  ; IR0, interval timer
 rs232c_mask_iret:   imr_mask_tail 0x10  ; IR4, RS-232C receive
 
+; --- Port write tail ---
+; An HLE handler programs the display hardware with port writes that the stub
+; executes as guest OUT instructions after the HLE trap. A protected-mode or
+; V86 monitor that traps these ports observes every write, as it observes the
+; writes of a real BIOS. The HLE handler leaves this frame on the stack above
+; the IRET frame:
+;
+;   SS:SP+0   number of port writes
+;   SS:SP+2   one word per port write: AL = value, AH = port table index
+;   then      the BX, CX, DX and AX the handler returns
+;
+; The order of the port table entries is part of the HLE interface.
+port_write_iret:
+    pop  cx                         ; Number of port writes
+    jcxz .done
+.next:
+    pop  ax                         ; AL = value, AH = port table index
+    mov  bl, ah
+    xor  bh, bh
+    shl  bx, 1
+    mov  dx, [cs:bx + port_table - BIOS_BASE_OFF]
+    out  dx, al
+    loop .next
+.done:
+    pop  bx
+    pop  cx
+    pop  dx
+    pop  ax
+    iret
+
+port_table:
+    dw 0x0037                       ; 0: system PPI control
+    dw 0x0060                       ; 1: text GDC parameter
+    dw 0x0062                       ; 2: text GDC command
+    dw 0x0068                       ; 3: mode F/F 1
+    dw 0x006A                       ; 4: mode F/F 2
+    dw 0x0070                       ; 5: CRTC PL
+    dw 0x0072                       ; 6: CRTC BL
+    dw 0x0074                       ; 7: CRTC CL
+    dw 0x0076                       ; 8: CRTC SSL
+    dw 0x00A0                       ; 9: graphics GDC parameter
+    dw 0x00A2                       ; 10: graphics GDC command
+    dw 0x00A4                       ; 11: graphics display page
+    dw 0x00A8                       ; 12: palette register A8h
+    dw 0x00AA                       ; 13: palette register AAh
+    dw 0x00AC                       ; 14: palette register ACh
+    dw 0x00AE                       ; 15: palette register AEh
+    dw 0x09A8                       ; 16: horizontal scan frequency
+
 ; --- HLE-dispatched interrupt handler stubs ---
 
 ; The INT 08h and INT 0Ah stubs write the master PIC non-specific EOI
@@ -360,7 +411,7 @@ int_0ah_handler:
 int_0ch_handler:    hle_stub_tail 0x0C, master_eoi_iret ; Serial receive (IRQ 4)
 int_12h_handler:    hle_stub_tail 0x12, slave_eoi_iret ; FDC 640KB (slave IR2)
 int_13h_handler:    hle_stub_tail 0x13, slave_eoi_iret ; FDC 1MB (slave IR3)
-int_18h_handler:    hle_stub 0x18            ; CRT/KB/Graphics
+int_18h_handler:    hle_stub_tail 0x18, port_write_iret ; CRT/KB/Graphics
 int_19h_handler:    hle_stub_tail 0x19, rs232c_mask_iret ; RS-232C
 int_1ah_handler:    hle_stub_chainable 0x1A  ; Printer/CMT (chainable at +25)
 int_1bh_handler:    hle_stub 0x1B            ; Disk BIOS

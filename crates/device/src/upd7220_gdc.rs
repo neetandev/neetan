@@ -844,23 +844,6 @@ impl Gdc {
         byte
     }
 
-    /// Loads 8 SYNC parameter bytes into the parameter buffer and parses them.
-    pub fn load_sync_params(&mut self, params: &[u8; 8]) {
-        self.param_buffer[..8].copy_from_slice(params);
-        self.param_index = 8;
-        self.parse_sync_params();
-    }
-
-    /// Writes only the P1 (mode) byte of SYNC parameters, leaving P2-P8 unchanged.
-    pub fn set_sync_mode_byte(&mut self, mode: u8) {
-        self.param_buffer[0] = mode;
-        self.param_index = self.param_index.max(8);
-        self.display_mode = mode & DISPLAY_MODE_MASK;
-        self.interlace_mode = (mode & 0x01) | (mode & 0x08);
-        self.draw_on_retrace = mode & 0x10 != 0;
-        self.recompute_timing();
-    }
-
     /// Recomputes display timing from current SYNC parameters and dot clock.
     ///
     /// Derives vsync_period, display_period, and vsync_blanking_period from

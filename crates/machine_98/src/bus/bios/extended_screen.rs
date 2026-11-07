@@ -11,12 +11,17 @@ use super::{
     super::Pc9801Bus,
     crt::{CELL_RASTERS_400_LINE, CRT_STATUS_ADDRESS},
     graphics::{
-        FULL_SCREEN_LINE_COUNT, GRAPHICS_RESOLUTION_ADDRESS, PRXCRT_31KHZ, PRXCRT_ADDRESS,
-        PRXCRT_DIP_SWITCH_1_8, PRXDUPD_5MHZ_ACTIVE, PRXDUPD_5MHZ_ALLOWED, PRXDUPD_ADDRESS,
-        PRXDUPD_EXTENDED_GRAPHICS, PRXDUPD_FLASH_DRAW, RESOLUTION_480_LINE, RESOLUTION_ALL,
-        RESOLUTION_LOWER, RESOLUTION_MASK, RESOLUTION_UPPER, SETTING_AREA_ALL, SETTING_AREA_LOWER,
-        SETTING_AREA_SHIFT, SETTING_AREA_UPPER, SETTING_DISPLAY_BANK, SETTING_MONOCHROME,
-        SYNC_MODE_GRAPHICS, SYNC_TIMING_2_5MHZ, SYNC_TIMING_5MHZ, SyncTiming,
+        FULL_SCREEN_LINE_COUNT, GRAPHICS_RESOLUTION_ADDRESS, MODE_FF2_EXTENDED_GRAPHICS,
+        MODE_FF2_STANDARD_GRAPHICS, PRXCRT_31KHZ, PRXCRT_ADDRESS, PRXCRT_DIP_SWITCH_1_8,
+        PRXDUPD_5MHZ_ACTIVE, PRXDUPD_5MHZ_ALLOWED, PRXDUPD_ADDRESS, PRXDUPD_EXTENDED_GRAPHICS,
+        PRXDUPD_FLASH_DRAW, RESOLUTION_480_LINE, RESOLUTION_ALL, RESOLUTION_LOWER, RESOLUTION_MASK,
+        RESOLUTION_UPPER, SETTING_AREA_ALL, SETTING_AREA_LOWER, SETTING_AREA_SHIFT,
+        SETTING_AREA_UPPER, SETTING_DISPLAY_BANK, SETTING_MONOCHROME, SYNC_MODE_GRAPHICS,
+        SYNC_TIMING_2_5MHZ, SYNC_TIMING_5MHZ, SyncTiming,
+    },
+    port_writes::{
+        BiosGdc, BiosPort, GDC_PARAMETER_RAM, GDC_PITCH, GDC_SYNC, GDC_SYNC_DISPLAY_ENABLE,
+        display_area_parameters,
     },
 };
 use crate::TraceSink;
@@ -71,12 +76,15 @@ const RESULT_ERROR: u8 = 0x01;
 /// SYNC mode byte of the text GDC: mixed display mode, drawing during the retrace.
 const SYNC_MODE_TEXT: u8 = 0x10;
 
+/// Protected mode F/F 2 command (port 6Ah): VRAM of 400 lines, the display page is selectable.
+const MODE_FF2_VRAM_400_LINES: u8 = 0x68;
+/// Protected mode F/F 2 command (port 6Ah): VRAM of 800 lines in one screen.
+const MODE_FF2_VRAM_800_LINES: u8 = 0x69;
+
 /// Display lines of the 640x400 screen.
 pub(super) const LINES_400: u16 = 400;
 /// Display lines of the 640x480 screen.
 pub(super) const LINES_480: u16 = 480;
-/// Text GDC words per line.
-const TEXT_PITCH: u16 = 80;
 
 /// Text GDC timing at 24.83 kHz with 400 lines.
 const SYNC_TIMING_TEXT_24KHZ: SyncTiming = SyncTiming {
@@ -178,7 +186,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
         let screen = cpu.bh();
         let result = if extended_screen_mode_valid(rate, screen) {
             let flags = self.extended_screen_current_area_flags();
-            self.extended_screen_mode_apply(rate, screen, flags);
+            self.extended_screen_mode_apply(rate, screen, flags, false);
             RESULT_SUCCESS
         } else {
             RESULT_ERROR
@@ -261,25 +269,32 @@ impl<T: TraceSink> Pc9801Bus<T> {
             rows => rows,
         };
         let rate = self.extended_screen_current_rate();
-        let text_enabled = self.gdc_master.state.display_enabled;
+        let text_display = self.gdc_master.state.display_enabled;
         let flags = setting & (SETTING_MONOCHROME | SETTING_DISPLAY_BANK);
         self.extended_screen_mode_apply(
             rate,
             (resolution << SCREEN_RESOLUTION_SHIFT) | rows,
             flags,
+            text_display,
         );
-        self.gdc_master.state.display_enabled = text_enabled;
     }
 
     /// Programs the display for a valid mode of AL `rate` and BH `screen`. `area_flags` holds
     /// the AH=42h monochrome and display bank bits for the 640x400 and 640x200 resolutions.
-    fn extended_screen_mode_apply(&mut self, rate: u8, screen: u8, area_flags: u8) {
+    /// The text screen is shown when `text_display` is set.
+    fn extended_screen_mode_apply(
+        &mut self,
+        rate: u8,
+        screen: u8,
+        area_flags: u8,
+        text_display: bool,
+    ) {
         let is_31khz = rate & RATE_FREQUENCY_MASK == RATE_31KHZ;
         let resolution = screen >> SCREEN_RESOLUTION_SHIFT;
         let is_480_line = resolution == RESOLUTION_480_LINE;
         let rows = screen & SCREEN_ROWS_MASK;
 
-        self.display_control.set_crt_31khz_enabled(is_31khz);
+        self.bios_out(BiosPort::ScanFrequency, u8::from(is_31khz));
         let ram = &mut self.memory.state.ram;
         ram[PRXCRT_ADDRESS] &= !PRXCRT_31KHZ;
         if is_31khz {
@@ -294,18 +309,20 @@ impl<T: TraceSink> Pc9801Bus<T> {
             *extended_status |= EXTENDED_STATUS_480_LINE;
         }
 
-        self.extended_screen_set_text(is_31khz, is_480_line, rows);
-        self.gdc_master.state.pitch = TEXT_PITCH;
+        self.extended_screen_set_text(is_31khz, is_480_line, rows, text_display);
         self.crt_set_single_area(0);
-        self.extended_screen_set_graphics(is_31khz, resolution, area_flags);
-
-        self.apply_gdc_dot_clock();
-        self.reschedule_gdc_events();
+        self.extended_screen_set_graphics(resolution, area_flags);
     }
 
-    /// Sets the text GDC timing, the text rows and the line counter, and hides the text screen
-    /// and the cursor.
-    pub(super) fn extended_screen_set_text(&mut self, is_31khz: bool, is_480_line: bool, rows: u8) {
+    /// Sets the text GDC timing and pitch, the text rows and the line counter, and hides the
+    /// cursor. The text screen is shown when `text_display` is set.
+    pub(super) fn extended_screen_set_text(
+        &mut self,
+        is_31khz: bool,
+        is_480_line: bool,
+        rows: u8,
+        text_display: bool,
+    ) {
         let (screen_lines, row_count) = match (is_480_line, rows) {
             (true, ROWS_20) => (LINES_480, 20),
             (true, ROWS_25) => (LINES_480, 25),
@@ -320,8 +337,17 @@ impl<T: TraceSink> Pc9801Bus<T> {
             (false, _) => SYNC_TIMING_TEXT_24KHZ,
         };
         let timing = with_active_lines(base_timing, row_count * u16::from(row_rasters));
-        self.gdc_master
-            .load_sync_params(&timing.sync_parameters(SYNC_MODE_TEXT));
+        let display_enable = if text_display {
+            GDC_SYNC_DISPLAY_ENABLE
+        } else {
+            0
+        };
+        self.bios_gdc_command(
+            BiosGdc::Text,
+            GDC_SYNC | display_enable,
+            &timing.sync_parameters(SYNC_MODE_TEXT),
+        );
+        self.bios_gdc_command(BiosGdc::Text, GDC_PITCH, &[timing.pitch()]);
 
         let status = &mut self.memory.state.ram[CRT_STATUS_ADDRESS];
         *status &= !(STATUS_ROWS_20_OR_30 | STATUS_ROWS_30);
@@ -332,16 +358,32 @@ impl<T: TraceSink> Pc9801Bus<T> {
         }
         self.crt_set_row_rasters(row_rasters, CELL_RASTERS_400_LINE);
         self.crt_set_cursor_form(false);
-        self.gdc_master.state.display_enabled = false;
+    }
+
+    /// Returns the graphics GDC timing of the screen in the work area: the scan frequency
+    /// (PRXCRT bit 5), the 640x480 screen (CRT_EXT_STS bit 0) and the GDC clock (PRXDUPD bit 2).
+    pub(super) fn graphics_current_sync_timing(&self) -> SyncTiming {
+        if self.crt_480_line_mode() {
+            return SYNC_TIMING_31KHZ_480_LINE;
+        }
+        let ram = &self.memory.state.ram;
+        let is_31khz = ram[PRXCRT_ADDRESS] & PRXCRT_31KHZ != 0;
+        let is_5mhz = ram[PRXDUPD_ADDRESS] & PRXDUPD_5MHZ_ACTIVE != 0;
+        match (is_31khz, is_5mhz) {
+            (true, true) => SYNC_TIMING_31KHZ_400_LINE,
+            (true, false) => SYNC_TIMING_31KHZ_400_LINE_2_5MHZ,
+            (false, true) => SYNC_TIMING_5MHZ,
+            (false, false) => SYNC_TIMING_2_5MHZ,
+        }
     }
 
     /// Selects the graphics resolution with its GDC timing, GDC clock and PEGC screen layout. The
     /// graphics GDC runs at 5 MHz in 640x480 and in 640x400 when DIP SW 2-8 allows it, and at
     /// 2.5 MHz in 640x200 (undoc98 `memsys.txt` 0000:054Dh bit 2).
-    fn extended_screen_set_graphics(&mut self, is_31khz: bool, resolution: u8, area_flags: u8) {
+    fn extended_screen_set_graphics(&mut self, resolution: u8, area_flags: u8) {
         if resolution == RESOLUTION_480_LINE {
-            self.pegc.set_256_color_enabled(true);
-            self.pegc.set_screen_mode(true);
+            self.graphics_write_protected_mode(MODE_FF2_EXTENDED_GRAPHICS);
+            self.graphics_write_protected_mode(MODE_FF2_VRAM_800_LINES);
             let ram = &mut self.memory.state.ram;
             ram[PRXDUPD_ADDRESS] |= PRXDUPD_EXTENDED_GRAPHICS;
             if ram[PRXCRT_ADDRESS] & PRXCRT_DIP_SWITCH_1_8 != 0 {
@@ -349,39 +391,29 @@ impl<T: TraceSink> Pc9801Bus<T> {
             }
             let saved = &mut ram[GRAPHICS_RESOLUTION_ADDRESS];
             *saved = (*saved & !RESOLUTION_MASK) | RESOLUTION_480_LINE;
-            self.update_plane_e_mapping();
             self.graphics_set_gdc_clock(true);
 
-            self.gdc_slave
-                .load_sync_params(&SYNC_TIMING_31KHZ_480_LINE.sync_parameters(SYNC_MODE_GRAPHICS));
-            self.gdc_slave.state.lines_per_row = 1;
-            let scroll = &mut self.gdc_slave.state.scroll[0];
-            scroll.start_address = 0;
-            scroll.line_count = FULL_SCREEN_LINE_COUNT;
-            scroll.im = false;
-            scroll.wd = false;
+            self.graphics_set_sync(&SYNC_TIMING_31KHZ_480_LINE, SYNC_MODE_GRAPHICS);
+            self.graphics_set_lines_per_row(1);
+            self.bios_gdc_command(
+                BiosGdc::Graphics,
+                GDC_PARAMETER_RAM,
+                &display_area_parameters(0, FULL_SCREEN_LINE_COUNT, false),
+            );
             return;
         }
 
-        self.pegc.set_screen_mode(false);
+        self.graphics_write_protected_mode(MODE_FF2_VRAM_400_LINES);
         if resolution == RESOLUTION_UPPER || resolution == RESOLUTION_LOWER {
-            self.pegc.set_256_color_enabled(false);
+            self.graphics_write_protected_mode(MODE_FF2_STANDARD_GRAPHICS);
             self.memory.state.ram[PRXDUPD_ADDRESS] &= !PRXDUPD_EXTENDED_GRAPHICS;
         }
-        self.update_plane_e_mapping();
         let five_mhz_allowed = self.memory.state.ram[PRXDUPD_ADDRESS] & PRXDUPD_5MHZ_ALLOWED != 0;
         self.graphics_set_gdc_clock(resolution == RESOLUTION_ALL && five_mhz_allowed);
         self.graphics_set_display_area(display_area_setting(resolution) | area_flags);
 
-        let is_5mhz = self.memory.state.ram[PRXDUPD_ADDRESS] & PRXDUPD_5MHZ_ACTIVE != 0;
-        let timing = match (is_31khz, is_5mhz) {
-            (true, true) => SYNC_TIMING_31KHZ_400_LINE,
-            (true, false) => SYNC_TIMING_31KHZ_400_LINE_2_5MHZ,
-            (false, true) => SYNC_TIMING_5MHZ,
-            (false, false) => SYNC_TIMING_2_5MHZ,
-        };
-        self.gdc_slave
-            .load_sync_params(&timing.sync_parameters(SYNC_MODE_GRAPHICS));
+        let timing = self.graphics_current_sync_timing();
+        self.graphics_set_sync(&timing, SYNC_MODE_GRAPHICS);
     }
 }
 

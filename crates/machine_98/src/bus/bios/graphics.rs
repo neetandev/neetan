@@ -1,10 +1,13 @@
 //! INT 18h graphics service handlers (AH=40..4Ah) and GDC drawing helpers.
 
 use common::{Cpu, MachineModel};
-use device::grcg;
 
 use super::{
     super::{GRAPHICS_PAGE_SIZE_BYTES, Pc9801Bus},
+    port_writes::{
+        BiosGdc, BiosPort, GDC_CURSOR_FORM, GDC_DISPLAY_OFF, GDC_DISPLAY_ON, GDC_PARAMETER_RAM,
+        GDC_PITCH, GDC_SYNC, GDC_SYNC_DISPLAY_ENABLE, display_area_parameters,
+    },
     reverse_bits,
 };
 use crate::TraceSink;
@@ -45,12 +48,30 @@ const MODE_FF2_GDC_CLOCK1_5MHZ: u8 = 0x83;
 const MODE_FF2_GDC_CLOCK2_2_5MHZ: u8 = 0x84;
 /// Mode F/F 2 command (port 6Ah): GDC CLOCK-2 at 5 MHz.
 const MODE_FF2_GDC_CLOCK2_5MHZ: u8 = 0x85;
+/// Mode F/F 2 command (port 6Ah): forbids the change of the protected mode F/Fs.
+const MODE_FF2_FORBID_CHANGE: u8 = 0x06;
+/// Mode F/F 2 command (port 6Ah): permits the change of the protected mode F/Fs.
+const MODE_FF2_PERMIT_CHANGE: u8 = 0x07;
+/// Protected mode F/F 2 command (port 6Ah): standard graphics mode.
+pub(super) const MODE_FF2_STANDARD_GRAPHICS: u8 = 0x20;
+/// Protected mode F/F 2 command (port 6Ah): extended graphics mode (PEGC).
+pub(super) const MODE_FF2_EXTENDED_GRAPHICS: u8 = 0x21;
+
+/// AH=4Dh CH value that selects the standard graphics mode.
+const GRAPHICS_SELECT_STANDARD: u8 = 0x00;
+/// AH=4Dh CH value that selects the extended graphics mode.
+const GRAPHICS_SELECT_EXTENDED: u8 = 0x01;
+
+/// PRXCRT bit 7: the graphics screen is shown.
+const PRXCRT_GRAPHICS_DISPLAY: u8 = 0x80;
+/// AH=4Ah CH bit: drawing during the retrace only.
+const DRAW_MODE_RETRACE_ONLY: u8 = 0x10;
 
 /// Work area byte with the graphics status flags (PRXCRT).
 pub(super) const PRXCRT_ADDRESS: usize = 0x054C;
 /// PRXCRT bit 5: the display runs at 31.47 kHz.
 pub(super) const PRXCRT_31KHZ: u8 = 0x20;
-/// PRXCRT bit: DIP SW 1-8 was on at boot.
+/// PRXCRT bit 0: DIP SW 1-8 was on at boot. AH=4Ah does nothing while it is set.
 pub(super) const PRXCRT_DIP_SWITCH_1_8: u8 = 0x01;
 /// Work area byte with the graphics mode flags (PRXDUPD).
 pub(super) const PRXDUPD_ADDRESS: usize = 0x054D;
@@ -79,10 +100,6 @@ pub(super) const RESOLUTION_480_LINE: u8 = 0b11;
 const UPPER_AREA_START_ADDRESS: u32 = 8000;
 /// SCROLL line count that covers the whole screen (the SL field value 0 means 1024 lines).
 pub(super) const FULL_SCREEN_LINE_COUNT: u16 = 0x400;
-/// Graphics GDC words per line at 2.5 MHz (16 dots per word).
-const WORDS_PER_LINE_2_5MHZ: u16 = 40;
-/// Graphics GDC words per line at 5 MHz.
-const WORDS_PER_LINE_5MHZ: u16 = 80;
 
 /// VRAM area selected by AH=42h.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -99,6 +116,7 @@ enum DisplayArea {
 pub(super) const SYNC_MODE_GRAPHICS: u8 = 0x02;
 
 /// GDC SYNC parameters in the field encoding of the uPD7220 SYNC command.
+#[derive(Clone, Copy)]
 pub(super) struct SyncTiming {
     /// C/R: active words per line minus 2.
     pub(super) words_per_line: u8,
@@ -132,6 +150,11 @@ impl SyncTiming {
             (self.vertical_back_porch << 2) | (self.active_lines >> 8) as u8,
         ]
     }
+
+    /// Returns the active words per line, the pitch of the timing.
+    pub(super) const fn pitch(&self) -> u8 {
+        self.words_per_line + 2
+    }
 }
 
 /// Standard graphics GDC timing at 2.5 MHz on a 24.83 kHz display.
@@ -159,14 +182,16 @@ pub(super) const SYNC_TIMING_5MHZ: SyncTiming = SyncTiming {
 };
 
 impl<T: TraceSink> Pc9801Bus<T> {
+    /// INT 18h AH=40h: shows the graphics screen.
     pub(super) fn int18h_graphics_display_start(&mut self) {
-        self.gdc_slave.state.display_enabled = true;
-        self.memory.state.ram[0x054C] |= 0x80;
+        self.bios_gdc_command(BiosGdc::Graphics, GDC_DISPLAY_ON, &[]);
+        self.memory.state.ram[PRXCRT_ADDRESS] |= PRXCRT_GRAPHICS_DISPLAY;
     }
 
+    /// INT 18h AH=41h: hides the graphics screen.
     pub(super) fn int18h_graphics_display_stop(&mut self) {
-        self.gdc_slave.state.display_enabled = false;
-        self.memory.state.ram[0x054C] &= 0x7F;
+        self.bios_gdc_command(BiosGdc::Graphics, GDC_DISPLAY_OFF, &[]);
+        self.memory.state.ram[PRXCRT_ADDRESS] &= !PRXCRT_GRAPHICS_DISPLAY;
     }
 
     /// INT 18h AH=42h: selects the graphics VRAM area, the color mode and the display bank.
@@ -202,8 +227,8 @@ impl<T: TraceSink> Pc9801Bus<T> {
         } else {
             MODE_FF_SHOW_ODD_RASTERS
         };
-        self.display_control.write_video_mode(color_command);
-        self.display_control.write_video_mode(raster_command);
+        self.bios_out(BiosPort::ModeFlipFlop1, color_command);
+        self.bios_out(BiosPort::ModeFlipFlop1, raster_command);
 
         if high_resolution_display {
             self.graphics_select_gdc_clock(!half_height);
@@ -212,20 +237,23 @@ impl<T: TraceSink> Pc9801Bus<T> {
             self.memory.state.ram[PRXDUPD_ADDRESS] |= PRXDUPD_FLASH_DRAW;
         }
 
-        self.gdc_slave.state.lines_per_row = if doubled_lines { 2 } else { 1 };
+        let lines_per_row = if doubled_lines { 2 } else { 1 };
+        self.graphics_set_lines_per_row(lines_per_row);
         let start_address = if area == DisplayArea::Upper {
             UPPER_AREA_START_ADDRESS
         } else {
             0
         };
-        let scroll = &mut self.gdc_slave.state.scroll[0];
-        scroll.start_address = start_address;
-        scroll.line_count = FULL_SCREEN_LINE_COUNT;
-        scroll.im = false;
-        scroll.wd = false;
+        self.bios_gdc_command(
+            BiosGdc::Graphics,
+            GDC_PARAMETER_RAM,
+            &display_area_parameters(start_address, FULL_SCREEN_LINE_COUNT, false),
+        );
 
-        self.display_control
-            .write_display_page((setting & SETTING_DISPLAY_BANK) >> SETTING_DISPLAY_BANK_SHIFT);
+        self.bios_out(
+            BiosPort::DisplayPage,
+            (setting & SETTING_DISPLAY_BANK) >> SETTING_DISPLAY_BANK_SHIFT,
+        );
 
         let saves_resolution = match self.machine_model {
             MachineModel::PC9801F
@@ -258,15 +286,43 @@ impl<T: TraceSink> Pc9801Bus<T> {
             return;
         }
 
-        let (timing, words_per_line) = if full_height {
-            (&SYNC_TIMING_5MHZ, WORDS_PER_LINE_5MHZ)
+        let timing = if full_height {
+            SYNC_TIMING_5MHZ
         } else {
-            (&SYNC_TIMING_2_5MHZ, WORDS_PER_LINE_2_5MHZ)
+            SYNC_TIMING_2_5MHZ
         };
-        self.gdc_slave
-            .load_sync_params(&timing.sync_parameters(SYNC_MODE_GRAPHICS));
-        self.gdc_slave.state.pitch = words_per_line;
+        self.graphics_set_sync(&timing, SYNC_MODE_GRAPHICS);
         self.graphics_set_gdc_clock(full_height);
+    }
+
+    /// Issues SYNC with `timing` and the mode byte `mode` to the graphics GDC, then PITCH with
+    /// the active words per line. SYNC keeps the graphics display state of PRXCRT bit 7.
+    pub(super) fn graphics_set_sync(&mut self, timing: &SyncTiming, mode: u8) {
+        let display_enable = if self.memory.state.ram[PRXCRT_ADDRESS] & PRXCRT_GRAPHICS_DISPLAY != 0
+        {
+            GDC_SYNC_DISPLAY_ENABLE
+        } else {
+            0
+        };
+        self.bios_gdc_command(
+            BiosGdc::Graphics,
+            GDC_SYNC | display_enable,
+            &timing.sync_parameters(mode),
+        );
+        self.bios_gdc_command(BiosGdc::Graphics, GDC_PITCH, &[timing.pitch()]);
+    }
+
+    /// Sets the display lines of one graphics line with the first CSRFORM parameter.
+    pub(super) fn graphics_set_lines_per_row(&mut self, lines_per_row: u8) {
+        self.bios_gdc_command(BiosGdc::Graphics, GDC_CURSOR_FORM, &[lines_per_row - 1]);
+    }
+
+    /// Writes `command` to a mode F/F of port 6Ah that changes only with the change
+    /// permission, and forbids the change again.
+    pub(super) fn graphics_write_protected_mode(&mut self, command: u8) {
+        self.bios_out(BiosPort::ModeFlipFlop2, MODE_FF2_PERMIT_CHANGE);
+        self.bios_out(BiosPort::ModeFlipFlop2, command);
+        self.bios_out(BiosPort::ModeFlipFlop2, MODE_FF2_FORBID_CHANGE);
     }
 
     /// Selects 5 MHz or 2.5 MHz on GDC CLOCK-1 and CLOCK-2 (port 6Ah 82h-85h) and records the
@@ -283,29 +339,32 @@ impl<T: TraceSink> Pc9801Bus<T> {
         } else {
             *prxdupd &= !PRXDUPD_5MHZ_ACTIVE;
         }
-        let has_egc = self.grcg.state.chip == grcg::GRCG_CHIP_EGC;
         for command in clock_commands {
-            self.display_control.write_mode2(command, has_egc);
+            self.bios_out(BiosPort::ModeFlipFlop2, command);
         }
-        self.apply_gdc_dot_clock();
     }
 
+    /// INT 18h AH=43h: writes the four GBCPC bytes of the UCW at DS:BX to the digital palette
+    /// ports A8h, AAh, ACh and AEh.
     pub(super) fn int18h_palette_set(&mut self, cpu: &mut impl Cpu) {
         let src_seg = cpu.ds();
         let src_off = cpu.bx();
         let src_base = (u32::from(src_seg) << 4).wrapping_add(u32::from(src_off));
 
-        // Read 4 GBCPC bytes and write to digital palette ports.
-        // NP21W computes degpal values then writes to ports. Port 0xA8..0xAE
-        // map to digital[0..3], with reversed indexing vs NP21W's degpal.
         let mut col = [0u8; 4];
         for (i, col_byte) in col.iter_mut().enumerate() {
             *col_byte = self.read_mem_byte(src_base + 4 + i as u32);
         }
-        self.palette.state.digital[0] = ((col[2] & 0x0F) << 4) | (col[0] & 0x0F);
-        self.palette.state.digital[1] = ((col[3] & 0x0F) << 4) | (col[1] & 0x0F);
-        self.palette.state.digital[2] = (col[2] & 0xF0) | (col[0] >> 4);
-        self.palette.state.digital[3] = (col[3] & 0xF0) | (col[1] >> 4);
+        self.bios_out(
+            BiosPort::PaletteA8,
+            ((col[2] & 0x0F) << 4) | (col[0] & 0x0F),
+        );
+        self.bios_out(
+            BiosPort::PaletteAa,
+            ((col[3] & 0x0F) << 4) | (col[1] & 0x0F),
+        );
+        self.bios_out(BiosPort::PaletteAc, (col[2] & 0xF0) | (col[0] >> 4));
+        self.bios_out(BiosPort::PaletteAe, (col[3] & 0xF0) | (col[1] >> 4));
     }
 
     pub(super) fn int18h_pattern_fill(&mut self, cpu: &mut impl Cpu) {
@@ -639,16 +698,19 @@ impl<T: TraceSink> Pc9801Bus<T> {
         }
     }
 
+    /// INT 18h AH=4Ah: issues SYNC to the graphics GDC with the mode byte CH and the timing of
+    /// the current graphics screen.
     pub(super) fn int18h_draw_mode_set(&mut self, cpu: &mut impl Cpu) {
-        if self.memory.state.ram[0x054C] & 0x01 != 0 {
+        if self.memory.state.ram[PRXCRT_ADDRESS] & PRXCRT_DIP_SWITCH_1_8 != 0 {
             return;
         }
         let mode = cpu.ch();
-        self.gdc_slave.set_sync_mode_byte(mode);
-        if mode & 0x10 != 0 {
-            self.memory.state.ram[0x054D] &= !0x08;
+        let timing = self.graphics_current_sync_timing();
+        self.graphics_set_sync(&timing, mode);
+        if mode & DRAW_MODE_RETRACE_ONLY != 0 {
+            self.memory.state.ram[PRXDUPD_ADDRESS] &= !PRXDUPD_FLASH_DRAW;
         } else {
-            self.memory.state.ram[0x054D] |= 0x08;
+            self.memory.state.ram[PRXDUPD_ADDRESS] |= PRXDUPD_FLASH_DRAW;
         }
     }
 
@@ -663,17 +725,14 @@ impl<T: TraceSink> Pc9801Bus<T> {
         if !self.machine_model.has_pegc() {
             return;
         }
-        let ch = cpu.ch();
-        match ch {
-            0x00 => {
-                self.pegc.set_256_color_enabled(false);
-                self.memory.state.ram[0x054D] &= !0x80;
-                self.update_plane_e_mapping();
+        match cpu.ch() {
+            GRAPHICS_SELECT_STANDARD => {
+                self.graphics_write_protected_mode(MODE_FF2_STANDARD_GRAPHICS);
+                self.memory.state.ram[PRXDUPD_ADDRESS] &= !PRXDUPD_EXTENDED_GRAPHICS;
             }
-            0x01 => {
-                self.pegc.set_256_color_enabled(true);
-                self.memory.state.ram[0x054D] |= 0x80;
-                self.memory.set_e_plane_enabled(false);
+            GRAPHICS_SELECT_EXTENDED => {
+                self.graphics_write_protected_mode(MODE_FF2_EXTENDED_GRAPHICS);
+                self.memory.state.ram[PRXDUPD_ADDRESS] |= PRXDUPD_EXTENDED_GRAPHICS;
             }
             _ => {}
         }
