@@ -27,19 +27,19 @@ const TRACK_FLAG_COUNT: usize = 170;
 const ABSENT_FILL_BYTE: u8 = 0xE5;
 
 /// Media type byte for 2HD (8 x 1024 bytes, 77 cylinders).
-const MEDIA_2HD: u8 = 0x00;
+pub(crate) const MEDIA_2HD: u8 = 0x00;
 
 /// Media type byte for 2HS (9 x 1024 bytes, 80 cylinders).
-const MEDIA_2HS: u8 = 0x01;
+pub(crate) const MEDIA_2HS: u8 = 0x01;
 
 /// Media type byte for 2HC (15 x 512 bytes, 80 cylinders).
-const MEDIA_2HC: u8 = 0x02;
+pub(crate) const MEDIA_2HC: u8 = 0x02;
 
 /// Media type byte for 2HDE (9 x 1024 bytes, 80 cylinders).
-const MEDIA_2HDE: u8 = 0x03;
+pub(crate) const MEDIA_2HDE: u8 = 0x03;
 
 /// Media type byte for 2HQ (18 x 512 bytes, 80 cylinders).
-const MEDIA_2HQ: u8 = 0x09;
+pub(crate) const MEDIA_2HQ: u8 = 0x09;
 
 /// Fixed physical geometry selected by the DIM media type byte.
 #[derive(Debug, Clone, Copy)]
