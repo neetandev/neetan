@@ -979,19 +979,17 @@ mod tests {
         write_bus_word(&mut bus, 0x7004, 0x0202);
 
         for (raw_code, expected_ax) in [
-            (Some(0x60), 0x1206),
-            (Some(0x61), 0x1205),
-            (Some(0xE0), 0x1200),
-            (Some(0xE1), 0x1200),
-            (Some(0x1C), 0x1200),
-            (None, 0x1200),
+            (0x60u8, 0x1206),
+            (0x61, 0x1205),
+            (0xE0, 0x1200),
+            (0xE1, 0x1200),
+            (0x1C, 0x1200),
         ] {
-            cpu.set_ax(0x1234);
-            bus.keyboard_chained_raw_code = raw_code;
+            cpu.set_ax(0x1200 | u16::from(raw_code));
 
             bus.hle_int09h(&mut cpu);
 
-            assert_eq!(cpu.ax(), expected_ax, "raw code {raw_code:02X?}");
+            assert_eq!(cpu.ax(), expected_ax, "raw code {raw_code:02X}");
             assert_eq!(cpu.sp(), 0x7000);
             assert_eq!(read_bus_word(&mut bus, 0x7000), 0x1111);
             assert_eq!(read_bus_word(&mut bus, 0x7002), 0x2222);

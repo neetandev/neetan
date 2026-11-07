@@ -316,13 +316,18 @@ int_08h_handler:
     hle_stub_tail 0x08, timer_mask_iret      ; Timer tick (IRQ 0)
 
 ; Keyboard (IRQ 1). The stub keeps the interrupted AX on the stack across the
-; HLE trap. The HLE handler returns AL = 06h after a STOP make code, 05h after
-; a COPY make code and 00h otherwise. After the EOI the stub restores AX and
-; executes INT 06h or INT 05h. A handler of these vectors finds the INT
-; instruction before its return address and tells the key interrupt from a
-; CPU exception (undoc98 int00t17.txt).
+; HLE trap. It reads the scan code from the keyboard data port (undoc98
+; io_kb.txt, I/O 0041h) with a guest IN and hands it to the HLE handler in AL.
+; A protected-mode or V86 monitor that virtualizes the keyboard observes the
+; read and supplies the scan code of its virtual keyboard. The HLE handler
+; returns AL = 06h after a STOP make code, 05h after a COPY make code and 00h
+; otherwise. After the EOI the stub restores AX and executes INT 06h or
+; INT 05h. A handler of these vectors finds the INT instruction before its
+; return address and tells the key interrupt from a CPU exception (undoc98
+; int00t17.txt).
 int_09h_handler:
     push ax                         ; Interrupted AX
+    in   al, 0x41                   ; Scan code
     push ax
     push dx
     mov  dx, TRAP_PORT

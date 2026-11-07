@@ -302,7 +302,6 @@ pub(crate) struct Pc9801BusState {
     pit: device::i8253_pit::I8253PitState,
     dma: device::i8237_dma::I8237DmaState,
     keyboard: device::i8251_keyboard::I8251KeyboardState,
-    keyboard_chained_raw_code: Option<u8>,
     serial: device::i8251_serial::I8251SerialState,
     gdc_master: device::upd7220_gdc::GdcState,
     gdc_slave: device::upd7220_gdc::GdcState,
@@ -389,8 +388,6 @@ pub struct Pc9801Bus<T: TraceSink = NoTrace> {
     pit: I8253Pit,
     dma: I8237Dma,
     keyboard: I8251Keyboard,
-    /// Scan code already consumed from port 41h by a guest INT 09h pre-handler.
-    keyboard_chained_raw_code: Option<u8>,
     serial: I8251Serial,
     gdc_master: Gdc,
     gdc_slave: Gdc,
@@ -827,7 +824,6 @@ impl<T: TraceSink> Pc9801Bus<T> {
     /// Injects one keyboard scan code and raises IRQ1.
     pub fn push_keyboard_scancode(&mut self, code: u8) {
         self.keyboard.push_scancode(code);
-        self.keyboard_chained_raw_code = None;
         self.raise_pic_irq(1);
     }
 
@@ -1923,7 +1919,6 @@ impl<T: TraceSink> Pc9801Bus<T> {
             pit: self.pit.state.clone(),
             dma: self.dma.state.clone(),
             keyboard: self.keyboard.state.clone(),
-            keyboard_chained_raw_code: self.keyboard_chained_raw_code,
             serial: self.serial.state.clone(),
             gdc_master: self.gdc_master.capture_state(),
             gdc_slave: self.gdc_slave.capture_state(),
@@ -2132,7 +2127,6 @@ impl<T: TraceSink> Pc9801Bus<T> {
             self.pit.state = state.pit;
             self.dma.state = state.dma;
             self.keyboard.state = state.keyboard;
-            self.keyboard_chained_raw_code = state.keyboard_chained_raw_code;
             self.serial.state = state.serial;
             self.fdd640k_hle.restore_state(state.fdd640k_hle);
             self.fdd320_ppi.state = state.fdd320_ppi;

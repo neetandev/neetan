@@ -189,7 +189,6 @@ impl<T: TraceSink> Pc9801Bus<T> {
             pit: I8253Pit::new(is_8mhz_lineage),
             dma: I8237Dma::new(),
             keyboard: I8251Keyboard::new(),
-            keyboard_chained_raw_code: None,
             serial: I8251Serial::new(),
             gdc_master: Gdc::new_master(clocks.cpu_clock_hz),
             gdc_slave: Gdc::new_slave(clocks.cpu_clock_hz),

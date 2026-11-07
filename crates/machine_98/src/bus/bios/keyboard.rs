@@ -24,20 +24,16 @@ const COPY_KEY_INTERRUPT_VECTOR: u8 = 0x05;
 const NO_KEY_INTERRUPT: u8 = 0x00;
 
 impl<T: TraceSink> Pc9801Bus<T> {
-    /// INT 09h keyboard interrupt. Buffers the pending scan code and returns
-    /// in AL the vector the ROM stub raises after the EOI: 06h for a STOP
-    /// make code, 05h for a COPY make code and 00h for every other code.
+    /// INT 09h keyboard interrupt. Buffers the scan code the ROM stub read
+    /// from port 41h into AL and returns in AL the vector the stub raises
+    /// after the EOI: 06h for a STOP make code, 05h for a COPY make code and
+    /// 00h for every other code.
     pub(super) fn hle_int09h(&mut self, cpu: &mut impl Cpu) {
-        let raw_code = self
-            .keyboard_chained_raw_code
-            .take()
-            .or_else(|| self.read_pending_keyboard_scan_code());
-        let key_interrupt_vector =
-            match raw_code.map(|raw_code| self.buffer_keyboard_scan_code(raw_code)) {
-                Some((STOP_KEY_CODE, false)) => STOP_KEY_INTERRUPT_VECTOR,
-                Some((COPY_KEY_CODE, false)) => COPY_KEY_INTERRUPT_VECTOR,
-                _ => NO_KEY_INTERRUPT,
-            };
+        let key_interrupt_vector = match self.buffer_keyboard_scan_code(cpu.al()) {
+            (STOP_KEY_CODE, false) => STOP_KEY_INTERRUPT_VECTOR,
+            (COPY_KEY_CODE, false) => COPY_KEY_INTERRUPT_VECTOR,
+            _ => NO_KEY_INTERRUPT,
+        };
         cpu.set_al(key_interrupt_vector);
     }
 
