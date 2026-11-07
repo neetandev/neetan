@@ -27,6 +27,7 @@ CD-ROM discs apply to the PC-9821, PC-8801, PC/AT, FM Towns, and X68000 SUPER/XV
 |---------|------------|------------------------------------------------------------------------------------------------------|
 | CUE/BIN | `.cue`     | CUE sheet referencing a raw BIN image                                                                |
 | CloneCD | `.ccd`     | CloneCD control file with sibling `.img` (raw 2352-byte sectors) and optional `.sub` subchannel data |
+| ISO     | `.iso`     | Single data track of 2048-byte or raw 2352-byte sectors                                              |
 
 ## Cartridge and cassette images
 

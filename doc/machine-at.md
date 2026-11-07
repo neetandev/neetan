@@ -76,8 +76,8 @@ Hard disks are raw flat images with an MBR partition table. For example, create 
 ./neetan create-hdd dosv.hdd --type at100
 ```
 
-The available sizes are `at40`, `at100`, `at250`, and `at504`. CUE/BIN and
-CloneCD images are exposed as an ATAPI device on the secondary IDE channel. The
+The available sizes are `at40`, `at100`, `at250`, and `at504`. CUE/BIN, CloneCD,
+and ISO images are exposed as an ATAPI device on the secondary IDE channel. The
 guest uses a real ATAPI driver plus the real MSCDEX shipped with DOS/V.
 
 ## MIDI sound modules

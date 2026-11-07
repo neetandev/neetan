@@ -762,9 +762,60 @@ fn open_read_from_cdrom_file() {
 }
 
 #[test]
+fn open_read_from_iso_cdrom_file() {
+    let temp_cdrom_files = harness::write_temp_iso("iso_cdrom");
+    let mut machine = harness::boot_hle_with_cdrom_path(&temp_cdrom_files.path);
+
+    let handle = open_file_ap(&mut machine, b"Q:\\README.TXT\0");
+    let handle_lo = (handle & 0xFF) as u8;
+    let handle_hi = (handle >> 8) as u8;
+    let readme_length = harness::TEST_CDROM_README.len() as u8;
+
+    #[rustfmt::skip]
+    let code: Vec<u8> = vec![
+        0xBB, handle_lo, handle_hi,          // MOV BX, handle
+        0xB9, readme_length, 0x00,          // MOV CX, README length
+        0xBA, 0x10, 0x02,                   // MOV DX, 0210h
+        0xB4, 0x3F,                         // MOV AH, 3Fh (read)
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (bytes read)
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x02, 0x01,                   // MOV [0x0102], AX (flags)
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run_generic_with_budget(
+        &mut machine,
+        &code,
+        harness::INJECT_BUDGET_DISK_IO,
+    );
+
+    let flags = harness::result_word(&machine.bus, 2);
+    assert_eq!(
+        flags & 0x0001,
+        0,
+        "CD-ROM read should succeed, flags={:#06X}",
+        flags
+    );
+    assert_eq!(
+        harness::result_word(&machine.bus, 0),
+        u16::from(readme_length),
+        "CD-ROM read should return the whole file"
+    );
+
+    let read_back = harness::read_bytes(
+        &machine.bus,
+        harness::INJECT_CODE_BASE + 0x210,
+        harness::TEST_CDROM_README.len(),
+    );
+    assert_eq!(&read_back, harness::TEST_CDROM_README);
+}
+
+#[test]
 fn open_read_from_multifile_mode2_cdrom_file() {
     let temp_cdrom_files = harness::write_temp_mode2_multi_file_cdrom("mode2_multifile");
-    let mut machine = harness::boot_hle_with_cdrom_path(&temp_cdrom_files.cue_path);
+    let mut machine = harness::boot_hle_with_cdrom_path(&temp_cdrom_files.path);
 
     let handle = open_file_ap(&mut machine, b"Q:\\SETUP.EXE\0");
     let handle_lo = (handle & 0xFF) as u8;

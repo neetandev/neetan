@@ -69,9 +69,10 @@ enum FatKind {
     Fat16,
 }
 
-/// A CUE sheet and its track files inside a temporary folder. Dropping the value removes them.
-pub struct TempCdromCueFiles {
-    pub cue_path: PathBuf,
+/// A CD-ROM disc image and its data files inside a temporary folder. Dropping the value removes them.
+pub struct TempCdromFiles {
+    /// Path of the CUE sheet or the ISO image.
+    pub path: PathBuf,
     _folder: TemporaryFolder,
 }
 
@@ -1477,23 +1478,17 @@ fn make_mode2_raw_sector(user_data: &[u8; 2048]) -> Vec<u8> {
     sector
 }
 
-/// Creates a minimal CD-ROM disc image with one data track and one audio track.
-/// Uses raw (2352-byte) sectors throughout, as is standard for single-file BIN images.
-pub fn create_test_cdimage() -> device::cdrom::CdImage {
-    let cue = r#"FILE "test.bin" BINARY
-  TRACK 01 MODE1/2352
-    INDEX 01 00:00:00
-  TRACK 02 AUDIO
-    INDEX 01 00:02:00
-"#;
+/// Returns the user data of each sector of the test disc data track: the volume descriptor at
+/// sector 16, the root directory at sector 20, `README.TXT` at 21, `INSTALL.EXE` at 22 and
+/// `RUNBAT.BAT` at 23.
+pub fn test_cdrom_user_sectors() -> Vec<[u8; 2048]> {
     const ROOT_DIR_LBA: u32 = 20;
     const README_LBA: u32 = 21;
     const INSTALL_LBA: u32 = 22;
     const RUNBAT_LBA: u32 = 23;
     const RUNBAT_DATA: &[u8] = b"ECHO CDBATCH\r\n";
 
-    // Track 1: 150 raw data sectors (2352 bytes each, with sync+header+user data).
-    let mut bin_data = Vec::with_capacity(2352 * 200);
+    let mut sectors = Vec::with_capacity(150);
     for sector_index in 0..150u32 {
         let mut user_data = [0u8; 2048];
         match sector_index {
@@ -1594,11 +1589,37 @@ pub fn create_test_cdimage() -> device::cdrom::CdImage {
                 user_data.fill(0x11);
             }
         }
+        sectors.push(user_data);
+    }
+    sectors
+}
+
+/// Creates a minimal CD-ROM disc image with one data track and one audio track.
+/// Uses raw (2352-byte) sectors throughout, as is standard for single-file BIN images.
+pub fn create_test_cdimage() -> device::cdrom::CdImage {
+    let cue = r#"FILE "test.bin" BINARY
+  TRACK 01 MODE1/2352
+    INDEX 01 00:00:00
+  TRACK 02 AUDIO
+    INDEX 01 00:02:00
+"#;
+    let mut bin_data = Vec::with_capacity(2352 * 200);
+    for user_data in test_cdrom_user_sectors() {
         bin_data.extend_from_slice(&make_mode1_raw_sector(&user_data));
     }
-    // Track 2: 50 audio sectors (2352 bytes each).
     bin_data.extend_from_slice(&vec![0xAAu8; 2352 * 50]);
     device::cdrom::CdImage::from_cue(cue, bin_data).unwrap()
+}
+
+/// Writes the user sectors of the test disc as a cooked ISO image into a new temporary folder.
+pub fn write_temp_iso(name: &str) -> TempCdromFiles {
+    let folder = TemporaryFolder::new(&format!("test_{name}"));
+    let iso_data = test_cdrom_user_sectors().concat();
+    let path = folder.write_file(format!("{name}.iso"), &iso_data);
+    TempCdromFiles {
+        path,
+        _folder: folder,
+    }
 }
 
 pub fn create_test_cdimage_with_xcopy_tree() -> device::cdrom::CdImage {
@@ -1835,7 +1856,7 @@ pub fn create_test_cdimage_with_xcopy_tree() -> device::cdrom::CdImage {
     device::cdrom::CdImage::from_cue(cue, bin_data).unwrap()
 }
 
-pub fn write_temp_mode2_multi_file_cdrom(name: &str) -> TempCdromCueFiles {
+pub fn write_temp_mode2_multi_file_cdrom(name: &str) -> TempCdromFiles {
     const ROOT_DIRECTORY_LBA: u32 = 20;
     const README_LBA: u32 = 21;
     const SETUP_LBA: u32 = 22;
@@ -1945,8 +1966,8 @@ pub fn write_temp_mode2_multi_file_cdrom(name: &str) -> TempCdromCueFiles {
     std::fs::write(&data_track_path, data_track).expect("failed to write temp data track");
     std::fs::write(&audio_track_path, audio_track).expect("failed to write temp audio track");
 
-    TempCdromCueFiles {
-        cue_path,
+    TempCdromFiles {
+        path: cue_path,
         _folder: folder,
     }
 }

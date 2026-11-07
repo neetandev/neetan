@@ -825,7 +825,7 @@ fn insert_floppy_impl<T: TraceSink>(
     Ok(description)
 }
 
-/// Loads a CD-ROM disc image (`.cue` or `.ccd`) and inserts it into the bus,
+/// Loads a CD-ROM disc image (`.cue`, `.ccd` or `.iso`) and inserts it into the bus,
 /// returning a short description.
 fn insert_cdrom_impl<T: TraceSink>(
     bus: &mut TownsBus<T>,
