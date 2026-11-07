@@ -15,7 +15,13 @@
 //! pixels. A source bit address above the destination bit address leaves the
 //! first input without a complete unit. The first write of such an operation
 //! writes nothing unless a later input completed a unit. An operation covers
-//! the bit length plus one pixel, counted by the writes.
+//! the bit length plus one pixel.
+//!
+//! A write of the raster operation result with VRAM as the shifter source
+//! takes its destination pixels from the last VRAM read. Each such read
+//! advances the operation and sets the destination pixels for the writes that
+//! follow it. A write alone does not advance the operation. Every other write
+//! advances the operation by its own destination pixels.
 
 /// Register 1 bits 3-0: P3EN#-P0EN#, 1 = the plane is not written.
 const ACCESS_PLANE_DISABLE: u16 = 0x0001;
@@ -135,6 +141,10 @@ const MASK_RESET: u16 = 0xFFFF;
 /// Register 8 after reset: 16 pixels.
 const LENG_RESET: u16 = 0x000F;
 
+/// Destination pixels of a read step after a write to the shift or length
+/// register: every pixel of the word.
+const FULL_STEP_MASK: u16 = 0xFFFF;
+
 save_state::runtime_state! {
 /// EGC state.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -168,6 +178,9 @@ pub struct EgcState {
     pub output_skip: u8,
     /// Whether an input of the operation completed an output unit.
     pub source_ready: bool,
+    /// Destination pixels of the last VRAM read in memory byte order, applied by
+    /// the writes of the raster operation result while VRAM feeds the shifter.
+    pub read_step_mask: u16,
     /// Shifter output per plane in memory byte order.
     pub source_latch: [u16; 4],
     /// Stream position of the next pixel taken by an output unit.
@@ -195,6 +208,7 @@ impl Default for EgcState {
             destination_skip: 0,
             output_skip: 0,
             source_ready: false,
+            read_step_mask: FULL_STEP_MASK,
             source_latch: [0; PLANE_COUNT],
             stream_read: 0,
             stream_write: 0,
@@ -226,6 +240,12 @@ impl EgcState {
         self.source_ready = false;
         self.stream_read = 0;
         self.stream_write = 0;
+    }
+
+    /// Returns whether VRAM reads advance the operation. This holds while the
+    /// raster operation result is written and VRAM feeds the shifter.
+    fn reads_advance_operation(&self) -> bool {
+        self.ope & OPE_SOURCE_CPU == 0 && self.ope & OPE_WRITE_SOURCE_MASK == OPE_WRITE_ROP
     }
 
     /// Returns whether the shifter runs right to left.
@@ -295,6 +315,9 @@ impl EgcState {
 
     /// Returns the destination pixels of the next word write in memory form.
     pub fn source_mask(&self) -> u16 {
+        if self.reads_advance_operation() {
+            return self.read_step_mask;
+        }
         stream_to_memory(
             self.next_write_bits(WORD_WIDTH),
             WORD_WIDTH,
@@ -402,6 +425,28 @@ impl EgcState {
             self.source_ready = true;
             return None;
         }
+        Some(self.advance_operation(width))
+    }
+
+    /// Advances the operation by one VRAM read of `width` pixels and stores
+    /// its destination pixels for the writes that follow. A read that leaves
+    /// a left shift without a complete unit sets no destination pixels.
+    fn advance_read(&mut self, width: u32, byte_odd: Option<bool>) {
+        let bits = if self.shifts_left() && !self.source_ready {
+            0
+        } else {
+            self.advance_operation(width)
+        };
+        let mask = stream_to_memory(bits, width, self.descending());
+        self.read_step_mask = match byte_odd {
+            Some(odd) => replace_register_byte(self.read_step_mask, odd, mask as u8),
+            None => mask,
+        };
+    }
+
+    /// Takes the destination pixels of one step of `width` pixels from the
+    /// operation and returns them in stream form.
+    fn advance_operation(&mut self, width: u32) -> u16 {
         let bits = self.next_write_bits(width);
         let offset = u32::from(self.destination_skip).min(width);
         self.destination_skip -= offset as u8;
@@ -409,7 +454,7 @@ impl EgcState {
         if self.remaining_bits == 0 {
             self.restart_operation();
         }
-        Some(bits)
+        bits
     }
 }
 
@@ -592,10 +637,12 @@ impl Egc {
             0x0C => {
                 self.state.sft = value;
                 self.state.restart_operation();
+                self.state.read_step_mask = FULL_STEP_MASK;
             }
             0x0E => {
                 self.state.leng = value;
                 self.state.restart_operation();
+                self.state.read_step_mask = FULL_STEP_MASK;
             }
             _ => {}
         }
@@ -696,6 +743,9 @@ impl Egc {
         let source_is_vram = self.state.ope & OPE_SOURCE_CPU == 0;
         if source_is_vram {
             self.state.shift_input(vram, width, byte_odd);
+            if self.state.reads_advance_operation() {
+                self.state.advance_read(width, byte_odd);
+            }
         }
 
         if self.state.ope & OPE_COMPARE_READ != 0 {
@@ -731,11 +781,15 @@ impl Egc {
                 .shift_input([value; PLANE_COUNT], width, byte_odd);
         }
 
-        let Some(stream_mask) = self.state.advance_write(width) else {
-            return (vram, 0);
+        let step_mask = if self.state.reads_advance_operation() {
+            latch_unit(self.state.read_step_mask, byte_odd)
+        } else {
+            let Some(stream_mask) = self.state.advance_write(width) else {
+                return (vram, 0);
+            };
+            stream_to_memory(stream_mask, width, self.state.descending())
         };
-
-        let pixel_mask = stream_to_memory(stream_mask, width, self.state.descending()) & mask;
+        let pixel_mask = step_mask & mask;
         let data = match self.state.ope & OPE_WRITE_SOURCE_MASK {
             OPE_WRITE_CPU => [value; PLANE_COUNT],
             OPE_WRITE_ROP => {
@@ -1033,6 +1087,33 @@ mod tests {
         let vram = [0xFF00, 0x00FF, 0xF0F0, 0x0F0F];
         let (data, _mask) = egc.write_word(0xAAAA, vram);
         assert_eq!(data, [0xAA00, 0x00AA, 0xA0A0, 0x0A0A]);
+    }
+
+    #[test]
+    fn vram_source_rop_write_does_not_advance_operation() {
+        let mut egc = Egc::new();
+        egc.write_register_word(0x04, 0x08CC);
+        egc.write_register_word(0x0C, 0x0050);
+        egc.write_register_word(0x0E, 0x001A);
+        let (_, mask) = egc.write_word(0, [0; 4]);
+        assert_eq!(mask, 0xFFFF);
+        assert_eq!(egc.state.remaining_bits, 0x001B);
+        assert_eq!(egc.state.destination_skip, 5);
+    }
+
+    #[test]
+    fn vram_read_sets_destination_pixels_of_following_writes() {
+        let mut egc = Egc::new();
+        egc.write_register_word(0x04, 0x08F0);
+        egc.write_register_word(0x0C, 0x0050);
+        egc.write_register_word(0x0E, 0x001A);
+        let _ = egc.read_word([0xFFFF; 4]);
+        assert_eq!(egc.state.remaining_bits, 0x0010);
+        let (_, first_mask) = egc.write_word(0, [0; 4]);
+        let (_, second_mask) = egc.write_word(0, [0; 4]);
+        assert_eq!(first_mask, 0xFF07);
+        assert_eq!(second_mask, 0xFF07);
+        assert_eq!(egc.state.remaining_bits, 0x0010);
     }
 
     #[test]

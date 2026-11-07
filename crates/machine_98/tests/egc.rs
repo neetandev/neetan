@@ -1304,3 +1304,41 @@ fn egc_sub_byte_leng() {
         "sub-byte leng: only 4 bits written"
     );
 }
+
+#[test]
+fn egc_pattern_load_write_keeps_the_fill_operation_intact() {
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9821AP, CpuMode::High, 48000);
+    bus.io_write_byte(0x6A, 0x01);
+
+    // Brush row in off-screen VRAM and a cleared destination of two words.
+    prefill_planes_word(&mut bus, 0x7FFC, [0xFFFF, 0x0000, 0x5555, 0x0000]);
+    prefill_planes_word(&mut bus, 0, [0; 4]);
+    prefill_planes_word(&mut bus, 2, [0; 4]);
+
+    setup_egc(&mut bus);
+
+    write_egc_register_word(&mut bus, 0x02, 0x00FF);
+    // 27 pixels from destination bit 5 cover the rest of word 0 and all of word 1.
+    write_egc_register_word(&mut bus, 0x0C, 0x0050);
+    write_egc_register_word(&mut bus, 0x0E, 0x001A);
+    // ROP CC with VRAM as the shifter source loads the pattern register on the write.
+    write_egc_register_word(&mut bus, 0x04, 0x0ACC);
+    bus.write_word(VRAM_B + 0x7FFC, 0x0000);
+    // ROP AA with the CPU as the shifter source fills with the pattern register.
+    write_egc_register_word(&mut bus, 0x04, 0x0CAA);
+    bus.write_word(VRAM_B, 0x0000);
+    bus.write_word(VRAM_B + 2, 0x0000);
+
+    disable_grcg(&mut bus);
+
+    assert_eq!(read_plane_word(&bus, VRAM_B, 0), 0xFF07, "B word 0");
+    assert_eq!(read_plane_word(&bus, VRAM_B, 2), 0xFFFF, "B word 1");
+    assert_eq!(read_plane_word(&bus, VRAM_R, 0), 0x0000, "R word 0");
+    assert_eq!(read_plane_word(&bus, VRAM_G, 0), 0x5505, "G word 0");
+    assert_eq!(read_plane_word(&bus, VRAM_G, 2), 0x5555, "G word 1");
+    assert_eq!(
+        read_plane_word(&bus, VRAM_B, 0x7FFC),
+        0xFFFF,
+        "brush unchanged"
+    );
+}
