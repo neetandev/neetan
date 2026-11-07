@@ -1,7 +1,7 @@
 use crate::{
     DiskIo,
     filesystem::{
-        fat::FatVolume,
+        fat::{FIRST_DATA_CLUSTER, FatVolume},
         fat_dir::{self, DirEntry},
     },
 };
@@ -231,7 +231,9 @@ pub(crate) fn read_all(
 }
 
 /// Reads `file_size` bytes of the cluster chain that starts at
-/// `start_cluster`.
+/// `start_cluster`. A size above the data area, a chain that leaves the data
+/// area or revisits a cluster and a chain shorter than the size fail with
+/// `0x001F`.
 pub(crate) fn read_chain(
     vol: &FatVolume,
     start_cluster: u16,
@@ -241,9 +243,29 @@ pub(crate) fn read_chain(
     if file_size == 0 {
         return Ok(Vec::new());
     }
+    let data_area_size = u64::from(vol.data_cluster_count) * u64::from(vol.bpb.cluster_size());
+    if u64::from(file_size) > data_area_size || !vol.is_data_cluster(start_cluster) {
+        return Err(0x001F);
+    }
 
-    let mut cursor = FatFileCursor::with_position(start_cluster, file_size, 0);
-    cursor.read_chunk(vol, disk, file_size as usize)
+    let file_size = file_size as usize;
+    let mut visited = vec![false; vol.data_cluster_count as usize];
+    let mut data = Vec::with_capacity(file_size);
+    let mut cluster = start_cluster;
+    loop {
+        let visited_flag = &mut visited[usize::from(cluster - FIRST_DATA_CLUSTER)];
+        if *visited_flag {
+            return Err(0x001F);
+        }
+        *visited_flag = true;
+        let cluster_data = vol.read_cluster(cluster, disk)?;
+        let length = (file_size - data.len()).min(cluster_data.len());
+        data.extend_from_slice(&cluster_data[..length]);
+        if data.len() == file_size {
+            return Ok(data);
+        }
+        cluster = vol.next_chain_cluster(cluster)?.ok_or(0x001Fu16)?;
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -369,6 +391,28 @@ mod tests {
             disk,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn read_chain_rejects_a_self_looping_chain() {
+        let mut disk = formatted_2hd_floppy(&human68k_2hd_boot_sector());
+        set_2hd_fat_entries(&mut disk, [2], 2);
+        let vol = mount_2hd(&mut disk);
+        assert_eq!(read_chain(&vol, 2, 3000, &mut disk), Err(0x001F));
+    }
+
+    #[test]
+    fn read_chain_rejects_a_size_above_the_data_area() {
+        let mut disk = formatted_2hd_floppy(&human68k_2hd_boot_sector());
+        store_2hd_single_cluster(&mut disk, 2, b"data");
+        let vol = mount_2hd(&mut disk);
+        let data_area_size = u32::from(FLOPPY_2HD_DATA_CLUSTER_COUNT) * 1024;
+        assert_eq!(
+            read_chain(&vol, 2, data_area_size + 1, &mut disk),
+            Err(0x001F)
+        );
+        assert_eq!(read_chain(&vol, 2, 1025, &mut disk), Err(0x001F));
+        assert_eq!(read_chain(&vol, 2, 4, &mut disk), Ok(b"data".to_vec()));
     }
 
     /// Options of a replaced file.

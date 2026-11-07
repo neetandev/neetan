@@ -553,6 +553,8 @@ fn for_each_entry(
 /// Root directory (dir_cluster == 0) uses fixed sectors; subdirectories follow cluster chain.
 /// Each returned LBA points to the start of one BPB logical sector
 /// (which may span multiple physical sectors when sector_ratio > 1).
+/// A chain with a cluster outside the data area or with more clusters than
+/// the volume holds fails with `0x001F`.
 fn dir_sectors(vol: &FatVolume, dir_cluster: u16, disk: &mut dyn DiskIo) -> Result<Vec<u32>, u16> {
     let _ = disk;
     let ratio = vol.sector_ratio();
@@ -561,15 +563,23 @@ fn dir_sectors(vol: &FatVolume, dir_cluster: u16, disk: &mut dyn DiskIo) -> Resu
         let count = vol.root_dir_sectors();
         Ok((0..count).map(|i| start + i * ratio).collect())
     } else {
+        if !vol.is_data_cluster(dir_cluster) {
+            return Err(0x001F);
+        }
         let mut sectors = Vec::new();
         let spc = vol.bpb.sectors_per_cluster as u32;
         let mut cluster = dir_cluster;
+        let mut cluster_count = 0u32;
         loop {
+            cluster_count += 1;
+            if cluster_count > vol.data_cluster_count {
+                return Err(0x001F);
+            }
             let base = vol.cluster_to_lba(cluster);
             for i in 0..spc {
                 sectors.push(base + i * ratio);
             }
-            match vol.next_cluster(cluster) {
+            match vol.next_chain_cluster(cluster)? {
                 Some(next) => cluster = next,
                 None => break,
             }
@@ -668,9 +678,36 @@ mod tests {
         test_support::{
             FLOPPY_2HD_DEVICE_ID, FLOPPY_2HD_ROOT_SECTOR, MockDisk, directory_entry_bytes,
             formatted_2hd_floppy, human68k_2hd_boot_sector, pc98_2hd_boot_sector,
-            store_directory_entry,
+            set_2hd_fat_entries, store_directory_entry,
         },
     };
+
+    /// FAT12 entry of a reserved cluster value: no data cluster and no end-of-chain marker.
+    const RESERVED_FAT12_ENTRY: u16 = 0x0FF0;
+
+    #[test]
+    fn dir_sectors_rejects_a_self_looping_chain() {
+        let mut disk = formatted_2hd_floppy(&pc98_2hd_boot_sector());
+        set_2hd_fat_entries(&mut disk, [2], 2);
+        let vol = mount(&mut disk);
+        assert_eq!(dir_sectors(&vol, 2, &mut disk), Err(0x001F));
+    }
+
+    #[test]
+    fn dir_sectors_rejects_a_chain_that_leaves_the_data_area() {
+        let mut disk = formatted_2hd_floppy(&pc98_2hd_boot_sector());
+        set_2hd_fat_entries(&mut disk, [2], RESERVED_FAT12_ENTRY);
+        let vol = mount(&mut disk);
+        assert_eq!(dir_sectors(&vol, 2, &mut disk), Err(0x001F));
+
+        set_2hd_fat_entries(&mut disk, [2], 0x0FFF);
+        let vol = mount(&mut disk);
+        assert_eq!(
+            dir_sectors(&vol, 2, &mut disk).map(|sectors| sectors.len()),
+            Ok(1)
+        );
+        assert_eq!(dir_sectors(&vol, 1300, &mut disk), Err(0x001F));
+    }
 
     /// Name of `ﾊﾟﾀｰﾝ一覧.X`: the lead byte of `覧` ends the base.
     const SPANNING_NAME: &[u8; 11] = b"\xCA\xDF\xC0\xB0\xDD\x88\xEA\x97X  ";
