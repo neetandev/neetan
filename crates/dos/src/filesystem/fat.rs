@@ -3,11 +3,14 @@
 use crate::{
     DiskIo,
     drive_map::{BpbSource, DriveGeometry, fm_towns},
-    filesystem::fat_bpb::Bpb,
+    filesystem::fat_bpb::{Bpb, is_human68k_boot_sector},
 };
 
 /// Bytes of the boot record that hold the BPB.
 const BOOT_RECORD_MINIMUM_LENGTH: u32 = 512;
+
+/// Number of the first data cluster.
+const FIRST_DATA_CLUSTER: u16 = 2;
 
 /// A mounted FAT12 or FAT16 volume.
 #[derive(Clone)]
@@ -24,6 +27,8 @@ pub(crate) struct FatVolume {
     /// Ratio of BPB logical sector size to physical sector size.
     /// On PC-98 SASI HDDs this can be 4 (1024-byte BPB / 256-byte physical).
     sector_ratio: u32,
+    /// The boot sector of the volume is a Human68k boot sector.
+    human68k: bool,
 }
 
 state_struct_codec!(FatVolume {
@@ -37,6 +42,7 @@ state_struct_codec!(FatVolume {
     fat_cache,
     fat_dirty,
     sector_ratio,
+    human68k,
 });
 
 /// Mount error of a medium whose format the driver rule does not know.
@@ -63,8 +69,9 @@ impl FatVolume {
         Ok(())
     }
 
-    /// Mounts a FAT volume: takes the BPB from the source of the drive
-    /// geometry and loads the FAT.
+    /// Mounts a FAT volume: reads the boot sector to detect a Human68k
+    /// volume, takes the BPB from the source of the drive geometry and loads
+    /// the FAT.
     ///
     /// `partition_offset` is in physical sectors. The BPB may declare a
     /// larger logical sector size (e.g. 1024 bytes on a 256-byte SASI HDD).
@@ -76,18 +83,20 @@ impl FatVolume {
         disk: &mut dyn DiskIo,
     ) -> Result<Self, u16> {
         let physical_sector_size = disk.sector_size(device_id).ok_or(0x001Fu16)?;
+        let boot_record =
+            Self::read_boot_record(device_id, partition_offset, physical_sector_size, disk);
+        let human68k = boot_record.as_deref().is_some_and(is_human68k_boot_sector);
         let bpb = match geometry.bpb_source {
-            BpbSource::BootRecord => {
-                Self::boot_record_bpb(device_id, partition_offset, physical_sector_size, disk)?
-                    .ok_or(0x001Fu16)?
-            }
+            BpbSource::BootRecord => Self::boot_record_bpb(
+                boot_record.as_deref().ok_or(0x001Fu16)?,
+                physical_sector_size,
+            )
+            .ok_or(0x001Fu16)?,
             BpbSource::BootRecordOrDefault => {
                 match Self::boot_record_bpb(
-                    device_id,
-                    partition_offset,
+                    boot_record.as_deref().ok_or(0x001Fu16)?,
                     physical_sector_size,
-                    disk,
-                )? {
+                ) {
                     Some(bpb) => bpb,
                     None => Self::validated_default_bpb(
                         device_id,
@@ -145,23 +154,32 @@ impl FatVolume {
             fat_cache: fat_data,
             fat_dirty: false,
             sector_ratio,
+            human68k,
         })
     }
 
-    /// Reads the boot record and returns its BPB when it describes a usable
-    /// volume.
-    fn boot_record_bpb(
+    /// Reads the physical sectors that hold the first 512 bytes of the
+    /// volume. Returns `None` when the read fails.
+    pub(crate) fn read_boot_record(
         device_id: u8,
         partition_offset: u32,
         physical_sector_size: u16,
         disk: &mut dyn DiskIo,
-    ) -> Result<Option<Bpb>, u16> {
+    ) -> Option<Vec<u8>> {
         let boot_physical_count = BOOT_RECORD_MINIMUM_LENGTH.div_ceil(physical_sector_size as u32);
-        let boot_sector = disk
-            .read_sectors(device_id, partition_offset, boot_physical_count)
-            .map_err(|_| 0x001Fu16)?;
-        Ok(Bpb::parse(&boot_sector)
-            .filter(|bpb| bpb.is_supported_with_physical_sector_size(physical_sector_size)))
+        disk.read_sectors(device_id, partition_offset, boot_physical_count)
+            .ok()
+    }
+
+    /// Returns the BPB of a boot record when it describes a usable volume.
+    /// A DOS BPB at `0Bh` comes first, then the BPB of a Human68k 2.x boot
+    /// sector.
+    pub(crate) fn boot_record_bpb(boot_record: &[u8], physical_sector_size: u16) -> Option<Bpb> {
+        let is_usable =
+            |bpb: &Bpb| bpb.is_supported_with_physical_sector_size(physical_sector_size);
+        Bpb::parse(boot_record)
+            .filter(is_usable)
+            .or_else(|| Bpb::parse_human68k(boot_record).filter(is_usable))
     }
 
     /// Returns the BPB of an FM Towns floppy from the FAT ID in its sector 1
@@ -318,6 +336,12 @@ impl FatVolume {
         }
     }
 
+    /// Returns true when the boot sector of the volume is a Human68k boot
+    /// sector. Its directory entries then hold 18.3 names.
+    pub fn is_human68k(&self) -> bool {
+        self.human68k
+    }
+
     /// Ratio of BPB logical sector size to physical sector size.
     pub fn sector_ratio(&self) -> u32 {
         self.sector_ratio
@@ -346,11 +370,19 @@ impl FatVolume {
         free_clusters
     }
 
-    /// Converts a cluster number to an absolute physical LBA.
+    /// Returns true when `cluster` is a data cluster of the volume.
+    pub fn is_data_cluster(&self, cluster: u16) -> bool {
+        cluster >= FIRST_DATA_CLUSTER
+            && u32::from(cluster) < self.data_cluster_count + u32::from(FIRST_DATA_CLUSTER)
+    }
+
+    /// Converts a cluster number to an absolute physical LBA. A cluster
+    /// below the first data cluster maps to the first data cluster.
     pub fn cluster_to_lba(&self, cluster: u16) -> u32 {
+        let cluster_index = u32::from(cluster.saturating_sub(FIRST_DATA_CLUSTER));
         self.partition_offset
             + self.first_data_sector * self.sector_ratio
-            + (cluster as u32 - 2) * self.bpb.sectors_per_cluster as u32 * self.sector_ratio
+            + cluster_index * self.bpb.sectors_per_cluster as u32 * self.sector_ratio
     }
 
     /// Returns the absolute physical LBA of the first root directory sector.
@@ -613,5 +645,83 @@ mod tests {
         assert_eq!(volume.logical_sector_lba(1), 7);
         assert_eq!(volume.root_dir_lba(), 0x1F);
         assert_eq!(volume.cluster_to_lba(2), 0x3F);
+    }
+
+    /// Human68k 2.x floppy in the 2HQ format (80 x 2 x 18 x 512) with its
+    /// big-endian BPB and the FAT ID `F0`.
+    fn human68k_2hq_image() -> ImageDisk {
+        let mut data = vec![0u8; 80 * 2 * 18 * 512];
+        data[..0x12].copy_from_slice(b"\x60\x1CHudson soft 2.00");
+        data[0x12..0x1E].copy_from_slice(&[
+            0x02, 0x00, 0x01, 0x02, 0x00, 0x01, 0x00, 0xE0, 0x0B, 0x40, 0xF0, 0x09,
+        ]);
+        data[0x200..0x203].copy_from_slice(&[0xF0, 0xFF, 0xFF]);
+        ImageDisk {
+            sector_size: 512,
+            geometry: (80, 2, 18),
+            data,
+        }
+    }
+
+    #[test]
+    fn human68k_2hq_volume_mounts_with_the_bpb_of_its_boot_sector() {
+        let mut disk = human68k_2hq_image();
+        let volume = FatVolume::mount(0x90, 0, &pc98::floppy_2hd_geometry(), &mut disk).unwrap();
+        assert_eq!(
+            volume.bpb,
+            Bpb {
+                bytes_per_sector: 512,
+                sectors_per_cluster: 1,
+                reserved_sectors: 1,
+                num_fats: 2,
+                root_entry_count: 224,
+                total_sectors_16: 2880,
+                media_descriptor: 0xF0,
+                sectors_per_fat: 9,
+                total_sectors_32: 0,
+            }
+        );
+        assert_eq!(volume.root_dir_lba(), 19);
+        assert!(volume.is_human68k());
+    }
+
+    #[test]
+    fn human68k_3x_volume_reports_human68k() {
+        let mut disk = floppy_2hd_without_bpb(0xFE);
+        disk.data[..0x18].copy_from_slice(&[
+            0x60, 0x3C, 0x90, b'X', b'6', b'8', b'I', b'P', b'L', b'3', b'0', 0x00, 0x04, 0x01,
+            0x01, 0x00, 0x02, 0xC0, 0x00, 0xD0, 0x04, 0xFE, 0x02, 0x00,
+        ]);
+        let volume = FatVolume::mount(0x90, 0, &pc98::floppy_2dd_geometry(), &mut disk).unwrap();
+        assert_eq!(volume.bpb, pc98::FLOPPY_2HD_BPB);
+        assert!(volume.is_human68k());
+    }
+
+    #[test]
+    fn pc98_volume_is_no_human68k_volume() {
+        let mut disk = floppy_2hd_without_bpb(0xFE);
+        disk.data[..3].copy_from_slice(&[0xEB, 0x1C, 0x90]);
+        disk.data[0x0B..0x18].copy_from_slice(&[
+            0x00, 0x04, 0x01, 0x01, 0x00, 0x02, 0xC0, 0x00, 0xD0, 0x04, 0xFE, 0x02, 0x00,
+        ]);
+        let volume = FatVolume::mount(0x90, 0, &pc98::floppy_2dd_geometry(), &mut disk).unwrap();
+        assert!(!volume.is_human68k());
+
+        let mut disk = floppy_2hd_without_bpb(0xFE);
+        let volume = FatVolume::mount(0x90, 0, &pc98::floppy_2hd_geometry(), &mut disk).unwrap();
+        assert!(!volume.is_human68k());
+    }
+
+    #[test]
+    fn clusters_outside_the_data_area_are_no_data_clusters() {
+        let mut disk = floppy_2hd_without_bpb(0xFE);
+        let volume = FatVolume::mount(0x90, 0, &pc98::floppy_2hd_geometry(), &mut disk).unwrap();
+        assert!(!volume.is_data_cluster(0));
+        assert!(!volume.is_data_cluster(1));
+        assert!(volume.is_data_cluster(2));
+        assert!(volume.is_data_cluster(1222));
+        assert!(!volume.is_data_cluster(1223));
+        assert_eq!(volume.cluster_to_lba(0), volume.cluster_to_lba(2));
+        assert_eq!(volume.cluster_to_lba(1), 11);
     }
 }

@@ -12,6 +12,27 @@ const DIRECTORY_ENTRY_SIZE: u32 = 32;
 /// Data cluster count from which a volume uses FAT16.
 const FAT16_MINIMUM_CLUSTER_COUNT: u32 = 4085;
 
+/// First byte of a Human68k boot sector: the 68000 `BRA.S` opcode.
+const HUMAN68K_BOOT_OPCODE: u8 = 0x60;
+
+/// Signature of a Human68k 2.x boot sector.
+const HUMAN68K_HUDSON_SIGNATURE: &[u8] = b"Hudson soft";
+
+/// Offset of the Human68k 2.x signature in the boot sector.
+const HUMAN68K_HUDSON_SIGNATURE_OFFSET: usize = 2;
+
+/// Signature of a Human68k 3.x boot sector.
+const HUMAN68K_IPL_SIGNATURE: &[u8] = b"X68IPL";
+
+/// Offset of the Human68k 3.x signature in the boot sector.
+const HUMAN68K_IPL_SIGNATURE_OFFSET: usize = 3;
+
+/// Offset of the big-endian BPB in a Human68k 2.x boot sector.
+const HUMAN68K_BPB_OFFSET: usize = 0x12;
+
+/// Length of the big-endian BPB of a Human68k 2.x boot sector.
+const HUMAN68K_BPB_LENGTH: usize = 12;
+
 /// BIOS Parameter Block of a FAT volume.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Bpb {
@@ -64,19 +85,9 @@ impl Bpb {
             return None;
         }
 
-        let bytes_per_sector = u16::from_le_bytes([block[0], block[1]]);
-        if !bytes_per_sector.is_power_of_two() {
-            return None;
-        }
-
-        let sectors_per_cluster = block[2];
-        if !sectors_per_cluster.is_power_of_two() {
-            return None;
-        }
-
-        Some(Self {
-            bytes_per_sector,
-            sectors_per_cluster,
+        Self {
+            bytes_per_sector: u16::from_le_bytes([block[0], block[1]]),
+            sectors_per_cluster: block[2],
             reserved_sectors: u16::from_le_bytes([block[3], block[4]]),
             num_fats: block[5],
             root_entry_count: u16::from_le_bytes([block[6], block[7]]),
@@ -84,7 +95,41 @@ impl Bpb {
             media_descriptor: block[10],
             sectors_per_fat: u16::from_le_bytes([block[11], block[12]]),
             total_sectors_32: u32::from_le_bytes([block[21], block[22], block[23], block[24]]),
-        })
+        }
+        .with_valid_sizes()
+    }
+
+    /// Parses the big-endian BPB of a Human68k 2.x boot sector: `0x60` at
+    /// offset 0 and `Hudson soft` at offset 2. Returns `None` for any other
+    /// sector and for sector and cluster sizes that are no powers of two.
+    pub fn parse_human68k(sector: &[u8]) -> Option<Self> {
+        if !has_signature(
+            sector,
+            HUMAN68K_HUDSON_SIGNATURE_OFFSET,
+            HUMAN68K_HUDSON_SIGNATURE,
+        ) {
+            return None;
+        }
+        let block = sector.get(HUMAN68K_BPB_OFFSET..HUMAN68K_BPB_OFFSET + HUMAN68K_BPB_LENGTH)?;
+
+        Self {
+            bytes_per_sector: u16::from_be_bytes([block[0], block[1]]),
+            sectors_per_cluster: block[2],
+            num_fats: block[3],
+            reserved_sectors: u16::from_be_bytes([block[4], block[5]]),
+            root_entry_count: u16::from_be_bytes([block[6], block[7]]),
+            total_sectors_16: u16::from_be_bytes([block[8], block[9]]),
+            media_descriptor: block[10],
+            sectors_per_fat: u16::from(block[11]),
+            total_sectors_32: 0,
+        }
+        .with_valid_sizes()
+    }
+
+    /// Returns the BPB when its sector and cluster sizes are powers of two.
+    fn with_valid_sizes(self) -> Option<Self> {
+        (self.bytes_per_sector.is_power_of_two() && self.sectors_per_cluster.is_power_of_two())
+            .then_some(self)
     }
 
     /// Returns true when the BPB describes a usable volume on a device with
@@ -164,9 +209,31 @@ impl Bpb {
     }
 }
 
+/// Returns true for a Human68k boot sector: `0x60` at offset 0 and
+/// `X68IPL` at offset 3 or `Hudson soft` at offset 2.
+pub(crate) fn is_human68k_boot_sector(sector: &[u8]) -> bool {
+    has_signature(
+        sector,
+        HUMAN68K_HUDSON_SIGNATURE_OFFSET,
+        HUMAN68K_HUDSON_SIGNATURE,
+    ) || has_signature(
+        sector,
+        HUMAN68K_IPL_SIGNATURE_OFFSET,
+        HUMAN68K_IPL_SIGNATURE,
+    )
+}
+
+/// Returns true when the sector starts with the Human68k boot opcode and
+/// holds the signature at the offset.
+fn has_signature(sector: &[u8], offset: usize, signature: &[u8]) -> bool {
+    sector.first() == Some(&HUMAN68K_BOOT_OPCODE)
+        && sector.get(offset..offset + signature.len()) == Some(signature)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::human68k_2hd_boot_sector;
 
     /// Boot sector of a PC-98 2HD floppy with the BPB at offset 0Bh.
     fn floppy_boot_sector() -> Vec<u8> {
@@ -224,5 +291,48 @@ mod tests {
         assert!(bpb.is_supported_with_physical_sector_size(256));
         assert!(!bpb.is_supported_with_physical_sector_size(2048));
         assert!(!bpb.is_supported_with_physical_sector_size(0));
+    }
+
+    #[test]
+    fn human68k_parse_reads_the_big_endian_bpb() {
+        let sector = human68k_2hd_boot_sector();
+        assert!(Bpb::parse(&sector).is_none());
+        let bpb = Bpb::parse_human68k(&sector).unwrap();
+        assert_eq!(bpb, Bpb::parse(&floppy_boot_sector()).unwrap());
+        assert_eq!(bpb.total_sectors_32, 0);
+    }
+
+    #[test]
+    fn human68k_parse_needs_the_hudson_signature() {
+        let mut sector = human68k_2hd_boot_sector();
+        sector[2..13].copy_from_slice(b"Hudson SOFT");
+        assert!(Bpb::parse_human68k(&sector).is_none());
+        let mut sector = human68k_2hd_boot_sector();
+        sector[0] = 0xEB;
+        assert!(Bpb::parse_human68k(&sector).is_none());
+        assert!(Bpb::parse_human68k(&floppy_boot_sector()).is_none());
+        assert!(Bpb::parse_human68k(&human68k_2hd_boot_sector()[..20]).is_none());
+    }
+
+    #[test]
+    fn human68k_parse_rejects_sizes_that_are_no_powers_of_two() {
+        let mut sector = human68k_2hd_boot_sector();
+        sector[HUMAN68K_BPB_OFFSET..HUMAN68K_BPB_OFFSET + 2].copy_from_slice(&[0x03, 0x00]);
+        assert!(Bpb::parse_human68k(&sector).is_none());
+        let mut sector = human68k_2hd_boot_sector();
+        sector[HUMAN68K_BPB_OFFSET + 2] = 0x03;
+        assert!(Bpb::parse_human68k(&sector).is_none());
+    }
+
+    #[test]
+    fn human68k_boot_sectors_carry_one_of_two_signatures() {
+        assert!(is_human68k_boot_sector(&human68k_2hd_boot_sector()));
+        let mut sector = vec![0u8; 1024];
+        sector[..12].copy_from_slice(b"\x60\x3C\x90X68IPL30\x00");
+        assert!(is_human68k_boot_sector(&sector));
+        sector[0] = 0xEB;
+        assert!(!is_human68k_boot_sector(&sector));
+        assert!(!is_human68k_boot_sector(&floppy_boot_sector()));
+        assert!(!is_human68k_boot_sector(&[]));
     }
 }

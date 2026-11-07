@@ -6,6 +6,28 @@ use crate::{DiskIo, filesystem::fat::FatVolume};
 
 pub(crate) const DIR_ENTRY_SIZE: usize = 32;
 
+/// Offset of the reserved bytes in a directory entry.
+const RESERVED_OFFSET: usize = 12;
+
+/// Length of the reserved bytes of a directory entry.
+pub(crate) const RESERVED_LENGTH: usize = 10;
+
+/// Offset of the extension in a directory entry.
+const EXTENSION_OFFSET: usize = 8;
+
+/// Offset of the time field in a directory entry, the first byte after
+/// the reserved bytes.
+const TIME_OFFSET: usize = 22;
+
+/// Length of the 8.3 name of a directory entry.
+const FCB_NAME_LENGTH: usize = 11;
+
+/// First byte of the name of a deleted entry.
+const DELETED_ENTRY_MARKER: u8 = 0xE5;
+
+/// Stored first byte of a name that starts with the byte `E5h`.
+const ESCAPED_DELETED_MARKER: u8 = 0x05;
+
 pub(crate) const ATTR_READ_ONLY: u8 = 0x01;
 pub(crate) const ATTR_HIDDEN: u8 = 0x02;
 pub(crate) const ATTR_SYSTEM: u8 = 0x04;
@@ -16,8 +38,13 @@ pub(crate) const ATTR_ARCHIVE: u8 = 0x20;
 /// A parsed directory entry with its on-disk location.
 #[derive(Debug, Clone)]
 pub(crate) struct DirEntry {
+    /// 8.3 name. A name that starts with `E5h` holds `E5h` here and `05h`
+    /// on disk.
     pub name: [u8; 11],
     pub attribute: u8,
+    /// Bytes 12 to 21: the Human68k name continuation or the creation time
+    /// fields of later DOS versions.
+    pub reserved: [u8; RESERVED_LENGTH],
     pub time: u16,
     pub date: u16,
     pub start_cluster: u16,
@@ -31,6 +58,7 @@ pub(crate) struct DirEntry {
 state_struct_codec!(DirEntry {
     name,
     attribute,
+    reserved,
     time,
     date,
     start_cluster,
@@ -40,15 +68,19 @@ state_struct_codec!(DirEntry {
 });
 
 impl DirEntry {
-    /// Serializes the entry back to a 32-byte buffer.
+    /// Serializes the entry back to a 32-byte buffer. A first name byte
+    /// `E5h` is stored as `05h`.
     pub fn to_bytes(&self) -> [u8; 32] {
         let mut buf = [0u8; 32];
-        buf[0..11].copy_from_slice(&self.name);
+        buf[..FCB_NAME_LENGTH].copy_from_slice(&self.name);
+        if buf[0] == DELETED_ENTRY_MARKER {
+            buf[0] = ESCAPED_DELETED_MARKER;
+        }
         buf[11] = self.attribute;
-        // bytes 12-21: reserved/NT, creation time, etc. - leave as zero
+        buf[RESERVED_OFFSET..RESERVED_OFFSET + RESERVED_LENGTH].copy_from_slice(&self.reserved);
         let time_bytes = self.time.to_le_bytes();
-        buf[22] = time_bytes[0];
-        buf[23] = time_bytes[1];
+        buf[TIME_OFFSET] = time_bytes[0];
+        buf[TIME_OFFSET + 1] = time_bytes[1];
         let date_bytes = self.date.to_le_bytes();
         buf[24] = date_bytes[0];
         buf[25] = date_bytes[1];
@@ -62,29 +94,69 @@ impl DirEntry {
         buf[31] = size_bytes[3];
         buf
     }
+
+    /// Returns the display name of a Human68k entry: the base, the name
+    /// continuation, a dot and the extension.
+    pub fn human68k_display_name(&self) -> Vec<u8> {
+        let mut result = self.name[..EXTENSION_OFFSET].to_vec();
+        result.extend_from_slice(human68k_name_continuation(&self.reserved));
+        let base_end = result
+            .iter()
+            .rposition(|&byte| byte != b' ')
+            .map_or(0, |position| position + 1);
+        result.truncate(base_end);
+
+        let extension = &self.name[EXTENSION_OFFSET..];
+        let extension_end = extension
+            .iter()
+            .rposition(|&byte| byte != b' ')
+            .map_or(0, |position| position + 1);
+        if extension_end > 0 {
+            result.push(b'.');
+            result.extend_from_slice(&extension[..extension_end]);
+        }
+        result
+    }
 }
 
 /// Parses a 32-byte directory entry. Returns None for deleted (0xE5) or
-/// end-of-directory (0x00) markers.
-pub(crate) fn parse_entry(data: &[u8], sector: u32, offset: u16) -> Option<DirEntry> {
+/// end-of-directory (0x00) markers. A stored first byte `05h` becomes
+/// `E5h`. On a Human68k volume the name also passes with the 18-byte name
+/// of base and continuation.
+pub(crate) fn parse_entry(
+    data: &[u8],
+    sector: u32,
+    offset: u16,
+    human68k: bool,
+) -> Option<DirEntry> {
     if data.len() < 32 {
         return None;
     }
     let first_byte = data[0];
-    if first_byte == 0x00 || first_byte == 0xE5 {
+    if first_byte == 0x00 || first_byte == DELETED_ENTRY_MARKER {
         return None;
+    }
+    let mut name: [u8; FCB_NAME_LENGTH] = data[..FCB_NAME_LENGTH].try_into().unwrap();
+    if name[0] == ESCAPED_DELETED_MARKER {
+        name[0] = DELETED_ENTRY_MARKER;
     }
     let attribute = data[11];
     if attribute & 0xC0 != 0 || attribute == 0x0F {
         return None;
     }
-    if !is_valid_fcb_name(&data[0..11]) {
+    let reserved: [u8; RESERVED_LENGTH] = data[RESERVED_OFFSET..RESERVED_OFFSET + RESERVED_LENGTH]
+        .try_into()
+        .unwrap();
+    let name_is_valid =
+        is_valid_fcb_name(&name) || (human68k && is_valid_human68k_name(&name, &reserved));
+    if !name_is_valid {
         return None;
     }
     Some(DirEntry {
-        name: data[0..11].try_into().unwrap(),
+        name,
         attribute,
-        time: u16::from_le_bytes([data[22], data[23]]),
+        reserved,
+        time: u16::from_le_bytes([data[TIME_OFFSET], data[TIME_OFFSET + 1]]),
         date: u16::from_le_bytes([data[24], data[25]]),
         start_cluster: u16::from_le_bytes([data[26], data[27]]),
         file_size: u32::from_le_bytes([data[28], data[29], data[30], data[31]]),
@@ -94,7 +166,18 @@ pub(crate) fn parse_entry(data: &[u8], sector: u32, offset: u16) -> Option<DirEn
 }
 
 fn is_valid_fcb_name(name: &[u8]) -> bool {
-    if name.len() != 11 {
+    is_valid_entry_name(name, &[])
+}
+
+/// Checks the 18.3 name of a Human68k entry: the base with the name
+/// continuation up to its first zero byte, and the extension.
+fn is_valid_human68k_name(name: &[u8], reserved: &[u8; RESERVED_LENGTH]) -> bool {
+    is_valid_entry_name(name, human68k_name_continuation(reserved))
+}
+
+/// Checks an 8.3 name whose base continues with `continuation`.
+fn is_valid_entry_name(name: &[u8], continuation: &[u8]) -> bool {
+    if name.len() != FCB_NAME_LENGTH || continuation.len() > RESERVED_LENGTH {
         return false;
     }
     if name == b".          " || name == b"..         " {
@@ -104,7 +187,21 @@ fn is_valid_fcb_name(name: &[u8]) -> bool {
         return false;
     }
 
-    is_valid_fcb_field(&name[..8]) && is_valid_fcb_field(&name[8..])
+    let base_length = EXTENSION_OFFSET + continuation.len();
+    let mut base = [0u8; EXTENSION_OFFSET + RESERVED_LENGTH];
+    base[..EXTENSION_OFFSET].copy_from_slice(&name[..EXTENSION_OFFSET]);
+    base[EXTENSION_OFFSET..base_length].copy_from_slice(continuation);
+    is_valid_fcb_field(&base[..base_length]) && is_valid_fcb_field(&name[EXTENSION_OFFSET..])
+}
+
+/// Returns the Human68k name continuation: the reserved bytes up to the
+/// first zero byte.
+fn human68k_name_continuation(reserved: &[u8; RESERVED_LENGTH]) -> &[u8] {
+    let end = reserved
+        .iter()
+        .position(|&byte| byte == 0)
+        .unwrap_or(RESERVED_LENGTH);
+    &reserved[..end]
 }
 
 fn is_valid_fcb_field(field: &[u8]) -> bool {
@@ -368,6 +465,8 @@ pub(crate) fn create_entry(
 }
 
 /// Updates an existing directory entry on disk at its stored location.
+/// Writes bytes 0 to 11 and 22 to 31 and keeps the reserved bytes 12 to 21
+/// of the entry on disk.
 pub(crate) fn update_entry(
     vol: &FatVolume,
     entry: &DirEntry,
@@ -376,7 +475,22 @@ pub(crate) fn update_entry(
     let mut sector_data = vol.read_sector_abs(entry.dir_sector, disk)?;
     let offset = entry.dir_offset as usize;
     let entry_bytes = entry.to_bytes();
-    sector_data[offset..offset + DIR_ENTRY_SIZE].copy_from_slice(&entry_bytes);
+    sector_data[offset..offset + RESERVED_OFFSET].copy_from_slice(&entry_bytes[..RESERVED_OFFSET]);
+    sector_data[offset + TIME_OFFSET..offset + DIR_ENTRY_SIZE]
+        .copy_from_slice(&entry_bytes[TIME_OFFSET..]);
+    vol.write_sector_abs(entry.dir_sector, &sector_data, disk)
+}
+
+/// Writes all 32 bytes of an existing directory entry at its stored
+/// location, the reserved bytes included.
+pub(crate) fn write_entry(
+    vol: &FatVolume,
+    entry: &DirEntry,
+    disk: &mut dyn DiskIo,
+) -> Result<(), u16> {
+    let mut sector_data = vol.read_sector_abs(entry.dir_sector, disk)?;
+    let offset = entry.dir_offset as usize;
+    sector_data[offset..offset + DIR_ENTRY_SIZE].copy_from_slice(&entry.to_bytes());
     vol.write_sector_abs(entry.dir_sector, &sector_data, disk)
 }
 
@@ -423,6 +537,7 @@ fn for_each_entry(
                 &sector_data[offset..offset + DIR_ENTRY_SIZE],
                 *abs_sector,
                 offset as u16,
+                vol.is_human68k(),
             ) {
                 match callback(entry) {
                     IterAction::Continue => {}
@@ -490,6 +605,7 @@ pub(crate) fn create_subdirectory(
     let dot_entry = DirEntry {
         name: *b".          ",
         attribute: ATTR_DIRECTORY,
+        reserved: [0; RESERVED_LENGTH],
         time,
         date,
         start_cluster: new_cluster,
@@ -506,6 +622,7 @@ pub(crate) fn create_subdirectory(
     let dotdot_entry = DirEntry {
         name: *b"..         ",
         attribute: ATTR_DIRECTORY,
+        reserved: [0; RESERVED_LENGTH],
         time,
         date,
         start_cluster: parent_cluster,
@@ -522,6 +639,7 @@ pub(crate) fn create_subdirectory(
     let dir_entry = DirEntry {
         name: fcb_name,
         attribute: ATTR_DIRECTORY,
+        reserved: [0; RESERVED_LENGTH],
         time,
         date,
         start_cluster: new_cluster,
@@ -545,6 +663,24 @@ pub(crate) fn create_subdirectory(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        drive_map::pc98,
+        test_support::{
+            FLOPPY_2HD_DEVICE_ID, FLOPPY_2HD_ROOT_SECTOR, MockDisk, directory_entry_bytes,
+            formatted_2hd_floppy, human68k_2hd_boot_sector, pc98_2hd_boot_sector,
+            store_directory_entry,
+        },
+    };
+
+    /// Name of `ﾊﾟﾀｰﾝ一覧.X`: the lead byte of `覧` ends the base.
+    const SPANNING_NAME: &[u8; 11] = b"\xCA\xDF\xC0\xB0\xDD\x88\xEA\x97X  ";
+
+    /// Name continuation of `ﾊﾟﾀｰﾝ一覧.X`: the trail byte of `覧`.
+    const SPANNING_CONTINUATION: &[u8] = &[0x97];
+
+    fn mount(disk: &mut MockDisk) -> FatVolume {
+        FatVolume::mount(FLOPPY_2HD_DEVICE_ID, 0, &pc98::floppy_2hd_geometry(), disk).unwrap()
+    }
 
     fn raw_entry(name: [u8; 11], attribute: u8) -> [u8; 32] {
         let mut data = [0u8; 32];
@@ -555,23 +691,174 @@ mod tests {
 
     #[test]
     fn parse_entry_accepts_dot_directory_entries() {
-        assert!(parse_entry(&raw_entry(*b".          ", ATTR_DIRECTORY), 0, 0).is_some());
-        assert!(parse_entry(&raw_entry(*b"..         ", ATTR_DIRECTORY), 0, 0).is_some());
+        assert!(parse_entry(&raw_entry(*b".          ", ATTR_DIRECTORY), 0, 0, false).is_some());
+        assert!(parse_entry(&raw_entry(*b"..         ", ATTR_DIRECTORY), 0, 0, false).is_some());
     }
 
     #[test]
     fn parse_entry_rejects_invalid_attribute_bits() {
-        assert!(parse_entry(&raw_entry(*b"FILE    TXT", 0x40), 0, 0).is_none());
-        assert!(parse_entry(&raw_entry(*b"LONGNAMEEXT", 0x0F), 0, 0).is_none());
+        assert!(parse_entry(&raw_entry(*b"FILE    TXT", 0x40), 0, 0, false).is_none());
+        assert!(parse_entry(&raw_entry(*b"LONGNAMEEXT", 0x0F), 0, 0, false).is_none());
     }
 
     #[test]
     fn parse_entry_rejects_invalid_fcb_names() {
-        assert!(parse_entry(&raw_entry(*b" FILE   TXT", ATTR_ARCHIVE), 0, 0).is_none());
-        assert!(parse_entry(&raw_entry(*b"BAD.NAMEEXT", ATTR_ARCHIVE), 0, 0).is_none());
+        assert!(parse_entry(&raw_entry(*b" FILE   TXT", ATTR_ARCHIVE), 0, 0, false).is_none());
+        assert!(parse_entry(&raw_entry(*b"BAD.NAMEEXT", ATTR_ARCHIVE), 0, 0, false).is_none());
 
         let mut shift_jis_name = *b"        TXT";
         shift_jis_name[0] = 0x82;
-        assert!(parse_entry(&raw_entry(shift_jis_name, ATTR_ARCHIVE), 0, 0).is_none());
+        assert!(parse_entry(&raw_entry(shift_jis_name, ATTR_ARCHIVE), 0, 0, false).is_none());
+    }
+
+    #[test]
+    fn parse_entry_and_to_bytes_keep_the_reserved_bytes() {
+        let raw = directory_entry_bytes(b"LONGNAMEX  ", ATTR_ARCHIVE, b"1Abcdefghi", 0x0123, 4567);
+        let mut data = raw;
+        data[22..26].copy_from_slice(&[0x11, 0x22, 0x33, 0x44]);
+        let entry = parse_entry(&data, 5, 0, false).unwrap();
+        assert_eq!(&entry.reserved, b"1Abcdefghi");
+        assert_eq!(entry.to_bytes(), data);
+    }
+
+    #[test]
+    fn update_entry_keeps_the_reserved_bytes_on_disk() {
+        let mut disk = formatted_2hd_floppy(&pc98_2hd_boot_sector());
+        let reserved = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        let raw = directory_entry_bytes(b"FILE    TXT", ATTR_ARCHIVE, &reserved, 0, 0);
+        store_directory_entry(&mut disk, FLOPPY_2HD_ROOT_SECTOR, 3, &raw);
+        let volume = mount(&mut disk);
+
+        let entry = DirEntry {
+            name: *b"FILE    TXT",
+            attribute: ATTR_READ_ONLY,
+            reserved: [0; RESERVED_LENGTH],
+            time: 0x1111,
+            date: 0x2222,
+            start_cluster: 7,
+            file_size: 1000,
+            dir_sector: FLOPPY_2HD_ROOT_SECTOR,
+            dir_offset: 3 * DIR_ENTRY_SIZE as u16,
+        };
+        update_entry(&volume, &entry, &mut disk).unwrap();
+
+        let stored = &disk.sector(FLOPPY_2HD_ROOT_SECTOR)[96..128];
+        assert_eq!(stored[11], ATTR_READ_ONLY);
+        assert_eq!(&stored[12..22], &reserved);
+        let mut expected = entry.to_bytes();
+        expected[12..22].copy_from_slice(&reserved);
+        assert_eq!(stored, expected);
+    }
+
+    #[test]
+    fn human68k_volume_parses_a_character_across_base_and_continuation() {
+        let raw = directory_entry_bytes(SPANNING_NAME, ATTR_ARCHIVE, SPANNING_CONTINUATION, 2, 1);
+
+        let mut disk = formatted_2hd_floppy(&human68k_2hd_boot_sector());
+        store_directory_entry(&mut disk, FLOPPY_2HD_ROOT_SECTOR, 0, &raw);
+        let volume = mount(&mut disk);
+        assert!(volume.is_human68k());
+        let entry = find_entry(&volume, 0, SPANNING_NAME, &mut disk)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            entry.human68k_display_name(),
+            b"\xCA\xDF\xC0\xB0\xDD\x88\xEA\x97\x97.X"
+        );
+
+        let mut disk = formatted_2hd_floppy(&pc98_2hd_boot_sector());
+        store_directory_entry(&mut disk, FLOPPY_2HD_ROOT_SECTOR, 0, &raw);
+        let volume = mount(&mut disk);
+        assert!(!volume.is_human68k());
+        assert!(
+            find_entry(&volume, 0, SPANNING_NAME, &mut disk)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn human68k_display_name_joins_base_continuation_and_extension() {
+        let raw = directory_entry_bytes(b"LONGNAMEX  ", ATTR_ARCHIVE, b"1a", 0, 0);
+        let entry = parse_entry(&raw, 0, 0, true).unwrap();
+        assert_eq!(entry.human68k_display_name(), b"LONGNAME1a.X");
+
+        let raw = directory_entry_bytes(b"SHORT      ", ATTR_DIRECTORY, &[], 0, 0);
+        let entry = parse_entry(&raw, 0, 0, true).unwrap();
+        assert_eq!(entry.human68k_display_name(), b"SHORT");
+    }
+
+    #[test]
+    fn human68k_name_check_rejects_a_lone_lead_byte() {
+        let raw = directory_entry_bytes(SPANNING_NAME, ATTR_ARCHIVE, &[], 0, 0);
+        assert!(parse_entry(&raw, 0, 0, true).is_none());
+    }
+
+    /// Name of a file whose first character has the lead byte `E5h`.
+    const E5_LEAD_NAME: &[u8; 11] = b"\xE5\xA0      TXT";
+
+    #[test]
+    fn stored_first_byte_05_reads_as_e5() {
+        let mut raw = directory_entry_bytes(E5_LEAD_NAME, ATTR_ARCHIVE, &[], 0, 0);
+        raw[0] = ESCAPED_DELETED_MARKER;
+
+        let entry = parse_entry(&raw, 0, 0, false).unwrap();
+        assert_eq!(&entry.name, E5_LEAD_NAME);
+        assert_eq!(entry.to_bytes(), raw);
+        assert_eq!(fcb_to_display_name(&entry.name), b"\xE5\xA0.TXT");
+        assert_eq!(entry.human68k_display_name(), b"\xE5\xA0.TXT");
+
+        let human68k_entry = parse_entry(&raw, 0, 0, true).unwrap();
+        assert_eq!(&human68k_entry.name, E5_LEAD_NAME);
+    }
+
+    #[test]
+    fn create_entry_stores_a_first_byte_e5_as_05() {
+        let mut disk = formatted_2hd_floppy(&pc98_2hd_boot_sector());
+        let mut volume = mount(&mut disk);
+        let entry = DirEntry {
+            name: *E5_LEAD_NAME,
+            attribute: ATTR_ARCHIVE,
+            reserved: [0; RESERVED_LENGTH],
+            time: 0,
+            date: 0,
+            start_cluster: 0,
+            file_size: 0,
+            dir_sector: 0,
+            dir_offset: 0,
+        };
+        create_entry(&mut volume, 0, &entry, &mut disk).unwrap();
+
+        let stored = &disk.sector(FLOPPY_2HD_ROOT_SECTOR)[..DIR_ENTRY_SIZE];
+        assert_eq!(stored[0], ESCAPED_DELETED_MARKER);
+        assert_eq!(&stored[1..FCB_NAME_LENGTH], &E5_LEAD_NAME[1..]);
+        let found = find_entry(&volume, 0, E5_LEAD_NAME, &mut disk)
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.dir_offset, 0);
+    }
+
+    #[test]
+    fn human68k_volume_accepts_an_8_3_name_with_a_continuation_it_cannot_join() {
+        let raw = directory_entry_bytes(b"AB      X  ", ATTR_ARCHIVE, b"cd", 0, 0);
+        assert!(parse_entry(&raw, 0, 0, true).is_some());
+        assert!(parse_entry(&raw, 0, 0, false).is_some());
+    }
+
+    #[test]
+    fn write_entry_writes_the_reserved_bytes() {
+        let mut disk = formatted_2hd_floppy(&human68k_2hd_boot_sector());
+        let raw = directory_entry_bytes(b"LONGNAMEX  ", ATTR_ARCHIVE, b"1A", 0, 0);
+        store_directory_entry(&mut disk, FLOPPY_2HD_ROOT_SECTOR, 0, &raw);
+        let volume = mount(&mut disk);
+        let mut entry = find_entry(&volume, 0, b"LONGNAMEX  ", &mut disk)
+            .unwrap()
+            .unwrap();
+        entry.reserved = [0; RESERVED_LENGTH];
+        write_entry(&volume, &entry, &mut disk).unwrap();
+        assert_eq!(
+            &disk.sector(FLOPPY_2HD_ROOT_SECTOR)[..DIR_ENTRY_SIZE],
+            entry.to_bytes()
+        );
     }
 }

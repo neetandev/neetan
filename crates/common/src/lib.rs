@@ -54,7 +54,7 @@ pub use inspect::{
 };
 pub use jis::{
     JisChar, char_to_jis, is_shift_jis_lead_byte, is_shift_jis_trail_byte, jis_slice_to_string,
-    jis_to_char, jis_to_shift_jis, shift_jis_pair_to_jis, str_to_jis,
+    jis_to_char, jis_to_shift_jis, shift_jis_pair_to_jis, shift_jis_to_string, str_to_jis,
 };
 pub use save_state::{MachineStateBlob, SaveStateError};
 pub use scheduler::{ScheduledEventIndex, SchedulerState};
