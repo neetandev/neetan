@@ -10,7 +10,7 @@ use crate::{
 const BOOT_RECORD_MINIMUM_LENGTH: u32 = 512;
 
 /// Number of the first data cluster.
-const FIRST_DATA_CLUSTER: u16 = 2;
+pub(crate) const FIRST_DATA_CLUSTER: u16 = 2;
 
 /// A mounted FAT12 or FAT16 volume.
 #[derive(Clone)]
@@ -302,6 +302,20 @@ impl FatVolume {
             None
         } else {
             Some(entry)
+        }
+    }
+
+    /// Returns the next data cluster of a chain, or `None` at an end-of-chain
+    /// marker. Any other FAT entry fails with `0x001F`.
+    pub fn next_chain_cluster(&self, cluster: u16) -> Result<Option<u16>, u16> {
+        let entry = self.read_fat_entry(cluster);
+        let end_of_chain = if self.is_fat16 { 0xFFF8 } else { 0x0FF8 };
+        if entry >= end_of_chain {
+            Ok(None)
+        } else if self.is_data_cluster(entry) {
+            Ok(Some(entry))
+        } else {
+            Err(0x001F)
         }
     }
 
