@@ -58,6 +58,9 @@ The MT-32 and SC-55 modules are configured separately via `--midi`; see
 | `--boot-device <DEVICE>`     | Boot device: `auto`, `fdd1`, `fdd2`, `hdd1`, `hdd2`, `dos`            | `auto`   |
 | `--printer <PATH>`           | Output file of the printer. The file must exist                       | -        |
 
+The floppy drives (`--fdd1`, `--fdd2`) read every format in
+[Floppy disk image formats](disk-images.md#floppy-disk-image-formats).
+
 CD-ROM disc images (`--cdrom`) are supported on the PC-9821 targets only.
 
 ## Boot device and HLE DOS

@@ -60,6 +60,8 @@ pub struct BlankImages {
 
 /// The extensions of a D88 floppy disk image.
 pub const D88_EXTENSIONS: &[&str] = &["d88"];
+/// The extensions of an Anex86 FDI floppy disk image.
+pub const FDI_EXTENSIONS: &[&str] = &["fdi"];
 /// The extensions of a PC-98 hard disk image.
 pub const HDI_EXTENSIONS: &[&str] = &["hdi"];
 /// The extensions of an FM Towns SCSI hard disk image, with `h0` first for SCSI ID 0. The digit
@@ -86,6 +88,14 @@ const fn d88_floppy(floppy_type: FddType) -> BlankImage {
     BlankImage {
         format: BlankFormat::Floppy(floppy_type),
         extensions: D88_EXTENSIONS,
+    }
+}
+
+/// Returns an Anex86 FDI floppy disk image of `floppy_type`.
+const fn fdi_floppy(floppy_type: FddType) -> BlankImage {
+    BlankImage {
+        format: BlankFormat::Floppy(floppy_type),
+        extensions: FDI_EXTENSIONS,
     }
 }
 
@@ -126,6 +136,8 @@ const AT_MODELS: &[&str] = &["AT486DX50", "AT486DX66"];
 
 /// The 2HD 1.2 MB D88 floppy disk.
 const HD2_D88_IMAGES: &[BlankImage] = &[d88_floppy(FddType::Hd2)];
+/// The floppy disks of the PC-98: 2HD 1.2 MB as a D88 and as an FDI.
+const PC98_FLOPPY_IMAGES: &[BlankImage] = &[d88_floppy(FddType::Hd2), fdi_floppy(FddType::Hd2)];
 /// The 2D 320 KB D88 floppy disk.
 const D2_D88_IMAGES: &[BlankImage] = &[d88_floppy(FddType::D2)];
 /// The floppy disks of the PC-88: 2D and 2HD.
@@ -276,7 +288,7 @@ const fn hard_disk_images(
 
 /// The blank images of every drive kind, family and model.
 pub const BLANK_IMAGES: &[BlankImages] = &[
-    floppy_images(Families::PC98, PC98_MODELS, HD2_D88_IMAGES),
+    floppy_images(Families::PC98, PC98_MODELS, PC98_FLOPPY_IMAGES),
     floppy_images(Families::PC88, PC88_MODELS, PC88_FLOPPY_IMAGES),
     floppy_images(Families::PC88VA, PC88VA_MODELS, PC88VA_FLOPPY_IMAGES),
     floppy_images(Families::PC60, PC60_FDD_MODELS, D2_D88_IMAGES),

@@ -261,7 +261,7 @@ Usage: neetan [OPTIONS]
        neetan <COMMAND>
 
 Commands:
-  create-fdd <PATH>             Create an empty floppy disk image (D88 or raw)
+  create-fdd <PATH>             Create an empty floppy disk image
   create-hdd <PATH>             Create an empty hard disk image (HDI, raw SCSI, X68000 HDF or PC/AT flat .hdd)
   convert-hdd <INPUT> <OUTPUT>  Convert HDD image between SASI and IDE
   copy <SOURCE> <DEST>          Copy files between host and FAT disk images
@@ -299,13 +299,14 @@ Run 'neetan <COMMAND> --help' for more information on a command.",
 fn print_create_fdd_help() {
     println!(
         "\
-Create an empty floppy disk image in D88 or raw format
+Create an empty floppy disk image.
 
 Usage: neetan create-fdd <PATH> [OPTIONS]
 
 Arguments:
-  <PATH>  Output file path (.d88 for D88 on every type; .xdf or .2hd raw for 2hd;
-          .img or .ima raw for 2hd144; .dsk, .img or .ima raw for 2dd720)
+  <PATH>  Output file path (.d88 for D88 and .fdi for FDI on every type; .xdf or
+          .2hd raw for 2hd; .img or .ima raw for 2hd144; .dsk, .img or .ima raw
+          for 2dd720)
 
 Options:
       --type <TYPE>  Floppy type [default: 2hd]
@@ -400,12 +401,15 @@ Examples:
   neetan copy src.hdi:A:\\FOO.EXE dst.hdi:A:\\FOO.EXE
 
 Image formats: HDI, NHD, THD, HDD (HDD);
-               D88, D98, 88D, 98D, HDM, NFD, 2D, IMG, IMA, DSK (FDD).
+               D88, D98, 88D, 98D, D77, HDM, NFD, FDI, 2D, DIM, XDF, 2HD, IMG,
+               IMA, DSK (FDD).
 
 Notes:
   - Directories are copied recursively (no -r flag).
-  - DOS paths must use 8.3 ASCII filenames; longer names are rejected
-    before any file is written.
+  - DOS paths and host names written into an image must fit 8.3 ASCII.
+    A name that does not fit fails before any file is written.
+    Image-to-image copies write the 8.3 part of each name. Files
+    extracted to the host keep their Shift-JIS and Human68k 18.3 names.
   - The destination image file is rewritten atomically on success."
     );
 }
@@ -809,7 +813,7 @@ mod tests {
         },
         *,
     };
-    use crate::copy::{FDD_EXTENSIONS, HDD_EXTENSIONS};
+    use crate::copy::HDD_EXTENSIONS;
 
     /// Keys that exist only in builds with the PC-88 family.
     const PC88_FEATURE_KEYS: &[&str] = &["pc88-memory-wait", "pc88-8mhz-wait"];
@@ -1216,7 +1220,10 @@ mod tests {
 
     #[test]
     fn copy_parser_recognizes_every_supported_disk_extension() {
-        for extension in HDD_EXTENSIONS.iter().chain(FDD_EXTENSIONS) {
+        for extension in HDD_EXTENSIONS
+            .iter()
+            .chain(device::floppy::FLOPPY_EXTENSIONS)
+        {
             for extension in [
                 extension.to_ascii_lowercase(),
                 extension.to_ascii_uppercase(),

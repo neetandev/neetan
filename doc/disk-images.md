@@ -2,18 +2,19 @@
 
 ## Floppy disk image formats
 
-| Format  | Extensions                     | Description                                        |
-|---------|--------------------------------|----------------------------------------------------|
-| D88     | `.d88`, `.d98`, `.88d`, `.98d` | Standard PC-98 disk image with per-sector metadata |
-| HDM     | `.hdm`                         | Headerless raw sector image (2HD only)             |
-| NFD     | `.nfd`                         | T98Next format with per-sector metadata            |
-| 2D      | `.2d`                          | Headerless raw sector image (Sharp X1, 2D only)    |
-| D77     | `.d77`                         | Fujitsu FM-7 disk image, byte-compatible with D88  |
-| MSX DSK | `.dsk`                         | Headerless raw MSX floppy image                    |
-| DIM     | `.dim`                         | X68000 DIFC.X container                            |
-| XDF     | `.xdf`, `.2hd`                 | Headerless raw sector image (X68000, 2HD only)     |
-| IMG     | `.img`, `.ima`                 | Headerless raw IBM PC floppy image                 |
-| IBM XDF | `.xdf`, `.img`, `.ima`         | IBM Extended Density Format, detected by file size |
+| Format  | Extensions                     | Description                                         |
+|---------|--------------------------------|-----------------------------------------------------|
+| D88     | `.d88`, `.d98`, `.88d`, `.98d` | Standard PC-98 disk image with per-sector metadata  |
+| HDM     | `.hdm`                         | Headerless raw sector image (2HD only)              |
+| NFD     | `.nfd`                         | T98Next format with per-sector metadata             |
+| FDI     | `.fdi`                         | Anex86 PC-98 image: geometry header and raw sectors |
+| 2D      | `.2d`                          | Headerless raw sector image (Sharp X1, 2D only)     |
+| D77     | `.d77`                         | Fujitsu FM-7 disk image, byte-compatible with D88   |
+| MSX DSK | `.dsk`                         | Headerless raw MSX floppy image                     |
+| DIM     | `.dim`                         | X68000 DIFC.X container                             |
+| XDF     | `.xdf`, `.2hd`                 | Headerless raw sector image (X68000, 2HD only)      |
+| IMG     | `.img`, `.ima`                 | Headerless raw IBM PC floppy image                  |
+| IBM XDF | `.xdf`, `.img`, `.ima`         | IBM Extended Density Format, detected by file size  |
 
 Writes made by the emulated software, for example game saves, are written back to the
 source file for all formats.
@@ -67,10 +68,11 @@ command line offers the same and more.
 
 ### create-fdd
 
-`create-fdd <PATH> [OPTIONS]` creates an empty floppy disk image. A `.d88` path
-produces a D88 image of every type. A raw extension produces a headerless image:
-`.xdf` or `.2hd` for `2hd` (X68000), `.img` or `.ima` for `2hd144` (PC/AT), and
-`.dsk`, `.img` or `.ima` for `2dd720` (MSX and PC/AT).
+`create-fdd <PATH> [OPTIONS]` creates an empty floppy disk image. Every type takes a
+`.d88` path for a D88 image and a `.fdi` path for an Anex86 FDI image. A raw extension
+produces a headerless image: `.xdf` or `.2hd` for `2hd` (X68000), `.img` or `.ima` for
+`2hd144` (PC/AT), and `.dsk`, `.img` or `.ima` for `2dd720` (MSX and PC/AT). The image
+is unformatted. Format it in the emulated system before `copy` writes to it.
 
 | Option          | Description                                                                             | Default |
 |-----------------|-----------------------------------------------------------------------------------------|---------|
@@ -106,9 +108,9 @@ be converted to SASI.
 ### copy
 
 `copy <SOURCE> <DEST>` copies files and directories between the host filesystem and
-FAT-formatted disk images. Each argument is either a host path or an `IMAGE:DOSPATH`
-reference such as `roms/dos620.hdi:A:\PROGS\FILE.EXE`. At least one side must be an
-image. Image-to-image copies are supported.
+the FAT volumes of disk images. Each argument is either a host path or an
+`IMAGE:DOSPATH` reference such as `roms/dos620.hdi:A:\PROGS\FILE.EXE`. At least one
+side must be an image. Image-to-image copies are supported.
 
 ```bash
 neetan copy ./readme.txt roms/disk.hdi:A:\README.TXT
@@ -116,7 +118,13 @@ neetan copy roms/disk.hdi:A:\PROGS\FOO.EXE ./extracted/
 neetan copy src.hdi:A:\FOO.EXE dst.hdi:A:\FOO.EXE
 ```
 
-Directories are copied recursively. There is no `-r` flag. DOS paths must use 8.3
-ASCII filenames. Longer names are rejected before any file is written. The recognized
-image extensions are `hdi`, `nhd`, `thd`, `hdd` (hard disks) and `d88`, `d98`, `88d`,
-`98d`, `hdm`, `nfd`, `2d`, `img`, `ima`, `dsk` (floppies).
+Directories are copied recursively. There is no `-r` flag. DOS paths and host names
+written into an image must fit 8.3 ASCII. A name that does not fit fails the copy
+before any file is written. Image-to-image copies write the 8.3 part of each name.
+Files extracted to the host keep their Shift-JIS and Human68k 18.3 names and follow
+the Windows file name rules on every host.
+
+`copy` reads FAT volumes only. A disk without a FAT volume, for example an F-BASIC
+disk, fails with an error. The recognized image extensions are `hdi`, `nhd`, `thd`,
+`hdd` (hard disks) and `d88`, `d98`, `88d`, `98d`, `d77`, `hdm`, `nfd`, `fdi`, `2d`,
+`dim`, `xdf`, `2hd`, `img`, `ima`, `dsk` (floppies).

@@ -1,7 +1,7 @@
 //! Tests for the `neetan create-fdd` subcommand geometries.
 
 use common::temporary::TemporaryFolder;
-use device::floppy::{FddType, d88::D88MediaType, load_floppy_image};
+use device::floppy::{FddType, FloppyFormat, d88::D88MediaType, load_floppy_image};
 use user_interface::create::create_fdd_image;
 
 #[test]
@@ -143,4 +143,46 @@ fn a_second_create_on_the_same_path_fails_and_keeps_the_first_file() {
     let error = create_fdd_image(&path, FddType::Hd2).expect_err("the file exists");
     assert!(error.to_string().contains("failed to create"), "{error}");
     assert_eq!(std::fs::read(&path).expect("read kept image"), first);
+}
+
+/// Verifies that an FDI image of every type loads back with the geometry and the media type of
+/// the type.
+#[test]
+fn creates_fdi_floppies_of_every_type() {
+    for fdd_type in [
+        FddType::Hd2,
+        FddType::Hd2Fmt144,
+        FddType::Dd2,
+        FddType::Dd2Fmt720,
+        FddType::D2,
+    ] {
+        let folder = TemporaryFolder::new("create_fdi");
+        let path = folder.path().join("image.fdi");
+        create_fdd_image(&path, fdd_type).expect("create FDI image");
+
+        let data = std::fs::read(&path).expect("read created image");
+        let disk = load_floppy_image(&path, &data).expect("parse created image");
+        assert_eq!(disk.format, FloppyFormat::Fdi, "{fdd_type:?}");
+        assert_eq!(disk.media_type, fdd_type.media_type(), "{fdd_type:?}");
+        assert_eq!(
+            disk.physical_geometry(),
+            Some(fdd_type.geometry()),
+            "{fdd_type:?}"
+        );
+    }
+}
+
+/// Verifies that the error of a wrong extension names every accepted extension.
+#[test]
+fn rejects_a_wrong_extension_with_every_accepted_extension() {
+    let folder = TemporaryFolder::new("create_fdd_bad_extension");
+    let path = folder.path().join("image.hdi");
+    let error = create_fdd_image(&path, FddType::Hd2).expect_err("hdi is no floppy extension");
+    assert!(
+        error.to_string().contains(".d88, .fdi, .xdf or .2hd"),
+        "{error}"
+    );
+    let error = create_fdd_image(&path, FddType::D2).expect_err("hdi is no floppy extension");
+    assert!(error.to_string().contains(".d88 or .fdi"), "{error}");
+    assert!(!path.exists());
 }
