@@ -61,7 +61,8 @@ The MT-32 and SC-55 modules are configured separately via `--midi`; see
 The floppy drives (`--fdd1`, `--fdd2`) read every format in
 [Floppy disk image formats](disk-images.md#floppy-disk-image-formats).
 
-CD-ROM disc images (`--cdrom`) are supported on the PC-9821 targets only.
+CD-ROM disc images (`--cdrom`) are supported on the PC-9821 targets only. The drive
+reads every format in [CD-ROM disc image formats](disk-images.md#cd-rom-disc-image-formats).
 
 ## Boot device and HLE DOS
 

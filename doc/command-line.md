@@ -63,7 +63,7 @@ single family are listed on the page of that family:
 | `--fdd2 <PATH>`             | PC-98, PC-88, PC-88VA, PC-6000, FM Towns, X68000, X1, FM-7, PC/AT | Floppy disk image for drive 2 (repeatable)                                      | -                            |
 | `--hdd1 <PATH>`             | PC-98, FM Towns, X68000, PC/AT                                    | Hard disk image for hard disk drive 1                                           | -                            |
 | `--hdd2 <PATH>`             | PC-98, FM Towns, X68000, PC/AT                                    | Hard disk image for hard disk drive 2                                           | -                            |
-| `--cdrom <PATH>`            | PC-9821, PC-88, PC/AT, FM Towns, X68000                           | CD-ROM disc image `.cue` or `.ccd` file (repeatable)                            | -                            |
+| `--cdrom <PATH>`            | PC-9821, PC-88, PC/AT, FM Towns, X68000                           | CD-ROM disc image `.cue`, `.ccd` or `.iso` file (repeatable)                    | -                            |
 | `--cartridge <PATH>`        | PC-6000, MSX                                                      | Cartridge ROM image                                                             | -                            |
 | `--cassette <PATH>`         | PC-6000, MSX, X1, FM-7                                            | Cassette tape image                                                             | -                            |
 | `--midi <DEVICE>`           | PC-98, PC/AT, FM Towns, X68000                                    | MIDI device: `none`, `mt32`, `sc55`                                             | `none`                       |

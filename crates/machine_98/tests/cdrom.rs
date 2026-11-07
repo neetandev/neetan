@@ -48,7 +48,7 @@ fn create_machine_ap() -> machine_98::Pc9821Ap {
 }
 
 /// Writes a CUE file and a BIN file into a new temporary folder.
-fn write_temp_cue_bin(name: &str, sector_count: u32) -> TempCdromCueFiles {
+fn write_temp_cue_bin(name: &str, sector_count: u32) -> TempCdromFiles {
     let folder = TemporaryFolder::new(&format!("test_{name}"));
     let cue_path = folder.path().join(format!("{name}.cue"));
     let bin_path = folder.path().join(format!("{name}.bin"));
@@ -65,21 +65,45 @@ fn write_temp_cue_bin(name: &str, sector_count: u32) -> TempCdromCueFiles {
     }
     std::fs::write(&bin_path, &bin_data).expect("failed to write temp BIN");
 
-    TempCdromCueFiles {
-        cue_path,
+    TempCdromFiles {
+        path: cue_path,
         _folder: folder,
     }
 }
 
-/// A CUE sheet and its track files inside a temporary folder. Dropping the value removes them.
-struct TempCdromCueFiles {
-    /// Path of the CUE sheet.
-    cue_path: PathBuf,
-    /// Folder that holds the CUE sheet and its track files.
+/// Writes a cooked ISO image into a new temporary folder. Each sector starts with its index and
+/// sector 16 holds the primary volume descriptor bytes.
+fn write_temp_iso(name: &str, sector_count: u32) -> TempCdromFiles {
+    let folder = TemporaryFolder::new(&format!("test_{name}"));
+    let iso_path = folder.path().join(format!("{name}.iso"));
+
+    let mut iso_data = vec![0u8; sector_count as usize * 2048];
+    for sector_index in 0..sector_count {
+        let offset = sector_index as usize * 2048;
+        iso_data[offset] = (sector_index >> 8) as u8;
+        iso_data[offset + 1] = sector_index as u8;
+    }
+    let descriptor_offset = 16 * 2048;
+    iso_data[descriptor_offset] = 0x01;
+    iso_data[descriptor_offset + 1..descriptor_offset + 6].copy_from_slice(b"CD001");
+    iso_data[descriptor_offset + 6] = 0x01;
+    std::fs::write(&iso_path, &iso_data).expect("failed to write temp ISO");
+
+    TempCdromFiles {
+        path: iso_path,
+        _folder: folder,
+    }
+}
+
+/// A CD-ROM disc image and its data files inside a temporary folder. Dropping the value removes them.
+struct TempCdromFiles {
+    /// Path of the CUE sheet or the ISO image.
+    path: PathBuf,
+    /// Folder that holds the disc image files.
     _folder: TemporaryFolder,
 }
 
-fn write_temp_mode2_multi_file_cdrom(name: &str) -> TempCdromCueFiles {
+fn write_temp_mode2_multi_file_cdrom(name: &str) -> TempCdromFiles {
     const ROOT_DIRECTORY_LBA: u32 = 20;
     const README_LBA: u32 = 21;
     const SETUP_LBA: u32 = 22;
@@ -239,8 +263,8 @@ fn write_temp_mode2_multi_file_cdrom(name: &str) -> TempCdromCueFiles {
     std::fs::write(&data_track_path, data_track).expect("failed to write temp data track");
     std::fs::write(&audio_track_path, audio_track).expect("failed to write temp audio track");
 
-    TempCdromCueFiles {
-        cue_path,
+    TempCdromFiles {
+        path: cue_path,
         _folder: folder,
     }
 }
@@ -776,7 +800,7 @@ fn hdd_and_cdrom_coexist_on_separate_channels() {
 #[test]
 fn machine_insert_cdrom_from_file() {
     let cue_files = write_temp_cue_bin("cdrom_machine", 100);
-    let cue_path = &cue_files.cue_path;
+    let cue_path = &cue_files.path;
 
     let mut machine = create_machine_ap();
     let result = machine.insert_cdrom(cue_path);
@@ -792,7 +816,7 @@ fn machine_insert_cdrom_from_file() {
 #[test]
 fn machine_eject_cdrom() {
     let cue_files = write_temp_cue_bin("cdrom_eject", 50);
-    let cue_path = &cue_files.cue_path;
+    let cue_path = &cue_files.path;
 
     let mut machine = create_machine_ap();
     machine
@@ -830,9 +854,9 @@ fn machine_insert_cdrom_invalid_cue() {
 #[test]
 fn machine_swap_cdrom() {
     let cue_files_a = write_temp_cue_bin("cdrom_swap_a", 50);
-    let cue_path_a = &cue_files_a.cue_path;
+    let cue_path_a = &cue_files_a.path;
     let cue_files_b = write_temp_cue_bin("cdrom_swap_b", 200);
-    let cue_path_b = &cue_files_b.cue_path;
+    let cue_path_b = &cue_files_b.path;
 
     let mut machine = create_machine_ap();
 
@@ -859,8 +883,48 @@ fn multifile_mode2_cdrom_pvd_is_readable_via_atapi() {
     let temp_cdrom_files = write_temp_mode2_multi_file_cdrom("mode2_multifile");
     let mut machine = create_machine_ap();
     machine
-        .insert_cdrom(&temp_cdrom_files.cue_path)
+        .insert_cdrom(&temp_cdrom_files.path)
         .expect("synthetic mode2 CD-ROM should mount");
+
+    select_ide_channel(&mut machine.bus, 1);
+    acknowledge_media_change(&mut machine.bus);
+
+    send_atapi_packet(&mut machine.bus, &[0x28, 0, 0, 0, 0, 16, 0, 0, 1, 0, 0, 0]);
+    let data = read_atapi_data(&mut machine.bus, 1024);
+    let bytes = words_to_bytes(&data);
+
+    assert_eq!(bytes[0], 0x01, "PVD type byte should be 1");
+    assert_eq!(&bytes[1..6], b"CD001", "PVD should expose ISO9660 magic");
+    assert_eq!(bytes[6], 0x01, "PVD version byte should be 1");
+}
+
+#[test]
+fn machine_insert_cdrom_from_iso_file() {
+    let iso_files = write_temp_iso("cdrom_machine_iso", 100);
+
+    let mut machine = create_machine_ap();
+    let description = machine
+        .insert_cdrom(&iso_files.path)
+        .expect("insert_cdrom should succeed");
+
+    assert!(
+        description.contains("100 sectors"),
+        "description should contain sector count: {description}"
+    );
+    assert!(
+        description.contains("ISO"),
+        "description should name the ISO loader: {description}"
+    );
+    assert!(machine.bus.has_cdrom());
+}
+
+#[test]
+fn iso_pvd_is_readable_via_atapi() {
+    let iso_files = write_temp_iso("iso_pvd", 100);
+    let mut machine = create_machine_ap();
+    machine
+        .insert_cdrom(&iso_files.path)
+        .expect("ISO CD-ROM should mount");
 
     select_ide_channel(&mut machine.bus, 1);
     acknowledge_media_change(&mut machine.bus);
