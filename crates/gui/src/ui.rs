@@ -13,8 +13,7 @@
 //! multiplies them by the scale factor of the viewport and records physical
 //! pixels.
 //!
-//! Every widget works with the mouse, the keyboard and a gamepad. The
-//! focusable widgets of a pass form a focus ring in drawing order. The
+//! The focusable widgets of a pass form a focus ring in drawing order. The
 //! [`Navigation`] events of the input give the focus to another widget of
 //! the ring or in a direction, or reach the focused widget when it handles
 //! them itself. The focused widget reacts to confirm. A click gives the

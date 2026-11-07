@@ -1,15 +1,6 @@
 //! The font of the user interface, the loaded faces, shaping and the cache of
 //! the shaped runs.
 //!
-//! The user interface uses Sarasa UI J Regular by Renzhi Li (Belleve Invis)
-//! under the SIL Open Font License 1.1. One face covers Latin, Greek,
-//! Cyrillic, Vietnamese, kana, kanji and Hangul. The file is the unmodified
-//! unhinted TTF file of the official release 1.0.42. The license text is
-//! `licenses/LICENSE_sarasa`.
-//!
-//! The repository holds the font in its `font` folder. The caller locates
-//! and reads the file and passes the bytes to [`Fonts::add`].
-//!
 //! Shaping maps every character to one glyph through the `cmap` table and
 //! places the glyphs one after another by their advance widths and the pair
 //! kerning. Every glyph keeps the default form of its character and sits on
