@@ -3349,6 +3349,7 @@ impl<T: TraceSink> common::Bus for Pc9801Bus<T> {
                 {
                     self.egc.write_register_word((port & 0x0F) as u8, value);
                 }
+                trace_access!(T, self, MAIN_IO, Write, port, Word, value);
             }
             _ => {
                 self.io_write_byte(port, value as u8);
