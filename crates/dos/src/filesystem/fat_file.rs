@@ -227,12 +227,23 @@ pub(crate) fn read_all(
     entry: &DirEntry,
     disk: &mut dyn DiskIo,
 ) -> Result<Vec<u8>, u16> {
-    if entry.file_size == 0 {
+    read_chain(vol, entry.start_cluster, entry.file_size, disk)
+}
+
+/// Reads `file_size` bytes of the cluster chain that starts at
+/// `start_cluster`.
+pub(crate) fn read_chain(
+    vol: &FatVolume,
+    start_cluster: u16,
+    file_size: u32,
+    disk: &mut dyn DiskIo,
+) -> Result<Vec<u8>, u16> {
+    if file_size == 0 {
         return Ok(Vec::new());
     }
 
-    let mut cursor = FatFileCursor::new(entry);
-    cursor.read_chunk(vol, disk, entry.file_size as usize)
+    let mut cursor = FatFileCursor::with_position(start_cluster, file_size, 0);
+    cursor.read_chunk(vol, disk, file_size as usize)
 }
 
 #[derive(Clone, Copy)]
@@ -242,6 +253,10 @@ pub(crate) struct FileCreateOptions {
     pub(crate) date: u16,
 }
 
+/// Writes a file into a directory. An existing file keeps its directory
+/// slot and its reserved entry bytes: its old chain is freed and its entry
+/// is updated in place. A failed write deletes the existing entry. A new
+/// file gets a new entry.
 pub(crate) fn create_or_replace_file(
     vol: &mut FatVolume,
     dir_cluster: u16,
@@ -250,14 +265,14 @@ pub(crate) fn create_or_replace_file(
     options: FileCreateOptions,
     disk: &mut dyn DiskIo,
 ) -> Result<(), u16> {
-    if let Some(existing) = fat_dir::find_entry(vol, dir_cluster, fcb_name, disk)? {
+    let existing = fat_dir::find_entry(vol, dir_cluster, fcb_name, disk)?;
+    if let Some(existing) = &existing {
         if existing.attribute & fat_dir::ATTR_DIRECTORY != 0 {
             return Err(0x0005);
         }
         if existing.start_cluster >= 2 {
             vol.free_chain(existing.start_cluster);
         }
-        fat_dir::delete_entry(vol, &existing, disk)?;
     }
 
     let mut writer = FatFileWriter::new(0, 0);
@@ -265,12 +280,27 @@ pub(crate) fn create_or_replace_file(
         if writer.start_cluster() >= 2 {
             vol.free_chain(writer.start_cluster());
         }
+        if let Some(existing) = &existing {
+            let _ = fat_dir::delete_entry(vol, existing, disk);
+        }
         return Err(error);
+    }
+
+    if let Some(existing) = existing {
+        return update_file_entry_in_place(
+            vol,
+            existing,
+            options,
+            writer.start_cluster(),
+            writer.position(),
+            disk,
+        );
     }
 
     let new_entry = DirEntry {
         name: *fcb_name,
         attribute: options.attributes,
+        reserved: [0; fat_dir::RESERVED_LENGTH],
         time: options.time,
         date: options.date,
         start_cluster: writer.start_cluster(),
@@ -289,94 +319,68 @@ pub(crate) fn create_or_replace_file(
     Ok(())
 }
 
+/// Updates an existing file entry in its slot with a new chain: the name
+/// and the reserved bytes stay. A failed update frees the new chain and
+/// deletes the entry.
+pub(crate) fn update_file_entry_in_place(
+    vol: &mut FatVolume,
+    existing: DirEntry,
+    options: FileCreateOptions,
+    start_cluster: u16,
+    file_size: u32,
+    disk: &mut dyn DiskIo,
+) -> Result<(), u16> {
+    let updated = DirEntry {
+        attribute: options.attributes,
+        time: options.time,
+        date: options.date,
+        start_cluster,
+        file_size,
+        ..existing
+    };
+    if let Err(error) = fat_dir::update_entry(vol, &updated, disk) {
+        if start_cluster >= 2 {
+            vol.free_chain(start_cluster);
+        }
+        let _ = fat_dir::delete_entry(vol, &updated, disk);
+        return Err(error);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::filesystem::fat::FatVolume;
+    use crate::{
+        filesystem::fat::FatVolume,
+        test_support::{
+            FLOPPY_2HD_DATA_CLUSTER_COUNT, FLOPPY_2HD_DEVICE_ID, FLOPPY_2HD_ROOT_SECTOR, MockDisk,
+            directory_entry_bytes, formatted_2hd_floppy, human68k_2hd_boot_sector,
+            set_2hd_fat_entries, set_fat12_entry, store_2hd_single_cluster, store_directory_entry,
+        },
+    };
 
-    struct MockDisk {
-        device_id: u8,
-        sector_size: u16,
-        sectors_per_track: u8,
-        heads: u8,
-        data: Vec<u8>,
+    /// Mounts a 2HD floppy with the PC-98 2HD drive rule.
+    fn mount_2hd(disk: &mut MockDisk) -> FatVolume {
+        FatVolume::mount(
+            FLOPPY_2HD_DEVICE_ID,
+            0,
+            &crate::drive_map::pc98::floppy_2hd_geometry(),
+            disk,
+        )
+        .unwrap()
     }
 
-    impl MockDisk {
-        fn new(
-            device_id: u8,
-            sector_size: u16,
-            sectors_per_track: u8,
-            heads: u8,
-            total_sectors: u32,
-        ) -> Self {
-            Self {
-                device_id,
-                sector_size,
-                sectors_per_track,
-                heads,
-                data: vec![0u8; total_sectors as usize * sector_size as usize],
-            }
-        }
+    /// Options of a replaced file.
+    const REPLACE_OPTIONS: FileCreateOptions = FileCreateOptions {
+        attributes: fat_dir::ATTR_ARCHIVE | fat_dir::ATTR_READ_ONLY,
+        time: 0x1234,
+        date: 0x5678,
+    };
 
-        fn write_sector(&mut self, lba: u32, sector: &[u8]) {
-            let offset = lba as usize * self.sector_size as usize;
-            self.data[offset..offset + self.sector_size as usize].copy_from_slice(sector);
-        }
-    }
-
-    impl DiskIo for MockDisk {
-        fn read_sectors(&mut self, device_id: u8, lba: u32, count: u32) -> Result<Vec<u8>, u8> {
-            if device_id != self.device_id {
-                return Err(0x02);
-            }
-            let start = lba as usize * self.sector_size as usize;
-            let end = start + count as usize * self.sector_size as usize;
-            self.data.get(start..end).map(|s| s.to_vec()).ok_or(0x10)
-        }
-
-        fn write_sectors(&mut self, device_id: u8, lba: u32, data: &[u8]) -> Result<(), u8> {
-            if device_id != self.device_id {
-                return Err(0x02);
-            }
-            let start = lba as usize * self.sector_size as usize;
-            let end = start + data.len();
-            let Some(slice) = self.data.get_mut(start..end) else {
-                return Err(0x10);
-            };
-            slice.copy_from_slice(data);
-            Ok(())
-        }
-
-        fn sector_size(&self, device_id: u8) -> Option<u16> {
-            (device_id == self.device_id).then_some(self.sector_size)
-        }
-
-        fn total_sectors(&self, device_id: u8) -> Option<u32> {
-            (device_id == self.device_id)
-                .then_some(self.data.len() as u32 / self.sector_size as u32)
-        }
-
-        fn drive_geometry(&self, device_id: u8) -> Option<(u16, u8, u8)> {
-            (device_id == self.device_id).then_some((
-                self.total_sectors(device_id)? as u16
-                    / self.heads as u16
-                    / self.sectors_per_track as u16,
-                self.heads,
-                self.sectors_per_track,
-            ))
-        }
-    }
-
-    fn set_fat12_entry(fat: &mut [u8], cluster: u16, value: u16) {
-        let offset = (cluster as usize * 3) / 2;
-        if cluster & 1 == 0 {
-            fat[offset] = (value & 0x00FF) as u8;
-            fat[offset + 1] = (fat[offset + 1] & 0xF0) | ((value >> 8) as u8 & 0x0F);
-        } else {
-            fat[offset] = (fat[offset] & 0x0F) | (((value << 4) as u8) & 0xF0);
-            fat[offset + 1] = (value >> 4) as u8;
-        }
+    /// Payload of three clusters of a 2HD floppy.
+    fn three_cluster_payload() -> Vec<u8> {
+        (0..3000).map(|index| (index % 251) as u8).collect()
     }
 
     fn mount_fat12_disk(
@@ -452,6 +456,7 @@ mod tests {
         let entry = DirEntry {
             name: *b"BIGFILE BIN",
             attribute: 0x20,
+            reserved: [0; fat_dir::RESERVED_LENGTH],
             time: 0,
             date: 0,
             start_cluster,
@@ -539,6 +544,7 @@ mod tests {
         let entry = DirEntry {
             name: *b"BIGFILE BIN",
             attribute: 0x20,
+            reserved: [0; fat_dir::RESERVED_LENGTH],
             time: 0,
             date: 0,
             start_cluster,
@@ -649,6 +655,83 @@ mod tests {
         assert_eq!(
             read_all(&volume, &updated_entry, &mut disk).unwrap(),
             expected
+        );
+    }
+
+    #[test]
+    fn replacing_a_file_keeps_its_slot_and_its_reserved_bytes() {
+        let mut disk = formatted_2hd_floppy(&human68k_2hd_boot_sector());
+        let deleted = directory_entry_bytes(b"\xE5LD     X  ", 0x20, &[], 0, 0);
+        store_directory_entry(&mut disk, FLOPPY_2HD_ROOT_SECTOR, 0, &deleted);
+        let existing = directory_entry_bytes(b"LONGNAMEX  ", 0x20, b"1A", 10, 5);
+        store_directory_entry(&mut disk, FLOPPY_2HD_ROOT_SECTOR, 1, &existing);
+        store_2hd_single_cluster(&mut disk, 10, b"short");
+
+        let mut volume = mount_2hd(&mut disk);
+        let payload = three_cluster_payload();
+        create_or_replace_file(
+            &mut volume,
+            0,
+            b"LONGNAMEX  ",
+            &payload,
+            REPLACE_OPTIONS,
+            &mut disk,
+        )
+        .unwrap();
+        volume.flush_fat(&mut disk).unwrap();
+        assert_eq!(volume.read_fat_entry(10), 0);
+
+        let root = disk.sector(FLOPPY_2HD_ROOT_SECTOR).to_vec();
+        assert_eq!(root[..32], deleted);
+        let rewritten = &root[32..64];
+        assert_eq!(&rewritten[..11], b"LONGNAMEX  ");
+        assert_eq!(
+            rewritten[11],
+            fat_dir::ATTR_ARCHIVE | fat_dir::ATTR_READ_ONLY
+        );
+        assert_eq!(&rewritten[12..22], b"1A\0\0\0\0\0\0\0\0");
+        assert_eq!(&rewritten[22..26], &[0x34, 0x12, 0x78, 0x56]);
+        assert_eq!(&rewritten[28..32], &3000u32.to_le_bytes());
+
+        let entry = fat_dir::find_entry(&volume, 0, b"LONGNAMEX  ", &mut disk)
+            .unwrap()
+            .unwrap();
+        assert_eq!(entry.dir_offset, 32);
+        assert_eq!(entry.start_cluster, 2);
+        assert_eq!(read_all(&volume, &entry, &mut disk).unwrap(), payload);
+    }
+
+    #[test]
+    fn failed_replace_deletes_the_entry_and_frees_both_chains() {
+        let mut disk = formatted_2hd_floppy(&human68k_2hd_boot_sector());
+        let existing = directory_entry_bytes(b"LONGNAMEX  ", 0x20, b"1A", 2, 5);
+        store_directory_entry(&mut disk, FLOPPY_2HD_ROOT_SECTOR, 0, &existing);
+        store_2hd_single_cluster(&mut disk, 2, b"short");
+        let last_cluster = FLOPPY_2HD_DATA_CLUSTER_COUNT + 1;
+        set_2hd_fat_entries(&mut disk, 4..=last_cluster, 0x0FFF);
+
+        let mut volume = mount_2hd(&mut disk);
+        assert_eq!(volume.free_cluster_count(), 1);
+        assert!(
+            create_or_replace_file(
+                &mut volume,
+                0,
+                b"LONGNAMEX  ",
+                &three_cluster_payload(),
+                REPLACE_OPTIONS,
+                &mut disk,
+            )
+            .is_err()
+        );
+
+        assert_eq!(volume.read_fat_entry(2), 0);
+        assert_eq!(volume.read_fat_entry(3), 0);
+        assert_eq!(volume.free_cluster_count(), 2);
+        assert_eq!(disk.sector(FLOPPY_2HD_ROOT_SECTOR)[0], 0xE5);
+        assert!(
+            fat_dir::find_entry(&volume, 0, b"LONGNAMEX  ", &mut disk)
+                .unwrap()
+                .is_none()
         );
     }
 }

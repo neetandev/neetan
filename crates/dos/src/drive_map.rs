@@ -170,6 +170,19 @@ impl DriveDevice {
         }
     }
 
+    /// Returns true for a diskette drive.
+    pub const fn is_floppy(&self) -> bool {
+        match self {
+            Self::Floppy { .. } => true,
+            Self::FixedDisk { .. }
+            | Self::MemoryImage { .. }
+            | Self::Cdrom
+            | Self::GuestDriver(_)
+            | Self::GuestCdrom(_)
+            | Self::Virtual => false,
+        }
+    }
+
     /// Returns true for devices with removable media.
     pub const fn is_removable(&self) -> bool {
         match self {

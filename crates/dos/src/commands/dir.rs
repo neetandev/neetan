@@ -230,6 +230,7 @@ impl RunningDir {
                     source: filesystem::ReadDirEntrySource::Fat(fat_dir::DirEntry {
                         name: ventry.name,
                         attribute: ventry.attribute,
+                        reserved: [0; fat_dir::RESERVED_LENGTH],
                         time: ventry.time,
                         date: ventry.date,
                         start_cluster: 0,

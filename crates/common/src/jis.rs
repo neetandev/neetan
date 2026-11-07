@@ -195,6 +195,41 @@ pub fn shift_jis_pair_to_jis(lead: u8, trail: u8) -> Option<JisChar> {
     Some(JisChar::from_u16(((row as u16) << 8) | cell as u16))
 }
 
+/// First byte of the half-width katakana range of Shift-JIS.
+const HALF_WIDTH_KATAKANA_FIRST_BYTE: u8 = 0xA1;
+
+/// Last byte of the half-width katakana range of Shift-JIS.
+const HALF_WIDTH_KATAKANA_LAST_BYTE: u8 = 0xDF;
+
+/// Unicode code point of the first half-width katakana character (U+FF61).
+const HALF_WIDTH_KATAKANA_FIRST_CODE_POINT: u32 = 0xFF61;
+
+/// Decodes a Shift-JIS byte string: ASCII, half-width katakana and
+/// double-byte characters. Returns `None` on a lone lead byte, an unmapped
+/// pair or a byte outside these ranges.
+pub fn shift_jis_to_string(bytes: &[u8]) -> Option<String> {
+    let mut result = String::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if byte.is_ascii() {
+            result.push(byte as char);
+            index += 1;
+        } else if (HALF_WIDTH_KATAKANA_FIRST_BYTE..=HALF_WIDTH_KATAKANA_LAST_BYTE).contains(&byte) {
+            let code_point = HALF_WIDTH_KATAKANA_FIRST_CODE_POINT
+                + u32::from(byte - HALF_WIDTH_KATAKANA_FIRST_BYTE);
+            result.push(char::from_u32(code_point)?);
+            index += 1;
+        } else {
+            let trail = *bytes.get(index + 1)?;
+            let jis = shift_jis_pair_to_jis(byte, trail)?;
+            result.push(jis_to_char(jis)?);
+            index += 2;
+        }
+    }
+    Some(result)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShiftJisChar {
     Single(u8),
@@ -534,5 +569,42 @@ mod tests {
             jis_to_shift_jis(JisChar::from_u16(0x2422)),
             Some(ShiftJisChar::Double([0x82, 0xA0]))
         );
+    }
+
+    #[test]
+    fn shift_jis_to_string_decodes_ascii() {
+        assert_eq!(
+            shift_jis_to_string(b"README.DOC").as_deref(),
+            Some("README.DOC")
+        );
+    }
+
+    #[test]
+    fn shift_jis_to_string_decodes_half_width_katakana() {
+        assert_eq!(
+            shift_jis_to_string(&[0xCA, 0xDF, 0xC0, 0xB0, 0xDD]).as_deref(),
+            Some("\u{FF8A}\u{FF9F}\u{FF80}\u{FF70}\u{FF9D}")
+        );
+        assert_eq!(shift_jis_to_string(&[0xA1]).as_deref(), Some("\u{FF61}"));
+        assert_eq!(shift_jis_to_string(&[0xDF]).as_deref(), Some("\u{FF9F}"));
+    }
+
+    #[test]
+    fn shift_jis_to_string_decodes_kanji_pairs() {
+        assert_eq!(
+            shift_jis_to_string(&[0x95, 0x5C, b'.', b'X']).as_deref(),
+            Some("\u{8868}.X")
+        );
+        assert_eq!(
+            shift_jis_to_string(&[0x83, 0x47, 0x83, 0x66, 0x83, 0x42, 0x83, 0x5E]).as_deref(),
+            Some("\u{30A8}\u{30C7}\u{30A3}\u{30BF}")
+        );
+    }
+
+    #[test]
+    fn shift_jis_to_string_rejects_a_lone_lead_byte() {
+        assert_eq!(shift_jis_to_string(&[b'A', 0x82]), None);
+        assert_eq!(shift_jis_to_string(&[0x82, 0x20]), None);
+        assert_eq!(shift_jis_to_string(&[0x80]), None);
     }
 }

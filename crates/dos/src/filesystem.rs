@@ -758,6 +758,7 @@ pub(crate) fn create_or_truncate_file(
     let new_entry = fat_dir::DirEntry {
         name: fcb_name,
         attribute: attributes & 0x27,
+        reserved: [0; fat_dir::RESERVED_LENGTH],
         time,
         date,
         start_cluster: 0,
@@ -853,7 +854,10 @@ pub(crate) fn rename_entry_by_components(
     }
 
     entry.name = fcb_new;
-    fat_dir::update_entry(volume, &entry, disk)?;
+    if volume.is_human68k() {
+        entry.reserved = [0; fat_dir::RESERVED_LENGTH];
+    }
+    fat_dir::write_entry(volume, &entry, disk)?;
     Ok(())
 }
 
@@ -931,6 +935,7 @@ pub(crate) fn flush_fat_handle(
     let entry = fat_dir::DirEntry {
         name: metadata.name,
         attribute: metadata.attribute,
+        reserved: [0; fat_dir::RESERVED_LENGTH],
         time: metadata.time,
         date: metadata.date,
         start_cluster: metadata.start_cluster,
@@ -973,15 +978,36 @@ pub(crate) fn finish_pending_file(
     if let Some(existing) =
         fat_dir::find_entry(volume, pending_file.dir_cluster, &pending_file.name, disk)?
     {
+        if existing.attribute & fat_dir::ATTR_DIRECTORY != 0 {
+            if pending_file.start_cluster >= 2 {
+                volume.free_chain(pending_file.start_cluster);
+                let _ = volume.flush_fat(disk);
+            }
+            return Err(0x0005);
+        }
         if existing.start_cluster >= 2 {
             volume.free_chain(existing.start_cluster);
         }
-        fat_dir::delete_entry(volume, &existing, disk)?;
+        let result = fat_file::update_file_entry_in_place(
+            volume,
+            existing,
+            fat_file::FileCreateOptions {
+                attributes: pending_file.attribute,
+                time: pending_file.time,
+                date: pending_file.date,
+            },
+            pending_file.start_cluster,
+            pending_file.file_size,
+            disk,
+        );
+        volume.flush_fat(disk)?;
+        return result;
     }
 
     let new_entry = fat_dir::DirEntry {
         name: pending_file.name,
         attribute: pending_file.attribute,
+        reserved: [0; fat_dir::RESERVED_LENGTH],
         time: pending_file.time,
         date: pending_file.date,
         start_cluster: pending_file.start_cluster,
@@ -1253,5 +1279,158 @@ fn rollback_created_files(
             }
             let _ = fat_dir::delete_entry(volume, &entry, disk);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        DosPlatform, NeetanDos,
+        drive_map::pc98,
+        filesystem::fat::FatVolume,
+        test_support::{
+            FLOPPY_2HD_DEVICE_ID, FLOPPY_2HD_ROOT_SECTOR, MockDisk, directory_entry_bytes,
+            formatted_2hd_floppy, human68k_2hd_boot_sector, pc98_2hd_boot_sector,
+            store_2hd_single_cluster, store_directory_entry,
+        },
+    };
+
+    /// Drive index of the mounted test volume.
+    const DRIVE_INDEX: u8 = 0;
+
+    /// Mounts a 2HD floppy as drive A of a PC-98 HLE DOS.
+    fn dos_with_volume(disk: &mut MockDisk) -> NeetanDos {
+        let mut dos = NeetanDos::new(DosPlatform::pc98());
+        let volume =
+            FatVolume::mount(FLOPPY_2HD_DEVICE_ID, 0, &pc98::floppy_2hd_geometry(), disk).unwrap();
+        dos.state.fat_volumes[usize::from(DRIVE_INDEX)] = Some(volume);
+        dos
+    }
+
+    /// Returns the volume of drive A.
+    fn volume(dos: &NeetanDos) -> &FatVolume {
+        dos.state.fat_volumes[usize::from(DRIVE_INDEX)]
+            .as_ref()
+            .unwrap()
+    }
+
+    /// Renames `LONGNAMEX` with the name continuation `1A` to `NEWX` and
+    /// returns the stored entry bytes.
+    fn rename_long_name(boot_sector: &[u8]) -> Vec<u8> {
+        let mut disk = formatted_2hd_floppy(boot_sector);
+        let raw = directory_entry_bytes(b"LONGNAMEX  ", fat_dir::ATTR_ARCHIVE, b"1A", 0, 0);
+        store_directory_entry(&mut disk, FLOPPY_2HD_ROOT_SECTOR, 0, &raw);
+        let mut dos = dos_with_volume(&mut disk);
+        rename_entry_by_components(
+            &mut dos.state,
+            &mut disk,
+            (DRIVE_INDEX, 0, *b"LONGNAMEX  "),
+            (DRIVE_INDEX, 0, *b"NEW     X  "),
+        )
+        .unwrap();
+        assert!(
+            fat_dir::find_entry(volume(&dos), 0, b"NEW     X  ", &mut disk)
+                .unwrap()
+                .is_some()
+        );
+        disk.sector(FLOPPY_2HD_ROOT_SECTOR)[..fat_dir::DIR_ENTRY_SIZE].to_vec()
+    }
+
+    #[test]
+    fn rename_on_a_human68k_volume_clears_the_name_continuation() {
+        let stored = rename_long_name(&human68k_2hd_boot_sector());
+        assert_eq!(&stored[..11], b"NEW     X  ");
+        assert_eq!(&stored[12..22], &[0; fat_dir::RESERVED_LENGTH]);
+    }
+
+    #[test]
+    fn rename_on_another_volume_keeps_the_reserved_bytes() {
+        let stored = rename_long_name(&pc98_2hd_boot_sector());
+        assert_eq!(&stored[..11], b"NEW     X  ");
+        assert_eq!(&stored[12..22], b"1A\0\0\0\0\0\0\0\0");
+    }
+
+    /// Writes a pending file of one cluster onto drive A and returns it.
+    fn pending_file(dos: &mut NeetanDos, disk: &mut MockDisk, name: [u8; 11]) -> PendingFatFile {
+        let volume = dos.state.fat_volumes[usize::from(DRIVE_INDEX)]
+            .as_mut()
+            .unwrap();
+        let mut writer = fat_file::FatFileWriter::new(0, 0);
+        writer.write_chunk(volume, disk, b"pending").unwrap();
+        PendingFatFile {
+            drive_index: DRIVE_INDEX,
+            dir_cluster: 0,
+            name,
+            attribute: fat_dir::ATTR_ARCHIVE,
+            time: 0x1234,
+            date: 0x5678,
+            start_cluster: writer.start_cluster(),
+            file_size: writer.position(),
+            position: writer.position(),
+        }
+    }
+
+    #[test]
+    fn finished_pending_file_replaces_an_existing_file_in_its_slot() {
+        let mut disk = formatted_2hd_floppy(&human68k_2hd_boot_sector());
+        let deleted = directory_entry_bytes(b"\xE5LD     X  ", 0x20, &[], 0, 0);
+        store_directory_entry(&mut disk, FLOPPY_2HD_ROOT_SECTOR, 0, &deleted);
+        let existing = directory_entry_bytes(b"LONGNAMEX  ", 0x20, b"1A", 10, 5);
+        store_directory_entry(&mut disk, FLOPPY_2HD_ROOT_SECTOR, 1, &existing);
+        store_2hd_single_cluster(&mut disk, 10, b"short");
+        let mut dos = dos_with_volume(&mut disk);
+
+        let pending = pending_file(&mut dos, &mut disk, *b"LONGNAMEX  ");
+        finish_pending_file(&mut dos.state, &mut disk, pending).unwrap();
+
+        let root = disk.sector(FLOPPY_2HD_ROOT_SECTOR).to_vec();
+        assert_eq!(root[..32], deleted);
+        assert_eq!(&root[32..43], b"LONGNAMEX  ");
+        assert_eq!(&root[44..54], b"1A\0\0\0\0\0\0\0\0");
+        assert_eq!(&root[54..58], &[0x34, 0x12, 0x78, 0x56]);
+        assert_eq!(volume(&dos).read_fat_entry(10), 0);
+        let entry = fat_dir::find_entry(volume(&dos), 0, b"LONGNAMEX  ", &mut disk)
+            .unwrap()
+            .unwrap();
+        assert_eq!(entry.dir_offset, 32);
+        assert_eq!(
+            fat_file::read_all(volume(&dos), &entry, &mut disk).unwrap(),
+            b"pending"
+        );
+    }
+
+    #[test]
+    fn finished_pending_file_creates_a_new_entry() {
+        let mut disk = formatted_2hd_floppy(&pc98_2hd_boot_sector());
+        let mut dos = dos_with_volume(&mut disk);
+        let pending = pending_file(&mut dos, &mut disk, *b"NEW     TXT");
+        finish_pending_file(&mut dos.state, &mut disk, pending).unwrap();
+        let entry = fat_dir::find_entry(volume(&dos), 0, b"NEW     TXT", &mut disk)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            fat_file::read_all(volume(&dos), &entry, &mut disk).unwrap(),
+            b"pending"
+        );
+    }
+
+    #[test]
+    fn finished_pending_file_fails_on_a_directory_and_frees_its_chain() {
+        let mut disk = formatted_2hd_floppy(&pc98_2hd_boot_sector());
+        let directory = directory_entry_bytes(b"TARGET     ", fat_dir::ATTR_DIRECTORY, &[], 10, 0);
+        store_directory_entry(&mut disk, FLOPPY_2HD_ROOT_SECTOR, 0, &directory);
+        store_2hd_single_cluster(&mut disk, 10, &[]);
+        let mut dos = dos_with_volume(&mut disk);
+
+        let pending = pending_file(&mut dos, &mut disk, *b"TARGET     ");
+        let pending_cluster = pending.start_cluster;
+        assert_eq!(
+            finish_pending_file(&mut dos.state, &mut disk, pending),
+            Err(0x0005)
+        );
+        assert_eq!(volume(&dos).read_fat_entry(pending_cluster), 0);
+        assert_ne!(volume(&dos).read_fat_entry(10), 0);
+        assert_eq!(disk.sector(FLOPPY_2HD_ROOT_SECTOR)[..32], directory);
     }
 }

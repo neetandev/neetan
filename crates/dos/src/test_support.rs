@@ -408,3 +408,230 @@ pub(crate) fn device_chain_names(
     }
     panic!("device chain did not end within 32 devices: {names:?}");
 }
+
+/// Writable disk image in host memory. Requests for another device id fail.
+pub(crate) struct MockDisk {
+    /// `DiskIo` device id of the disk.
+    pub(crate) device_id: u8,
+    /// Bytes per physical sector.
+    pub(crate) sector_size: u16,
+    /// Sectors per track of the reported geometry.
+    pub(crate) sectors_per_track: u8,
+    /// Heads of the reported geometry.
+    pub(crate) heads: u8,
+    /// Image bytes.
+    pub(crate) data: Vec<u8>,
+}
+
+impl MockDisk {
+    /// Creates a zeroed disk of `total_sectors` sectors.
+    pub(crate) fn new(
+        device_id: u8,
+        sector_size: u16,
+        sectors_per_track: u8,
+        heads: u8,
+        total_sectors: u32,
+    ) -> Self {
+        Self {
+            device_id,
+            sector_size,
+            sectors_per_track,
+            heads,
+            data: vec![0u8; total_sectors as usize * sector_size as usize],
+        }
+    }
+
+    /// Overwrites one sector.
+    pub(crate) fn write_sector(&mut self, lba: u32, sector: &[u8]) {
+        let offset = lba as usize * self.sector_size as usize;
+        self.data[offset..offset + self.sector_size as usize].copy_from_slice(sector);
+    }
+
+    /// Returns the bytes of one sector.
+    pub(crate) fn sector(&self, lba: u32) -> &[u8] {
+        let offset = lba as usize * self.sector_size as usize;
+        &self.data[offset..offset + self.sector_size as usize]
+    }
+}
+
+impl crate::DiskIo for MockDisk {
+    fn read_sectors(&mut self, device_id: u8, lba: u32, count: u32) -> Result<Vec<u8>, u8> {
+        if device_id != self.device_id {
+            return Err(0x02);
+        }
+        let start = lba as usize * self.sector_size as usize;
+        let end = start + count as usize * self.sector_size as usize;
+        self.data.get(start..end).map(|s| s.to_vec()).ok_or(0x10)
+    }
+
+    fn write_sectors(&mut self, device_id: u8, lba: u32, data: &[u8]) -> Result<(), u8> {
+        if device_id != self.device_id {
+            return Err(0x02);
+        }
+        let start = lba as usize * self.sector_size as usize;
+        let end = start + data.len();
+        let Some(slice) = self.data.get_mut(start..end) else {
+            return Err(0x10);
+        };
+        slice.copy_from_slice(data);
+        Ok(())
+    }
+
+    fn sector_size(&self, device_id: u8) -> Option<u16> {
+        (device_id == self.device_id).then_some(self.sector_size)
+    }
+
+    fn total_sectors(&self, device_id: u8) -> Option<u32> {
+        (device_id == self.device_id).then_some(self.data.len() as u32 / self.sector_size as u32)
+    }
+
+    fn drive_geometry(&self, device_id: u8) -> Option<(u16, u8, u8)> {
+        (device_id == self.device_id).then_some((
+            self.total_sectors(device_id)? as u16
+                / self.heads as u16
+                / self.sectors_per_track as u16,
+            self.heads,
+            self.sectors_per_track,
+        ))
+    }
+}
+
+/// Device id of the first PC-98 2HD floppy drive.
+pub(crate) const FLOPPY_2HD_DEVICE_ID: u8 = 0x90;
+
+/// Bytes per sector of a 2HD floppy.
+const FLOPPY_2HD_SECTOR_SIZE: u16 = 1024;
+
+/// Sectors per track of a 2HD floppy.
+const FLOPPY_2HD_SECTORS_PER_TRACK: u8 = 8;
+
+/// Heads of a 2HD floppy.
+const FLOPPY_2HD_HEADS: u8 = 2;
+
+/// Sectors of a 2HD floppy (77 x 2 x 8).
+const FLOPPY_2HD_TOTAL_SECTORS: u32 = 1232;
+
+/// First sector of each FAT copy of a 2HD floppy.
+const FLOPPY_2HD_FAT_SECTORS: [u32; 2] = [1, 3];
+
+/// Sectors of one FAT copy of a 2HD floppy.
+const FLOPPY_2HD_SECTORS_PER_FAT: u32 = 2;
+
+/// Data clusters of a 2HD floppy: clusters 2 to 1222.
+pub(crate) const FLOPPY_2HD_DATA_CLUSTER_COUNT: u16 = 1221;
+
+/// First root directory sector of a 2HD floppy.
+pub(crate) const FLOPPY_2HD_ROOT_SECTOR: u32 = 5;
+
+/// First data sector of a 2HD floppy, the sector of cluster 2.
+pub(crate) const FLOPPY_2HD_DATA_SECTOR: u32 = 11;
+
+/// Boot sector of a PC-98 2HD floppy with a FAT12 BPB at `0Bh`.
+pub(crate) fn pc98_2hd_boot_sector() -> Vec<u8> {
+    let mut sector = vec![0u8; FLOPPY_2HD_SECTOR_SIZE as usize];
+    sector[0x0B..0x18].copy_from_slice(&[
+        0x00, 0x04, 0x01, 0x01, 0x00, 0x02, 0xC0, 0x00, 0xD0, 0x04, 0xFE, 0x02, 0x00,
+    ]);
+    sector
+}
+
+/// Boot sector of a Human68k 2.x 2HD floppy with its big-endian BPB at `12h`.
+pub(crate) fn human68k_2hd_boot_sector() -> Vec<u8> {
+    let mut sector = vec![0u8; FLOPPY_2HD_SECTOR_SIZE as usize];
+    sector[..0x12].copy_from_slice(b"\x60\x1CHudson soft 2.00");
+    sector[0x12..0x1E].copy_from_slice(&[
+        0x04, 0x00, 0x01, 0x02, 0x00, 0x01, 0x00, 0xC0, 0x04, 0xD0, 0xFE, 0x02,
+    ]);
+    sector
+}
+
+/// Empty FAT12 2HD floppy (77 x 2 x 8 x 1024) with the boot sector and two
+/// FATs that start with `FE FF FF`.
+pub(crate) fn formatted_2hd_floppy(boot_sector: &[u8]) -> MockDisk {
+    let mut disk = MockDisk::new(
+        FLOPPY_2HD_DEVICE_ID,
+        FLOPPY_2HD_SECTOR_SIZE,
+        FLOPPY_2HD_SECTORS_PER_TRACK,
+        FLOPPY_2HD_HEADS,
+        FLOPPY_2HD_TOTAL_SECTORS,
+    );
+    disk.write_sector(0, boot_sector);
+    let mut fat = vec![0u8; FLOPPY_2HD_SECTOR_SIZE as usize];
+    fat[..3].copy_from_slice(&[0xFE, 0xFF, 0xFF]);
+    for fat_sector in FLOPPY_2HD_FAT_SECTORS {
+        disk.write_sector(fat_sector, &fat);
+    }
+    disk
+}
+
+/// Builds the 32 bytes of a directory entry.
+pub(crate) fn directory_entry_bytes(
+    name: &[u8; 11],
+    attribute: u8,
+    reserved: &[u8],
+    start_cluster: u16,
+    file_size: u32,
+) -> [u8; 32] {
+    let mut entry = [0u8; 32];
+    entry[..11].copy_from_slice(name);
+    entry[11] = attribute;
+    entry[12..12 + reserved.len()].copy_from_slice(reserved);
+    entry[26..28].copy_from_slice(&start_cluster.to_le_bytes());
+    entry[28..32].copy_from_slice(&file_size.to_le_bytes());
+    entry
+}
+
+/// Writes a 12-bit FAT entry into a FAT buffer.
+pub(crate) fn set_fat12_entry(fat: &mut [u8], cluster: u16, value: u16) {
+    let offset = (cluster as usize * 3) / 2;
+    if cluster & 1 == 0 {
+        fat[offset] = (value & 0x00FF) as u8;
+        fat[offset + 1] = (fat[offset + 1] & 0xF0) | ((value >> 8) as u8 & 0x0F);
+    } else {
+        fat[offset] = (fat[offset] & 0x0F) | (((value << 4) as u8) & 0xF0);
+        fat[offset + 1] = (value >> 4) as u8;
+    }
+}
+
+/// Stores a directory entry in a slot of a directory sector.
+pub(crate) fn store_directory_entry(
+    disk: &mut MockDisk,
+    directory_sector: u32,
+    slot: usize,
+    entry: &[u8; 32],
+) {
+    let mut sector = disk.sector(directory_sector).to_vec();
+    sector[slot * 32..slot * 32 + 32].copy_from_slice(entry);
+    disk.write_sector(directory_sector, &sector);
+}
+
+/// Stores the contents of a file of one cluster on a 2HD floppy and marks
+/// the cluster as the end of its chain in both FATs.
+pub(crate) fn store_2hd_single_cluster(disk: &mut MockDisk, cluster: u16, contents: &[u8]) {
+    let mut sector = vec![0u8; FLOPPY_2HD_SECTOR_SIZE as usize];
+    sector[..contents.len()].copy_from_slice(contents);
+    disk.write_sector(FLOPPY_2HD_DATA_SECTOR + u32::from(cluster) - 2, &sector);
+    set_2hd_fat_entries(disk, [cluster], 0x0FFF);
+}
+
+/// Writes the same value into the FAT entries of the clusters in both FATs
+/// of a 2HD floppy.
+pub(crate) fn set_2hd_fat_entries(
+    disk: &mut MockDisk,
+    clusters: impl IntoIterator<Item = u16> + Clone,
+    value: u16,
+) {
+    let sector_size = usize::from(FLOPPY_2HD_SECTOR_SIZE);
+    for fat_start in FLOPPY_2HD_FAT_SECTORS {
+        let mut fat = Vec::new();
+        for fat_sector in fat_start..fat_start + FLOPPY_2HD_SECTORS_PER_FAT {
+            fat.extend_from_slice(disk.sector(fat_sector));
+        }
+        for cluster in clusters.clone() {
+            set_fat12_entry(&mut fat, cluster, value);
+        }
+        for (index, chunk) in fat.chunks(sector_size).enumerate() {
+            disk.write_sector(fat_start + index as u32, chunk);
+        }
+    }
+}
