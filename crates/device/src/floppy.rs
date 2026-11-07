@@ -5,6 +5,7 @@
 //! - **D77** (.d77): Fujitsu FM-7 disk format; a byte-compatible D88 container.
 //! - **HDM** (.hdm): Headerless raw sector format for 2HD floppies.
 //! - **NFD** (.nfd): T98Next format with per-sector metadata (R0 and R1 revisions).
+//! - **FDI** (.fdi): Anex86 PC-98 format with a geometry header and raw sectors.
 //! - **2D** (.2d): Headerless raw sector format for Sharp X1 2D floppies.
 //! - **DIM** (.dim): X68000 DIFC.X container with a per-track saved-flag table.
 //! - **XDF** (.xdf/.2hd): Headerless raw sector format for X68000 2HD floppies.
@@ -14,6 +15,8 @@
 
 pub mod d88;
 pub mod dim;
+pub mod fdi;
+mod geometry;
 pub mod hdm;
 pub mod ibm_xdf;
 pub mod img;
@@ -31,6 +34,7 @@ use std::{
 
 use common::error;
 pub use d88::{D88Disk, D88Error, D88MediaType, D88Sector};
+pub use geometry::FloppyGeometry;
 pub use msx_dsk::{MsxDskError, MsxDskGeometry};
 pub use nfd::{NfdExtra, NfdRevision};
 
@@ -61,6 +65,29 @@ pub enum FloppyFormat {
     IbmXdf,
     /// Headerless raw MSX sector format (.dsk).
     MsxDsk(MsxDskGeometry),
+    /// Anex86 FDI format (.fdi) with a geometry header.
+    Fdi,
+}
+
+impl FloppyFormat {
+    /// Returns whether the parser of the format fills the track table from one
+    /// geometry and stores the sectors of a track in logical order.
+    pub const fn has_fixed_layout(self) -> bool {
+        match self {
+            FloppyFormat::Hdm
+            | FloppyFormat::Xdf
+            | FloppyFormat::TwoD
+            | FloppyFormat::Img
+            | FloppyFormat::MsxDsk(_)
+            | FloppyFormat::Dim
+            | FloppyFormat::Fdi => true,
+            FloppyFormat::D88
+            | FloppyFormat::D77
+            | FloppyFormat::NfdR0
+            | FloppyFormat::NfdR1
+            | FloppyFormat::IbmXdf => false,
+        }
+    }
 }
 
 /// Format-specific metadata preserved so an image can be re-emitted
@@ -72,6 +99,8 @@ pub enum FormatExtra {
     Dim(Box<[u8; dim::DIM_HEADER_SIZE]>),
     /// NFD (T98-Next) container and per-sector metadata.
     Nfd(Box<NfdExtra>),
+    /// FDI (Anex86) header up to its declared size, preserved verbatim.
+    Fdi(Box<[u8]>),
 }
 
 /// A parsed floppy disk image.
@@ -177,6 +206,16 @@ impl FloppyImage {
         })
     }
 
+    /// Parses an FDI floppy image from raw bytes, keeping the header.
+    pub fn from_fdi_bytes(data: &[u8]) -> Result<Self, FloppyError> {
+        let (disk, header) = fdi::from_bytes(data).map_err(FloppyError::Fdi)?;
+        Ok(Self {
+            disk,
+            format: FloppyFormat::Fdi,
+            extra: Some(FormatExtra::Fdi(header)),
+        })
+    }
+
     /// Parses an XDF floppy image from raw bytes.
     pub fn from_xdf_bytes(data: &[u8]) -> Result<Self, FloppyError> {
         let disk = xdf::from_bytes(data).map_err(FloppyError::Xdf)?;
@@ -245,6 +284,7 @@ impl FloppyImage {
             FloppyFormat::Img => "IMG",
             FloppyFormat::IbmXdf => "IBM XDF",
             FloppyFormat::MsxDsk(_) => "MSX DSK",
+            FloppyFormat::Fdi => "FDI",
         }
     }
 
@@ -261,6 +301,7 @@ impl FloppyImage {
             FloppyFormat::Img => img::to_bytes(&self.disk),
             FloppyFormat::IbmXdf => ibm_xdf::to_bytes(&self.disk),
             FloppyFormat::MsxDsk(geometry) => msx_dsk::to_bytes(&self.disk, geometry),
+            FloppyFormat::Fdi => fdi::to_bytes(&self.disk, self.fdi_header()),
         }
     }
 
@@ -318,6 +359,13 @@ impl FloppyImage {
                     Some("MSX DSK cannot represent the current track layout")
                 }
             }
+            FloppyFormat::Fdi => {
+                if fdi::is_representable(&self.disk, self.fdi_header()) {
+                    None
+                } else {
+                    Some("FDI cannot represent the current track layout")
+                }
+            }
         }
     }
 
@@ -327,6 +375,16 @@ impl FloppyImage {
         match &self.extra {
             Some(FormatExtra::Dim(header)) => header,
             _ => &DEFAULT_DIM_HEADER,
+        }
+    }
+
+    /// Returns the preserved FDI header, or the standard 2HD header when absent.
+    fn fdi_header(&self) -> &[u8] {
+        const DEFAULT_FDI_HEADER: [u8; fdi::FDI_STANDARD_HEADER_SIZE] = fdi::standard_2hd_header();
+        if let Some(FormatExtra::Fdi(header)) = &self.extra {
+            header
+        } else {
+            &DEFAULT_FDI_HEADER
         }
     }
 
@@ -718,8 +776,16 @@ const fn floppy_format_tag(format: FloppyFormat) -> u8 {
         FloppyFormat::MsxDsk(MsxDskGeometry::Tracks80Sides1) => 10,
         FloppyFormat::MsxDsk(MsxDskGeometry::Tracks40Sides2) => 11,
         FloppyFormat::MsxDsk(MsxDskGeometry::Tracks80Sides2) => 12,
+        FloppyFormat::Fdi => 13,
     }
 }
+
+/// The file extensions of the floppy disk images in lowercase without the dot.
+/// `load_floppy_image` maps each of them to its format.
+pub const FLOPPY_EXTENSIONS: &[&str] = &[
+    "d88", "d98", "88d", "98d", "d77", "hdm", "nfd", "fdi", "2d", "dim", "xdf", "2hd", "img",
+    "ima", "dsk",
+];
 
 /// Loads a floppy image, auto-detecting the format by file extension.
 pub fn load_floppy_image(path: &Path, data: &[u8]) -> Result<FloppyImage, FloppyError> {
@@ -731,6 +797,7 @@ pub fn load_floppy_image(path: &Path, data: &[u8]) -> Result<FloppyImage, Floppy
     match extension.as_deref() {
         Some("hdm") => FloppyImage::from_hdm_bytes(data),
         Some("nfd") => FloppyImage::from_nfd_bytes(data),
+        Some("fdi") => FloppyImage::from_fdi_bytes(data),
         Some("2d") => FloppyImage::from_2d_bytes(data),
         Some("d77") => FloppyImage::from_d77_bytes(data),
         Some("dim") => FloppyImage::from_dim_bytes(data),
@@ -801,6 +868,8 @@ pub enum FloppyError {
     IbmXdf(ibm_xdf::IbmXdfError),
     /// Raw MSX DSK parsing error.
     MsxDsk(MsxDskError),
+    /// FDI format parsing error.
+    Fdi(fdi::FdiError),
     /// File extension not recognized as a supported floppy format.
     UnrecognizedFormat,
 }
@@ -817,6 +886,7 @@ impl fmt::Display for FloppyError {
             FloppyError::Img(err) => write!(f, "{err}"),
             FloppyError::IbmXdf(err) => write!(f, "{err}"),
             FloppyError::MsxDsk(err) => write!(f, "{err}"),
+            FloppyError::Fdi(err) => write!(f, "{err}"),
             FloppyError::UnrecognizedFormat => write!(f, "unrecognized floppy image format"),
         }
     }
@@ -839,6 +909,13 @@ mod tests {
         assert_eq!("2dd".parse::<FddType>(), Ok(FddType::Dd2));
         assert_eq!("2dd720".parse::<FddType>(), Ok(FddType::Dd2Fmt720));
         assert!("2xx".parse::<FddType>().is_err());
+    }
+
+    /// Builds a 2HD FDI image with the standard header and a byte pattern in the sectors.
+    fn build_fdi_2hd() -> Vec<u8> {
+        let mut image = fdi::standard_2hd_header().to_vec();
+        image.extend((0..hdm::HDM_FILE_SIZE).map(|index| (index % 251) as u8));
+        image
     }
 
     fn build_minimal_d88(payload_byte: u8) -> Vec<u8> {
@@ -982,6 +1059,149 @@ mod tests {
         assert_eq!(raw, original);
 
         drop(mounted);
+    }
+
+    /// Verifies that a guest sector write reaches the FDI file behind its header.
+    #[test]
+    fn mounted_floppy_fdi_sector_write_through() {
+        let original = build_fdi_2hd();
+        let file = TemporaryFile::new("floppy_test", "image.fdi", &original);
+        let path = file.path().to_path_buf();
+
+        let image = FloppyImage::from_fdi_bytes(&original).unwrap();
+        let mut mounted = MountedFloppy::new(image, Some(path.clone()));
+
+        let pattern = [0xCCu8; 1024];
+        assert!(mounted.write_sector_data(0, 0, 0, 1, 3, &pattern));
+        assert!(!mounted.is_dirty());
+
+        mounted.flush().expect("flush succeeds");
+        drop(mounted);
+        let raw = std::fs::read(&path).unwrap();
+        let header_size = fdi::FDI_STANDARD_HEADER_SIZE;
+        assert_eq!(raw.len(), original.len());
+        assert_eq!(raw[..header_size], original[..header_size]);
+        assert!(
+            raw[header_size..header_size + 1024]
+                .iter()
+                .all(|&byte| byte == 0xCC)
+        );
+        assert_eq!(raw[header_size + 1024..], original[header_size + 1024..]);
+    }
+
+    /// Verifies that a FORMAT TRACK with the FDI layout re-emits the file with its header.
+    #[test]
+    fn mounted_floppy_fdi_format_track_reemits_file_with_its_header() {
+        let mut original = build_fdi_2hd();
+        original[fdi::FDI_GEOMETRY_FIELDS_SIZE..fdi::FDI_GEOMETRY_FIELDS_SIZE + 6]
+            .copy_from_slice(b"Anex86");
+        let file = TemporaryFile::new("floppy_test", "image.fdi", &original);
+        let path = file.path().to_path_buf();
+
+        let image = FloppyImage::from_fdi_bytes(&original).unwrap();
+        let mut mounted = MountedFloppy::new(image, Some(path.clone()));
+        let chrn: Vec<(u8, u8, u8, u8)> = (1..=8).map(|record| (0, 1, record, 3)).collect();
+        mounted.format_track(1, &chrn, 3, 0xE5);
+        assert!(!mounted.is_dirty());
+
+        let pattern = [0x5Au8; 1024];
+        assert!(mounted.write_sector_data(1, 0, 1, 2, 3, &pattern));
+        assert!(!mounted.is_dirty());
+        mounted.flush().expect("flush succeeds");
+        drop(mounted);
+
+        let raw = std::fs::read(&path).unwrap();
+        let header_size = fdi::FDI_STANDARD_HEADER_SIZE;
+        let track_size = 8 * 1024;
+        let track_start = header_size + track_size;
+        assert_eq!(raw.len(), original.len());
+        assert_eq!(raw[..track_start], original[..track_start]);
+        assert!(
+            raw[track_start..track_start + 1024]
+                .iter()
+                .all(|&byte| byte == 0xE5)
+        );
+        assert!(
+            raw[track_start + 1024..track_start + 2048]
+                .iter()
+                .all(|&byte| byte == 0x5A)
+        );
+        assert!(
+            raw[track_start + 2048..track_start + track_size]
+                .iter()
+                .all(|&byte| byte == 0xE5)
+        );
+        assert_eq!(
+            raw[header_size + 2 * track_size..],
+            original[header_size + 2 * track_size..]
+        );
+    }
+
+    /// Verifies that a FORMAT TRACK that FDI cannot represent leaves the file unchanged and the mount dirty.
+    #[test]
+    fn mounted_floppy_fdi_incompatible_format_stays_dirty_and_leaves_file_unchanged() {
+        let original = build_fdi_2hd();
+        let file = TemporaryFile::new("floppy_test", "image.fdi", &original);
+        let path = file.path().to_path_buf();
+
+        let image = FloppyImage::from_fdi_bytes(&original).unwrap();
+        let mut mounted = MountedFloppy::new(image, Some(path.clone()));
+
+        mounted.format_track(0, &[(0, 0, 1, 1)], 1, 0xE5);
+
+        assert!(mounted.is_dirty());
+        let raw = std::fs::read(&path).unwrap();
+        assert_eq!(raw, original);
+
+        drop(mounted);
+    }
+
+    /// Verifies that an `.fdi` path loads as FDI.
+    #[test]
+    fn fdi_extension_loads_as_fdi() {
+        let original = build_fdi_2hd();
+        let image = load_floppy_image(Path::new("Disk 1 [FD].FDI"), &original).expect("load fdi");
+        assert_eq!(image.format, FloppyFormat::Fdi);
+        assert_eq!(image.format_name(), "FDI");
+        assert_eq!(image.media_type, D88MediaType::Disk2HD);
+        assert_eq!(image.to_bytes(), original);
+    }
+
+    /// Returns a valid image for `extension` and the format that it loads as.
+    fn build_image_for_extension(extension: &str) -> (Vec<u8>, FloppyFormat) {
+        match extension {
+            "d88" | "d98" | "88d" | "98d" => (build_minimal_d88(0x00), FloppyFormat::D88),
+            "d77" => (build_minimal_d88(0x00), FloppyFormat::D77),
+            "hdm" => (vec![0; hdm::HDM_FILE_SIZE], FloppyFormat::Hdm),
+            "nfd" => (build_mount_r1(0, 0), FloppyFormat::NfdR1),
+            "fdi" => (build_fdi_2hd(), FloppyFormat::Fdi),
+            "2d" => (vec![0; 40 * 2 * 16 * 256], FloppyFormat::TwoD),
+            "dim" => (dim::blank_header().to_vec(), FloppyFormat::Dim),
+            "xdf" | "2hd" => (vec![0; hdm::HDM_FILE_SIZE], FloppyFormat::Xdf),
+            "img" | "ima" => (vec![0; 80 * 2 * 18 * 512], FloppyFormat::Img),
+            "dsk" => (
+                vec![0; 80 * 2 * 9 * 512],
+                FloppyFormat::MsxDsk(MsxDskGeometry::Tracks80Sides2),
+            ),
+            other => panic!("no test image for the extension {other}"),
+        }
+    }
+
+    /// Verifies that the loader parses a valid image of every floppy extension into its format.
+    #[test]
+    fn every_floppy_extension_loads_its_format() {
+        for extension in FLOPPY_EXTENSIONS {
+            let (bytes, format) = build_image_for_extension(extension);
+            let path = PathBuf::from(format!("image.{extension}"));
+            let image = load_floppy_image(&path, &bytes)
+                .unwrap_or_else(|error| panic!("{extension}: {error}"));
+            assert_eq!(image.format, format, "{extension}");
+
+            let upper_path = PathBuf::from(format!("IMAGE.{}", extension.to_ascii_uppercase()));
+            let image = load_floppy_image(&upper_path, &bytes)
+                .unwrap_or_else(|error| panic!("{extension}: {error}"));
+            assert_eq!(image.format, format, "{extension}");
+        }
     }
 
     /// Constants and layout helpers shared by the NFD R1 mount tests.

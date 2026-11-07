@@ -54,16 +54,11 @@ pub const CARTRIDGE_ID: &str = "cartridge";
 /// The id of the cassette tape images.
 pub const TAPE_ID: &str = "tape";
 
-/// The extensions of the floppy disk images. One loader reads them on every family.
-const FLOPPY_EXTENSIONS: &[&str] = &[
-    "d88", "d98", "88d", "98d", "hdm", "nfd", "2d", "d77", "dim", "xdf", "2hd", "img", "ima", "dsk",
-];
-
-/// The files of a floppy drive.
+/// The files of a floppy drive. One loader reads them on every family.
 pub(super) const FLOPPY_FILES: &[FileTypes] = &[FileTypes {
     id: FLOPPY_ID,
     families: Families::ALL,
-    extensions: FLOPPY_EXTENSIONS,
+    extensions: device::floppy::FLOPPY_EXTENSIONS,
     icon: ImageIcon::Disk,
 }];
 
@@ -179,6 +174,7 @@ mod tests {
         let floppy = FLOPPY_FILES[0];
         assert!(floppy.matches(Path::new("games/Ys (Disk A).D88")));
         assert!(floppy.matches(Path::new("disk.hdm")));
+        assert!(floppy.matches(Path::new("games/98/os2-warp-v3/Disk 1.fdi")));
         assert!(!floppy.matches(Path::new("disk.cue")));
         assert!(!floppy.matches(Path::new("d88")));
         let extensions: Vec<&str> = HARD_DISK_FILES
