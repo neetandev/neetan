@@ -365,8 +365,8 @@ fn saved_media_mounts_as_a_checkpoint() {
          (test-suite \"Checkpoint creation\"\n\
          (test-case \"saves a formatted hard disk\"\n\
          (with-machine (machine '((model . pc9801vm)))\n\
-         (create-hdd! machine 'hdd 0 'sasi20)\n\
-         (format-hdd! machine 'hdd 0 #f)\n\
+         (media-create! machine 'hdd 0 'sasi20)\n\
+         (media-format! machine 'hdd 0 #f)\n\
          (media-save! machine 'hdd 0 \"install.hdi\"))))\n";
     workspace.write("save.scm", save_script.as_bytes());
     assert_completed_ok(&workspace.run("save.scm", 60));

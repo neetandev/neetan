@@ -250,8 +250,7 @@ impl HddFormat {
     }
 }
 
-/// A named hard-disk capacity and container format, selectable on the command
-/// line and by the automation `create-hdd!` procedure.
+/// A named hard-disk capacity and container format.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum HddSizeType {
     /// PC-98 SASI 5 MB (.hdi).

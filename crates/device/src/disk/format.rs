@@ -1,5 +1,6 @@
-//! Hard-disk formatting: partition table, BPB/boot sector, FAT, and root
-//! directory layout for FAT12/FAT16 volumes.
+//! FAT formatting: partition table, BPB/boot sector, FAT, and root
+//! directory layout for FAT12/FAT16 volumes on hard disks, and the shared
+//! boot sector writers of the floppy formatter.
 
 use super::{HddGeometry, HddImage, pc98_ide, pc98_sasi};
 
@@ -39,6 +40,8 @@ pub enum FormatError {
     ImageTooSmall,
     /// A computed sector fell outside the image.
     SectorOutOfRange,
+    /// The floppy geometry has no FAT12 format on the machine family.
+    UnsupportedGeometry,
 }
 
 impl std::fmt::Display for FormatError {
@@ -46,6 +49,9 @@ impl std::fmt::Display for FormatError {
         match self {
             FormatError::ImageTooSmall => f.write_str("hard disk image is too small to format"),
             FormatError::SectorOutOfRange => f.write_str("format wrote a sector out of range"),
+            FormatError::UnsupportedGeometry => {
+                f.write_str("the floppy geometry has no format on this machine family")
+            }
         }
     }
 }
@@ -326,43 +332,47 @@ pub fn at_master_boot_record(
     sector
 }
 
-/// Builds the hard-disk FAT boot sector (BPB) for a partition at
-/// `partition_offset`.
-pub fn hdd_boot_sector(
+/// Writes the jump, the OEM name and the DOS 3.31 BPB of a FAT boot sector
+/// into `boot`. A volume of more than 65535 sectors stores its size in the
+/// 32-bit total sector field.
+pub(crate) fn write_bpb_fields(
+    boot: &mut [u8],
+    jump: [u8; 3],
     bpb: &BpbParams,
-    sector_size: u16,
-    partition_sectors: u32,
+    total_sectors: u32,
     sectors_per_track: u8,
     heads: u8,
-    partition_offset: u32,
-) -> Vec<u8> {
-    let mut boot = vec![0u8; sector_size as usize];
-    boot[0] = 0xEB;
-    boot[1] = 0x3C;
-    boot[2] = 0x90;
+    hidden_sectors: u32,
+) {
+    boot[0..3].copy_from_slice(&jump);
     boot[3..11].copy_from_slice(b"NEETAN  ");
     boot[11..13].copy_from_slice(&bpb.bytes_per_sector.to_le_bytes());
     boot[13] = bpb.sectors_per_cluster;
     boot[14..16].copy_from_slice(&bpb.reserved_sectors.to_le_bytes());
     boot[16] = bpb.num_fats;
     boot[17..19].copy_from_slice(&bpb.root_entry_count.to_le_bytes());
-    if partition_sectors <= 0xFFFF {
-        boot[19..21].copy_from_slice(&(partition_sectors as u16).to_le_bytes());
+    if total_sectors <= 0xFFFF {
+        boot[19..21].copy_from_slice(&(total_sectors as u16).to_le_bytes());
     } else {
         boot[19..21].copy_from_slice(&0u16.to_le_bytes());
-        boot[32..36].copy_from_slice(&partition_sectors.to_le_bytes());
+        boot[32..36].copy_from_slice(&total_sectors.to_le_bytes());
     }
     boot[21] = bpb.media_descriptor;
     boot[22..24].copy_from_slice(&bpb.sectors_per_fat.to_le_bytes());
     boot[24..26].copy_from_slice(&(sectors_per_track as u16).to_le_bytes());
     boot[26..28].copy_from_slice(&(heads as u16).to_le_bytes());
-    boot[28..32].copy_from_slice(&partition_offset.to_le_bytes());
+    boot[28..32].copy_from_slice(&hidden_sectors.to_le_bytes());
+}
 
+/// Writes the extended BPB with the BIOS drive number `drive_number`, the
+/// parking loop at the target of the `EB 3C` jump and the `55 AA` signature
+/// at the end of `boot`.
+pub(crate) fn write_extended_bpb_and_signature(boot: &mut [u8], bpb: &BpbParams, drive_number: u8) {
     // The extended BPB and the boot signature make DOS accept the BPB when
     // it mounts the volume. Without them the IBM DOS kernel builds a default
     // layout from the partition size instead, which breaks the filesystem
     // as soon as SYS trusts the on-disk BPB.
-    boot[36] = HDD_PHYSICAL_DRIVE_NUMBER;
+    boot[36] = drive_number;
     boot[38] = EXTENDED_BOOT_SIGNATURE;
     boot[39..43].copy_from_slice(&VOLUME_SERIAL_NUMBER.to_le_bytes());
     boot[43..54].copy_from_slice(b"NO NAME    ");
@@ -377,9 +387,35 @@ pub fn hdd_boot_sector(
     boot[62] = 0xEB;
     boot[63] = 0xFE;
 
-    let signature_offset = sector_size as usize - 2;
+    let signature_offset = boot.len() - 2;
     boot[signature_offset] = 0x55;
     boot[signature_offset + 1] = 0xAA;
+}
+
+/// The `JMP SHORT 3Eh` and `NOP` at the start of a DOS boot sector.
+pub(crate) const DOS_BOOT_JUMP: [u8; 3] = [0xEB, 0x3C, 0x90];
+
+/// Builds the hard-disk FAT boot sector (BPB) for a partition at
+/// `partition_offset`.
+pub fn hdd_boot_sector(
+    bpb: &BpbParams,
+    sector_size: u16,
+    partition_sectors: u32,
+    sectors_per_track: u8,
+    heads: u8,
+    partition_offset: u32,
+) -> Vec<u8> {
+    let mut boot = vec![0u8; sector_size as usize];
+    write_bpb_fields(
+        &mut boot,
+        DOS_BOOT_JUMP,
+        bpb,
+        partition_sectors,
+        sectors_per_track,
+        heads,
+        partition_offset,
+    );
+    write_extended_bpb_and_signature(&mut boot, bpb, HDD_PHYSICAL_DRIVE_NUMBER);
     boot
 }
 

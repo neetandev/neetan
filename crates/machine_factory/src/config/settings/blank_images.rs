@@ -364,10 +364,10 @@ pub fn is_blank_image_extension(extension: &str) -> bool {
 }
 
 impl BlankImages {
-    /// Returns whether the entry covers the drive `key` with the files `types` on the family
-    /// `target`. The key compares ignoring the case.
-    fn covers(&self, types: &FileTypes, target: Target, key: &str) -> bool {
-        self.types_id == types.id
+    /// Returns whether the entry covers the drive `key` with the files of the id `types_id` on
+    /// the family `target`. The key compares ignoring the case.
+    fn covers(&self, types_id: &str, target: Target, key: &str) -> bool {
+        self.types_id == types_id
             && self.family.contains_target(target)
             && self
                 .keys
@@ -382,7 +382,7 @@ impl BlankImages {
 pub fn has_blank_images(types: &FileTypes, target: Target, key: &str) -> bool {
     BLANK_IMAGES
         .iter()
-        .any(|entry| entry.covers(types, target, key))
+        .any(|entry| entry.covers(types.id, target, key))
 }
 
 /// Returns the blank images of the drive `key` with the files `types` on the model `model` of
@@ -394,8 +394,21 @@ pub fn blank_images_for(
     key: &str,
     model: &str,
 ) -> Option<&'static BlankImages> {
+    blank_images_for_id(types.id, target, key, model)
+}
+
+/// Returns the blank images of the drive `key` with the files of the id `types_id`
+/// (`FLOPPY_ID` or `HARD_DISK_ID`) on the model `model` of the family `target`. The key and the
+/// model compare ignoring the case.
+#[must_use]
+pub fn blank_images_for_id(
+    types_id: &str,
+    target: Target,
+    key: &str,
+    model: &str,
+) -> Option<&'static BlankImages> {
     BLANK_IMAGES.iter().find(|entry| {
-        entry.covers(types, target, key)
+        entry.covers(types_id, target, key)
             && entry
                 .models
                 .iter()

@@ -1,8 +1,12 @@
-//! Media insert, eject, save, info, and hard disk creation natives.
+//! Media insert, eject, save, info, creation, and formatting natives.
 
 use std::{cell::RefCell, rc::Rc};
 
-use device::disk::{HddSizeType, format::PartitionTableType};
+use device::{
+    disk::{HddSizeType, format::PartitionTableType},
+    floppy::FddType,
+};
+use machine_factory::config::settings::blank_images::BlankFormat;
 use r7rs::{Engine, Error, LibraryName, NativeContext, Value, ValueKind};
 
 use super::support::{
@@ -71,7 +75,19 @@ fn media_kind_argument(
     }
 }
 
-/// Registers the media insert, eject, save, info, and hard disk creation
+/// Parses the format symbol of `media-create!` for `kind`: a hard-disk size
+/// for `hdd` media, a floppy type for `floppy` media.
+fn parse_blank_format(kind: MediaKind, name: &str) -> Result<BlankFormat, String> {
+    match kind {
+        MediaKind::Hdd => parse_hdd_size(name).map(BlankFormat::HardDisk),
+        MediaKind::Floppy => name.parse::<FddType>().map(BlankFormat::Floppy),
+        MediaKind::Cdrom | MediaKind::Cartridge | MediaKind::Cassette | MediaKind::Printer => {
+            Err(format!("{} media cannot be created", kind.symbol()))
+        }
+    }
+}
+
+/// Registers the media insert, eject, save, info, creation, and formatting
 /// natives.
 pub(super) fn register_media_natives(
     engine: &mut Engine,
@@ -157,53 +173,39 @@ pub(super) fn register_media_natives(
         }
     })?;
 
-    let create_hdd = Rc::clone(session);
-    engine.register_library_fn(internal, "%create-hdd", 4..=4, move |context, args| {
-        if let Err(value) = machine_id(context, &create_hdd, args[0])? {
+    let media_create = Rc::clone(session);
+    engine.register_library_fn(internal, "%media-create", 4..=4, move |context, args| {
+        if let Err(value) = machine_id(context, &media_create, args[0])? {
             return Ok(value);
         }
         let kind = match media_kind_argument(context, args[1])? {
             Ok(kind) => kind,
             Err(value) => return Ok(value),
         };
-        if kind != MediaKind::Hdd {
-            return error_value(
-                context,
-                "neetan/argument",
-                "create-hdd! only supports 'hdd media",
-            );
-        }
         let slot = match to_count(context, args[2])? {
             Ok(slot) => slot as usize,
             Err(value) => return Ok(value),
         };
-        let size_name = context.to_symbol_name(args[3])?.to_owned();
-        let size = match parse_hdd_size(&size_name) {
-            Ok(size) => size,
+        let format_name = context.to_symbol_name(args[3])?.to_owned();
+        let format = match parse_blank_format(kind, &format_name) {
+            Ok(format) => format,
             Err(message) => return error_value(context, "neetan/argument", &message),
         };
-        match create_hdd.borrow_mut().create_hdd(slot, size) {
+        match media_create.borrow_mut().media_create(kind, slot, format) {
             Ok(mount) => media_mount_alist(context, &mount),
             Err(error) => op_error_value(context, &error),
         }
     })?;
 
-    let format_hdd = Rc::clone(session);
-    engine.register_library_fn(internal, "%format-hdd", 4..=4, move |context, args| {
-        if let Err(value) = machine_id(context, &format_hdd, args[0])? {
+    let media_format = Rc::clone(session);
+    engine.register_library_fn(internal, "%media-format", 4..=4, move |context, args| {
+        if let Err(value) = machine_id(context, &media_format, args[0])? {
             return Ok(value);
         }
         let kind = match media_kind_argument(context, args[1])? {
             Ok(kind) => kind,
             Err(value) => return Ok(value),
         };
-        if kind != MediaKind::Hdd {
-            return error_value(
-                context,
-                "neetan/argument",
-                "format-hdd! only supports 'hdd media",
-            );
-        }
         let slot = match to_count(context, args[2])? {
             Ok(slot) => slot as usize,
             Err(value) => return Ok(value),
@@ -218,7 +220,7 @@ pub(super) fn register_media_natives(
                     Err(message) => return error_value(context, "neetan/argument", &message),
                 }
             };
-        match format_hdd.borrow_mut().format_hdd(slot, table) {
+        match media_format.borrow_mut().media_format(kind, slot, table) {
             Ok(()) => Ok(Value::boolean(true)),
             Err(error) => op_error_value(context, &error),
         }

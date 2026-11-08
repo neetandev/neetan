@@ -13,9 +13,11 @@
 //! - **IBM XDF** (.xdf/.img, 1,884,160 bytes): IBM Extended Density Format.
 //! - **MSX DSK** (.dsk): Headerless raw sector format for MSX floppies.
 
+mod blank;
 pub mod d88;
 pub mod dim;
 pub mod fdi;
+pub mod format;
 mod geometry;
 pub mod hdm;
 pub mod ibm_xdf;
@@ -32,6 +34,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub use blank::{FloppyContainer, blank_floppy_image_bytes};
 use common::error;
 pub use d88::{D88Disk, D88Error, D88MediaType, D88Sector};
 pub use geometry::FloppyGeometry;
@@ -847,6 +850,19 @@ impl std::str::FromStr for FddType {
     }
 }
 
+impl FddType {
+    /// Returns the token of the type, the text that `from_str` parses.
+    pub const fn as_token(self) -> &'static str {
+        match self {
+            Self::Hd2 => "2hd",
+            Self::Hd2Fmt144 => "2hd144",
+            Self::Dd2 => "2dd",
+            Self::Dd2Fmt720 => "2dd720",
+            Self::D2 => "2d",
+        }
+    }
+}
+
 /// Error type for floppy image parsing.
 #[derive(Debug, Clone)]
 pub enum FloppyError {
@@ -909,6 +925,15 @@ mod tests {
         assert_eq!("2dd".parse::<FddType>(), Ok(FddType::Dd2));
         assert_eq!("2dd720".parse::<FddType>(), Ok(FddType::Dd2Fmt720));
         assert!("2xx".parse::<FddType>().is_err());
+        for fdd_type in [
+            FddType::Hd2,
+            FddType::Hd2Fmt144,
+            FddType::Dd2,
+            FddType::Dd2Fmt720,
+            FddType::D2,
+        ] {
+            assert_eq!(fdd_type.as_token().parse::<FddType>(), Ok(fdd_type));
+        }
     }
 
     /// Builds a 2HD FDI image with the standard header and a byte pattern in the sectors.

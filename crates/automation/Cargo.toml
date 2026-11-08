@@ -64,7 +64,7 @@ name = "guest_clock"
 required-features = ["pc98"]
 
 [[test]]
-name = "hdd"
+name = "media_create"
 required-features = ["pc98", "at", "towns"]
 
 [[test]]

@@ -1,12 +1,13 @@
-//! In-memory hard disk synthesis and formatting.
+//! In-memory floppy and hard disk synthesis and formatting.
 //!
-//! `create-hdd!` builds a zeroed image in memory and mounts it RAM-backed, and
-//! `format-hdd!` lays down the partition table of the machine family and an
-//! empty FAT volume in place. The committed script drives the full Scheme
-//! wrapper, native, and session path, and confirms the formatted disk survives
-//! a hard reset. The session tests compare every formatted disk type with the
-//! layout builders and with the FORMAT command of the HLE DOS, and check the
-//! volume with the FAT code of the HLE DOS.
+//! `media-create!` builds a zeroed image in memory and mounts it RAM-backed,
+//! and `media-format!` lays down the FAT layout of the machine family in
+//! place. The committed script drives the full Scheme wrapper, native, and
+//! session path, and confirms the formatted disks survive a hard reset. The
+//! session tests compare every formatted hard disk type with the layout
+//! builders and with the FORMAT command of the HLE DOS, check the volume with
+//! the FAT code of the HLE DOS, and compare every formatted floppy with the
+//! floppy formatter.
 
 #[path = "common/harness.rs"]
 mod harness;
@@ -15,13 +16,20 @@ use std::path::Path;
 
 use automation::{AutomationSession, MediaKind, OpError};
 use common::{BootDevice, MachineModel, RunTarget};
-use device::disk::{
-    HddGeometry, HddImage, HddSizeType, blank_hdd_image,
-    format::{
-        PartitionTableType, at_master_boot_record, fat_region, format_hdd_image, hdd_boot_sector,
-        hdd_bpb_params, pc98_nec_partition_table_sector,
+use device::{
+    disk::{
+        HddGeometry, HddImage, HddSizeType, blank_hdd_image,
+        format::{
+            PartitionTableType, at_master_boot_record, fat_region, format_hdd_image,
+            hdd_boot_sector, hdd_bpb_params, pc98_nec_partition_table_sector,
+        },
+        load_hdd_image, pc98_ide,
     },
-    load_hdd_image, pc98_ide,
+    floppy::{
+        FddType, FloppyContainer, blank_floppy_image_bytes,
+        format::{FloppyLayout, format_floppy_image},
+        load_floppy_image,
+    },
 };
 use dos::{
     DiskIo,
@@ -29,7 +37,9 @@ use dos::{
     filesystem::fat_api::FatFs,
 };
 use harness::{assert_completed_ok, make_session, run_committed_script};
-use machine_factory::config::{EmulatorConfig, MachineSelection};
+use machine_factory::config::{
+    EmulatorConfig, MachineSelection, settings::blank_images::BlankFormat,
+};
 
 /// Tick budget of every frame run.
 const MAX_TICKS: u64 = u64::MAX / 4;
@@ -95,10 +105,10 @@ const AT_DISKS: [HddSizeType; 4] = [
     HddSizeType::AtMb504,
 ];
 
-/// Runs the committed script that creates, formats and hard-resets a disk.
+/// Runs the committed script that creates, formats and hard-resets disks.
 #[test]
-fn create_format_and_reset_in_memory_hdd() {
-    let run = run_committed_script("hdd-create.scm", 60);
+fn create_format_and_reset_in_memory_disks() {
+    let run = run_committed_script("media-create.scm", 60);
     assert_completed_ok(&run.termination);
 }
 
@@ -153,6 +163,22 @@ impl DiskIo for ImageDisk {
             self.bios_geometry.sectors_per_track,
         ))
     }
+}
+
+/// Creates a blank hard disk of `size` in slot 0 of `session`.
+fn create_hdd(
+    session: &mut AutomationSession,
+    size: HddSizeType,
+) -> Result<automation::MediaMount, OpError> {
+    session.media_create(MediaKind::Hdd, 0, BlankFormat::HardDisk(size))
+}
+
+/// Formats the hard disk in slot 0 of `session` with `table`.
+fn format_hdd(
+    session: &mut AutomationSession,
+    table: Option<PartitionTableType>,
+) -> Result<(), OpError> {
+    session.media_format(MediaKind::Hdd, 0, table)
 }
 
 /// Opens a session with a machine of `selection` that boots `boot_device`.
@@ -317,15 +343,15 @@ fn mount_volume(disk: &mut ImageDisk, scheme: PartitionScheme) -> (u32, FatFs<'_
     (volume_start, volume)
 }
 
-/// Formats a blank disk of `size` with `format-hdd!` on a PC-98 `model`,
+/// Formats a blank disk of `size` with `media-format!` on a PC-98 `model`,
 /// checks the layout, creates a directory through the HLE DOS, and compares the
 /// formatted disk with the disk the FORMAT command of the HLE DOS writes.
 fn check_pc98_disk(model: MachineModel, size: HddSizeType, bios_geometry: HddGeometry) {
     let tag = format!("{model} {}", size.as_token());
 
     let mut session = open_session(MachineSelection::Pc98(model), BootDevice::Dos);
-    session.create_hdd(0, size).expect("create disk");
-    session.format_hdd(0, None).expect("format disk");
+    create_hdd(&mut session, size).expect("create disk");
+    format_hdd(&mut session, None).expect("format disk");
     let formatted = session
         .media_image_bytes(MediaKind::Hdd, 0)
         .expect("formatted disk");
@@ -363,7 +389,7 @@ fn check_pc98_disk(model: MachineModel, size: HddSizeType, bios_geometry: HddGeo
     drop(disk);
 
     let mut session = open_session(MachineSelection::Pc98(model), BootDevice::Dos);
-    session.create_hdd(0, size).expect("create disk");
+    create_hdd(&mut session, size).expect("create disk");
     wait_for_last_line(&mut session, DRIVE_A_PROMPT);
     type_command(&mut session, "FORMAT A: /Q\n", FORMAT_QUESTION);
     type_command(&mut session, "Y\n", DRIVE_A_PROMPT);
@@ -372,13 +398,13 @@ fn check_pc98_disk(model: MachineModel, size: HddSizeType, bios_geometry: HddGeo
         .expect("disk formatted by DOS");
     assert!(
         formatted == dos_formatted,
-        "{tag}: format-hdd! and the FORMAT command write different disks"
+        "{tag}: media-format! and the FORMAT command write different disks"
     );
 }
 
 /// Checks every PC-98 SASI disk type on the SASI and the IDE machines.
 #[test]
-fn format_hdd_writes_the_nec_layout_of_every_pc98_sasi_disk() {
+fn media_format_writes_the_nec_layout_of_every_pc98_sasi_disk() {
     for (model, size) in PC98_SASI_DISKS {
         check_pc98_disk(model, size, size.geometry().0);
     }
@@ -386,7 +412,7 @@ fn format_hdd_writes_the_nec_layout_of_every_pc98_sasi_disk() {
 
 /// Checks every PC-98 IDE disk type in the PC-98 IDE BIOS geometry.
 #[test]
-fn format_hdd_writes_the_nec_layout_of_every_pc98_ide_disk() {
+fn media_format_writes_the_nec_layout_of_every_pc98_ide_disk() {
     for size in PC98_IDE_DISKS {
         let bios_geometry = pc98_ide::bios_geometry(size.geometry().0);
         assert_eq!(bios_geometry.heads, 8, "{}", size.as_token());
@@ -397,13 +423,13 @@ fn format_hdd_writes_the_nec_layout_of_every_pc98_ide_disk() {
 
 /// Checks every PC/AT disk type against the image tooling and the FAT code.
 #[test]
-fn format_hdd_writes_a_master_boot_record_on_every_at_disk() {
+fn media_format_writes_a_master_boot_record_on_every_at_disk() {
     for size in AT_DISKS {
         let tag = size.as_token();
         let geometry = size.geometry().0;
         let mut session = open_session(at_selection(), BootDevice::Auto);
-        session.create_hdd(0, size).expect("create disk");
-        session.format_hdd(0, None).expect("format disk");
+        create_hdd(&mut session, size).expect("create disk");
+        format_hdd(&mut session, None).expect("format disk");
         let formatted = session
             .media_image_bytes(MediaKind::Hdd, 0)
             .expect("formatted disk");
@@ -413,7 +439,7 @@ fn format_hdd_writes_a_master_boot_record_on_every_at_disk() {
         format_hdd_image(&mut tooling, PartitionTableType::At).expect("tooling format");
         assert!(
             formatted == tooling.to_bytes(),
-            "{tag}: format-hdd! and the image tooling write different disks"
+            "{tag}: media-format! and the image tooling write different disks"
         );
         drop(tooling);
 
@@ -445,19 +471,17 @@ fn format_hdd_writes_a_master_boot_record_on_every_at_disk() {
 
 /// Checks that an explicit table must match the machine family.
 #[test]
-fn format_hdd_rejects_the_partition_table_of_another_machine_family() {
+fn media_format_rejects_the_partition_table_of_another_machine_family() {
     let mut session = open_session(
         MachineSelection::Pc98(MachineModel::PC9801VM),
         BootDevice::Auto,
     );
-    session
-        .create_hdd(0, HddSizeType::Mb40)
-        .expect("create disk");
+    create_hdd(&mut session, HddSizeType::Mb40).expect("create disk");
     let blank = session
         .media_image_bytes(MediaKind::Hdd, 0)
         .expect("blank disk");
     assert!(matches!(
-        session.format_hdd(0, Some(PartitionTableType::At)),
+        format_hdd(&mut session, Some(PartitionTableType::At)),
         Err(OpError::Argument(_))
     ));
     assert!(
@@ -466,33 +490,25 @@ fn format_hdd_rejects_the_partition_table_of_another_machine_family() {
             .expect("unchanged disk")
             == blank
     );
-    session
-        .format_hdd(0, Some(PartitionTableType::Pc98))
-        .expect("format with the PC-98 table");
+    format_hdd(&mut session, Some(PartitionTableType::Pc98)).expect("format with the PC-98 table");
     drop(session);
 
     let mut session = open_session(at_selection(), BootDevice::Auto);
-    session
-        .create_hdd(0, HddSizeType::AtMb40)
-        .expect("create disk");
+    create_hdd(&mut session, HddSizeType::AtMb40).expect("create disk");
     assert!(matches!(
-        session.format_hdd(0, Some(PartitionTableType::Pc98)),
+        format_hdd(&mut session, Some(PartitionTableType::Pc98)),
         Err(OpError::Argument(_))
     ));
-    session
-        .format_hdd(0, Some(PartitionTableType::At))
-        .expect("format with the PC/AT table");
+    format_hdd(&mut session, Some(PartitionTableType::At)).expect("format with the PC/AT table");
 }
 
 /// Checks that the FM Towns reports formatting as unsupported.
 #[test]
-fn format_hdd_is_unsupported_on_a_machine_family_of_another_partition_table() {
+fn media_format_is_unsupported_on_a_machine_family_of_another_partition_table() {
     let mut session = open_session("fmtowns".parse().expect("FM Towns model"), BootDevice::Auto);
-    session
-        .create_hdd(0, HddSizeType::ScsiMb20)
-        .expect("create disk");
+    create_hdd(&mut session, HddSizeType::ScsiMb20).expect("create disk");
     assert!(matches!(
-        session.format_hdd(0, None),
+        format_hdd(&mut session, None),
         Err(OpError::Unsupported(_))
     ));
 }
@@ -506,7 +522,11 @@ fn x68k_blank_hdd_mounts_and_saves_as_hdf() {
     let (mut session, _receiver) = make_session(folder.path(), folder.path());
     session.install_machine(harness::build_x68k());
     let mount = session
-        .create_hdd(0, HddSizeType::X68kSasiMb20)
+        .media_create(
+            MediaKind::Hdd,
+            0,
+            BlankFormat::HardDisk(HddSizeType::X68kSasiMb20),
+        )
         .expect("create disk");
     assert_eq!(mount.format, "HDF");
 
@@ -530,4 +550,183 @@ fn x68k_blank_hdd_mounts_and_saves_as_hdf() {
             .expect("mounted copy"),
         saved
     );
+}
+
+/// Floppy cases: the model, the floppy type, the container the model takes,
+/// the format of the mount, and the FAT12 layout of the family.
+fn floppy_cases() -> [(
+    MachineSelection,
+    FddType,
+    FloppyContainer,
+    &'static str,
+    FloppyLayout,
+); 4] {
+    [
+        (
+            MachineSelection::Pc98(MachineModel::PC9801VM),
+            FddType::Hd2,
+            FloppyContainer::D88,
+            "D88",
+            FloppyLayout::Pc98,
+        ),
+        (
+            at_selection(),
+            FddType::Hd2Fmt144,
+            FloppyContainer::Raw,
+            "IMG",
+            FloppyLayout::At,
+        ),
+        (
+            at_selection(),
+            FddType::Dd2Fmt720,
+            FloppyContainer::Raw,
+            "IMG",
+            FloppyLayout::At,
+        ),
+        (
+            "fmtowns".parse().expect("FM Towns model"),
+            FddType::Hd2,
+            FloppyContainer::D88,
+            "D88",
+            FloppyLayout::Towns,
+        ),
+    ]
+}
+
+/// Checks that every created floppy mounts in the container of the model and
+/// that `media-format!` writes the disk of the floppy formatter.
+#[test]
+fn media_format_writes_the_fat12_layout_of_every_floppy() {
+    for (selection, fdd_type, container, format, layout) in floppy_cases() {
+        let tag = format!("{layout:?} {}", fdd_type.as_token());
+        let mut session = open_session(selection, BootDevice::Auto);
+        let mount = session
+            .media_create(MediaKind::Floppy, 0, BlankFormat::Floppy(fdd_type))
+            .unwrap_or_else(|error| panic!("{tag}: create floppy: {error:?}"));
+        assert_eq!(mount.format, format, "{tag}");
+        assert_eq!(
+            session
+                .media_image_bytes(MediaKind::Floppy, 0)
+                .expect("blank floppy"),
+            blank_floppy_image_bytes(fdd_type, container),
+            "{tag}: blank floppy"
+        );
+        session
+            .media_format(MediaKind::Floppy, 0, None)
+            .unwrap_or_else(|error| panic!("{tag}: format floppy: {error:?}"));
+        let formatted = session
+            .media_image_bytes(MediaKind::Floppy, 0)
+            .expect("formatted floppy");
+
+        let name = format!("disk.{}", format.to_ascii_lowercase());
+        let mut expected = load_floppy_image(
+            Path::new(&name),
+            &blank_floppy_image_bytes(fdd_type, container),
+        )
+        .expect("parse blank floppy");
+        format_floppy_image(&mut expected, layout).expect("format blank floppy");
+        assert!(
+            formatted == expected.to_bytes(),
+            "{tag}: media-format! and the floppy formatter write different disks"
+        );
+    }
+}
+
+/// Checks that a floppy type the model does not list is an argument error,
+/// and that a partition table on a floppy is an argument error.
+#[test]
+fn media_create_and_media_format_reject_wrong_floppy_arguments() {
+    let mut session = open_session(
+        MachineSelection::Pc98(MachineModel::PC9801VM),
+        BootDevice::Auto,
+    );
+    assert!(matches!(
+        session.media_create(
+            MediaKind::Floppy,
+            0,
+            BlankFormat::Floppy(FddType::Hd2Fmt144)
+        ),
+        Err(OpError::Argument(_))
+    ));
+    assert!(matches!(
+        session.media_create(
+            MediaKind::Floppy,
+            0,
+            BlankFormat::HardDisk(HddSizeType::Mb20)
+        ),
+        Err(OpError::Argument(_))
+    ));
+    assert!(matches!(
+        session.media_create(
+            MediaKind::Hdd,
+            0,
+            BlankFormat::HardDisk(HddSizeType::AtMb40)
+        ),
+        Err(OpError::Argument(_))
+    ));
+    session
+        .media_create(MediaKind::Floppy, 0, BlankFormat::Floppy(FddType::Hd2))
+        .expect("create floppy");
+    assert!(matches!(
+        session.media_format(MediaKind::Floppy, 0, Some(PartitionTableType::Pc98)),
+        Err(OpError::Argument(_))
+    ));
+    assert!(matches!(
+        session.media_format(MediaKind::Floppy, 1, None),
+        Err(OpError::Argument(_))
+    ));
+}
+
+/// Checks that a created and formatted floppy survives a hard reset and that
+/// a saved copy of it parses as a D88 image.
+#[test]
+fn created_floppy_survives_a_hard_reset_and_saves() {
+    let folder = common::temporary::TemporaryFolder::new("auto_floppy_create");
+    let (mut session, _receiver) = make_session(folder.path(), folder.path());
+    let mut config = EmulatorConfig::for_model(MachineSelection::Pc98(MachineModel::PC9801VM));
+    config.boot_device = BootDevice::Auto;
+    session
+        .open_machine(config, Vec::new())
+        .expect("open machine");
+    session
+        .media_create(MediaKind::Floppy, 0, BlankFormat::Floppy(FddType::Hd2))
+        .expect("create floppy");
+    session
+        .media_format(MediaKind::Floppy, 0, None)
+        .expect("format floppy");
+    let formatted = session
+        .media_image_bytes(MediaKind::Floppy, 0)
+        .expect("formatted floppy");
+
+    session.reset(true).expect("hard reset");
+    assert_eq!(
+        session
+            .media_image_bytes(MediaKind::Floppy, 0)
+            .expect("floppy after the reset"),
+        formatted
+    );
+
+    session
+        .media_save(MediaKind::Floppy, 0, "saved.d88")
+        .expect("save floppy");
+    let saved = std::fs::read(folder.path().join("saved.d88")).expect("read saved floppy");
+    assert_eq!(saved, formatted);
+    load_floppy_image(Path::new("saved.d88"), &saved).expect("parse saved floppy");
+}
+
+/// Checks that the X68000 creates its floppy as an `.xdf` image and reports
+/// floppy formatting as unsupported.
+#[cfg(feature = "x68k")]
+#[test]
+fn x68k_blank_floppy_mounts_as_xdf_and_cannot_be_formatted() {
+    let (mut session, _receiver) = make_session(Path::new("."), Path::new("."));
+    session.install_machine(harness::build_x68k());
+    let mount = session
+        .media_create(MediaKind::Floppy, 0, BlankFormat::Floppy(FddType::Hd2))
+        .expect("create floppy");
+    assert_eq!(mount.format, "XDF");
+    assert!(matches!(
+        session.media_format(MediaKind::Floppy, 0, None),
+        Err(OpError::Unsupported(_))
+    ));
 }
