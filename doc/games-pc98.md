@@ -19,6 +19,7 @@ AS and AP machines do not support loading a real BIOS yet. But HLE BIOS and HLE 
 | D.P.S.                                                   | D.P.S.                |      VX      |    ✅     |    ❌️    |  ⁿ̸ₐ   | Needs N88 Basic of an original ROM      |
 | Edge                                                     | エッジ                   |      AP      |    ❌️    |    ✅     |   ✅    | Best sound with 86 and SC-55            |
 | Illusion City                                            | 幻影都市 ILLUSION CITY    |      RA      |    ✅     |    ✅     |   ❌️   | Boots from floppy and uses it's own DOS |
+| Love Escalator                                           | ラブ・エスカレーター            |      AS      |    ❌️    |    ✅     |   ✅    |                                         |
 | Mujintou Monogatari                                      | 無人島物語                 |      RA      |    ✅     |    ✅     |   ✅    | Must load STMOUSE.DRV in CONFIG.SYS     |
 | Mujintou Monogatari 2                                    | 無人島物語 ２               |      RA      |    ✅     |    ✅     |   ✅    | Must load STMOUSE.DRV in CONFIG.SYS     |
 | Mujintou Monogatari 3                                    | 無人島物語 ３               |      RA      |    ✅     |    ✅     |   ✅    |                                         |

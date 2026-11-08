@@ -317,41 +317,52 @@ impl<T: TraceSink> Pc9801Bus<T> {
 
     /// Populates the IVT at 0x0000–0x03FF from the stub BIOS ROM's vector table.
     ///
-    /// The ROM contains a vector initialization table at a known offset within
-    /// the BIOS code segment (0xFD80). Each entry is a (vector_number, handler_offset)
-    /// pair of 16-bit words, terminated by 0xFFFF. The handler offsets are relative
-    /// to segment 0xFD80.
+    /// Every vector first points to the default handler of the ROM, an `IRET`, as the
+    /// NEC BIOS points its unused vectors to an `IRET`. The ROM then contains a vector
+    /// initialization table at a known offset within the BIOS code segment (0xFD80).
+    /// Each entry is a (vector_number, handler_offset) pair of 16-bit words, terminated
+    /// by 0xFFFF. The handler offsets are relative to segment 0xFD80.
     pub(super) fn populate_ivt_from_stub_bios(&mut self) {
         const BIOS_CODE_SEG: u16 = 0xFD80;
         const BIOS_CODE_OFFSET: usize = 0x15800;
-        // Read the vector table offset from the metadata header at the start of
-        // the BIOS code region (+0 = vector table segment offset).
-        let vector_table_seg_offset = u16::from_le_bytes([
-            self.memory.rom_byte(BIOS_CODE_OFFSET),
-            self.memory.rom_byte(BIOS_CODE_OFFSET + 1),
-        ]) as usize;
+        const METADATA_VECTOR_TABLE: usize = 0;
+        const METADATA_DEFAULT_HANDLER: usize = 12;
+        const VECTOR_COUNT: usize = 256;
+
+        let vector_table_seg_offset =
+            self.stub_bios_word(BIOS_CODE_OFFSET + METADATA_VECTOR_TABLE) as usize;
+        let default_handler_offset =
+            self.stub_bios_word(BIOS_CODE_OFFSET + METADATA_DEFAULT_HANDLER);
+
+        for vector_number in 0..VECTOR_COUNT {
+            self.write_ivt_entry(vector_number, BIOS_CODE_SEG, default_handler_offset);
+        }
 
         let mut rom_pos = BIOS_CODE_OFFSET + vector_table_seg_offset;
-
         loop {
-            let vector_num = u16::from_le_bytes([
-                self.memory.rom_byte(rom_pos),
-                self.memory.rom_byte(rom_pos + 1),
-            ]);
+            let vector_num = self.stub_bios_word(rom_pos);
             if vector_num == 0xFFFF {
                 break;
             }
-            let handler_offset = u16::from_le_bytes([
-                self.memory.rom_byte(rom_pos + 2),
-                self.memory.rom_byte(rom_pos + 3),
-            ]);
-            let ivt_addr = (vector_num as usize) * 4;
-            self.memory.state.ram[ivt_addr] = handler_offset as u8;
-            self.memory.state.ram[ivt_addr + 1] = (handler_offset >> 8) as u8;
-            self.memory.state.ram[ivt_addr + 2] = BIOS_CODE_SEG as u8;
-            self.memory.state.ram[ivt_addr + 3] = (BIOS_CODE_SEG >> 8) as u8;
+            let handler_offset = self.stub_bios_word(rom_pos + 2);
+            self.write_ivt_entry(vector_num as usize, BIOS_CODE_SEG, handler_offset);
             rom_pos += 4;
         }
+    }
+
+    /// Reads a little-endian word of the stub BIOS ROM at `rom_offset`.
+    fn stub_bios_word(&self, rom_offset: usize) -> u16 {
+        u16::from_le_bytes([
+            self.memory.rom_byte(rom_offset),
+            self.memory.rom_byte(rom_offset + 1),
+        ])
+    }
+
+    /// Points the IVT entry of `vector_number` to `segment:offset`.
+    fn write_ivt_entry(&mut self, vector_number: usize, segment: u16, offset: u16) {
+        let ivt_addr = vector_number * 4;
+        self.memory.state.ram[ivt_addr..ivt_addr + 2].copy_from_slice(&offset.to_le_bytes());
+        self.memory.state.ram[ivt_addr + 2..ivt_addr + 4].copy_from_slice(&segment.to_le_bytes());
     }
 
     /// Populates BDA fields based on machine model and clock lineage.
