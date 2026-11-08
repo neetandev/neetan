@@ -542,3 +542,29 @@ fn unclaimed_master_vector_inside_slave_interrupt_keeps_it_in_service_ra() {
         "the cascade should stay in service across the software INT 0Bh"
     );
 }
+
+/// Vectors without a BIOS service. The NEC BIOS points each of them to an `IRET`.
+const VECTORS_WITHOUT_SERVICE: [u8; 4] = [0x3F, 0x40, 0x7F, 0xFF];
+
+#[test]
+fn vectors_without_service_point_to_iret_ra() {
+    let code = make_master_hwint_code(0x7F);
+    let (mut machine, _cycles) = boot_and_run_ra(&code, &[], HW_VECTOR_BUDGET);
+    assert_eq!(
+        machine.bus.read_byte(RESULT),
+        0xAA,
+        "INT 7Fh should return and execution should continue"
+    );
+    for vector in VECTORS_WITHOUT_SERVICE {
+        let entry = u32::from(vector) * 4;
+        let offset = u32::from(machine.bus.read_word(entry));
+        let segment = u32::from(machine.bus.read_word(entry + 2));
+        let handler = (segment << 4) + offset;
+        assert_ne!(segment, 0, "INT {vector:#04X} should have a handler");
+        assert_eq!(
+            machine.bus.read_byte(handler),
+            0xCF,
+            "INT {vector:#04X} should point to an IRET"
+        );
+    }
+}

@@ -261,13 +261,16 @@ fn dbcs_table_at_fixed_address() {
 
 #[test]
 fn trap_codes_have_no_interrupt_vectors() {
+    const IRET: u8 = 0xCF;
     let machine = harness::boot_hle();
     for trap in dos::DosTrapCode::ALL {
         let vector_address = u32::from(trap.code()) * 4;
+        let (segment, offset) = harness::read_far_ptr(&machine.bus, vector_address);
+        let handler_address = (u32::from(segment) << 4) + u32::from(offset);
         assert_eq!(
-            harness::read_far_ptr(&machine.bus, vector_address),
-            (0x0000, 0x0000),
-            "trap code {:#04X} must not own an interrupt vector",
+            harness::read_byte(&machine.bus, handler_address),
+            IRET,
+            "trap code {:#04X} must keep the default IRET vector",
             trap.code()
         );
     }

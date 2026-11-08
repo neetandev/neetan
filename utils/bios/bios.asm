@@ -149,8 +149,8 @@ dos330_probe:
     times BIOS_BASE_OFF - ($ - $$) db 0xFF
 
 ; --- Metadata header at fixed offset 0x15800 ---
-; The Rust side reads these at BIOS_CODE_OFFSET + 0/2/4/6/8/10 to find entry
-; points and the port table.
+; The Rust side reads these at BIOS_CODE_OFFSET + 0/2/4/6/8/10/12 to find entry
+; points, the port table and the default vector handler.
 
 metadata:
     dw vector_table     - BIOS_BASE_OFF     ; +0: vector table offset
@@ -159,10 +159,11 @@ metadata:
     dw bootstrap_entry  - BIOS_BASE_OFF     ; +6: bootstrap entry offset
     dw ipl_call         - BIOS_BASE_OFF     ; +8: IPL call entry offset
     dw port_table       - BIOS_BASE_OFF     ; +10: port table offset
+    dw iret_stub        - BIOS_BASE_OFF     ; +12: default vector handler offset
 
 ; --- Shared IRET stub ---
-; The exception and software vectors without a handler (INT 00h-07h,
-; INT 0Fh and INT 1Dh) point here.
+; Every vector without a handler points here. The NEC BIOS points INT 20h-FFh
+; to its IRET at E800:11C0 in the same way.
 
 iret_stub:
     iret
