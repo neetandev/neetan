@@ -5,27 +5,12 @@ use std::{io::Write, path::Path};
 use common::{Context, bail, info};
 use device::{
     disk::HddSizeType,
-    floppy::{
-        FddType,
-        d88::{D88Disk, D88Sector},
-        fdi,
-    },
+    floppy::{FddType, FloppyContainer, blank_floppy_image_bytes},
 };
 use machine_factory::config::settings::blank_images::{
     AT_HDD_EXTENSIONS, BlankFormat, D88_EXTENSIONS, FDI_EXTENSIONS, HDF_EXTENSIONS, HDI_EXTENSIONS,
     TOWNS_SCSI_EXTENSIONS,
 };
-
-/// The container of a blank floppy disk image file.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-enum FloppyContainer {
-    /// The D88 container with a track table.
-    D88,
-    /// The Anex86 FDI geometry header followed by the sectors.
-    Fdi,
-    /// The headerless sectors.
-    Raw,
-}
 
 /// Returns the raw extensions of a floppy disk of `fdd_type` in lowercase without the dot.
 fn raw_floppy_extensions(fdd_type: FddType) -> &'static [&'static str] {
@@ -140,47 +125,7 @@ pub fn create_fdd_image(path: &Path, fdd_type: FddType) -> crate::Result<()> {
         );
     };
 
-    let geometry = fdd_type.geometry();
-    let sector_size = usize::from(geometry.sector_size);
-    let sectors_per_track = usize::from(geometry.sectors_per_track);
-    let track_count = usize::from(geometry.cylinders) * usize::from(geometry.heads);
-    let data_size = track_count * sectors_per_track * sector_size;
-
-    let bytes = match container {
-        FloppyContainer::Raw => vec![0u8; data_size],
-        FloppyContainer::Fdi => {
-            let mut bytes = fdi::header(fdi::media_code(fdd_type), &geometry);
-            bytes.resize(bytes.len() + data_size, 0);
-            bytes
-        }
-        FloppyContainer::D88 => {
-            let heads = usize::from(geometry.heads);
-            let track_sectors = (0..track_count)
-                .map(|track_index| {
-                    let cylinder = (track_index / heads) as u8;
-                    let head = (track_index % heads) as u8;
-                    let sectors = (1..=geometry.sectors_per_track)
-                        .map(|record| D88Sector {
-                            cylinder,
-                            head,
-                            record,
-                            size_code: geometry.size_code(),
-                            sector_count: u16::from(geometry.sectors_per_track),
-                            mfm_flag: 0x00,
-                            deleted: 0x00,
-                            status: 0x00,
-                            reserved: [0u8; 5],
-                            data: vec![0u8; sector_size],
-                            source_offset: None,
-                        })
-                        .collect();
-                    Some(sectors)
-                })
-                .collect();
-            D88Disk::from_tracks(String::new(), false, fdd_type.media_type(), track_sectors)
-                .to_bytes()
-        }
-    };
+    let bytes = blank_floppy_image_bytes(fdd_type, container);
 
     write_new_file(path, &bytes)?;
     info!(

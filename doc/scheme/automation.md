@@ -175,24 +175,53 @@ See the joystick-control table in the API index for the `control` vocabulary.
 - `(media-info machine type slot)` -> media alist or `#f`. Reports `type`,
   `slot`, `format`, `description`, `source`, `private` (the printer output path,
   otherwise `#f`), and `write-protected`. `#f` when the slot is empty.
-- `(create-hdd! machine type slot size)` -> media alist. Builds a zeroed hard
-  disk of `size` in memory and mounts it in `slot`. No host file is read or
-  written. `type` must be `hdd`. `size` is a symbol from the `create-hdd` size
-  table of the [disk image tooling](../disk-images.md#create-hdd), such as
-  `sasi20`, `ide40` or `at100`. Dashes are optional, so `sasi-20` names the same
-  size. The media alist reports `source` as `blank:<size>` and `format` as the
-  image format of the size: `HDI` for SASI and IDE, `H0` for SCSI, `HDF` for
-  the X68000 sizes and `HDD` for the PC/AT sizes. An unknown size raises
-  `neetan/argument`.
-- `(format-hdd! machine type slot)` / `(format-hdd! machine type slot table)`
-  -> unspecified. Formats the hard disk in `slot` in place. It writes the
-  partition table, a boot sector, both FATs and an empty root directory. The
-  guest sees one empty FAT volume. `type` must be `hdd`. The machine family
-  selects the partition table: `pc98` on the PC-98 and `at` on the PC/AT. The
-  optional `table` symbol names it explicitly, and a table of another family
-  raises `neetan/argument`. Other machine families raise `neetan/unsupported`.
-  An empty slot raises `neetan/argument`. Call it before the guest boots from
-  or reads the disk.
+- `(media-create! machine type slot format)` -> media alist. Builds a zeroed
+  floppy or hard disk in memory and mounts it in `slot`. No host file is read
+  or written. `type` is `floppy` or `hdd`. The `format` symbol names the disk:
+  - For `hdd` it is a size from the `create-hdd` table of the
+    [disk image tooling](../disk-images.md#create-hdd), such as `sasi20`,
+    `ide40` or `at100`. Dashes are optional. `sasi-20` names the same size.
+  - For `floppy` it is a type from the `create-fdd` table of the
+    [disk image tooling](../disk-images.md#create-fdd): `|2hd|`, `|2hd144|`,
+    `|2dd|`, `|2dd720|` or `|2d|`. These names start with a digit. Scheme
+    reads `2hd` as a number, and the vertical bars make it a symbol.
+
+  The format must be one of the blank images that the drive of the model
+  takes in the game editor. A format of another model raises
+  `neetan/argument`. A drive without blank images raises
+  `neetan/unsupported`. The media alist reports `source` as `blank:<size>`
+  for a hard disk and as `blank:<type>.<extension>` for a floppy. It reports
+  `format` as the image format: `HDI` for SASI and IDE, `H0` for SCSI,
+  `HDF` for the X68000 sizes and `HDD` for the PC/AT sizes. A floppy takes the
+  container of the first blank floppy image of the model:
+
+  | Family                                              | Floppy format |
+  |-----------------------------------------------------|---------------|
+  | PC-98, PC-88, PC-88VA, PC-6000, FM Towns, X1, FM-7  | `D88`         |
+  | MSX                                                 | `DSK`         |
+  | X68000                                              | `XDF`         |
+  | PC/AT                                               | `IMG`         |
+
+- `(media-format! machine type slot)` / `(media-format! machine type slot table)`
+  -> `#t`. Formats the floppy or hard disk in `slot` in place. The guest sees
+  one empty FAT volume. `type` is `floppy` or `hdd`. An empty slot raises
+  `neetan/argument`. Call it before the guest boots from or reads the disk.
+  - A hard disk gets the partition table, a boot sector, both FATs and an
+    empty root directory. The machine family selects the partition table:
+    `pc98` on the PC-98 and `at` on the PC/AT. The optional `table` symbol
+    names it explicitly. A table of another family raises `neetan/argument`.
+    Other machine families raise `neetan/unsupported`.
+  - A floppy gets a boot sector, both FATs and an empty root directory in the
+    FAT12 layout of the machine family. A floppy takes no `table`, and a
+    `table` raises `neetan/argument`. A geometry outside the table below and
+    the other machine families raise `neetan/unsupported`.
+
+  | Family   | Floppy geometries                                              |
+  |----------|----------------------------------------------------------------|
+  | PC-98    | 2HD 1.2 MB (`\|2hd\|`), 2DD 640 KB (8 sectors of 512 bytes)     |
+  | FM Towns | 2HD 1.2 MB (`\|2hd\|`), 2HC 1.2 MB, 2HD 1.44 MB (`\|2hd144\|`) |
+  | PC/AT    | 2HD 1.44 MB (`\|2hd144\|`), 2DD 720 KB (`\|2dd720\|`)          |
+  | MSX      | 2DD 720 KB (`\|2dd720\|`)                                      |
 
 See the media-type and slot-count table in the API index.
 
@@ -204,8 +233,8 @@ directly. A game installation runs once onto a fresh hard disk and saves it:
 ```scheme
 (with-machine (machine '((model . pc9801vm)
                          (media . ((floppy 0 "install-a.d88")))))
-  (create-hdd! machine 'hdd 0 'sasi40)
-  (format-hdd! machine 'hdd 0)
+  (media-create! machine 'hdd 0 'sasi40)
+  (media-format! machine 'hdd 0)
   ;; ... drive the installer to its end ...
   (media-save! machine 'hdd 0 "installed.hdi"))
 ```
@@ -218,6 +247,16 @@ path relative to its own directory:
 (with-machine (machine '((model . pc9801vm)
                          (media . ((hdd 0 "artifacts/install/installed.hdi")))))
   (check-true (wait-for-screen machine "title.png")))
+```
+
+A save disk for a game works the same way with a floppy:
+
+```scheme
+(with-machine (machine '((model . pc9801vm)))
+  (media-create! machine 'floppy 1 '|2hd|)
+  (media-format! machine 'floppy 1)
+  ;; ... let the game write its save data to drive 2 ...
+  (media-save! machine 'floppy 1 "save-disk.d88"))
 ```
 
 ## Screen and display

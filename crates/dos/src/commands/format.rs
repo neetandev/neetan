@@ -1,6 +1,9 @@
 //! FORMAT command.
 
-use device::disk::{format as disk_format, pc98_ide, pc98_sasi};
+use device::{
+    disk::{format as disk_format, pc98_ide, pc98_sasi},
+    floppy::{FloppyGeometry, format as floppy_format},
+};
 
 use crate::{
     DiskIo, DosState, DriveIo, IoAccess,
@@ -344,22 +347,13 @@ impl RunningFormat {
         } else {
             let bpb = floppy_bpb_params(&format_state.floppy_bpb);
 
-            let mut boot = vec![0u8; format_state.sector_size as usize];
-            boot[0] = 0xEB;
-            boot[1] = 0x3C;
-            boot[2] = 0x90;
-            boot[3..11].copy_from_slice(b"NEETAN  ");
-            boot[11..13].copy_from_slice(&bpb.bytes_per_sector.to_le_bytes());
-            boot[13] = bpb.sectors_per_cluster;
-            boot[14..16].copy_from_slice(&bpb.reserved_sectors.to_le_bytes());
-            boot[16] = bpb.num_fats;
-            boot[17..19].copy_from_slice(&bpb.root_entry_count.to_le_bytes());
-            let total_16 = format_state.total_sectors.min(0xFFFF) as u16;
-            boot[19..21].copy_from_slice(&total_16.to_le_bytes());
-            boot[21] = bpb.media_descriptor;
-            boot[22..24].copy_from_slice(&bpb.sectors_per_fat.to_le_bytes());
-            boot[24..26].copy_from_slice(&(format_state.sectors_per_track as u16).to_le_bytes());
-            boot[26..28].copy_from_slice(&(format_state.heads as u16).to_le_bytes());
+            let geometry = FloppyGeometry {
+                cylinders: (format_state.total_tracks / u32::from(format_state.heads)) as u16,
+                heads: format_state.heads,
+                sectors_per_track: format_state.sectors_per_track,
+                sector_size: format_state.sector_size,
+            };
+            let boot = floppy_format::floppy_boot_sector(&bpb, &geometry);
 
             if disk
                 .write_sectors(format_state.device_id, 0, &boot)
