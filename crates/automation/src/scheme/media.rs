@@ -1,11 +1,13 @@
-//! Media insert, eject, flush, and info natives.
+//! Media insert, eject, save, info, and hard disk creation natives.
 
 use std::{cell::RefCell, rc::Rc};
 
 use device::disk::{HddSizeType, format::PartitionTableType};
 use r7rs::{Engine, Error, LibraryName, NativeContext, Value, ValueKind};
 
-use super::support::{error_value, machine_id, make_alist, op_error_value, to_count};
+use super::support::{
+    artifact_alist, error_value, machine_id, make_alist, op_error_value, to_count, written_len,
+};
 use crate::{
     media::{MediaKind, MediaMount, media_kind_from_name},
     session::AutomationSession,
@@ -49,7 +51,6 @@ fn media_mount_alist(context: &mut NativeContext, mount: &MediaMount) -> Result<
             ("source", source),
             ("private", private),
             ("write-protected", Value::boolean(mount.write_protected)),
-            ("dirty", Value::boolean(mount.dirty)),
         ],
     )
 }
@@ -70,7 +71,8 @@ fn media_kind_argument(
     }
 }
 
-/// Registers the media insert, eject, flush, and info natives.
+/// Registers the media insert, eject, save, info, and hard disk creation
+/// natives.
 pub(super) fn register_media_natives(
     engine: &mut Engine,
     session: &Rc<RefCell<AutomationSession>>,
@@ -115,13 +117,22 @@ pub(super) fn register_media_natives(
         }
     })?;
 
-    let media_flush = Rc::clone(session);
-    engine.register_library_fn(internal, "%media-flush", 1..=1, move |context, args| {
-        if let Err(value) = machine_id(context, &media_flush, args[0])? {
+    let media_save = Rc::clone(session);
+    engine.register_library_fn(internal, "%media-save", 4..=4, move |context, args| {
+        if let Err(value) = machine_id(context, &media_save, args[0])? {
             return Ok(value);
         }
-        match media_flush.borrow_mut().media_flush() {
-            Ok(()) => Ok(Value::boolean(true)),
+        let kind = match media_kind_argument(context, args[1])? {
+            Ok(kind) => kind,
+            Err(value) => return Ok(value),
+        };
+        let slot = match to_count(context, args[2])? {
+            Ok(slot) => slot as usize,
+            Err(value) => return Ok(value),
+        };
+        let path = context.to_str(args[3])?.to_owned();
+        match media_save.borrow_mut().media_save(kind, slot, &path) {
+            Ok(written) => artifact_alist(context, &path, Some(written_len(&written))),
             Err(error) => op_error_value(context, &error),
         }
     })?;

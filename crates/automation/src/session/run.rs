@@ -66,23 +66,6 @@ impl AutomationSession {
             RunTarget::Frames(_) | RunTarget::UntilSessionFrame(_) => 0,
         };
 
-        // An advancing run may have let the guest write to a mounted disk. There
-        // is no machine-side dirty query, so mark every writable mount as
-        // possibly written since the last flush.
-        if ticks > 0 || frames > 0 {
-            for mount in self
-                .active
-                .as_mut()
-                .expect("machine present")
-                .mounts
-                .values_mut()
-            {
-                if mount.kind.writable() {
-                    mount.dirty = true;
-                }
-            }
-        }
-
         Ok(RunOutcome {
             stop_reason,
             ticks,

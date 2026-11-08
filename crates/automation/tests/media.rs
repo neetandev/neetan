@@ -1,5 +1,5 @@
-//! Media isolation, mount lifecycle, reset and restore semantics, and filesystem
-//! confinement.
+//! Media isolation, mount lifecycle, reset and restore semantics, media saves,
+//! and filesystem confinement.
 //!
 //! Writable fixtures are mounted with a RAM backing, so the on-disk baseline
 //! must stay byte-identical on every termination path. Byte-level retention of
@@ -336,4 +336,108 @@ fn hard_disk_cannot_be_ejected() {
            (fail \"expected an unsupported error\")))))\n";
     workspace.write("script.scm", script.as_bytes());
     assert_completed_ok(&workspace.run("script.scm", 60));
+}
+
+#[test]
+fn media_save_writes_the_floppy_image() {
+    let workspace = Workspace::new("save-floppy");
+    let baseline = minimal_d88(0x5A);
+    workspace.write("disk.d88", &baseline);
+    let script = "(import (scheme base) (neetan automation 1) (neetan test 1))\n\
+         (test-suite \"Media save\"\n\
+         (test-case \"writes the floppy image\"\n\
+         (with-machine (machine '((model . pc9801vm) (media . ((floppy 0 \"disk.d88\")))))\n\
+         (run-frames! machine 3)\n\
+         (let ((artifact (media-save! machine 'floppy 0 \"checkpoint/saved.d88\")))\n\
+           (if (not (equal? \"checkpoint/saved.d88\" (alist-ref artifact 'path)))\n\
+               (fail \"path\"))\n\
+           (if (not (> (alist-ref artifact 'bytes) 0)) (fail \"bytes\"))))))\n";
+    workspace.write("script.scm", script.as_bytes());
+    assert_completed_ok(&workspace.run("script.scm", 60));
+    assert_eq!(workspace.read("artifacts/checkpoint/saved.d88"), baseline);
+    assert_eq!(workspace.read("disk.d88"), baseline);
+}
+
+#[test]
+fn saved_media_mounts_as_a_checkpoint() {
+    let workspace = Workspace::new("save-checkpoint");
+    let save_script = "(import (scheme base) (neetan automation 1) (neetan test 1))\n\
+         (test-suite \"Checkpoint creation\"\n\
+         (test-case \"saves a formatted hard disk\"\n\
+         (with-machine (machine '((model . pc9801vm)))\n\
+         (create-hdd! machine 'hdd 0 'sasi20)\n\
+         (format-hdd! machine 'hdd 0 #f)\n\
+         (media-save! machine 'hdd 0 \"install.hdi\"))))\n";
+    workspace.write("save.scm", save_script.as_bytes());
+    assert_completed_ok(&workspace.run("save.scm", 60));
+    let saved = workspace.read("artifacts/install.hdi");
+
+    let load_script = "(import (scheme base) (neetan automation 1) (neetan test 1))\n\
+         (test-suite \"Checkpoint use\"\n\
+         (test-case \"mounts the saved hard disk\"\n\
+         (with-machine (machine '((model . pc9801vm)\n\
+                                  (media . ((hdd 0 \"artifacts/install.hdi\")))))\n\
+         (if (not (equal? \"HDI\" (alist-ref (media-info machine 'hdd 0) 'format)))\n\
+             (fail \"format\"))\n\
+         (media-save! machine 'hdd 0 \"copy.hdi\"))))\n";
+    workspace.write("load.scm", load_script.as_bytes());
+    assert_completed_ok(&workspace.run("load.scm", 60));
+    assert_eq!(workspace.read("artifacts/copy.hdi"), saved);
+}
+
+/// Runs `expression` on a PC-9801VM with `disk.d88` in floppy 0 and expects
+/// it to raise the error kind `kind`.
+fn assert_media_save_raises(tag: &str, expression: &str, kind: &str) {
+    let workspace = Workspace::new(tag);
+    workspace.write("disk.d88", &minimal_d88(0x00));
+    let script = format!(
+        "(import (scheme base) (neetan automation 1) (neetan test 1))\n\
+         (test-suite \"Media save errors\"\n\
+         (test-case \"{tag}\"\n\
+         (with-machine (machine '((model . pc9801vm) (media . ((floppy 0 \"disk.d88\")))))\n\
+         (guard (condition ((error-object? condition)\n\
+                            (if (not (memq '{kind}\n\
+                                           (error-object-irritants condition)))\n\
+                                (fail \"expected a {kind} error\"))))\n\
+           {expression}\n\
+           (fail \"expected a {kind} error\")))))\n"
+    );
+    workspace.write("script.scm", script.as_bytes());
+    assert_completed_ok(&workspace.run("script.scm", 60));
+}
+
+#[test]
+fn media_save_rejects_a_mismatched_extension() {
+    assert_media_save_raises(
+        "save-extension",
+        "(media-save! machine 'floppy 0 \"saved.hdm\")",
+        "neetan/argument",
+    );
+}
+
+#[test]
+fn media_save_rejects_an_empty_slot() {
+    assert_media_save_raises(
+        "save-empty",
+        "(media-save! machine 'floppy 1 \"saved.d88\")",
+        "neetan/argument",
+    );
+}
+
+#[test]
+fn media_save_rejects_read_only_media() {
+    assert_media_save_raises(
+        "save-read-only",
+        "(media-save! machine 'cdrom 0 \"saved.cue\")",
+        "neetan/unsupported",
+    );
+}
+
+#[test]
+fn media_save_rejects_a_path_escape() {
+    assert_media_save_raises(
+        "save-escape",
+        "(media-save! machine 'floppy 0 \"../saved.d88\")",
+        "neetan/path-escape",
+    );
 }

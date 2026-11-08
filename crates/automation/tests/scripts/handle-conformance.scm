@@ -56,7 +56,7 @@
     (cons "mouse-button!" (lambda (machine) (mouse-button! machine 'left #f)))
     (cons "media-insert!" (lambda (machine) (media-insert! machine 'floppy 0 "missing.d88")))
     (cons "media-eject!" (lambda (machine) (media-eject! machine 'floppy 0)))
-    (cons "media-flush!" (lambda (machine) (media-flush! machine)))
+    (cons "media-save!" (lambda (machine) (media-save! machine 'floppy 0 "disk.d88")))
     (cons "media-info" (lambda (machine) (media-info machine 'floppy 0)))
     (cons "screen-available?" (lambda (machine) (screen-available? machine)))
     (cons "screen-size" (lambda (machine) (screen-size machine)))

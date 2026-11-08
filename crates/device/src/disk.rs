@@ -376,6 +376,16 @@ impl HddSizeType {
         )
     }
 
+    /// Returns the file extension of an image of this size. An X68000 size
+    /// takes `hdf`, every other size the extension of its container format.
+    pub fn file_extension(self) -> &'static str {
+        if self.is_x68k_hdf() {
+            "hdf"
+        } else {
+            self.geometry().1.file_extension()
+        }
+    }
+
     /// Whether this size denotes an AT headerless flat .hdd image.
     pub fn is_at_flat(self) -> bool {
         matches!(

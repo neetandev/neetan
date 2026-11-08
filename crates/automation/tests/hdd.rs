@@ -13,7 +13,7 @@ mod harness;
 
 use std::path::Path;
 
-use automation::{AutomationSession, OpError};
+use automation::{AutomationSession, MediaKind, OpError};
 use common::{BootDevice, MachineModel, RunTarget};
 use device::disk::{
     HddGeometry, HddImage, HddSizeType, blank_hdd_image,
@@ -326,7 +326,9 @@ fn check_pc98_disk(model: MachineModel, size: HddSizeType, bios_geometry: HddGeo
     let mut session = open_session(MachineSelection::Pc98(model), BootDevice::Dos);
     session.create_hdd(0, size).expect("create disk");
     session.format_hdd(0, None).expect("format disk");
-    let formatted = session.hdd_image_bytes(0).expect("formatted disk");
+    let formatted = session
+        .media_image_bytes(MediaKind::Hdd, 0)
+        .expect("formatted disk");
     assert_layout(
         &parse_image(size, &formatted),
         PartitionTableType::Pc98,
@@ -336,7 +338,9 @@ fn check_pc98_disk(model: MachineModel, size: HddSizeType, bios_geometry: HddGeo
 
     wait_for_last_line(&mut session, DRIVE_A_PROMPT);
     type_command(&mut session, "MD NEETAN\n", DRIVE_A_PROMPT);
-    let written = session.hdd_image_bytes(0).expect("written disk");
+    let written = session
+        .media_image_bytes(MediaKind::Hdd, 0)
+        .expect("written disk");
     drop(session);
     let mut disk = ImageDisk {
         image: parse_image(size, &written),
@@ -363,7 +367,9 @@ fn check_pc98_disk(model: MachineModel, size: HddSizeType, bios_geometry: HddGeo
     wait_for_last_line(&mut session, DRIVE_A_PROMPT);
     type_command(&mut session, "FORMAT A: /Q\n", FORMAT_QUESTION);
     type_command(&mut session, "Y\n", DRIVE_A_PROMPT);
-    let dos_formatted = session.hdd_image_bytes(0).expect("disk formatted by DOS");
+    let dos_formatted = session
+        .media_image_bytes(MediaKind::Hdd, 0)
+        .expect("disk formatted by DOS");
     assert!(
         formatted == dos_formatted,
         "{tag}: format-hdd! and the FORMAT command write different disks"
@@ -398,7 +404,9 @@ fn format_hdd_writes_a_master_boot_record_on_every_at_disk() {
         let mut session = open_session(at_selection(), BootDevice::Auto);
         session.create_hdd(0, size).expect("create disk");
         session.format_hdd(0, None).expect("format disk");
-        let formatted = session.hdd_image_bytes(0).expect("formatted disk");
+        let formatted = session
+            .media_image_bytes(MediaKind::Hdd, 0)
+            .expect("formatted disk");
         drop(session);
 
         let mut tooling = blank_hdd_image(size);
@@ -445,12 +453,19 @@ fn format_hdd_rejects_the_partition_table_of_another_machine_family() {
     session
         .create_hdd(0, HddSizeType::Mb40)
         .expect("create disk");
-    let blank = session.hdd_image_bytes(0).expect("blank disk");
+    let blank = session
+        .media_image_bytes(MediaKind::Hdd, 0)
+        .expect("blank disk");
     assert!(matches!(
         session.format_hdd(0, Some(PartitionTableType::At)),
         Err(OpError::Argument(_))
     ));
-    assert!(session.hdd_image_bytes(0).expect("unchanged disk") == blank);
+    assert!(
+        session
+            .media_image_bytes(MediaKind::Hdd, 0)
+            .expect("unchanged disk")
+            == blank
+    );
     session
         .format_hdd(0, Some(PartitionTableType::Pc98))
         .expect("format with the PC-98 table");
@@ -480,4 +495,39 @@ fn format_hdd_is_unsupported_on_a_machine_family_of_another_partition_table() {
         session.format_hdd(0, None),
         Err(OpError::Unsupported(_))
     ));
+}
+
+/// Checks that a blank X68000 hard disk mounts as an `.hdf` image and that a
+/// saved copy of it mounts again.
+#[cfg(feature = "x68k")]
+#[test]
+fn x68k_blank_hdd_mounts_and_saves_as_hdf() {
+    let folder = common::temporary::TemporaryFolder::new("auto_hdd_x68k_hdf");
+    let (mut session, _receiver) = make_session(folder.path(), folder.path());
+    session.install_machine(harness::build_x68k());
+    let mount = session
+        .create_hdd(0, HddSizeType::X68kSasiMb20)
+        .expect("create disk");
+    assert_eq!(mount.format, "HDF");
+
+    session
+        .media_save(MediaKind::Hdd, 0, "saved.hdf")
+        .expect("save disk");
+    let saved = std::fs::read(folder.path().join("saved.hdf")).expect("read saved disk");
+    assert_eq!(
+        saved,
+        session
+            .media_image_bytes(MediaKind::Hdd, 0)
+            .expect("blank disk")
+    );
+
+    session
+        .media_insert(MediaKind::Hdd, 1, "saved.hdf".to_owned())
+        .expect("mount saved disk");
+    assert_eq!(
+        session
+            .media_image_bytes(MediaKind::Hdd, 1)
+            .expect("mounted copy"),
+        saved
+    );
 }

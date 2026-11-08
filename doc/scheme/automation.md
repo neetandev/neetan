@@ -109,7 +109,7 @@ from `call-with-machine` or `with-machine`.
   asserts the machine's documented reset line. Hard reset advances the epoch and
   invalidates save states.
 - `(restore-startup! machine)` -> unspecified. Reconstructs the machine from its
-  original specification, restores startup media with fresh writable overlays,
+  original specification, re-reads the startup media from their fixture files,
   releases all controls, and discards runtime media changes. Advances the epoch
   and invalidates save states.
 
@@ -161,16 +161,64 @@ See the joystick-control table in the API index for the `control` vocabulary.
 ## Media
 
 - `(media-insert! machine type slot path)` -> media alist. Mounts media at a
-  zero-based `slot`. Writable fixtures are mounted through a private copy or
-  overlay beneath the artifact root, never by their baseline path.
+  zero-based `slot`. Floppy and hard disk images are read into memory. The guest
+  writes to that copy and the fixture file stays unchanged.
 - `(media-eject! machine type slot)` -> unspecified. Ejects media from a slot.
-- `(media-flush! machine)` -> unspecified. Flushes dirty writable media to disk. A
-  failed write raises `neetan/io`.
+- `(media-save! machine type slot artifact-path)` -> artifact alist (`path`,
+  `bytes`). Writes the current image of the floppy or hard disk in `slot`,
+  guest writes included, to `artifact-path` beneath the artifact root. `type` is
+  `floppy` or `hdd`. The file keeps the format of the mounted image, and the
+  extension of `artifact-path` must name that format (`.d88` for a D88 floppy,
+  `.hdi` for an HDI hard disk). An empty slot or a wrong extension raises
+  `neetan/argument`. Other media types and a machine that cannot read back its
+  image raise `neetan/unsupported`. A failed write raises `neetan/io`.
 - `(media-info machine type slot)` -> media alist or `#f`. Reports `type`,
-  `slot`, `format`, `description`, `source`, `private` backing path,
-  `write-protected`, and `dirty`; `#f` when the slot is empty.
+  `slot`, `format`, `description`, `source`, `private` (the printer output path,
+  otherwise `#f`), and `write-protected`. `#f` when the slot is empty.
+- `(create-hdd! machine type slot size)` -> media alist. Builds a zeroed hard
+  disk of `size` in memory and mounts it in `slot`. No host file is read or
+  written. `type` must be `hdd`. `size` is a symbol from the `create-hdd` size
+  table of the [disk image tooling](../disk-images.md#create-hdd), such as
+  `sasi20`, `ide40` or `at100`. Dashes are optional, so `sasi-20` names the same
+  size. The media alist reports `source` as `blank:<size>` and `format` as the
+  image format of the size: `HDI` for SASI and IDE, `H0` for SCSI, `HDF` for
+  the X68000 sizes and `HDD` for the PC/AT sizes. An unknown size raises
+  `neetan/argument`.
+- `(format-hdd! machine type slot)` / `(format-hdd! machine type slot table)`
+  -> unspecified. Formats the hard disk in `slot` in place. It writes the
+  partition table, a boot sector, both FATs and an empty root directory. The
+  guest sees one empty FAT volume. `type` must be `hdd`. The machine family
+  selects the partition table: `pc98` on the PC-98 and `at` on the PC/AT. The
+  optional `table` symbol names it explicitly, and a table of another family
+  raises `neetan/argument`. Other machine families raise `neetan/unsupported`.
+  An empty slot raises `neetan/argument`. Call it before the guest boots from
+  or reads the disk.
 
 See the media-type and slot-count table in the API index.
+
+### Media checkpoints
+
+`media-save!` turns a slow setup step into a file that later scripts mount
+directly. A game installation runs once onto a fresh hard disk and saves it:
+
+```scheme
+(with-machine (machine '((model . pc9801vm)
+                         (media . ((floppy 0 "install-a.d88")))))
+  (create-hdd! machine 'hdd 0 'sasi40)
+  (format-hdd! machine 'hdd 0)
+  ;; ... drive the installer to its end ...
+  (media-save! machine 'hdd 0 "installed.hdi"))
+```
+
+The default artifact root `<script-dir>/artifacts/<stem>` lies beneath the
+script directory. A test script next to `install.scm` mounts the result with a
+path relative to its own directory:
+
+```scheme
+(with-machine (machine '((model . pc9801vm)
+                         (media . ((hdd 0 "artifacts/install/installed.hdi")))))
+  (check-true (wait-for-screen machine "title.png")))
+```
 
 ## Screen and display
 
