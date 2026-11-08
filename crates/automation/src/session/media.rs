@@ -1,6 +1,9 @@
-//! Media mounting: startup and runtime insert, eject, flush, and capture.
+//! Media mounting: startup and runtime insert, eject, save, and capture.
 
-use std::{collections::BTreeMap, path::Path};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 use common::{MediaBacking, MediaImage};
 use device::disk::{
@@ -189,7 +192,6 @@ impl AutomationSession {
                     format,
                     description,
                     write_protected: false,
-                    dirty: false,
                     printer_artifact: None,
                 }
             }
@@ -209,7 +211,6 @@ impl AutomationSession {
                     format,
                     description,
                     write_protected: true,
-                    dirty: false,
                     printer_artifact: None,
                 }
             }
@@ -229,7 +230,6 @@ impl AutomationSession {
                     format,
                     description: format!("printer output to {}", request.source),
                     write_protected: false,
-                    dirty: false,
                     printer_artifact: Some(resolved),
                 }
             }
@@ -253,7 +253,7 @@ impl AutomationSession {
             .parse()
             .map_err(|message: String| OpError::Argument(message))?;
         let image = blank_hdd_image(size);
-        let extension = image.format.file_extension();
+        let extension = size.file_extension();
         let name = format!("blank.{extension}");
         let bytes = match written {
             Some(bytes) => bytes.to_vec(),
@@ -274,7 +274,6 @@ impl AutomationSession {
             format: extension.to_uppercase(),
             description,
             write_protected: false,
-            dirty: false,
             printer_artifact: None,
         };
         active.mounts.insert((MediaKind::Hdd, slot), mount.clone());
@@ -408,17 +407,71 @@ impl AutomationSession {
         Ok(())
     }
 
-    /// Returns the current image bytes of the hard disk mounted in `slot`.
-    pub fn hdd_image_bytes(&self, slot: usize) -> Result<Vec<u8>, OpError> {
+    /// Returns the current image bytes of the floppy or hard disk mounted in
+    /// `slot`, in the format of the mounted image.
+    pub fn media_image_bytes(&self, kind: MediaKind, slot: usize) -> Result<Vec<u8>, OpError> {
         let active = self.active.as_ref().ok_or(OpError::NoMachine)?;
-        if !active.mounts.contains_key(&(MediaKind::Hdd, slot)) {
+        let bytes = match kind {
+            MediaKind::Floppy | MediaKind::Hdd => {
+                if !active.mounts.contains_key(&(kind, slot)) {
+                    return Err(OpError::Argument(format!(
+                        "no {} media is mounted in slot {slot}",
+                        kind.symbol()
+                    )));
+                }
+                match kind {
+                    MediaKind::Floppy => active.machine.floppy_image_bytes(slot),
+                    MediaKind::Hdd => active.machine.hdd_image_bytes(slot),
+                    MediaKind::Cdrom
+                    | MediaKind::Cartridge
+                    | MediaKind::Cassette
+                    | MediaKind::Printer => unreachable!(),
+                }
+            }
+            MediaKind::Cdrom | MediaKind::Cartridge | MediaKind::Cassette | MediaKind::Printer => {
+                return Err(OpError::Unsupported(format!(
+                    "{} media has no image to read back",
+                    kind.symbol()
+                )));
+            }
+        };
+        bytes.ok_or_else(|| {
+            OpError::Unsupported(format!(
+                "{} media in slot {slot} cannot be read back on this machine",
+                kind.symbol()
+            ))
+        })
+    }
+
+    /// Writes the current image of the floppy or hard disk mounted in `slot`
+    /// beneath the artifact root. The extension of `path` must match the
+    /// format of the mounted image so the saved file mounts again.
+    pub fn media_save(
+        &mut self,
+        kind: MediaKind,
+        slot: usize,
+        path: &str,
+    ) -> Result<PathBuf, OpError> {
+        let bytes = self.media_image_bytes(kind, slot)?;
+        let format = self
+            .active
+            .as_ref()
+            .and_then(|active| active.mounts.get(&(kind, slot)))
+            .map(|mount| mount.format.clone())
+            .ok_or(OpError::NoMachine)?;
+        let extension = Path::new(path)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or("");
+        if !extension.eq_ignore_ascii_case(&format) {
             return Err(OpError::Argument(format!(
-                "no hard disk is mounted in slot {slot}"
+                "the {} media in slot {slot} is a {format} image, the path {path} needs the \
+                 .{} extension",
+                kind.symbol(),
+                format.to_ascii_lowercase()
             )));
         }
-        active.machine.hdd_image_bytes(slot).ok_or_else(|| {
-            OpError::Argument(format!("hard disk in slot {slot} cannot be read back"))
-        })
+        self.write_artifact(path, &bytes)
     }
 
     /// Ejects mounted media from a slot.
@@ -448,25 +501,6 @@ impl AutomationSession {
         Ok(())
     }
 
-    /// Flushes writable media and printer output, then clears the dirty flags.
-    /// A failed write raises `neetan/io` and keeps the dirty flags.
-    ///
-    /// Cartridges are deliberately not flushed so a read-only cartridge is never
-    /// written back to its baseline.
-    pub fn media_flush(&mut self) -> Result<(), OpError> {
-        let active = self.active.as_mut().ok_or(OpError::NoMachine)?;
-        common::FlushError::combine([
-            active.machine.flush_floppies(),
-            active.machine.flush_hdds(),
-            active.machine.flush_printer(),
-        ])
-        .map_err(|error| OpError::Io(error.to_string()))?;
-        for mount in active.mounts.values_mut() {
-            mount.dirty = false;
-        }
-        Ok(())
-    }
-
     /// Returns the mount in a slot, if one is present.
     #[must_use]
     pub fn media_info(&self, kind: MediaKind, slot: usize) -> Option<MediaMount> {
@@ -476,17 +510,13 @@ impl AutomationSession {
             .cloned()
     }
 
-    /// Flushes writable media and releases mount records on session teardown.
-    ///
-    /// Called on every orderly termination path. Cartridges are excluded from the
-    /// flush; RAM-backed disks have nothing to write through.
-    pub fn flush_and_release_media(&mut self) {
-        if self.has_machine()
-            && let Err(error) = self.media_flush()
-        {
-            common::error!("Flushing the media on teardown failed: {error:?}");
-        }
+    /// Flushes the printer output and releases the mount records on session
+    /// teardown. Floppies and hard disks are RAM-backed and write nothing.
+    pub fn release_media(&mut self) {
         if let Some(active) = self.active.as_mut() {
+            if let Err(error) = active.machine.flush_printer() {
+                common::error!("Flushing the printer output on teardown failed: {error}");
+            }
             active.mounts.clear();
         }
     }

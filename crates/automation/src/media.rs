@@ -49,12 +49,6 @@ impl MediaKind {
         }
     }
 
-    /// Returns whether the guest can write to this kind under automation.
-    #[must_use]
-    pub fn writable(self) -> bool {
-        matches!(self, MediaKind::Floppy | MediaKind::Hdd)
-    }
-
     /// Returns the stable symbol name for this kind.
     #[must_use]
     pub fn symbol(self) -> &'static str {
@@ -109,8 +103,6 @@ pub struct MediaMount {
     pub description: String,
     /// Whether guest writes to this mount are dropped.
     pub write_protected: bool,
-    /// Whether the guest may have written since the last flush.
-    pub dirty: bool,
     /// The printer artifact path for the printer kind, otherwise `None`.
     pub printer_artifact: Option<PathBuf>,
 }

@@ -248,7 +248,9 @@ Used by `mouse-button!`: `left`, `right`, `middle`.
 
 ### Media types and slot counts
 
-Used by `media-insert!`, `media-eject!`, and `media-info`. Slots are zero-based.
+Used by `media-insert!`, `media-eject!`, `media-save!`, `media-info`,
+`create-hdd!`, and `format-hdd!`. Slots are zero-based. `media-save!` accepts
+`floppy` and `hdd` only. `create-hdd!` and `format-hdd!` accept `hdd` only.
 
 ```text
 floppy/fdd        2 slots

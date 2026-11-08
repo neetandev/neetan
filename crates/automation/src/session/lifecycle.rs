@@ -205,7 +205,7 @@ impl AutomationSession {
             return;
         }
         self.release_all_controls();
-        self.flush_and_release_media();
+        self.release_media();
         if let Some(active) = self.active.take() {
             active.trace.stop();
         }

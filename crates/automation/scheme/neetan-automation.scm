@@ -14,7 +14,7 @@
     save-state restore-state! discard-state! call-with-saved-state
     key-down! key-up! key-tap! type-text!
     joystick-set! joystick-clear! mouse-move! mouse-button!
-    media-insert! media-eject! media-flush! media-info create-hdd! format-hdd!
+    media-insert! media-eject! media-save! media-info create-hdd! format-hdd!
     screen-available? screen-size screen-rgba screen-pixel screen-hash
     save-screenshot! screen-matches? screen-region-matches? wait-for-screen)
   (import (scheme base) (neetan internal 1) (neetan handles internal 1))
@@ -459,10 +459,13 @@
         (%media-eject (%machine-token "media-eject!" machine) type slot))
       (if #f #f))
 
-    (define (media-flush! machine)
+    (define (media-save! machine type slot artifact-path)
+      (%require-symbol "media-save!" type)
+      (%require-count "media-save!" slot)
+      (%require-string "media-save!" artifact-path)
       (%raise-if-error
-        (%media-flush (%machine-token "media-flush!" machine)))
-      (if #f #f))
+        (%media-save (%machine-token "media-save!" machine)
+                     type slot artifact-path)))
 
     (define (media-info machine type slot)
       (%require-symbol "media-info" type)
