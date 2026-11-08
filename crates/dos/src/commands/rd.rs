@@ -74,7 +74,8 @@ fn error_message(error: u16) -> &'static [u8] {
         0x0003 => b"Invalid path\r\n",
         0x0005 => b"Access denied\r\n",
         0x000F => b"Invalid drive\r\n",
-        0x0012 => b"Directory not empty\r\n",
+        filesystem::ERROR_CURRENT_DIRECTORY => b"Attempt to remove current directory\r\n",
+        filesystem::ERROR_DIRECTORY_NOT_EMPTY => b"Directory not empty\r\n",
         _ => b"Disk error\r\n",
     }
 }

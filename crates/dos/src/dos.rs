@@ -93,6 +93,7 @@ impl NeetanDos {
             0x37 => self.int21h_37h_switch_char(cpu),
             0x38 => self.int21h_38h_get_country_info(cpu, memory),
             0x39 => self.int21h_39h_mkdir(cpu, memory, disk),
+            0x3A => self.int21h_3ah_rmdir(cpu, memory, disk),
             0x3B => {
                 self.int21h_3bh_chdir(cpu, memory, disk);
             }

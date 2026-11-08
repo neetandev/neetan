@@ -1259,6 +1259,160 @@ fn find_next_uses_restored_dta_directory() {
     );
 }
 
+#[test]
+fn remove_directory_via_int21h_3ah() {
+    let mut machine = harness::boot_hle_with_floppy();
+    run_mkdir(&mut machine, b"A:\\OLDDIR\0");
+
+    let (_, flags) = run_rmdir(&mut machine, b"A:\\OLDDIR\0");
+    assert_eq!(
+        flags & 0x0001,
+        0,
+        "AH=3Ah should succeed (CF=0), flags={flags:#06X}"
+    );
+
+    harness::write_bytes(
+        &mut machine.bus,
+        harness::INJECT_CODE_BASE + 0x200,
+        b"A:\\OLDDIR\0",
+    );
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xBA, 0x00, 0x02,                   // MOV DX, 0200h
+        0xB8, 0x00, 0x43,                   // MOV AX, 4300h
+        0xCD, 0x21,                         // INT 21h
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x00, 0x01,                   // MOV [0100h], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run_with_budget(&mut machine, code, harness::INJECT_BUDGET_DISK_IO);
+    let attribute_flags = harness::result_word(&machine.bus, 0);
+    assert_eq!(
+        attribute_flags & 0x0001,
+        1,
+        "the removed directory should be gone, flags={attribute_flags:#06X}"
+    );
+}
+
+#[test]
+fn remove_directory_via_int21h_3ah_with_forward_slashes() {
+    let mut machine = harness::boot_hle_with_floppy();
+    run_mkdir(&mut machine, b"A:\\PARENT\0");
+    run_mkdir(&mut machine, b"A:\\PARENT\\CHILD\0");
+
+    let (_, flags) = run_rmdir(&mut machine, b"A:/PARENT/CHILD\0");
+    assert_eq!(
+        flags & 0x0001,
+        0,
+        "AH=3Ah should accept / separators, flags={flags:#06X}"
+    );
+    let (_, flags) = run_rmdir(&mut machine, b"A:\\PARENT\0");
+    assert_eq!(
+        flags & 0x0001,
+        0,
+        "the emptied parent should be removable, flags={flags:#06X}"
+    );
+}
+
+#[test]
+fn remove_directory_via_int21h_3ah_not_empty_returns_access_denied() {
+    let mut machine = harness::boot_hle_with_floppy();
+    run_mkdir(&mut machine, b"A:\\FULLDIR\0");
+    run_create_file_with_payload(&mut machine, b"A:\\FULLDIR\\FILE.TXT\0");
+
+    let (error_code, flags) = run_rmdir(&mut machine, b"A:\\FULLDIR\0");
+    assert_eq!(
+        flags & 0x0001,
+        1,
+        "AH=3Ah on a directory with entries should fail (CF=1), flags={flags:#06X}"
+    );
+    assert_eq!(
+        error_code, 0x0005,
+        "a directory with entries should return access denied, got {error_code:#06X}"
+    );
+}
+
+#[test]
+fn remove_directory_via_int21h_3ah_current_directory_returns_error() {
+    let mut machine = harness::boot_hle_with_floppy();
+    run_mkdir(&mut machine, b"A:\\CURDIR\0");
+
+    harness::write_bytes(
+        &mut machine.bus,
+        harness::INJECT_CODE_BASE + 0x200,
+        b"A:\\CURDIR\0",
+    );
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xBA, 0x00, 0x02,                   // MOV DX, 0200h
+        0xB4, 0x3B,                         // MOV AH, 3Bh
+        0xCD, 0x21,                         // INT 21h
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x00, 0x01,                   // MOV [0100h], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run_with_budget(&mut machine, code, harness::INJECT_BUDGET_DISK_IO);
+    let chdir_flags = harness::result_word(&machine.bus, 0);
+    assert_eq!(
+        chdir_flags & 0x0001,
+        0,
+        "CHDIR should succeed, flags={chdir_flags:#06X}"
+    );
+
+    let (error_code, flags) = run_rmdir(&mut machine, b"A:\\CURDIR\0");
+    assert_eq!(
+        flags & 0x0001,
+        1,
+        "AH=3Ah on the current directory should fail (CF=1), flags={flags:#06X}"
+    );
+    assert_eq!(
+        error_code, 0x0010,
+        "the current directory should return error 10h, got {error_code:#06X}"
+    );
+}
+
+#[test]
+fn remove_directory_via_int21h_3ah_missing_returns_path_not_found() {
+    let mut machine = harness::boot_hle_with_floppy();
+
+    let (error_code, flags) = run_rmdir(&mut machine, b"A:\\NODIR\0");
+    assert_eq!(
+        flags & 0x0001,
+        1,
+        "AH=3Ah on a missing directory should fail (CF=1), flags={flags:#06X}"
+    );
+    assert_eq!(
+        error_code, 0x0003,
+        "a missing directory should return path not found, got {error_code:#06X}"
+    );
+}
+
+/// Removes the directory `path` with `INT 21h AH=3Ah` and returns AX and the flags.
+fn run_rmdir(machine: &mut machine_98::Pc9801Ra, path: &[u8]) -> (u16, u16) {
+    harness::write_bytes(&mut machine.bus, harness::INJECT_CODE_BASE + 0x200, path);
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xBA, 0x00, 0x02,                   // MOV DX, 0200h
+        0xB4, 0x3A,                         // MOV AH, 3Ah
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x00, 0x01,                   // MOV [0100h], AX
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x02, 0x01,                   // MOV [0102h], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run_with_budget(machine, code, harness::INJECT_BUDGET_DISK_IO);
+    (
+        harness::result_word(&machine.bus, 0),
+        harness::result_word(&machine.bus, 2),
+    )
+}
+
 fn run_mkdir(machine: &mut machine_98::Pc9801Ra, path: &[u8]) {
     harness::write_bytes(&mut machine.bus, harness::INJECT_CODE_BASE + 0x200, path);
     #[rustfmt::skip]

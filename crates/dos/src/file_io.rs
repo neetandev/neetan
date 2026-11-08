@@ -23,6 +23,8 @@ const ERROR_INVALID_HANDLE: u16 = 0x0006;
 const OPEN_ACCESS_MASK: u8 = 0x03;
 /// DOS error code of an invalid function.
 const ERROR_INVALID_FUNCTION: u16 = 0x0001;
+/// DOS error code of a denied access.
+const ERROR_ACCESS_DENIED: u16 = 0x0005;
 /// Function number of `INT 21h AH=3Eh`. The kernel puts it back into AH
 /// after a successful close.
 const CLOSE_FUNCTION: u16 = 0x3E;
@@ -414,6 +416,31 @@ impl NeetanDos {
             Ok(()) => self.state.set_iret_carry(cpu, memory, false),
             Err(error) => {
                 cpu.set_ax(error);
+                self.state.set_iret_carry(cpu, memory, true);
+            }
+        }
+    }
+
+    /// AH=3Ah: Remove subdirectory. MS-DOS reports a directory that still
+    /// holds entries as access denied.
+    pub(crate) fn int21h_3ah_rmdir(
+        &mut self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+        disk: &mut dyn DiskIo,
+    ) {
+        let path_addr = cpu.linear_address(SegmentRegister::DS, cpu.dx());
+        let path = DosState::read_asciiz(memory, path_addr, 128);
+
+        match filesystem::remove_directory(&mut self.state, memory, disk, &path) {
+            Ok(()) => self.state.set_iret_carry(cpu, memory, false),
+            Err(error) => {
+                let code = if error == filesystem::ERROR_DIRECTORY_NOT_EMPTY {
+                    ERROR_ACCESS_DENIED
+                } else {
+                    error
+                };
+                cpu.set_ax(code);
                 self.state.set_iret_carry(cpu, memory, true);
             }
         }

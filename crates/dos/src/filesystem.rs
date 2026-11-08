@@ -349,6 +349,12 @@ pub(crate) fn split_path(path: &[u8]) -> (Option<u8>, Vec<&[u8]>, bool) {
 /// Error code of a path whose drive does not exist.
 const ERROR_PATH_NOT_FOUND: u16 = 0x0003;
 
+/// Error code of a removal of the current directory of its drive.
+pub(crate) const ERROR_CURRENT_DIRECTORY: u16 = 0x0010;
+
+/// Error of [`remove_directory`] for a directory that still holds entries.
+pub(crate) const ERROR_DIRECTORY_NOT_EMPTY: u16 = 0x0012;
+
 /// Checks that the drive of a path exists. A drive letter without a drive
 /// fails with "path not found", like the path translation of MS-DOS.
 fn ensure_path_drive_exists(state: &DosState, drive_index: u8) -> Result<(), u16> {
@@ -701,6 +707,7 @@ pub(crate) fn remove_directory(
         return Err(0x0005);
     }
 
+    let current_cluster = current_dir_cluster(state, drive_index, memory, disk)?;
     let volume = state.fat_volumes[drive_index as usize]
         .as_mut()
         .ok_or(0x000Fu16)?;
@@ -710,8 +717,12 @@ pub(crate) fn remove_directory(
         return Err(0x0003);
     }
 
+    if entry.start_cluster == current_cluster {
+        return Err(ERROR_CURRENT_DIRECTORY);
+    }
+
     if !directory_is_empty(volume, entry.start_cluster, disk)? {
-        return Err(0x0012);
+        return Err(ERROR_DIRECTORY_NOT_EMPTY);
     }
 
     fat_dir::delete_entry(volume, &entry, disk)?;
