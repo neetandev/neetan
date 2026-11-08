@@ -868,13 +868,6 @@ impl NeetanDos {
             full.extend_from_slice(rest);
         }
 
-        // Normalize slashes.
-        for byte in &mut full {
-            if *byte == b'/' {
-                *byte = b'\\';
-            }
-        }
-
         let normalized = normalize_path(&full);
 
         // Uppercase and write to output buffer.
@@ -1723,8 +1716,15 @@ pub(crate) fn route_for_character_device(memory: &dyn MemoryAccess, is_nul: bool
 }
 
 /// Normalizes a DOS path by resolving `.` and `..` components.
-/// Input/output is a byte vector like `A:\FOO\BAR\..\BAZ`.
+/// Input/output is a byte vector like `A:\FOO\BAR\..\BAZ`. MS-DOS accepts `/`
+/// as a path separator in its file functions, and the result holds `\` for it.
 pub(crate) fn normalize_path(path: &[u8]) -> Vec<u8> {
+    let path: Vec<u8> = path
+        .iter()
+        .map(|&byte| if byte == b'/' { b'\\' } else { byte })
+        .collect();
+    let path = path.as_slice();
+
     // Find the root prefix (e.g. "A:\" or "\")
     let root_len = if path.len() >= 3 && path[1] == b':' && path[2] == b'\\' {
         3
@@ -1794,6 +1794,16 @@ mod tests {
         assert_eq!(super::normalize_path(b"PD\\FILE"), b"PD\\FILE");
         assert_eq!(super::normalize_path(b"C:MSCDEX"), b"C:MSCDEX");
         assert_eq!(super::normalize_path(b"Q:\\PD\\.\\FILE"), b"Q:\\PD\\FILE");
+    }
+
+    #[test]
+    fn normalize_path_accepts_forward_slash_separators() {
+        assert_eq!(
+            super::normalize_path(b"A:TFX/MISSIONS/MISS830.MIS"),
+            b"A:TFX\\MISSIONS\\MISS830.MIS"
+        );
+        assert_eq!(super::normalize_path(b"A:/TFX/./TUNES"), b"A:\\TFX\\TUNES");
+        assert_eq!(super::normalize_path(b"/TFX/../DOS"), b"\\DOS");
     }
 
     fn prepare_dos_with_umb() -> (NeetanDos, MockMemory) {

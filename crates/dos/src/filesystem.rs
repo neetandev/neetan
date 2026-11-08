@@ -631,7 +631,7 @@ pub(crate) fn change_directory(
     new_path.push(b'A' + drive_index);
     new_path.push(b':');
 
-    if remaining.is_empty() || remaining[0] == b'\\' {
+    if remaining.is_empty() || remaining[0] == b'\\' || remaining[0] == b'/' {
         if remaining.is_empty() {
             new_path.push(b'\\');
         } else {
