@@ -377,12 +377,6 @@ fn build_program_path(state: &DosState, mem: &dyn MemoryAccess, path: &[u8]) -> 
         full.extend_from_slice(rest);
     }
 
-    for byte in &mut full {
-        if *byte == b'/' {
-            *byte = b'\\';
-        }
-    }
-
     let normalized = dos::normalize_path(&full);
     normalized
         .into_iter()
