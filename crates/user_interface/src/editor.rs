@@ -41,6 +41,7 @@ use std::path::{Path, PathBuf};
 
 use gui::{
     Rect,
+    component::{Status, run},
     ui::{ScrollState, UiContext},
 };
 use i18n::Catalog;
@@ -56,9 +57,9 @@ use machine_factory::config::{
 pub(crate) use self::rows::field_id;
 use self::{
     browse::BrowseTarget,
-    create_image::{CreateImageDialog, CreateOutcome},
+    create_image::CreateImageDialog,
     derived_file::DerivedFile,
-    discard::{DiscardOutcome, DiscardQuestion},
+    discard::DiscardQuestion,
     fields::{Field, FieldValue},
     file::{EditorFile, fill_required, write_file},
     form::{
@@ -87,7 +88,7 @@ use crate::texts::english_text;
 use crate::{
     catalog::copy_title,
     config::{ConfigDocument, HostLayers, metadata::TITLE_KEY},
-    file_browser::{BrowserOutcome, FileBrowser},
+    file_browser::FileBrowser,
     manager::shown_path,
     texts::{HintText, HintTexts, common, editor},
 };
@@ -744,10 +745,10 @@ impl Editor {
         }
 
         if let Some((mut browser, target)) = self.browser.take() {
-            match browser.show(context, screen) {
-                BrowserOutcome::Open => self.browser = Some((browser, target)),
-                BrowserOutcome::Cancelled => {}
-                BrowserOutcome::Chosen(value) => {
+            match run(&mut browser, context, screen, (), &mut |_| {}) {
+                Status::Open => self.browser = Some((browser, target)),
+                Status::Closed => {}
+                Status::Done(value) => {
                     self.apply_browsed(target, value);
                     context.request_pass();
                 }
@@ -759,20 +760,20 @@ impl Editor {
             self.creator = Some((CreateImageDialog::new(request, &self.root), target));
         }
         if let Some((mut dialog, target)) = self.creator.take() {
-            match dialog.show(context, screen) {
-                CreateOutcome::Open => self.creator = Some((dialog, target)),
-                CreateOutcome::Cancelled => {}
-                CreateOutcome::Created(value) => {
+            match run(&mut dialog, context, screen, (), &mut |_| {}) {
+                Status::Open => self.creator = Some((dialog, target)),
+                Status::Closed => {}
+                Status::Done(value) => {
                     self.apply_browsed(target, value);
                     context.request_pass();
                 }
             }
         }
         if let Some(mut question) = self.discard.take() {
-            match question.show(context, screen) {
-                DiscardOutcome::Open => self.discard = Some(question),
-                DiscardOutcome::Kept => {}
-                DiscardOutcome::Discarded => pass.closed = true,
+            match run(&mut question, context, screen, (), &mut |_| {}) {
+                Status::Open => self.discard = Some(question),
+                Status::Closed => {}
+                Status::Done(()) => pass.closed = true,
             }
         }
         self.hints = self.status_hints(context);
