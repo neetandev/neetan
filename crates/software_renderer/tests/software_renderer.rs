@@ -439,6 +439,64 @@ fn pegc_renders_palette_indexed_pixel() {
 }
 
 #[test]
+fn pegc_two_screen_mode_renders_the_selected_display_page() {
+    let font_rom = vec![0u8; 0x83000];
+
+    let text_vram: [u8; TEXT_VRAM_BYTES] = [0u8; TEXT_VRAM_BYTES];
+    let mut pegc_vram = vec![0u8; 0x80000];
+    pegc_vram[3] = 0x11;
+    pegc_vram[0x40003] = 0x22;
+    pegc_vram[0x40000 + 640 * 399 + 7] = 0x33;
+
+    let palette_256 = {
+        let mut palette = [0xFF00_0000u32; 256];
+        palette[0x11] = 0xFF00_00FF;
+        palette[0x22] = 0xFF00_FF00;
+        palette[0x33] = 0xFFFF_0000;
+        palette
+    };
+
+    let render_page = |display_page: u32| {
+        let pegc = PegcRenderInputs {
+            palette_rgba_256: palette_256,
+            pegc_flags: display_page << 2,
+            vram: &pegc_vram,
+        };
+        let mut inputs = base_inputs(
+            &text_vram,
+            &ZERO_PLANE,
+            &ZERO_PLANE,
+            &ZERO_PLANE,
+            &ZERO_PLANE,
+        );
+        inputs.global_enabled = true;
+        inputs.graphics_enabled = true;
+        inputs.gdc_graphics_pitch = 40;
+        inputs.gdc_graphics_scroll[0] = 400 << 16;
+        inputs.gdc_graphics_al = 400;
+        inputs.graphics = GraphicsInput::Pegc(Box::new(pegc));
+
+        let mut renderer = SoftwareRenderer::new(&font_rom);
+        renderer.render(&inputs);
+        (
+            pixel_at(renderer.framebuffer(), 3, 0),
+            pixel_at(renderer.framebuffer(), 7, 399),
+        )
+    };
+
+    assert_eq!(
+        render_page(0),
+        ([0xFF, 0x00, 0x00, 0xFF], [0x00, 0x00, 0x00, 0xFF]),
+        "display page 0 shows the first 256 KB of PEGC VRAM"
+    );
+    assert_eq!(
+        render_page(1),
+        ([0x00, 0xFF, 0x00, 0xFF], [0x00, 0x00, 0xFF, 0xFF]),
+        "display page 1 shows the second 256 KB of PEGC VRAM"
+    );
+}
+
+#[test]
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 fn scalar_and_simd_paths_match() {
     #[cfg(target_arch = "x86_64")]
