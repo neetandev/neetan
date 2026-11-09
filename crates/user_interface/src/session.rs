@@ -93,7 +93,8 @@ pub(crate) struct Session {
     cdrom_entries: Vec<ImageEntry>,
     /// Current index into cdrom_entries, or `None` if no disc is loaded.
     cdrom_index: Option<usize>,
-    /// The open media dialog.
+    /// The open media dialog. It is the only dialog of the session and the
+    /// root of its pass, run with `run`.
     media_dialog: Option<MediaDialog>,
     /// Whether the CRT effect is enabled.
     crt_enabled: bool,

@@ -13,7 +13,6 @@ use super::{
     FILTER_ID, Manager, ManagerMessage, ManagerOverlay, SETTINGS_ID,
     counts::{GameCounts, write_counts},
     entries::TableEntry,
-    filter::Filter,
     game_table::{self, GAME_TABLE_ID, GameRows, RowErrors, show_game_table},
     hints::{LibraryFocus, library_hints, status_end},
     rows::GameRow,
@@ -265,7 +264,6 @@ impl Manager {
         let baseline = context.centered_baseline(area, &title_style);
         context.text(area.x, baseline, &title_style, entry.system.label);
         let title_width = context.measure(&title_style, entry.system.label);
-        let filtering = !Filter::new(&self.view.filter).is_empty();
         let shown_games = self
             .entries
             .iter()
@@ -281,7 +279,7 @@ impl Manager {
             games: entry.game_count(),
             shown_errors,
             errors: entry.error_count(),
-            filtering,
+            filtering: self.filtering,
         };
         let count = self
             .texts

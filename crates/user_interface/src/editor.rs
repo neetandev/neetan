@@ -381,6 +381,12 @@ pub(crate) struct Editor {
     /// The model of the form of a game or of a system defaults file at the
     /// last refresh. The settings page has none.
     model: Option<MachineSelection>,
+    /// The empty list that the media list of a path list field without a
+    /// list edits. A change moves it into the field.
+    unset_images: Vec<String>,
+    /// The empty text that the text field of a path field without a text
+    /// edits. A typed text moves into the field.
+    unset_text: String,
 }
 
 impl Editor {
@@ -421,6 +427,8 @@ impl Editor {
             help_tracking: HelpTracking::default(),
             shown: String::new(),
             model: None,
+            unset_images: Vec::new(),
+            unset_text: String::new(),
         };
         editor.refresh();
         editor

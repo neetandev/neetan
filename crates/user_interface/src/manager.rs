@@ -173,6 +173,8 @@ pub(crate) struct Manager {
     /// The index of the system whose rows the entries hold. The view pairs the rows of this
     /// system with the entries until the update of a system switch builds them again.
     entries_system: usize,
+    /// Whether a filter text chose the entries.
+    filtering: bool,
     /// The row kinds of the entries in the game table. They refill with the
     /// entries and keep their buffer.
     row_kinds: Vec<RowKind>,
@@ -206,6 +208,7 @@ impl Manager {
             roms,
             entries: Vec::new(),
             entries_system: 0,
+            filtering: false,
             row_kinds: Vec::new(),
             view: ManagerView::default(),
             mode: ManagerMode::Library,
@@ -290,6 +293,7 @@ impl Manager {
         let filter = Filter::new(&self.view.filter);
         self.entries_system = self.view.systems.selected;
         self.entries = table_entries(self.rows(), sort, &filter);
+        self.filtering = !filter.is_empty();
         self.row_kinds.clear();
         self.row_kinds
             .extend(self.entries.iter().map(|entry| entry.kind()));
@@ -1317,7 +1321,7 @@ mod tests {
         harness.input.cancel = true;
         settle(&mut harness, &mut manager);
 
-        select(&mut manager, "pc6000");
+        select(&mut manager, "towns");
         harness.state.set_focus(UiId::from(SYSTEM_LIST_ID));
         settle(&mut harness, &mut manager);
         render(&harness, "empty");

@@ -177,11 +177,12 @@ impl Editor {
             | FieldValue::Text(_)
             | FieldValue::EmptyList
             | FieldValue::EmptyPath => {
-                let mut values = Vec::new();
-                let response = media_list.show(context, wide, &mut field.list, &mut values);
+                let values = &mut self.unset_images;
+                let response = media_list.show(context, wide, &mut field.list, values);
                 if response.changed {
-                    field.value = FieldValue::List(values);
+                    field.value = FieldValue::List(std::mem::take(values));
                 }
+                values.clear();
                 response
             }
         };
