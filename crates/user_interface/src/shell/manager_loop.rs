@@ -4,6 +4,7 @@
 use std::time::{Duration, Instant};
 
 use common::error;
+use gui::component::run;
 use sdl3::{
     event::{Event, EventPump},
     keyboard::Scancode,
@@ -12,7 +13,7 @@ use sdl3::{
 use super::Shell;
 use crate::{
     gui_host::{GuiEvent, GuiHost, keys::pointer_or_text_event, run_pending_passes},
-    manager::Launch,
+    manager::{Launch, ShellEffect},
 };
 
 /// The longest wait for an event while nothing repeats.
@@ -215,13 +216,22 @@ impl Shell {
         }
     }
 
-    /// Runs one pass of the manager and keeps the game it asks to start.
+    /// Runs one pass of the manager over the whole window, keeps the game it
+    /// asks to start and switches the catalog it asks for.
     fn manager_pass(&mut self) {
         let (Some(gui), Some(manager)) = (self.host.gui.as_mut(), self.manager.as_mut()) else {
             return;
         };
-        let launch = gui.pass(|context| manager.show(context));
-        if let Some(catalog) = manager.take_catalog_switch() {
+        let mut launch = None;
+        let mut catalog = None;
+        gui.pass(|context| {
+            let area = context.bounds();
+            run(manager, context, area, (), &mut |effect| match effect {
+                ShellEffect::Launch(started) => launch = Some(started),
+                ShellEffect::SwitchCatalog(switched) => catalog = Some(switched),
+            })
+        });
+        if let Some(catalog) = catalog {
             gui.set_catalog(catalog);
         }
         gui.sync_text_input(&self.host.window);

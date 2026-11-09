@@ -6,14 +6,15 @@ use std::path::Path;
 
 use common::{info, warn};
 use gui::{
-    component::{Status, run},
+    Rect,
+    component::{Update, run_child},
     ui::{STATUS_LINE_HEIGHT, StatusEnd, UiContext, UiId, status_line},
 };
 use machine_factory::config::systems::System;
 
 use super::{
-    EditTarget, ErrorChoice, ErrorDialog, GameRow, Manager, NextFocus, SETTINGS_ID, rows_at,
-    sidebar::SYSTEM_DEFAULTS_ID,
+    EditTarget, ErrorDialog, GameRow, Manager, ManagerFocus, ManagerMessage, ManagerMode,
+    ManagerOverlay, SETTINGS_ID, ShellEffect, rows_at, sidebar::SYSTEM_DEFAULTS_ID,
 };
 use crate::{
     catalog::{read_game, read_games},
@@ -48,57 +49,60 @@ impl Manager {
     /// Opens `editor`, or the error dialog of the editor that did not open.
     pub(super) fn open_editor(
         &mut self,
-        context: &mut UiContext,
         editor: Result<Editor, ErrorDialog>,
+        update: &mut Update<'_, ShellEffect>,
     ) {
         match editor {
             Ok(editor) => {
                 info!("Game manager: editing {}", editor.path().display());
-                self.editor = Some(editor);
+                self.mode = ManagerMode::Editor(Box::new(editor));
             }
-            Err(dialog) => self.dialog = Some(dialog),
+            Err(dialog) => self.show_error(Box::new(dialog), update),
         }
-        context.request_pass();
     }
 
     /// Opens the editor on a new game of the selected system.
-    pub(super) fn open_new_game(&mut self, context: &mut UiContext) {
+    pub(super) fn open_new_game(&mut self, update: &mut Update<'_, ShellEffect>) {
         let Some(system) = self.current().map(|entry| entry.system) else {
             return;
         };
         let editor = Editor::new_game(&self.host, system).ok_or_else(|| {
             ErrorDialog::new_game_open_failed(system, &OpenError::NotCompiled(system.name))
         });
-        self.open_editor(context, editor);
+        self.open_editor(editor, update);
     }
 
     /// Opens the editor on the game file of `row`.
-    pub(super) fn open_game(&mut self, context: &mut UiContext, row: &GameRow) {
+    pub(super) fn open_game(&mut self, row: &GameRow, update: &mut Update<'_, ShellEffect>) {
         let editor = Editor::open(&self.host, row.system, &row.path)
             .map_err(|error| game_open_failed(row.system, row.name(), &error));
-        self.open_editor(context, editor);
+        self.open_editor(editor, update);
     }
 
     /// Opens the editor on a copy of the game file of `row` with the copy
-    /// pattern of the catalog of `context`.
-    pub(super) fn open_duplicate(&mut self, context: &mut UiContext, row: &GameRow) {
-        let editor = Editor::duplicate(&self.host, row.system, &row.path, context.catalog)
+    /// pattern of the catalog of the pass.
+    pub(super) fn open_duplicate(&mut self, row: &GameRow, update: &mut Update<'_, ShellEffect>) {
+        let editor = Editor::duplicate(&self.host, row.system, &row.path, update.catalog())
             .map_err(|error| game_open_failed(row.system, row.name(), &error));
-        self.open_editor(context, editor);
+        self.open_editor(editor, update);
     }
 
     /// Opens the editor on the system defaults file of the selected system.
-    pub(super) fn open_system_defaults(&mut self, context: &mut UiContext) {
+    pub(super) fn open_system_defaults(&mut self, update: &mut Update<'_, ShellEffect>) {
         let Some(system) = self.current().map(|entry| entry.system) else {
             return;
         };
         let editor = Editor::system_defaults(&self.host, system)
             .map_err(|error| ErrorDialog::open_failed(&EditedFile::SystemDefaults(system), &error));
-        self.open_editor(context, editor);
+        self.open_editor(editor, update);
     }
 
     /// Opens the editor on the game file of `target`, the game of an error dialog.
-    pub(super) fn open_target(&mut self, context: &mut UiContext, target: &EditTarget) {
+    pub(super) fn open_target(
+        &mut self,
+        target: &EditTarget,
+        update: &mut Update<'_, ShellEffect>,
+    ) {
         let name = target
             .path
             .file_stem()
@@ -106,7 +110,7 @@ impl Manager {
             .unwrap_or_default();
         let editor = Editor::open(&self.host, target.system, &target.path)
             .map_err(|error| game_open_failed(target.system, &name, &error));
-        self.open_editor(context, editor);
+        self.open_editor(editor, update);
     }
 
     /// Reads the saved game file `path` of `system` again and updates its
@@ -176,93 +180,128 @@ impl Manager {
     /// Updates the library after a save of the file `path` of the editor
     /// on `edited`: the row of a game file, every row of the system after a
     /// save of its system defaults, or the host settings after a save of
-    /// the settings file. `active_language` is the tag of the catalog of
-    /// the pass.
-    fn file_saved(&mut self, edited: &EditedFile, path: &Path, active_language: &str) {
+    /// the settings file. A save of the settings file that selects another
+    /// language than the one of the catalog of the pass switches the
+    /// catalog, and a settings file that does not read opens the error
+    /// dialog.
+    fn file_saved(
+        &mut self,
+        edited: &EditedFile,
+        path: &Path,
+        update: &mut Update<'_, ShellEffect>,
+    ) {
         match *edited {
             EditedFile::Game { system, .. } => self.game_saved(system, path),
             EditedFile::SystemDefaults(system) => self.system_defaults_saved(system, path),
-            EditedFile::Settings => self.settings_saved(path, active_language),
+            EditedFile::Settings => {
+                let active_language = update.catalog().tag();
+                match self.settings_saved(path, active_language) {
+                    Ok(Some(catalog)) => update.emit(ShellEffect::SwitchCatalog(catalog)),
+                    Ok(None) => {}
+                    Err(dialog) => self.show_error(dialog, update),
+                }
+            }
         }
     }
 
-    /// Draws one pass of the open editor over the whole window with its
-    /// status line, and the error dialog of a failed save over it. The
-    /// Overwrite of the dialog of a game file that changed outside the
-    /// manager saves over the file. A closed editor gives the library back
-    /// with the focus on its game table, on the system defaults button after
-    /// the system defaults, or on the settings button after the settings
-    /// page.
-    pub(super) fn show_editor(&mut self, context: &mut UiContext) {
-        let (status_area, screen) = context.bounds().cut_bottom(STATUS_LINE_HEIGHT);
-        let Some(editor) = self.editor.as_mut() else {
+    /// Applies the effect `effect` of the open editor: a saved file updates
+    /// the library, and a failed save opens the error dialog of the file.
+    pub(super) fn editor_effect(
+        &mut self,
+        effect: EditorEffect,
+        update: &mut Update<'_, ShellEffect>,
+    ) {
+        match effect {
+            EditorEffect::Saved { edited, path } => self.file_saved(&edited, &path, update),
+            EditorEffect::SaveFailed(failure) => {
+                if let ManagerMode::Editor(editor) = &self.mode {
+                    let dialog = save_failure_dialog(editor, &failure);
+                    self.show_error(Box::new(dialog), update);
+                }
+            }
+        }
+    }
+
+    /// Saves the changes of the open editor over its file after the
+    /// Overwrite of the dialog of a file that changed outside the manager.
+    /// A failed save opens the error dialog of the file.
+    pub(super) fn overwrite(&mut self, update: &mut Update<'_, ShellEffect>) {
+        let ManagerMode::Editor(editor) = &mut self.mode else {
             return;
         };
-        let mut effects = std::mem::take(&mut self.editor_effects);
-        effects.clear();
-        let closed = run(editor, context, screen, (), &mut |effect| {
-            effects.push(effect)
-        }) != Status::Open;
+        match editor.overwrite() {
+            Ok(path) => {
+                let edited = editor.edited_file();
+                self.file_saved(&edited, &path, update);
+            }
+            Err(failure) => {
+                let dialog = save_failure_dialog(editor, &failure);
+                self.show_error(Box::new(dialog), update);
+            }
+        }
+    }
+
+    /// Gives the library back after the editor closed, with the focus on
+    /// its game table, on the system defaults button after the system
+    /// defaults, or on the settings button after the settings page.
+    pub(super) fn editor_ended(&mut self) {
+        let mode = std::mem::replace(&mut self.mode, ManagerMode::Library);
+        let ManagerMode::Editor(editor) = mode else {
+            return;
+        };
+        let focus = match editor.edited_file() {
+            EditedFile::Game { .. } => ManagerFocus::Start,
+            EditedFile::SystemDefaults(_) => ManagerFocus::Widget(UiId::from(SYSTEM_DEFAULTS_ID)),
+            EditedFile::Settings => ManagerFocus::Widget(UiId::from(SETTINGS_ID)),
+        };
+        self.overlay = ManagerOverlay::None;
+        self.focus = Some(focus);
+    }
+
+    /// Draws one pass of the open editor into `area`, the whole window,
+    /// with its status line, and the error dialog of a failed save over it.
+    pub(super) fn view_editor(
+        &mut self,
+        context: &mut UiContext,
+        area: Rect,
+        messages: &mut Vec<ManagerMessage>,
+    ) {
+        let (status_area, screen) = area.cut_bottom(STATUS_LINE_HEIGHT);
+        let ManagerMode::Editor(editor) = &mut self.mode else {
+            return;
+        };
+        run_child(
+            &mut **editor,
+            context,
+            screen,
+            (),
+            messages,
+            ManagerMessage::Editor,
+        );
+        let dialog_open = self.show_dialog(context, screen, messages);
+        let ManagerMode::Editor(editor) = &self.mode else {
+            return;
+        };
         let catalog = context.catalog;
-        let active_language = catalog.tag();
-        for effect in effects.drain(..) {
-            match effect {
-                EditorEffect::Saved { edited, path } => {
-                    self.file_saved(&edited, &path, active_language);
-                }
-                EditorEffect::SaveFailed(failure) => {
-                    if let Some(editor) = &self.editor {
-                        self.dialog = Some(save_failure_dialog(editor, &failure));
-                    }
-                }
+        let hints = match &self.overlay {
+            ManagerOverlay::Error(dialog) if dialog_open => {
+                hints_in(catalog, &dialog.hints(context))
             }
-        }
-        self.editor_effects = effects;
-        let status = self.dialog.as_mut().map_or(Status::Open, |dialog| {
-            run(dialog, context, screen, (), &mut |_| {})
-        });
-        if status != Status::Open {
-            self.dialog = None;
-        }
-        if status == Status::Done(ErrorChoice::Overwrite)
-            && let Some(editor) = self.editor.as_mut()
-        {
-            let written = match editor.overwrite() {
-                Ok(path) => Ok((path, editor.edited_file())),
-                Err(failure) => Err(save_failure_dialog(editor, &failure)),
-            };
-            match written {
-                Ok((path, edited)) => self.file_saved(&edited, &path, active_language),
-                Err(dialog) => self.dialog = Some(dialog),
+            ManagerOverlay::None | ManagerOverlay::Delete(_) | ManagerOverlay::Error(_) => {
+                hints_in(catalog, editor.hints())
             }
-            context.request_pass();
-        }
-        let Some(editor) = self.editor.as_mut() else {
-            return;
-        };
-        let hints = match &self.dialog {
-            Some(dialog) => hints_in(catalog, &dialog.hints(context)),
-            None => hints_in(catalog, editor.hints()),
         };
         let shown_path = editor.shown_path_text();
         status_line(context, status_area, &hints, StatusEnd::Path(shown_path));
-        if closed {
-            let next = match editor.edited_file() {
-                EditedFile::Game { .. } => NextFocus::Start,
-                EditedFile::SystemDefaults(_) => NextFocus::Widget(UiId::from(SYSTEM_DEFAULTS_ID)),
-                EditedFile::Settings => NextFocus::Widget(UiId::from(SETTINGS_ID)),
-            };
-            self.editor = None;
-            self.dialog = None;
-            self.next_focus = Some(next);
-            context.request_pass();
-        }
     }
 
     /// The open editor.
     #[cfg(test)]
     pub(crate) fn editor(&self) -> Option<&Editor> {
-        self.editor.as_ref()
+        match &self.mode {
+            ManagerMode::Editor(editor) => Some(editor),
+            ManagerMode::Library => None,
+        }
     }
 }
 
@@ -282,7 +321,7 @@ mod tests {
         gui_test_support::{MINIMUM_HEIGHT, MINIMUM_WIDTH, PassCounts},
         manager::{
             error_dialog::{CANCEL_ID, OK_ID},
-            test_support::{select, shown_help},
+            test_support::{pass, select, shown_help},
         },
         texts::repository::{RepositoryLanguage, repository_languages},
     };
@@ -291,7 +330,10 @@ mod tests {
         editor::{field_id, test_support::EditorRoot},
         gui_test_support::GuiHarness,
         manager::{
-            FILTER_ID, error_dialog::OVERWRITE_ID, game_table::GAME_TABLE_ID, test_support::titles,
+            FILTER_ID,
+            error_dialog::OVERWRITE_ID,
+            game_table::GAME_TABLE_ID,
+            test_support::{delete_open, settle, titles},
         },
     };
 
@@ -325,11 +367,6 @@ mod tests {
             locations: root.locations(),
         })
         .expect("manager starts")
-    }
-
-    /// Draws passes of `manager` until it settles.
-    fn settle(harness: &mut GuiHarness, manager: &mut Manager) {
-        harness.settle(|context| manager.show(context));
     }
 
     /// A root with two games of the first system.
@@ -388,12 +425,12 @@ mod tests {
             harness.input.shortcut = Some(shortcut);
             settle(&mut harness, &mut manager);
             assert!(manager.editor().is_none(), "{shortcut:?}");
-            assert!(manager.delete.is_none(), "{shortcut:?}");
+            assert!(!delete_open(&manager), "{shortcut:?}");
         }
         harness.input.edit = Some(EditCommand::DeleteForward);
         settle(&mut harness, &mut manager);
         assert!(manager.editor().is_none());
-        assert!(manager.delete.is_none());
+        assert!(!delete_open(&manager));
         harness.input.shortcut = Some(Shortcut::ControlD);
         settle(&mut harness, &mut manager);
         let editor = manager.editor().expect("Ctrl+D duplicates");
@@ -745,9 +782,9 @@ mod tests {
     /// second pass with an unchanged state, and checks that the frame keeps the revision of the
     /// editor.
     fn steady_frame(harness: &mut GuiHarness, manager: &mut Manager) -> PassCounts {
-        harness.frame(|context| manager.show(context));
+        harness.frame(|context| pass(manager, context));
         let revision = manager.editor().map(Editor::revision);
-        let (counts, _) = harness.counted_frame(|context| manager.show(context));
+        let (counts, _) = harness.counted_frame(|context| pass(manager, context));
         assert_eq!(manager.editor().map(Editor::revision), revision);
         assert!(!harness.state.take_pass_request());
         counts
@@ -796,9 +833,10 @@ mod tests {
     }
 
     #[cfg(feature = "pc98")]
-    /// Verifies that a save of the editor keeps the capacity of the effect buffer of the
-    /// manager and that the steady frame after the save allocates nothing, fills no text again
-    /// and keeps the revision of the editor. The save itself writes a file and allocates.
+    /// Verifies that a save of the editor keeps the capacity of the message buffer of the
+    /// manager, which takes the effects of the editor, and that the steady frame after the save
+    /// allocates nothing, fills no text again and keeps the revision of the editor. The save
+    /// itself writes a file and allocates.
     #[test]
     fn a_steady_frame_after_a_save_allocates_nothing() {
         let (root, mut manager, mut harness) = steady_editor("steady_editor_save");
@@ -813,8 +851,8 @@ mod tests {
                 .contains("YU-NO: A Girl Who Chants Love at the Bound of this World!")
         );
         assert!(manager.editor().is_some());
-        assert!(manager.editor_effects.is_empty());
-        assert!(manager.editor_effects.capacity() > 0);
+        assert!(manager.messages.is_empty());
+        assert!(manager.messages.capacity() > 0);
         assert_eq!(steady_frame(&mut harness, &mut manager), PassCounts::NONE);
     }
 
@@ -1161,8 +1199,8 @@ key.PageDown = RollUp
         render(&harness, "discard");
         harness.input.confirm = true;
         settle(&mut harness, &mut manager);
-        manager.editor = None;
-        manager.next_focus = Some(NextFocus::Start);
+        manager.mode = ManagerMode::Library;
+        manager.focus = Some(ManagerFocus::Start);
         settle(&mut harness, &mut manager);
 
         open_with_year_step(&mut harness, &mut manager);
@@ -1187,8 +1225,8 @@ key.PageDown = RollUp
         settle(&mut harness, &mut manager);
         std::fs::remove_dir(&path).expect("the folder is removed");
         root.game("yu-no", YU_NO);
-        manager.editor = None;
-        manager.next_focus = Some(NextFocus::Start);
+        manager.mode = ManagerMode::Library;
+        manager.focus = Some(ManagerFocus::Start);
         settle(&mut harness, &mut manager);
 
         harness.input.shortcut = Some(Shortcut::Insert);
@@ -1199,14 +1237,14 @@ key.PageDown = RollUp
         harness.input.navigation = Some(Navigation::NextTab);
         settle(&mut harness, &mut manager);
         render(&harness, "new_machine");
-        manager.editor = None;
+        manager.mode = ManagerMode::Library;
         settle(&mut harness, &mut manager);
 
         select_game(&mut harness, &mut manager, "Brandish");
         harness.input.shortcut = Some(Shortcut::ControlD);
         settle(&mut harness, &mut manager);
         render(&harness, "duplicate");
-        manager.editor = None;
+        manager.mode = ManagerMode::Library;
 
         let defaults = root.path("config/pc98.conf");
         let readable = std::fs::read(&defaults).expect("the system defaults read");
@@ -1214,7 +1252,7 @@ key.PageDown = RollUp
             .expect("file is written");
         open_with_year_step(&mut harness, &mut manager);
         render(&harness, "header_warning");
-        manager.editor = None;
+        manager.mode = ManagerMode::Library;
         std::fs::write(&defaults, readable).expect("file is written");
         empty_list_screenshot(viewport, scale, kind, language);
         defaults_screenshots(viewport, scale, kind, language);
@@ -1230,7 +1268,7 @@ key.PageDown = RollUp
             harness.state.set_focus(field_id("cpu-mode"));
             settle(&mut harness, &mut manager);
             render(&harness, "pc88_cpu_mode");
-            manager.editor = None;
+            manager.mode = ManagerMode::Library;
         }
         if compiled_systems().any(|system| system.name == "pc6000") {
             select(&mut manager, "pc6000");

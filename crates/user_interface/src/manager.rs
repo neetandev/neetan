@@ -20,12 +20,12 @@ mod test_support;
 mod toolbar;
 mod view;
 
-use std::{path::PathBuf, result};
+use std::{convert::Infallible, path::PathBuf, result};
 
 use common::{FlushError, debug, info};
 use gui::{
     Rect,
-    component::{Status, run},
+    component::{ChildEvent, Component, Ended, Status, Update, run_child},
     ui::{ActionButton, RowKind, STATUS_LINE_HEIGHT, Shortcut, UiContext, UiId},
 };
 use machine_factory::config::systems::{System, compiled_systems};
@@ -81,9 +81,72 @@ pub(crate) struct Launch {
     pub(crate) model: &'static str,
 }
 
-/// The widget that takes the focus in the next pass of the library.
+/// What the manager asks the shell to do.
+#[derive(Debug)]
+pub(crate) enum ShellEffect {
+    /// Start this game.
+    Launch(Launch),
+    /// Switch the user interface to this language.
+    SwitchCatalog(LanguageCatalog),
+}
+
+/// What the user can ask the manager to do.
+#[derive(Debug)]
+pub(crate) enum ManagerMessage {
+    /// Selects the system at this index of the system list.
+    SelectSystem(usize),
+    /// The text of the filter field changed.
+    FilterChanged,
+    /// The sort of the game table changed.
+    SortChanged,
+    /// The selection of the game table changed.
+    SelectionChanged,
+    /// Checks the ROM folders and scans the catalog again.
+    Refresh,
+    /// Opens the editor on a new game of the selected system.
+    AddGame,
+    /// Starts the selected game.
+    Launch,
+    /// Opens the selected game in the editor.
+    Edit,
+    /// Opens a copy of the selected game in the editor.
+    Duplicate,
+    /// Asks before the delete of the file of the selected row.
+    AskDelete,
+    /// Opens the settings page.
+    OpenSettings,
+    /// Opens the editor on the system defaults of the selected system.
+    OpenSystemDefaults,
+    /// The question before the delete ended. `Done` confirms the delete.
+    Delete(Ended<()>),
+    /// The error dialog ended.
+    Error(Ended<ErrorChoice>),
+    /// The editor reported an effect or ended.
+    Editor(ChildEvent<EditorEffect, ()>),
+}
+
+/// What the manager shows.
+enum ManagerMode {
+    /// The library with the systems and their games.
+    Library,
+    /// The editor of a game file, a system defaults file or the settings
+    /// file. It takes the whole window while it is open.
+    Editor(Box<Editor>),
+}
+
+/// The open dialog of the manager.
+enum ManagerOverlay {
+    /// No dialog is open.
+    None,
+    /// The question before the delete of a game file is open.
+    Delete(Box<DeleteRequest>),
+    /// The error dialog is open.
+    Error(Box<ErrorDialog>),
+}
+
+/// A focus request of the library for the next pass.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum NextFocus {
+enum ManagerFocus {
     /// The game table, or the add button while the table has no entry.
     Start,
     /// The widget with this id.
@@ -92,6 +155,8 @@ enum NextFocus {
 
 /// The game manager.
 pub(crate) struct Manager {
+    /// The message buffer.
+    messages: Vec<ManagerMessage>,
     /// The command line and the folders of the settings discovery.
     start: ManagerStart,
     /// The settings file and the command line flags.
@@ -105,26 +170,22 @@ pub(crate) struct Manager {
     roms: Vec<RomFolderStatus>,
     /// The entries of the game table of the selected system.
     entries: Vec<TableEntry>,
+    /// The index of the system whose rows the entries hold. The view pairs the rows of this
+    /// system with the entries until the update of a system switch builds them again.
+    entries_system: usize,
     /// The row kinds of the entries in the game table. They refill with the
     /// entries and keep their buffer.
     row_kinds: Vec<RowKind>,
     /// The selection, the sort, the filter and the scroll positions.
     view: ManagerView,
-    /// The open question before a delete.
-    delete: Option<DeleteRequest>,
-    /// The open error dialog.
-    dialog: Option<ErrorDialog>,
-    /// The open game editor. It takes the whole window while it is open.
-    editor: Option<Editor>,
-    /// The effects of the last pass of the editor. The buffer keeps its capacity.
-    editor_effects: Vec<EditorEffect>,
-    /// The widget that takes the focus in the next pass of the library.
-    next_focus: Option<NextFocus>,
+    /// The library or the open editor.
+    mode: ManagerMode,
+    /// The open dialog.
+    overlay: ManagerOverlay,
+    /// The widget of the library that takes the focus in the next pass.
+    focus: Option<ManagerFocus>,
     /// The game that runs.
     running: Option<Launch>,
-    /// The catalog of a new language of the user interface after a save of
-    /// the settings page.
-    catalog_switch: Option<LanguageCatalog>,
     /// The texts of the library.
     texts: LibraryTexts,
 }
@@ -137,21 +198,20 @@ impl Manager {
         let config_folder = host.config_folder();
         let roms = check_all_folders(&host);
         let mut manager = Self {
+            messages: Vec::new(),
             start,
             host,
             config_folder,
             systems: Vec::new(),
             roms,
             entries: Vec::new(),
+            entries_system: 0,
             row_kinds: Vec::new(),
             view: ManagerView::default(),
-            delete: None,
-            dialog: None,
-            editor: None,
-            editor_effects: Vec::new(),
-            next_focus: Some(NextFocus::Start),
+            mode: ManagerMode::Library,
+            overlay: ManagerOverlay::None,
+            focus: Some(ManagerFocus::Start),
             running: None,
-            catalog_switch: None,
             texts: LibraryTexts::default(),
         };
         manager.rescan();
@@ -162,12 +222,6 @@ impl Manager {
     /// The settings file and the command line flags.
     pub(crate) fn host(&self) -> &HostLayers {
         &self.host
-    }
-
-    /// Takes the catalog of the language that a save of the settings page
-    /// selected. A second call gives `None` until the next switch.
-    pub(crate) fn take_catalog_switch(&mut self) -> Option<LanguageCatalog> {
-        self.catalog_switch.take()
     }
 
     /// Scans the catalog again, builds the shown systems with their games
@@ -224,9 +278,9 @@ impl Manager {
         self.systems.get(self.view.systems.selected)
     }
 
-    /// The games and the files with errors of the selected system.
+    /// The games and the files with errors of the system of the entries.
     fn rows(&self) -> &[GameRow] {
-        rows_at(&self.systems, self.view.systems.selected)
+        rows_at(&self.systems, self.entries_system)
     }
 
     /// Builds the entries of the game table of the selected system from the
@@ -234,6 +288,7 @@ impl Manager {
     fn refresh_entries(&mut self) {
         let sort = self.view.table.sort.unwrap_or(entries::DEFAULT_SORT);
         let filter = Filter::new(&self.view.filter);
+        self.entries_system = self.view.systems.selected;
         self.entries = table_entries(self.rows(), sort, &filter);
         self.row_kinds.clear();
         self.row_kinds
@@ -243,6 +298,11 @@ impl Manager {
     /// The row of the selected entry of the game table.
     fn selected_row(&self) -> Option<&GameRow> {
         self.view.selected_row(&self.entries, self.rows())
+    }
+
+    /// The row of the selected entry of the game table when its game starts.
+    fn launchable_row(&self) -> Option<&GameRow> {
+        self.selected_row().filter(|row| row.launchable())
     }
 
     /// Whether the game table has an entry that takes the selection.
@@ -260,7 +320,7 @@ impl Manager {
         };
         self.view.select_system(index, name);
         self.refresh_entries();
-        let rows = rows_at(&self.systems, self.view.systems.selected);
+        let rows = rows_at(&self.systems, self.entries_system);
         self.view.record(&self.entries, rows);
     }
 
@@ -325,7 +385,7 @@ impl Manager {
         flush: result::Result<(), FlushError>,
     ) -> Option<UiId> {
         let running = self.running.take();
-        self.next_focus = Some(NextFocus::Start);
+        self.focus = Some(ManagerFocus::Start);
         let dialog = match (panic_message, &flush) {
             (Some(message), _) => {
                 let label = running.as_ref().map(|launch| launch.system.label);
@@ -342,27 +402,36 @@ impl Manager {
 
     /// Opens `dialog` over the library and returns the id of its modal layer.
     fn open_dialog(&mut self, dialog: ErrorDialog) -> UiId {
-        self.dialog = Some(dialog);
+        self.overlay = ManagerOverlay::Error(Box::new(dialog));
         UiId::from(error_dialog::LAYER_ID)
+    }
+
+    /// Opens `dialog` with its layer from an update.
+    fn show_error(&mut self, dialog: Box<ErrorDialog>, update: &mut Update<'_, ShellEffect>) {
+        self.overlay = ManagerOverlay::Error(dialog);
+        update.open::<ErrorDialog>();
     }
 
     /// The open error dialog.
     #[cfg(test)]
     pub(crate) fn dialog(&self) -> Option<&ErrorDialog> {
-        self.dialog.as_ref()
+        match &self.overlay {
+            ManagerOverlay::Error(dialog) => Some(dialog),
+            ManagerOverlay::None | ManagerOverlay::Delete(_) => None,
+        }
     }
 
-    /// Draws one pass of the manager. Returns the game to start, if the user
-    /// asked for one.
-    pub(crate) fn show(&mut self, context: &mut UiContext) -> Option<Launch> {
-        if self.editor.is_some() {
-            self.show_editor(context);
-            return None;
-        }
+    /// Draws one pass of the library into `area`, the whole window, with the
+    /// open dialog over it and the status line at the bottom.
+    fn view_library(
+        &mut self,
+        context: &mut UiContext,
+        area: Rect,
+        messages: &mut Vec<ManagerMessage>,
+    ) {
         let theme = context.theme;
-        let bounds = context.bounds();
-        context.fill(bounds, theme.colors.panel);
-        let (status_area, screen) = bounds.cut_bottom(STATUS_LINE_HEIGHT);
+        context.fill(area, theme.colors.panel);
+        let (status_area, screen) = area.cut_bottom(STATUS_LINE_HEIGHT);
         let (sidebar_area, main_area) = screen.cut_left(SIDEBAR_WIDTH);
 
         let start_focus = if self.has_entries() {
@@ -370,9 +439,9 @@ impl Manager {
         } else {
             UiId::from(ADD_ID)
         };
-        match self.next_focus.take() {
-            Some(NextFocus::Start) => context.set_focus(start_focus),
-            Some(NextFocus::Widget(id)) => context.set_focus(id),
+        match self.focus.take() {
+            Some(ManagerFocus::Start) => context.set_focus(start_focus),
+            Some(ManagerFocus::Widget(id)) => context.set_focus(id),
             None => context.default_focus(start_focus),
         }
         if context.shortcut() == Some(Shortcut::ControlF)
@@ -381,45 +450,154 @@ impl Manager {
             context.set_focus(UiId::from(FILTER_ID));
         }
 
-        self.show_systems(context, sidebar_area);
-        let launch = self.show_main(context, main_area);
-        self.show_dialogs(context, screen);
-        self.show_status_line(context, status_area);
-        launch
+        self.show_systems(context, sidebar_area, messages);
+        self.show_main(context, main_area, messages);
+        let dialog_open = self.show_dialog(context, screen, messages);
+        self.show_status_line(context, status_area, dialog_open);
     }
 
-    /// Draws the open question and the open error dialog, centered in
-    /// `screen`. A confirmed delete removes the game file and scans the
-    /// catalog again.
-    fn show_dialogs(&mut self, context: &mut UiContext, screen: Rect) {
-        if let Some(mut request) = self.delete.take() {
-            match run(&mut request, context, screen, (), &mut |_| {}) {
-                Status::Open => self.delete = Some(request),
-                Status::Closed => {}
-                Status::Done(()) => {
-                    if let Some(dialog) = remove_game_file(&request) {
-                        self.dialog = Some(dialog);
-                    }
-                    self.rescan_after_delete();
-                }
+    /// Draws the open dialog centered in `screen`. Returns whether a dialog
+    /// stays open after the pass.
+    fn show_dialog(
+        &mut self,
+        context: &mut UiContext,
+        screen: Rect,
+        messages: &mut Vec<ManagerMessage>,
+    ) -> bool {
+        match &mut self.overlay {
+            ManagerOverlay::None => false,
+            ManagerOverlay::Delete(request) => {
+                run_child(&mut **request, context, screen, (), messages, |event| {
+                    ManagerMessage::Delete(event.into_ended())
+                })
+            }
+            ManagerOverlay::Error(dialog) => {
+                run_child(&mut **dialog, context, screen, (), messages, |event| {
+                    ManagerMessage::Error(event.into_ended())
+                })
             }
         }
-        let status = self.dialog.as_mut().map_or(Status::Open, |dialog| {
-            run(dialog, context, screen, (), &mut |_| {})
-        });
-        match status {
-            Status::Open => {}
-            Status::Closed | Status::Done(ErrorChoice::Overwrite) => self.dialog = None,
-            Status::Done(ErrorChoice::Edit) => {
-                let target = self
-                    .dialog
-                    .take()
-                    .and_then(|dialog| dialog.edit_target().cloned());
-                if let Some(target) = target {
-                    self.open_target(context, &target);
+    }
+
+    /// Opens the question before the delete of the file of the selected row.
+    fn ask_delete(&mut self, update: &mut Update<'_, ShellEffect>) {
+        let Some(row) = self.selected_row() else {
+            return;
+        };
+        self.overlay = ManagerOverlay::Delete(Box::new(DeleteRequest::new(row)));
+        update.open::<DeleteRequest>();
+    }
+
+    /// Takes the end `ended` of the question before a delete. A confirmed
+    /// delete removes the game file and scans the catalog again. A failed
+    /// removal opens the error dialog.
+    fn delete_ended(&mut self, ended: Ended<()>, update: &mut Update<'_, ShellEffect>) {
+        let overlay = std::mem::replace(&mut self.overlay, ManagerOverlay::None);
+        if let (ManagerOverlay::Delete(request), Ended::Done(())) = (overlay, ended) {
+            if let Some(dialog) = remove_game_file(&request) {
+                self.show_error(Box::new(dialog), update);
+            }
+            self.rescan_after_delete();
+        }
+    }
+
+    /// Takes the end `ended` of the error dialog. Edit opens the game of the
+    /// dialog in the editor over the library, and Overwrite saves the changes
+    /// of the editor over its file. Over an open editor, Edit only closes the
+    /// dialog.
+    fn error_ended(&mut self, ended: Ended<ErrorChoice>, update: &mut Update<'_, ShellEffect>) {
+        let overlay = std::mem::replace(&mut self.overlay, ManagerOverlay::None);
+        let ManagerOverlay::Error(dialog) = overlay else {
+            return;
+        };
+        match ended {
+            Ended::Closed => {}
+            Ended::Done(ErrorChoice::Edit) => {
+                if matches!(self.mode, ManagerMode::Library)
+                    && let Some(target) = dialog.edit_target()
+                {
+                    self.open_target(target, update);
                 }
             }
+            Ended::Done(ErrorChoice::Overwrite) => self.overwrite(update),
         }
+    }
+}
+
+impl Component for Manager {
+    type Message = ManagerMessage;
+    type Output = Infallible;
+    type Effect = ShellEffect;
+    type Input<'a> = ();
+
+    fn messages(&mut self) -> &mut Vec<ManagerMessage> {
+        &mut self.messages
+    }
+
+    /// Draws one pass of the manager into `area`, the whole window: the
+    /// library or the open editor.
+    fn view(
+        &mut self,
+        context: &mut UiContext,
+        area: Rect,
+        _input: (),
+        messages: &mut Vec<ManagerMessage>,
+    ) {
+        match self.mode {
+            ManagerMode::Library => self.view_library(context, area, messages),
+            ManagerMode::Editor(_) => self.view_editor(context, area, messages),
+        }
+    }
+
+    fn update(
+        &mut self,
+        message: ManagerMessage,
+        update: &mut Update<'_, ShellEffect>,
+    ) -> Status<Infallible> {
+        match message {
+            ManagerMessage::SelectSystem(index) => self.select_system(index),
+            ManagerMessage::FilterChanged => {
+                self.refresh_entries();
+                let rows = rows_at(&self.systems, self.entries_system);
+                self.view.refilter(&self.entries, rows);
+            }
+            ManagerMessage::SortChanged => {
+                self.refresh_entries();
+                let rows = rows_at(&self.systems, self.entries_system);
+                self.view.restore(&self.entries, rows);
+            }
+            ManagerMessage::SelectionChanged => {
+                let rows = rows_at(&self.systems, self.entries_system);
+                self.view.record(&self.entries, rows);
+            }
+            ManagerMessage::Refresh => self.refresh(),
+            ManagerMessage::AddGame => self.open_new_game(update),
+            ManagerMessage::Launch => {
+                if let Some(row) = self.launchable_row() {
+                    update.emit(ShellEffect::Launch(self.launch(row)));
+                }
+            }
+            ManagerMessage::Edit => {
+                if let Some(row) = self.launchable_row().cloned() {
+                    self.open_game(&row, update);
+                }
+            }
+            ManagerMessage::Duplicate => {
+                if let Some(row) = self.launchable_row().cloned() {
+                    self.open_duplicate(&row, update);
+                }
+            }
+            ManagerMessage::AskDelete => self.ask_delete(update),
+            ManagerMessage::OpenSettings => self.open_settings(update),
+            ManagerMessage::OpenSystemDefaults => self.open_system_defaults(update),
+            ManagerMessage::Delete(ended) => self.delete_ended(ended, update),
+            ManagerMessage::Error(ended) => self.error_ended(ended, update),
+            ManagerMessage::Editor(ChildEvent::Effect(effect)) => {
+                self.editor_effect(effect, update);
+            }
+            ManagerMessage::Editor(ChildEvent::Ended(_)) => self.editor_ended(),
+        }
+        Status::Open
     }
 }
 
@@ -449,18 +627,28 @@ fn rows_at(systems: &[SystemEntry], index: usize) -> &[GameRow] {
 #[cfg(test)]
 mod tests {
     use common::temporary::TemporaryFolder;
-    use gui::ui::{EditCommand, EditModifiers, Navigation, ThemeKind, Viewport};
+    use gui::{
+        component::run,
+        ui::{EditCommand, EditModifiers, Navigation, ThemeKind, Viewport},
+    };
     use machine_factory::rom_status::RomStatus;
 
     use super::{
         delete::DELETE_LAYER_ID,
         rows::tests::game,
         sidebar::SYSTEM_LIST_ID,
-        test_support::{TestRoot, first_system, games, sample_root, select, steady_frame, titles},
+        test_support::{
+            TestRoot, delete_open, first_system, frame, games, sample_root, select, settle,
+            steady_frame, titles,
+        },
         *,
     };
     use crate::{
-        gui_test_support::{GuiHarness, MINIMUM_HEIGHT, MINIMUM_SCREEN, MINIMUM_WIDTH, PassCounts},
+        editor::SaveFailure,
+        gui_test_support::{
+            GuiHarness, MINIMUM_HEIGHT, MINIMUM_SCREEN, MINIMUM_WIDTH, PassCounts,
+            apply_with_effects,
+        },
         texts::repository::{RepositoryLanguage, repository_languages},
     };
 
@@ -549,9 +737,9 @@ mod tests {
         games(&test, &["a", "b", "c"]);
         let mut manager = test.manager();
         let mut harness = GuiHarness::minimum();
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         harness.input.navigation = Some(Navigation::End);
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         let selected = format!("{}/c.conf", first_system().name);
         assert_eq!(manager.view.selected.as_deref(), Some(selected.as_str()));
 
@@ -599,7 +787,7 @@ mod tests {
         games(&test, &names);
         let mut manager = test.manager();
         let mut harness = GuiHarness::minimum();
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         manager.view.table.sort_by(entries::TITLE_COLUMN);
         manager.refresh_entries();
         manager.view.filter = "game 1".to_owned();
@@ -607,7 +795,7 @@ mod tests {
         manager.view.table.list.select(5);
         let rows = manager.rows().to_vec();
         manager.view.record(&manager.entries, &rows);
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         let before = manager.view.clone();
         assert_eq!(titles(&manager)[0], "game 19");
         assert_eq!(
@@ -640,32 +828,32 @@ mod tests {
         games(&test, &["a", "b", "c"]);
         let mut manager = test.manager();
         let mut harness = GuiHarness::minimum();
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         harness.input.navigation = Some(Navigation::End);
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
 
         harness.input.edit = Some(EditCommand::DeleteForward);
-        harness.settle(|context| manager.show(context));
-        assert!(manager.delete.is_some());
+        settle(&mut harness, &mut manager);
+        assert!(delete_open(&manager));
         harness.input.confirm = true;
-        harness.settle(|context| manager.show(context));
-        assert!(manager.delete.is_none());
+        settle(&mut harness, &mut manager);
+        assert!(!delete_open(&manager));
         assert_eq!(titles(&manager), ["a", "b", "c"]);
         assert_eq!(harness.state.focused(), Some(UiId::from(GAME_TABLE_ID)));
 
         harness.input.edit = Some(EditCommand::DeleteForward);
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         harness.input.cancel = true;
-        harness.settle(|context| manager.show(context));
-        assert!(manager.delete.is_none());
+        settle(&mut harness, &mut manager);
+        assert!(!delete_open(&manager));
         assert_eq!(titles(&manager), ["a", "b", "c"]);
 
         harness.input.edit = Some(EditCommand::DeleteForward);
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         harness.input.navigation = Some(Navigation::Right);
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         harness.input.confirm = true;
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         assert_eq!(titles(&manager), ["a", "b"]);
         assert_eq!(manager.view.table.list.selected, 1);
         assert!(
@@ -687,19 +875,19 @@ mod tests {
         games(&test, &["a"]);
         let mut manager = test.manager();
         let mut harness = GuiHarness::minimum();
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         harness.input.edit = Some(EditCommand::DeleteForward);
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         test.remove(&format!("{}/a.conf", first_system().name));
         harness.input.navigation = Some(Navigation::Right);
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         harness.input.confirm = true;
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         let dialog = manager.dialog().expect("the error dialog opens");
         assert_eq!(dialog.message(), Some("a was not deleted."));
         assert_eq!(harness.state.open_modals(), 1);
         harness.input.confirm = true;
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         assert!(manager.dialog().is_none());
     }
 
@@ -747,13 +935,13 @@ mod tests {
         games(&test, &["a"]);
         let mut manager = test.manager();
         let mut harness = GuiHarness::minimum();
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         harness.input.edit = Some(EditCommand::DeleteForward);
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         harness.input.navigation = Some(Navigation::Right);
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         harness.input.confirm = true;
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         assert!(titles(&manager).is_empty());
         assert_eq!(harness.state.focused(), Some(UiId::from(ADD_ID)));
     }
@@ -767,9 +955,9 @@ mod tests {
         test.game(&format!("{}/x.conf", system.name), "machine = FOOBAR\n");
         let mut manager = test.manager();
         let mut harness = GuiHarness::minimum();
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         harness.input.navigation = Some(Navigation::Down);
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         assert_eq!(titles(&manager), ["a", "b", "|", "x.conf"]);
         assert_eq!(manager.view.table.list.selected, 1);
         test.remove(&format!("{}/b.conf", system.name));
@@ -788,24 +976,24 @@ mod tests {
         let launch = manager.launch(&manager.rows()[0].clone());
         let layer = manager.launch_failed(&launch, &LaunchFailure::missing_image("/a.d88"));
         let mut harness = GuiHarness::minimum();
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         harness.state.open_layer(layer);
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         assert_eq!(
             manager.dialog().and_then(ErrorDialog::message),
             Some("A did not start.")
         );
         let selected = manager.view.table.list.selected;
         harness.input.navigation = Some(Navigation::Down);
-        assert!(harness.frame(|context| manager.show(context)).is_none());
+        assert!(frame(&mut harness, &mut manager).is_empty());
         assert_eq!(manager.view.table.list.selected, selected);
         assert!(manager.dialog().is_some());
         harness.input.confirm = true;
-        assert!(harness.settle(|context| manager.show(context)).is_none());
+        assert!(settle(&mut harness, &mut manager).is_empty());
         assert!(manager.dialog().is_none());
         assert_eq!(harness.state.focused(), Some(UiId::from(GAME_TABLE_ID)));
         harness.input.navigation = Some(Navigation::Down);
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         assert_eq!(manager.view.table.list.selected, selected + 1);
 
         manager.game_started(launch);
@@ -813,7 +1001,7 @@ mod tests {
             .game_ended(Some("core halted"), Ok(()))
             .expect("the panic dialog opens");
         harness.state.open_layer(layer);
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         let dialog = manager.dialog().expect("panic dialog opens");
         assert_eq!(dialog.detail(), Some("core halted"));
         assert_eq!(
@@ -835,21 +1023,21 @@ mod tests {
         games(&test, &["a", "b", "c"]);
         let mut manager = test.manager();
         let mut harness = GuiHarness::minimum();
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         let selected = manager.view.table.list.selected;
         let launch = manager.launch(&manager.rows()[0].clone());
         let layer = manager.launch_failed(&launch, &LaunchFailure::missing_image("/a.d88"));
         harness.state.open_layer(layer);
         for navigation in [Navigation::Down, Navigation::PageDown] {
             harness.input.navigation = Some(navigation);
-            assert!(harness.frame(|context| manager.show(context)).is_none());
+            assert!(frame(&mut harness, &mut manager).is_empty());
             assert_eq!(manager.view.table.list.selected, selected);
         }
         harness.input.confirm = true;
-        assert!(harness.frame(|context| manager.show(context)).is_none());
+        assert!(frame(&mut harness, &mut manager).is_empty());
         assert!(manager.dialog().is_none());
         harness.input.navigation = Some(Navigation::Down);
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         assert_eq!(manager.view.table.list.selected, selected + 1);
     }
 
@@ -870,7 +1058,7 @@ mod tests {
             .expect("the media dialog opens");
         let mut harness = GuiHarness::minimum();
         harness.state.open_layer(layer);
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         let dialog = manager.dialog().expect("the media dialog opens");
         assert_eq!(
             dialog.message(),
@@ -884,6 +1072,192 @@ mod tests {
         let mut manager = test.manager();
         manager.game_ended(None, Ok(()));
         assert!(manager.dialog().is_none());
+    }
+
+    /// The id of the modal layer of the error dialog.
+    fn error_layer() -> UiId {
+        UiId::from(error_dialog::LAYER_ID)
+    }
+
+    /// Verifies that the launch message emits the launch of the selected game and that a file
+    /// with an error starts nothing.
+    #[test]
+    fn the_launch_message_emits_the_launch_of_the_selected_game() {
+        let test = TestRoot::new("update_launch");
+        let system = first_system();
+        test.game(&format!("{}/a.conf", system.name), "meta.title = A\n");
+        test.game(&format!("{}/b.conf", system.name), "machine = FOOBAR\n");
+        let mut manager = test.manager();
+        let (status, layers, effects) = apply_with_effects(&mut manager, ManagerMessage::Launch);
+        assert_eq!((status, layers), (Status::Open, Vec::new()));
+        let [ShellEffect::Launch(launch)] = effects.as_slice() else {
+            panic!("the message launches: {effects:?}");
+        };
+        assert_eq!(launch.title, "A");
+        assert_eq!(launch.request.game_files, [manager.rows()[0].path.clone()]);
+
+        manager.view.table.list.select(2);
+        let (_, _, effects) = apply_with_effects(&mut manager, ManagerMessage::Launch);
+        assert!(effects.is_empty(), "{effects:?}");
+    }
+
+    /// Verifies that the filter message rebuilds the entries from the filter text and keeps the
+    /// selected game when the filter shows it.
+    #[test]
+    fn the_filter_message_rebuilds_the_entries() {
+        let test = TestRoot::new("update_filter");
+        games(&test, &["alpha", "beta", "gamma"]);
+        let mut manager = test.manager();
+        manager.view.table.list.select(1);
+        apply_with_effects(&mut manager, ManagerMessage::SelectionChanged);
+        manager.view.filter = "ta".to_owned();
+        apply_with_effects(&mut manager, ManagerMessage::FilterChanged);
+        assert_eq!(titles(&manager), ["beta"]);
+        let selected = format!("{}/beta.conf", first_system().name);
+        assert_eq!(manager.view.selected.as_deref(), Some(selected.as_str()));
+        assert_eq!(manager.view.table.list.selected, 0);
+    }
+
+    /// Verifies that the delete message opens the question with its layer, that a kept file
+    /// stays, and that a confirmed delete removes the file and scans the catalog again.
+    #[test]
+    fn the_delete_messages_ask_first_and_remove_the_file() {
+        let test = TestRoot::new("update_delete");
+        games(&test, &["a", "b"]);
+        let mut manager = test.manager();
+        let (status, layers, effects) = apply_with_effects(&mut manager, ManagerMessage::AskDelete);
+        assert_eq!(status, Status::Open);
+        assert_eq!(layers, [UiId::from(DELETE_LAYER_ID)]);
+        assert!(effects.is_empty());
+        assert!(delete_open(&manager));
+        let (_, layers, _) =
+            apply_with_effects(&mut manager, ManagerMessage::Delete(Ended::Closed));
+        assert!(layers.is_empty());
+        assert!(!delete_open(&manager));
+        assert_eq!(titles(&manager), ["a", "b"]);
+
+        apply_with_effects(&mut manager, ManagerMessage::AskDelete);
+        let (_, layers, _) =
+            apply_with_effects(&mut manager, ManagerMessage::Delete(Ended::Done(())));
+        assert!(layers.is_empty());
+        assert!(!delete_open(&manager));
+        assert!(manager.dialog().is_none());
+        assert_eq!(titles(&manager), ["b"]);
+        let path = test.root.path().join("config").join(first_system().name);
+        assert!(!path.join("a.conf").exists());
+    }
+
+    /// Verifies that a confirmed delete whose removal fails opens the error dialog with its
+    /// layer.
+    #[test]
+    fn a_failed_removal_opens_the_error_dialog_with_its_layer() {
+        let test = TestRoot::new("update_delete_failed");
+        games(&test, &["a"]);
+        let mut manager = test.manager();
+        apply_with_effects(&mut manager, ManagerMessage::AskDelete);
+        test.remove(&format!("{}/a.conf", first_system().name));
+        let (_, layers, _) =
+            apply_with_effects(&mut manager, ManagerMessage::Delete(Ended::Done(())));
+        assert_eq!(layers, [error_layer()]);
+        assert_eq!(
+            manager.dialog().map(ErrorDialog::title),
+            Some(crate::texts::errors::DELETE_FAILED_TITLE)
+        );
+        assert!(!delete_open(&manager));
+    }
+
+    /// Verifies that both ends of the editor give the library back with the focus request of
+    /// the edited file: the start widget after a game, the system defaults button after the
+    /// system defaults and the settings button after the settings page.
+    #[test]
+    fn the_end_of_the_editor_returns_to_the_library_with_its_focus() {
+        let test = TestRoot::new("update_editor_end");
+        games(&test, &["a"]);
+        let mut manager = test.manager();
+        let cases = [
+            (ManagerMessage::Edit, Ended::Closed, ManagerFocus::Start),
+            (
+                ManagerMessage::OpenSystemDefaults,
+                Ended::Done(()),
+                ManagerFocus::Widget(UiId::from(sidebar::SYSTEM_DEFAULTS_ID)),
+            ),
+            (
+                ManagerMessage::OpenSettings,
+                Ended::Closed,
+                ManagerFocus::Widget(UiId::from(SETTINGS_ID)),
+            ),
+        ];
+        for (open, ended, focus) in cases {
+            manager.focus = None;
+            let (_, layers, effects) = apply_with_effects(&mut manager, open);
+            assert!(layers.is_empty());
+            assert!(effects.is_empty());
+            assert!(manager.editor().is_some());
+            let message = ManagerMessage::Editor(ChildEvent::Ended(ended));
+            apply_with_effects(&mut manager, message);
+            assert!(manager.editor().is_none());
+            assert_eq!(manager.focus, Some(focus));
+        }
+    }
+
+    /// Verifies that a failed save of the editor opens the error dialog of the file with its
+    /// layer over the editor, and that the end of the dialog keeps the editor.
+    #[test]
+    fn a_failed_save_opens_the_error_dialog_over_the_editor() {
+        let test = TestRoot::new("update_save_failed");
+        games(&test, &["a"]);
+        let mut manager = test.manager();
+        apply_with_effects(&mut manager, ManagerMessage::Edit);
+        let failure = SaveFailure::NoFreeName(test.root.path().to_path_buf());
+        let message = ManagerMessage::Editor(ChildEvent::Effect(EditorEffect::SaveFailed(failure)));
+        let (_, layers, effects) = apply_with_effects(&mut manager, message);
+        assert_eq!(layers, [error_layer()]);
+        assert!(effects.is_empty());
+        assert_eq!(
+            manager.dialog().map(ErrorDialog::title),
+            Some(crate::texts::errors::GAME_SAVE_FAILED_TITLE)
+        );
+        assert!(manager.editor().is_some());
+        apply_with_effects(&mut manager, ManagerMessage::Error(Ended::Closed));
+        assert!(manager.dialog().is_none());
+        assert!(manager.editor().is_some());
+    }
+
+    /// Verifies that the Edit of an error dialog opens its game over the library, and that over
+    /// an open editor it only closes the dialog and keeps the editor.
+    #[test]
+    fn the_edit_of_an_error_dialog_keeps_an_open_editor() {
+        let test = TestRoot::new("update_error_edit");
+        games(&test, &["a", "b"]);
+        let mut manager = test.manager();
+        let launch = manager.launch(&manager.rows()[1].clone());
+        manager.launch_failed(&launch, &LaunchFailure::missing_image("/b.d88"));
+        apply_with_effects(
+            &mut manager,
+            ManagerMessage::Error(Ended::Done(ErrorChoice::Edit)),
+        );
+        assert!(manager.dialog().is_none());
+        assert_eq!(
+            manager
+                .editor()
+                .map(|editor| editor.edited_file().display_name()),
+            Some("b".to_owned())
+        );
+
+        manager.mode = ManagerMode::Library;
+        apply_with_effects(&mut manager, ManagerMessage::Edit);
+        manager.launch_failed(&launch, &LaunchFailure::missing_image("/b.d88"));
+        apply_with_effects(
+            &mut manager,
+            ManagerMessage::Error(Ended::Done(ErrorChoice::Edit)),
+        );
+        assert!(manager.dialog().is_none());
+        assert_eq!(
+            manager
+                .editor()
+                .map(|editor| editor.edited_file().display_name()),
+            Some("a".to_owned())
+        );
     }
 
     /// Renders the library at `width` x `height` logical units and `scale`:
@@ -907,24 +1281,24 @@ mod tests {
         let render = |harness: &GuiHarness, name: &str| {
             harness.write_screenshot(&format!("manager_{prefix}{name}_{scale}x"));
         };
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         harness.input.navigation = Some(Navigation::End);
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         render(&harness, "library");
         if !prefix.is_empty() {
             return;
         }
 
         harness.input.edit = Some(EditCommand::DeleteForward);
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         render(&harness, "delete");
         harness.input.cancel = true;
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
 
         harness.input.shortcut = Some(Shortcut::ControlF);
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         harness.input.text = "touhou".to_owned();
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         render(&harness, "filtered");
         for _ in 0..3 {
             harness.input.navigation = Some(Navigation::Left);
@@ -932,37 +1306,37 @@ mod tests {
                 extend: true,
                 ..EditModifiers::default()
             };
-            harness.settle(|context| manager.show(context));
+            settle(&mut harness, &mut manager);
         }
         render(&harness, "filter_selection");
         harness.input.navigation = Some(Navigation::End);
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         harness.input.text = "x".to_owned();
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         render(&harness, "no_match");
         harness.input.cancel = true;
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
 
         select(&mut manager, "pc6000");
         harness.state.set_focus(UiId::from(SYSTEM_LIST_ID));
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         render(&harness, "empty");
 
         select(&mut manager, "x68k");
         harness.state.set_focus(UiId::from(GAME_TABLE_ID));
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         harness.input.navigation = Some(Navigation::End);
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         render(&harness, "errors");
 
         select(&mut manager, "pc88");
         harness.state.set_focus(UiId::from(SYSTEM_LIST_ID));
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         render(&harness, "system_list");
 
         select(&mut manager, "pc98");
         harness.state.set_focus(UiId::from(GAME_TABLE_ID));
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         let launch = manager.launch(&manager.rows()[0].clone());
         let layer = manager.launch_failed(
             &launch,
@@ -971,10 +1345,10 @@ mod tests {
             ),
         );
         harness.state.open_layer(layer);
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         render(&harness, "launch_error");
         harness.input.confirm = true;
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
 
         manager.game_started(launch.clone());
         let layer = manager.game_ended(
@@ -984,10 +1358,10 @@ mod tests {
         harness
             .state
             .open_layer(layer.expect("the panic dialog opens"));
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         render(&harness, "game_stopped");
         harness.input.confirm = true;
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
 
         manager.game_started(launch);
         let layer = manager.game_ended(
@@ -999,7 +1373,7 @@ mod tests {
         harness
             .state
             .open_layer(layer.expect("the media dialog opens"));
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         render(&harness, "media_not_saved");
     }
 
@@ -1023,16 +1397,16 @@ mod tests {
         long_title_game(&test);
         let mut manager = test.manager();
         let mut harness = GuiHarness::minimum();
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         harness.input.edit = Some(EditCommand::DeleteForward);
-        harness.settle(|context| manager.show(context));
-        assert!(manager.delete.is_some());
+        settle(&mut harness, &mut manager);
+        assert!(delete_open(&manager));
         let cancel = UiId::from(DELETE_LAYER_ID).child("cancel");
         let action = UiId::from(DELETE_LAYER_ID).child("action");
         for focus in [cancel, action] {
             if focus == action {
                 harness.input.navigation = Some(Navigation::Right);
-                harness.settle(|context| manager.show(context));
+                settle(&mut harness, &mut manager);
             }
             assert_eq!(harness.state.focused(), Some(focus));
             assert_eq!(
@@ -1052,7 +1426,7 @@ mod tests {
         long_title_game(&test);
         let mut manager = test.manager();
         let mut harness = GuiHarness::minimum();
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         let launch = manager.launch(&manager.rows()[0].clone());
         let layer = manager.launch_failed(
             &launch,
@@ -1061,13 +1435,13 @@ mod tests {
             ),
         );
         harness.state.open_layer(layer);
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         let ok = UiId::from(error_dialog::OK_ID);
         let edit = UiId::from(error_dialog::EDIT_ID);
         for focus in [ok, edit] {
             if focus == edit {
                 harness.input.navigation = Some(Navigation::Left);
-                harness.settle(|context| manager.show(context));
+                settle(&mut harness, &mut manager);
             }
             assert_eq!(harness.state.focused(), Some(focus));
             assert_eq!(
@@ -1077,9 +1451,9 @@ mod tests {
             );
         }
         harness.input.navigation = Some(Navigation::Right);
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         harness.input.confirm = true;
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         assert!(manager.dialog().is_none());
 
         manager.game_started(launch);
@@ -1090,7 +1464,7 @@ mod tests {
             )
             .expect("the panic dialog opens");
         harness.state.open_layer(layer);
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         assert_eq!(harness.state.focused(), Some(ok));
         assert_eq!(
             steady_frame(&mut harness, &mut manager),
