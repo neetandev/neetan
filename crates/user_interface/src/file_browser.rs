@@ -9,7 +9,7 @@
 
 use std::{
     convert::Infallible,
-    fmt,
+    fmt::{self, Write},
     path::{Path, PathBuf},
 };
 
@@ -274,6 +274,8 @@ struct BrowserTexts {
     extensions: TextBuffer<bool>,
     /// The text of a list without a file row, keyed on the read error of the folder.
     empty: TextBuffer<(EmptyText, String)>,
+    /// The folder that the list shows, written again in each pass.
+    folder: String,
 }
 
 /// The open file browser.
@@ -549,6 +551,8 @@ impl FileBrowser {
             ),
             theme.colors.panel_edge,
         );
+        texts.folder.clear();
+        let _ = write!(texts.folder, "{}", self.folder.display());
         let (icon_area, path_area) = location.cut_left(theme.icon_size);
         context.icon(
             icon_area,
@@ -560,7 +564,7 @@ impl FileBrowser {
             context,
             path_area.cut_left(gap).1,
             &theme.body(),
-            &self.folder.to_string_lossy(),
+            &texts.folder,
             Align::Start,
             Truncation::Middle,
         );

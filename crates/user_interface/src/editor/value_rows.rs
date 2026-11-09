@@ -293,11 +293,12 @@ impl Editor {
         match field.text_mut() {
             Some(text) => form.changed |= text_field.show(context, field_area, text).changed,
             None => {
-                let mut typed = String::new();
-                if text_field.show(context, field_area, &mut typed).changed && !typed.is_empty() {
-                    field.value = FieldValue::Text(typed);
+                let typed = &mut self.unset_text;
+                if text_field.show(context, field_area, typed).changed && !typed.is_empty() {
+                    field.value = FieldValue::Text(std::mem::take(typed));
                     form.changed = true;
                 }
+                typed.clear();
             }
         }
         if enabled {

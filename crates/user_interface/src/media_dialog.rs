@@ -2,7 +2,7 @@
 //! configured images of the drive with a filter, and the insert and eject
 //! actions.
 
-use std::{convert::Infallible, path::PathBuf};
+use std::{convert::Infallible, fmt::Write, path::PathBuf};
 
 use gui::{
     Rect,
@@ -149,6 +149,13 @@ pub(crate) enum MediaMessage {
         tab: usize,
         /// The index of the loaded image of the drive of the tab.
         loaded: Option<usize>,
+    },
+    /// The text of the filter field changed.
+    FilterChanged,
+    /// The user picked another row of the list.
+    SelectionChanged {
+        /// The picked entry. `None` is the eject row.
+        selection: Option<usize>,
     },
     /// The close button or the cancel button closes the dialog without a change.
     Close,
@@ -303,6 +310,8 @@ pub(crate) struct MediaDialog {
     selection: Option<usize>,
     /// Whether the next pass scrolls the selected row into view.
     reveal: bool,
+    /// The path of the selected image, written again in each pass.
+    path_text: String,
     /// The message buffer.
     messages: Vec<MediaMessage>,
 }
@@ -324,6 +333,7 @@ impl MediaDialog {
             eject_chosen: false,
             selection: loaded,
             reveal: true,
+            path_text: String::new(),
             messages: Vec::new(),
         }
     }
@@ -400,7 +410,8 @@ impl MediaDialog {
         }
         let shown = self.drives.len().min(MAXIMUM_DRIVES);
         let mut tab = self.tab;
-        if tab_bar(context, "drives", tabs_area, &tabs[..shown], &mut tab) {
+        let switched = tab_bar(context, "drives", tabs_area, &tabs[..shown], &mut tab);
+        if switched {
             let loaded = media.get(tab).and_then(|media| media.loaded);
             messages.push(MediaMessage::SwitchTab { tab, loaded });
         }
@@ -418,15 +429,17 @@ impl MediaDialog {
             catalog.text(media::FILTER_PLACEHOLDER),
         );
         if filter.changed {
-            self.eject_chosen = false;
+            messages.push(MediaMessage::FilterChanged);
         }
         self.refresh_rows(entries);
+        // The selection among the visible rows follows the rows of the input, so the view keeps
+        // it. It reads the pick of the eject row as the update of a filter change leaves it.
         let rows = &self.rows;
         let selection = visible_selection(
             self.preferred,
             rows,
             !self.filter.trim().is_empty(),
-            self.eject_chosen,
+            self.eject_chosen && !filter.changed,
         );
         if selection != self.selection || filter.changed {
             self.selection = selection;
@@ -472,9 +485,11 @@ impl MediaDialog {
             0 => None,
             row => rows.get(row - 1).copied(),
         };
-        if list_response.selection_changed {
-            self.preferred = self.selection;
-            self.eject_chosen = self.selection.is_none();
+        // A tab switch of the same pass selects the loaded image of the new tab instead.
+        if list_response.selection_changed && !switched {
+            messages.push(MediaMessage::SelectionChanged {
+                selection: self.selection,
+            });
         }
         if rows.is_empty() {
             let hint = if entries.is_empty() {
@@ -499,6 +514,8 @@ impl MediaDialog {
         }
 
         if let Some(entry) = self.selection {
+            self.path_text.clear();
+            let _ = write!(self.path_text, "{}", entries[entry].path.display());
             let (icon_area, path_area) = path_line.cut_left(theme.icon_size);
             context.icon(
                 icon_area,
@@ -510,7 +527,7 @@ impl MediaDialog {
                 context,
                 path_area.cut_left(gap).1,
                 &theme.small(),
-                &entries[entry].path.to_string_lossy(),
+                &self.path_text,
                 Align::Start,
                 Truncation::Middle,
             );
@@ -573,6 +590,15 @@ impl Component for MediaDialog {
         match message {
             MediaMessage::SwitchTab { tab, loaded } => {
                 self.switch_tab(tab, loaded);
+                Status::Open
+            }
+            MediaMessage::FilterChanged => {
+                self.eject_chosen = false;
+                Status::Open
+            }
+            MediaMessage::SelectionChanged { selection } => {
+                self.preferred = selection;
+                self.eject_chosen = selection.is_none();
                 Status::Open
             }
             MediaMessage::Close => Status::Closed,
@@ -857,6 +883,39 @@ mod tests {
     }
 
     #[test]
+    fn a_filter_change_forgets_the_picked_eject_row() {
+        let mut dialog = dialog();
+        dialog.preferred = None;
+        dialog.eject_chosen = true;
+        assert_eq!(
+            apply(&mut dialog, MediaMessage::FilterChanged),
+            (Status::Open, Vec::new())
+        );
+        assert!(!dialog.eject_chosen);
+        assert_eq!(dialog.preferred, None);
+    }
+
+    #[test]
+    fn a_selection_change_keeps_the_pick_of_the_user() {
+        let mut dialog = dialog();
+        assert_eq!(
+            apply(
+                &mut dialog,
+                MediaMessage::SelectionChanged { selection: Some(5) }
+            ),
+            (Status::Open, Vec::new())
+        );
+        assert_eq!(dialog.preferred, Some(5));
+        assert!(!dialog.eject_chosen);
+        apply(
+            &mut dialog,
+            MediaMessage::SelectionChanged { selection: None },
+        );
+        assert_eq!(dialog.preferred, None);
+        assert!(dialog.eject_chosen);
+    }
+
+    #[test]
     fn choose_inserts_the_selected_image() {
         let mut dialog = dialog();
         assert_eq!(
@@ -1055,6 +1114,25 @@ mod tests {
                 drive: Drive::Floppy(0)
             })
         );
+    }
+
+    #[test]
+    fn the_first_filter_character_selects_the_first_match_in_its_frame() {
+        let mut harness = Harness::new(Viewport::new(1024, 768, 1.0), ThemeKind::Dark);
+        harness.pass();
+        harness.navigate(Navigation::Home);
+        assert_eq!(harness.dialog.selection, None);
+        assert!(harness.dialog.eject_chosen);
+        harness.navigate(Navigation::Previous);
+        assert_eq!(harness.gui.state.focused(), Some(UiId::from("filter")));
+        harness.gui.input.text.push('d');
+        let media = drive_media(&harness.media, harness.loaded);
+        assert_eq!(
+            frame(&mut harness.gui, &mut harness.dialog, &media),
+            Status::Open
+        );
+        assert_eq!(harness.dialog.selection, Some(0));
+        assert_eq!(harness.dialog.list.selected, 1);
     }
 
     #[test]

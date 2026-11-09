@@ -7,7 +7,7 @@ mod session_cycle;
 mod setup;
 
 use std::{
-    fmt::Display,
+    fmt::{Display, Write},
     path::PathBuf,
     result,
     time::{Duration, Instant},
@@ -173,6 +173,8 @@ pub(crate) struct Shell {
     busy_duration: Duration,
     /// When the window title was last updated with CPU usage.
     window_title_last_update: Instant,
+    /// The text of the window title, written again at each update.
+    window_title: String,
 }
 
 impl Shell {
@@ -250,6 +252,7 @@ impl Shell {
             should_quit: false,
             busy_duration: Duration::ZERO,
             window_title_last_update: Instant::now(),
+            window_title: String::new(),
         })
     }
 
@@ -370,9 +373,9 @@ impl Shell {
         let busy_percent = (self.busy_duration.as_secs_f64() / elapsed.as_secs_f64() * 100.0)
             .round()
             .min(100.0) as u32;
-        self.host
-            .window
-            .set_title(&format!("{GAME_NAME} ({busy_percent}% CPU)"));
+        self.window_title.clear();
+        let _ = write!(self.window_title, "{GAME_NAME} ({busy_percent}% CPU)");
+        self.host.window.set_title(&self.window_title);
         self.busy_duration = Duration::ZERO;
         self.window_title_last_update = Instant::now();
     }

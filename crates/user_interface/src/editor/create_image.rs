@@ -12,6 +12,7 @@ mod type_rows;
 
 use std::{
     convert::Infallible,
+    fmt::Write,
     path::{Path, PathBuf},
 };
 
@@ -154,6 +155,8 @@ struct CreateTexts {
     rows: Vec<TextBuffer<()>>,
     /// The line below the name, for the check and the count of the changes of the state.
     message: TextBuffer<(NameCheck, u64)>,
+    /// The folder of the new image, written again in each pass.
+    folder: String,
 }
 
 /// The open create image dialog.
@@ -372,6 +375,8 @@ impl CreateImageDialog {
             browse_slot.width,
             theme.control_height,
         );
+        texts.folder.clear();
+        let _ = write!(texts.folder, "{}", self.folder.display());
         let (icon_area, path_area) = path_slot
             .cut_right(gap)
             .1
@@ -386,7 +391,7 @@ impl CreateImageDialog {
             context,
             path_area.cut_left(gap).1,
             &theme.body(),
-            &self.folder.to_string_lossy(),
+            &texts.folder,
             Align::Start,
             Truncation::Middle,
         );

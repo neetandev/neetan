@@ -35,6 +35,9 @@
 //! (file I/O, a rescan), every open and close of a child, every focus
 //! request that follows an update, and every effect.
 //!
+//! State derived from [`Component::Input`] stays in the view, because
+//! `update` cannot see the input, and the site carries a short comment.
+//!
 //! When a widget changes a bound value that has consequences, the view emits
 //! a message for it (`FilterChanged`, `FieldChanged`), and the update of the
 //! message computes the consequences. Rule of thumb: a change that would be
@@ -47,7 +50,7 @@
 //! reader of the component reads.
 //!
 //! - A message names an intent of the user or a result of a child
-//!   (`Delete(Ended<()>)`, `Editor(ChildEvent<EditorEffect, ()>)`). It never
+//!   (`Delete(Ended<()>)`, `Child(ChildEvent<ChildEffect, ()>)`). It never
 //!   names a widget (`ButtonClicked(3)`).
 //! - Keystrokes inside a text field change its bound value. The view emits
 //!   the meaning: `FilterChanged`, `Submit`.
@@ -79,7 +82,7 @@
 //! an effect while the child stays open, or its end. A child without effects
 //! maps its events with [`ChildEvent::into_ended`]
 //! (`|event| Message::Delete(event.into_ended())`). A child with effects
-//! maps the whole event (`Message::Editor`).
+//! maps the whole event (`Message::Child`).
 //!
 //! # Effects
 //!
