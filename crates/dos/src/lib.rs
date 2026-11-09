@@ -188,6 +188,11 @@ const ERROR_TOO_MANY_OPEN_FILES: u16 = 0x0004;
 /// Far pointer value that ends a DOS chain.
 const END_OF_CHAIN: (u16, u16) = (0xFFFF, 0xFFFF);
 
+/// Configuration files of the boot drive root in search order. Game disks
+/// with the MicroCabin MEGDOS keep the PC-98 configuration in `CONFIG.98`
+/// next to a `CONFIG.SYS` for other machines.
+const CONFIG_FILE_NAMES: [&[u8]; 2] = [b"CONFIG.98", b"CONFIG.SYS"];
+
 /// A run of physical sectors on a `DiskIo` device.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PhysicalSectorSpan {
@@ -1019,7 +1024,6 @@ impl NeetanDos {
             }
         }
 
-        // Parse CONFIG.SYS if present on the boot drive root.
         let cfg = self.try_parse_config_sys(device);
         self.apply_config(&cfg, memory);
         self.write_device_chain(memory, cdrom_device);
@@ -1244,7 +1248,7 @@ impl NeetanDos {
         }
     }
 
-    /// Searches the boot drive root for CONFIG.SYS and parses it.
+    /// Parses the first file of `CONFIG_FILE_NAMES` in the boot drive root.
     fn try_parse_config_sys(&mut self, disk: &mut dyn DiskIo) -> config::ConfigSys {
         let Some(boot_drive_index) = self.state.boot_drive.checked_sub(1) else {
             return config::ConfigSys::default();
@@ -1260,16 +1264,17 @@ impl NeetanDos {
             Some(v) => v,
             None => return config::ConfigSys::default(),
         };
-        let fcb_name = filesystem::fat_dir::name_to_fcb(b"CONFIG.SYS");
-        let entry = match filesystem::fat_dir::find_entry(vol, 0, &fcb_name, disk) {
-            Ok(Some(e)) => e,
-            _ => return config::ConfigSys::default(),
-        };
-        if entry.attribute & filesystem::fat_dir::ATTR_DIRECTORY != 0 {
-            return config::ConfigSys::default();
-        }
-        if let Ok(data) = process::read_file_data(vol, &entry, disk) {
-            return config::parse_config_sys(&data);
+        for name in CONFIG_FILE_NAMES {
+            let fcb_name = filesystem::fat_dir::name_to_fcb(name);
+            let Ok(Some(entry)) = filesystem::fat_dir::find_entry(vol, 0, &fcb_name, disk) else {
+                continue;
+            };
+            if entry.attribute & filesystem::fat_dir::ATTR_DIRECTORY != 0 {
+                continue;
+            }
+            if let Ok(data) = process::read_file_data(vol, &entry, disk) {
+                return config::parse_config_sys(&data);
+            }
         }
         config::ConfigSys::default()
     }
