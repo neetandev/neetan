@@ -48,6 +48,8 @@ pub const DEVHDR_OFF_NAME: u32 = 0x0A;
 // Device attribute flags
 pub const DEVATTR_CHAR: u16 = 0x8000;
 pub const DEVATTR_IOCTL: u16 = 0x4000;
+/// The device supports the generic IOCTL functions of DOS 3.2.
+pub const DEVATTR_GENERIC_IOCTL: u16 = 0x0040;
 pub const DEVATTR_SPECIAL: u16 = 0x0010;
 pub const DEVATTR_CLOCK: u16 = 0x0008;
 pub const DEVATTR_NUL: u16 = 0x0004;

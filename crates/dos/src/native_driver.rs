@@ -70,6 +70,14 @@ const GABIOS_BLAKE3: [u8; 32] = [
     0x7E, 0x2E, 0x60, 0xD6, 0x70, 0xBE, 0x83, 0x0D, 0x7A, 0x76, 0xE4, 0x2A, 0xA9, 0x8F, 0x29, 0xDE,
 ];
 
+/// File size of MMD.SYS 2.50, the music driver of MicroCabin.
+const MMD_SIZE: usize = 8782;
+/// BLAKE3 digest of MMD.SYS 2.50.
+const MMD_BLAKE3: [u8; 32] = [
+    0xFA, 0x19, 0x3F, 0xE1, 0x24, 0x0C, 0xD8, 0xDB, 0x6F, 0x06, 0x54, 0xBF, 0xCF, 0xF8, 0xA2, 0xD6,
+    0x07, 0x52, 0xEB, 0x07, 0x4A, 0x09, 0xEA, 0x3B, 0xD3, 0xCB, 0x2D, 0x11, 0x42, 0x9E, 0x67, 0xFA,
+];
+
 #[derive(Clone, Copy)]
 struct NativeDriverSpec {
     basename: &'static [u8],
@@ -115,7 +123,19 @@ const GABIOS_SPEC: NativeDriverSpec = NativeDriverSpec {
     mcb_name: b"GABIOS  ",
 };
 
-const WHITELIST: &[NativeDriverSpec] = &[STMOUSE_SPEC, RMOUSE_SPEC, GABIOS_SPEC];
+/// Whitelist entry of MMD.SYS 2.50.
+const MMD_SPEC: NativeDriverSpec = NativeDriverSpec {
+    basename: b"MMD.SYS",
+    size: MMD_SIZE,
+    blake3: MMD_BLAKE3,
+    device_name: b"MMD200  ",
+    strategy_offset: 0x004E,
+    interrupt_offset: 0x0057,
+    attributes: tables::DEVATTR_CHAR | tables::DEVATTR_IOCTL | tables::DEVATTR_GENERIC_IOCTL,
+    mcb_name: b"MMD     ",
+};
+
+const WHITELIST: &[NativeDriverSpec] = &[STMOUSE_SPEC, RMOUSE_SPEC, GABIOS_SPEC, MMD_SPEC];
 const IGNORED_NATIVE_DRIVER_PATTERNS: &[&[u8]] = &[b"HIMEM.SYS", b"EMM386.EXE", b"VEM486.EXE"];
 
 struct NativeDriverImage {
