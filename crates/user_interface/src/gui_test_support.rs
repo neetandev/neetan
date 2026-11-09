@@ -382,8 +382,7 @@ impl Component for AskScreen {
     ) -> Status<Infallible> {
         match message {
             AskMessage::Ask => {
-                self.dialog = Some(AnswerDialog::default());
-                update.open::<AnswerDialog>();
+                self.dialog = Some(update.open(AnswerDialog::default()));
             }
             AskMessage::Answer(ended) => {
                 self.dialog = None;

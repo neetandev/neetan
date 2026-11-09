@@ -111,12 +111,20 @@
 //!   [`UiContext::layer`] or [`UiContext::close_layer`] itself, because only
 //!   the status of an update knows whether the component ends. A dialog
 //!   whose update fails stays open in its layer and keeps its focus.
-//! - The update that sets an overlay calls [`Update::open`] for the new
-//!   child. After the updates, [`run`] opens the requested layers for the
-//!   next pass, so the layer blocks the widgets below it from the start of
-//!   the next pass. A queued key of the same batch of events then stays out
-//!   of the screen below the child, although the child draws only in the
-//!   next pass.
+//! - The update that sets an overlay builds the new child through
+//!   [`Update::open`], which requests the layer of the child and returns
+//!   it. After the updates, [`run`] opens the requested layers for the next
+//!   pass, so the layer blocks the widgets below it from the start of the
+//!   next pass. A queued key of the same batch of events then stays out of
+//!   the screen below the child, although the child draws only in the next
+//!   pass.
+//! - A child that opens outside a pass, such as a dialog after an error of
+//!   the application, has its layer opened by the application with
+//!   [`crate::ui::UiState::open_layer`] before the next pass.
+//! - [`run_child`] checks in a debug build that the layer of a child with
+//!   [`Layer::Modal`] or [`Layer::Widget`] is open at the start of its pass,
+//!   and panics with a message that names [`Update::open`]. A release build
+//!   runs the child, and its layer blocks the screen below one pass late.
 //! - A widget that opens and closes its own layer, such as
 //!   [`crate::ui::ConfirmDialog`], belongs to a component with
 //!   [`Layer::Widget`]. [`run`] leaves the layer to the widget, and
@@ -136,8 +144,11 @@
 //! its hints, as its own state of the last pass, and the owner reads it
 //! after [`run_child`]. The input of a child comes from fields of the owner,
 //! because the view borrows the overlay mutably for [`run_child`] and a
-//! `&self` method would borrow the whole owner. The owner removes the child
-//! from its overlay in the update of the end message.
+//! `&self` method would borrow the whole owner. The update that sets the
+//! overlay builds the child through [`Update::open`]
+//! (`self.overlay = Overlay::Delete(Box::new(update.open(DeleteQuestion::new(row))))`).
+//! The owner removes the child from its overlay in the update of the end
+//! message.
 //!
 //! # Focus
 //!
@@ -430,16 +441,18 @@ impl<'a, E> Update<'a, E> {
         (self.emit)(effect);
     }
 
-    /// Opens the modal layer of the child component `C` for the next pass.
-    /// An update that sets an overlay opens the layer of the new child with
-    /// it. For a `C` in the layer of its owner it does nothing. A layer
-    /// requested already in this pass keeps its place. A fifth distinct layer
-    /// in one pass panics, because the requests sit in a buffer of fixed
-    /// capacity.
-    pub fn open<C: Component>(&mut self) {
+    /// Opens the modal layer of the child component `child` for the next
+    /// pass and returns `child`. An update that sets an overlay builds the
+    /// new child through it, so the layer request sits in the expression of
+    /// the overlay. For a child in the layer of its owner it only returns the
+    /// child. A layer requested already in this pass keeps its place. A
+    /// fifth distinct layer in one pass panics, because the requests sit in a
+    /// buffer of fixed capacity.
+    pub fn open<C: Component>(&mut self, child: C) -> C {
         if let Some(id) = C::LAYER.modal_id() {
             self.layers.request(id);
         }
+        child
     }
 }
 
@@ -517,6 +530,11 @@ fn run_pass<C: Component>(
 /// Each effect of the child and its end become messages of the owner
 /// through `map`, pushed to `messages`. Returns whether the child stays
 /// open. An open child adds no message besides its effects.
+///
+/// The layer of a child with [`Layer::Modal`] or [`Layer::Widget`] is open
+/// at the start of each of its passes, because the update that set the
+/// child requested it with [`Update::open`], or the application opened it
+/// between passes. A debug build panics on a child whose layer is missing.
 pub fn run_child<C: Component, M>(
     child: &mut C,
     context: &mut UiContext,
@@ -525,6 +543,12 @@ pub fn run_child<C: Component, M>(
     messages: &mut Vec<M>,
     map: impl Fn(ChildEvent<C::Effect, C::Output>) -> M,
 ) -> bool {
+    if let Some(id) = C::LAYER.modal_id() {
+        debug_assert!(
+            context.layer_open(id),
+            "the update that sets a modal child requests its layer with Update::open"
+        );
+    }
     let status = run(child, context, area, input, &mut |effect| {
         messages.push(map(ChildEvent::Effect(effect)));
     });
@@ -943,16 +967,20 @@ mod tests {
     }
 
     /// Verifies that `Update::open` requests the modal layer of a child once, for `Layer::Modal`
-    /// and `Layer::Widget`, and nothing for `Layer::Owner`.
+    /// and `Layer::Widget`, and nothing for `Layer::Owner`, and that it returns the child.
     #[test]
     fn update_open_requests_the_modal_layer_of_the_child_once() {
         let mut layers = LayerRequests::new();
         let mut emit = |_: u32| {};
         let mut update = Update::new(test_catalog(), &mut emit, &mut layers);
-        update.open::<Script>();
-        update.open::<Dialog>();
-        update.open::<Question>();
-        update.open::<Dialog>();
+        update.open(Script::default());
+        let dialog = update.open(Dialog {
+            fail: true,
+            ..Dialog::default()
+        });
+        update.open(Question::default());
+        update.open(Dialog::default());
+        assert!(dialog.fail);
         assert_eq!(layers.ids(), [UiId::from("dialog"), UiId::from("question")]);
     }
 
@@ -976,6 +1004,8 @@ mod tests {
         applied: Vec<OpenerMessage>,
         /// Whether the dialog stayed open in the last pass.
         dialog_open: bool,
+        /// Whether the update that opens the dialog skips `Update::open`.
+        forget_open: bool,
     }
 
     impl Component for Opener {
@@ -1014,8 +1044,12 @@ mod tests {
             self.applied.push(message);
             match message {
                 OpenerMessage::Open => {
-                    self.dialog = Some(Dialog::default());
-                    update.open::<Dialog>();
+                    let dialog = Dialog::default();
+                    self.dialog = Some(if self.forget_open {
+                        dialog
+                    } else {
+                        update.open(dialog)
+                    });
                 }
                 OpenerMessage::Dialog(ChildEvent::Effect(_)) => {}
                 OpenerMessage::Dialog(ChildEvent::Ended(_)) => self.dialog = None,
@@ -1085,6 +1119,142 @@ mod tests {
         assert!(opener.dialog.is_none());
         assert_eq!(harness.state.open_modals(), 0);
         assert_eq!(harness.state.focused(), Some(UiId::from("below")));
+    }
+
+    /// Verifies that a debug build panics at the first pass of a modal child whose owner set it
+    /// without `Update::open`, and that a release build runs the child.
+    #[test]
+    fn a_child_without_update_open_panics_at_its_first_pass() {
+        let mut harness = Harness::new();
+        let mut opener = Opener {
+            forget_open: true,
+            ..Opener::default()
+        };
+        harness.state.set_focus(UiId::from("below"));
+        run_opener(&mut harness, &mut opener);
+        harness.input.confirm = true;
+        run_opener(&mut harness, &mut opener);
+        assert!(opener.dialog.is_some());
+        assert_eq!(harness.state.open_modals(), 0);
+        let result = catch_unwind(AssertUnwindSafe(|| run_opener(&mut harness, &mut opener)));
+        if cfg!(debug_assertions) {
+            let payload = result.expect_err("a debug build reports the missing layer");
+            let message = payload.downcast_ref::<&str>().copied().unwrap_or_default();
+            assert!(message.contains("Update::open"));
+        } else {
+            assert!(result.is_ok());
+            assert!(opener.dialog_open);
+        }
+    }
+
+    /// Verifies that the first pass of a modal child whose owner set it without `Update::open`
+    /// runs when the layer of the child opened between the passes.
+    #[test]
+    fn a_child_whose_layer_opened_between_passes_runs_its_first_pass() {
+        let mut harness = Harness::new();
+        let mut opener = Opener {
+            forget_open: true,
+            ..Opener::default()
+        };
+        harness.state.set_focus(UiId::from("below"));
+        run_opener(&mut harness, &mut opener);
+        harness.input.confirm = true;
+        run_opener(&mut harness, &mut opener);
+        assert_eq!(harness.state.open_modals(), 0);
+        harness.state.open_layer(UiId::from("dialog"));
+        run_opener(&mut harness, &mut opener);
+        assert!(opener.dialog_open);
+        assert_eq!(harness.state.open_modals(), 1);
+        assert_eq!(harness.state.focused(), Some(UiId::from("first")));
+    }
+
+    /// A message of the [`Asker`] component.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum AskerMessage {
+        /// The button below opens the question.
+        Ask,
+        /// The end of the question.
+        Question(Ended<()>),
+    }
+
+    /// A screen with a button that opens a [`Question`].
+    #[derive(Default)]
+    struct Asker {
+        /// The message buffer.
+        messages: Vec<AskerMessage>,
+        /// The open question.
+        question: Option<Question>,
+        /// Whether the question stayed open in the last pass.
+        question_open: bool,
+    }
+
+    impl Component for Asker {
+        type Message = AskerMessage;
+        type Output = Infallible;
+        type Effect = Infallible;
+        type Input<'a> = ();
+
+        fn messages(&mut self) -> &mut Vec<AskerMessage> {
+            &mut self.messages
+        }
+
+        fn view(
+            &mut self,
+            context: &mut UiContext,
+            area: Rect,
+            _input: (),
+            messages: &mut Vec<AskerMessage>,
+        ) {
+            if button(context, "below", BELOW) {
+                messages.push(AskerMessage::Ask);
+            }
+            self.question_open = match self.question.as_mut() {
+                Some(question) => run_child(question, context, area, (), messages, |event| {
+                    AskerMessage::Question(event.into_ended())
+                }),
+                None => false,
+            };
+        }
+
+        fn update(
+            &mut self,
+            message: AskerMessage,
+            update: &mut Update<'_, Infallible>,
+        ) -> Status<Infallible> {
+            match message {
+                AskerMessage::Ask => self.question = Some(update.open(Question::default())),
+                AskerMessage::Question(_) => self.question = None,
+            }
+            Status::Open
+        }
+    }
+
+    /// Verifies that the first pass of a child with `Layer::Widget` whose owner set it with
+    /// `Update::open` runs in the layer that the update opened and that its widget takes the
+    /// focus.
+    #[test]
+    fn a_widget_child_with_update_open_runs_its_first_pass() {
+        let mut harness = Harness::new();
+        let mut asker = Asker::default();
+        let pass = |harness: &mut Harness, asker: &mut Asker| {
+            let status =
+                harness.frame(|context| run(asker, context, AREA, (), &mut |never| match never {}));
+            assert_eq!(status, Status::Open);
+        };
+        harness.state.set_focus(UiId::from("below"));
+        pass(&mut harness, &mut asker);
+        harness.input.confirm = true;
+        pass(&mut harness, &mut asker);
+        assert!(asker.question.is_some());
+        assert!(!asker.question_open);
+        assert_eq!(harness.state.open_modals(), 1);
+        pass(&mut harness, &mut asker);
+        assert!(asker.question_open);
+        assert_eq!(harness.state.open_modals(), 1);
+        assert_eq!(
+            harness.state.focused(),
+            Some(UiId::from("question").child("action"))
+        );
     }
 
     /// Verifies that the end of a child without effects maps to its `Ended` and that only an

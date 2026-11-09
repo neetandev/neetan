@@ -536,11 +536,8 @@ impl Component for CreateImageDialog {
                 self.run_check();
             }
             CreateMessage::Browse => {
-                self.overlay = CreateOverlay::Browser(Box::new(FileBrowser::new(
-                    self.folder_request(),
-                    &self.root,
-                )));
-                update.open::<FileBrowser>();
+                let browser = FileBrowser::new(self.folder_request(), &self.root);
+                self.overlay = CreateOverlay::Browser(Box::new(update.open(browser)));
             }
             CreateMessage::Create => return self.create(),
             CreateMessage::Cancel => return Status::Closed,
