@@ -192,6 +192,21 @@ fn prompt_shows_drive_letter() {
 }
 
 #[test]
+fn config_98_takes_precedence_over_config_sys() {
+    let floppy = harness::create_test_floppy_with_files(&[
+        (*b"CONFIG  SYS", b"BUFFERS=10\r\n"),
+        (*b"CONFIG  98 ", b"BUFFERS=30\r\n"),
+    ]);
+    let mut machine = harness::boot_hle_with_forced_os(Some(floppy), None);
+    let sysvars = harness::get_sysvars_address(&mut machine);
+    let buffers = harness::read_word(&machine.bus, sysvars + 0x3F);
+    assert_eq!(
+        buffers, 30,
+        "BUFFERS should come from CONFIG.98, got {buffers}"
+    );
+}
+
+#[test]
 fn shell_program_runs_in_place_of_autoexec() {
     #[rustfmt::skip]
     let shell_program: &[u8] = &[
