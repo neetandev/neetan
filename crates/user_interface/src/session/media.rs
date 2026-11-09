@@ -246,23 +246,168 @@ impl Session {
         });
         drop(media);
         gui.sync_text_input(&host.window);
+        if self.apply_media_status(status) {
+            self.close_media_dialog(host);
+        }
+    }
+
+    /// Applies the change that the media dialog closes with in `status` and
+    /// returns whether the dialog closes.
+    fn apply_media_status(&mut self, status: Status<MediaChoice>) -> bool {
         match status {
-            Status::Open => {}
-            Status::Closed => self.close_media_dialog(host),
+            Status::Open => false,
+            Status::Closed => true,
             Status::Done(MediaChoice::Insert { drive, index }) => {
                 let _ = match drive {
                     Drive::Floppy(number) => self.select_floppy(number, index),
                     Drive::CdRom => self.select_cdrom(index),
                 };
-                self.close_media_dialog(host);
+                true
             }
             Status::Done(MediaChoice::Eject { drive }) => {
                 match drive {
                     Drive::Floppy(number) => self.eject_floppy(number),
                     Drive::CdRom => self.eject_cdrom(),
                 }
-                self.close_media_dialog(host);
+                true
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use gui::component::Status;
+
+    use super::super::test_support::{CallLog, fake_machine, session_with};
+    use crate::media_dialog::{Drive, ImageEntry, MediaChoice};
+
+    /// A session with two images for each floppy drive and the CD-ROM that records into `log`.
+    fn session_with_media(log: &CallLog) -> super::Session {
+        let mut session = session_with(fake_machine(log));
+        session.fdd1_entries = vec![
+            ImageEntry::new(PathBuf::from("first-a.d88")),
+            ImageEntry::new(PathBuf::from("first-b.d88")),
+        ];
+        session.fdd2_entries = vec![
+            ImageEntry::new(PathBuf::from("second-a.d88")),
+            ImageEntry::new(PathBuf::from("second-b.d88")),
+        ];
+        session.cdrom_entries = vec![
+            ImageEntry::new(PathBuf::from("disc-a.cue")),
+            ImageEntry::new(PathBuf::from("disc-b.cue")),
+        ];
+        session
+    }
+
+    /// Verifies that an open dialog stays open and changes nothing.
+    #[test]
+    fn an_open_dialog_stays_open_and_changes_nothing() {
+        let log = CallLog::default();
+        let mut session = session_with_media(&log);
+        assert!(!session.apply_media_status(Status::Open));
+        assert!(log.borrow().is_empty());
+        assert_eq!(session.fdd1_index, None);
+        assert_eq!(session.fdd2_index, None);
+        assert_eq!(session.cdrom_index, None);
+    }
+
+    /// Verifies that a closed dialog closes without a change of the media.
+    #[test]
+    fn a_closed_dialog_closes() {
+        let log = CallLog::default();
+        let mut session = session_with_media(&log);
+        assert!(session.apply_media_status(Status::Closed));
+        assert!(log.borrow().is_empty());
+    }
+
+    /// Verifies that an insert into floppy drive 1 selects its image and closes.
+    #[test]
+    fn an_insert_into_floppy_drive_one_selects_its_image_and_closes() {
+        let log = CallLog::default();
+        let mut session = session_with_media(&log);
+        let choice = MediaChoice::Insert {
+            drive: Drive::Floppy(0),
+            index: 1,
+        };
+        assert!(session.apply_media_status(Status::Done(choice)));
+        assert_eq!(*log.borrow(), ["floppies", "insert floppy 0"]);
+        assert_eq!(session.fdd1_index, Some(1));
+        assert_eq!(session.fdd2_index, None);
+    }
+
+    /// Verifies that an insert of an image that is not available changes nothing and still closes.
+    #[test]
+    fn a_failed_insert_still_closes() {
+        let log = CallLog::default();
+        let mut session = session_with_media(&log);
+        let choice = MediaChoice::Insert {
+            drive: Drive::Floppy(0),
+            index: 5,
+        };
+        assert!(session.apply_media_status(Status::Done(choice)));
+        assert!(log.borrow().is_empty());
+        assert_eq!(session.fdd1_index, None);
+    }
+
+    /// Verifies that an insert into floppy drive 2 selects its image and closes.
+    #[test]
+    fn an_insert_into_floppy_drive_two_selects_its_image_and_closes() {
+        let log = CallLog::default();
+        let mut session = session_with_media(&log);
+        let choice = MediaChoice::Insert {
+            drive: Drive::Floppy(1),
+            index: 0,
+        };
+        assert!(session.apply_media_status(Status::Done(choice)));
+        assert_eq!(*log.borrow(), ["floppies", "insert floppy 1"]);
+        assert_eq!(session.fdd1_index, None);
+        assert_eq!(session.fdd2_index, Some(0));
+    }
+
+    /// Verifies that an insert into the CD-ROM drive selects its image and closes.
+    #[test]
+    fn an_insert_into_the_cdrom_drive_selects_its_image_and_closes() {
+        let log = CallLog::default();
+        let mut session = session_with_media(&log);
+        let choice = MediaChoice::Insert {
+            drive: Drive::CdRom,
+            index: 1,
+        };
+        assert!(session.apply_media_status(Status::Done(choice)));
+        assert_eq!(*log.borrow(), ["insert cdrom"]);
+        assert_eq!(session.cdrom_index, Some(1));
+    }
+
+    /// Verifies that an eject of a floppy drive ejects its disk and closes.
+    #[test]
+    fn an_eject_of_a_floppy_drive_ejects_and_closes() {
+        let log = CallLog::default();
+        let mut session = session_with_media(&log);
+        session.fdd1_index = Some(0);
+        session.fdd2_index = Some(1);
+        let choice = MediaChoice::Eject {
+            drive: Drive::Floppy(1),
+        };
+        assert!(session.apply_media_status(Status::Done(choice)));
+        assert_eq!(*log.borrow(), ["floppies", "eject floppy 1"]);
+        assert_eq!(session.fdd1_index, Some(0));
+        assert_eq!(session.fdd2_index, None);
+    }
+
+    /// Verifies that an eject of the CD-ROM drive ejects its disc and closes.
+    #[test]
+    fn an_eject_of_the_cdrom_drive_ejects_and_closes() {
+        let log = CallLog::default();
+        let mut session = session_with_media(&log);
+        session.cdrom_index = Some(0);
+        let choice = MediaChoice::Eject {
+            drive: Drive::CdRom,
+        };
+        assert!(session.apply_media_status(Status::Done(choice)));
+        assert_eq!(*log.borrow(), ["eject cdrom"]);
+        assert_eq!(session.cdrom_index, None);
     }
 }
