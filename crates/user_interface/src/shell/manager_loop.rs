@@ -1,7 +1,10 @@
 //! The event loop of the game manager. It waits for events and renders a
 //! frame only after a pass of the user interface or a window change.
 
-use std::time::{Duration, Instant};
+use std::{
+    mem,
+    time::{Duration, Instant},
+};
 
 use common::error;
 use gui::component::run;
@@ -13,7 +16,7 @@ use sdl3::{
 use super::Shell;
 use crate::{
     gui_host::{GuiEvent, GuiHost, keys::pointer_or_text_event, run_pending_passes},
-    manager::{Launch, ShellEffect},
+    manager::ShellEffect,
 };
 
 /// The longest wait for an event while nothing repeats.
@@ -76,23 +79,22 @@ fn frame_still_pending(
 }
 
 impl Shell {
-    /// Runs the manager until the application quits or the user starts a
-    /// game. Returns the game to start, or `None` when the application quits.
+    /// Runs the manager until the application quits or a game starts.
     ///
     /// The events that wait from the end of a session reach the manager
     /// before its first frame, so the frame has the restored window size.
     /// The passes that the user interface asks for run before each frame, so
-    /// the frame shows the settled state. A game that waits to start ends the
-    /// chain of passes.
-    pub(super) fn run_manager_loop(&mut self, event_pump: &mut EventPump) -> Option<Launch> {
+    /// the frame shows the settled state. A started game ends the chain of
+    /// passes.
+    pub(super) fn run_manager_loop(&mut self, event_pump: &mut EventPump) {
         for event in event_pump.poll_iter() {
             self.handle_event(&event);
         }
         self.host.update_gui_window();
         self.frame_pending = true;
         loop {
-            if self.should_quit {
-                return None;
+            if self.should_quit || self.session.is_some() {
+                return;
             }
             if let Some(gui) = self.host.gui.as_mut()
                 && let Some(repeat) = gui.gamepad.poll(Instant::now())
@@ -104,15 +106,15 @@ impl Shell {
             }
             run_pending_passes(|| {
                 let due = self.manager.is_some()
-                    && self.pending_launch.is_none()
+                    && self.session.is_none()
                     && self.host.gui.as_ref().is_some_and(GuiHost::pending);
                 if due {
                     self.manager_pass();
                 }
                 due
             });
-            if let Some(launch) = self.pending_launch.take() {
-                return Some(launch);
+            if self.session.is_some() {
+                return;
             }
             if self.frame_pending {
                 let window_visible = self.window_visible;
@@ -216,29 +218,45 @@ impl Shell {
         }
     }
 
-    /// Runs one pass of the manager over the whole window, keeps the game it
-    /// asks to start and switches the catalog it asks for.
+    /// Runs one pass of the manager over the whole window and applies its
+    /// effects.
     fn manager_pass(&mut self) {
         let (Some(gui), Some(manager)) = (self.host.gui.as_mut(), self.manager.as_mut()) else {
             return;
         };
-        let mut launch = None;
-        let mut catalog = None;
+        let effects = &mut self.manager_effects;
         gui.pass(|context| {
             let area = context.bounds();
-            run(manager, context, area, (), &mut |effect| match effect {
-                ShellEffect::Launch(started) => launch = Some(started),
-                ShellEffect::SwitchCatalog(switched) => catalog = Some(switched),
+            run(manager, context, area, (), &mut |effect| {
+                effects.push(effect)
             })
         });
-        if let Some(catalog) = catalog {
-            gui.set_catalog(catalog);
-        }
         gui.sync_text_input(&self.host.window);
         self.frame_pending = true;
-        if launch.is_some() {
-            self.pending_launch = launch;
+        self.apply_manager_effects();
+    }
+
+    /// Applies the effects of the last manager pass in their order: a launch
+    /// starts the game while no session runs, and a catalog switch changes
+    /// the language of the user interface. A failed launch opens its error
+    /// dialog before the next pass.
+    fn apply_manager_effects(&mut self) {
+        let mut effects = mem::take(&mut self.manager_effects);
+        for effect in effects.drain(..) {
+            match effect {
+                ShellEffect::Launch(launch) => {
+                    if self.session.is_none() {
+                        self.launch(launch);
+                    }
+                }
+                ShellEffect::SwitchCatalog(catalog) => {
+                    if let Some(gui) = self.host.gui.as_mut() {
+                        gui.set_catalog(catalog);
+                    }
+                }
+            }
         }
+        self.manager_effects = effects;
     }
 
     /// Renders the scene of the last pass of the manager over black.

@@ -45,7 +45,7 @@ use crate::{
         initial_window_size, logical_to_screen, manager_minimum_size,
         screen_units_per_logical_unit, wants_large_native_target,
     },
-    manager::{Launch, Manager},
+    manager::{Manager, ShellEffect},
     session::Session,
 };
 
@@ -149,8 +149,9 @@ pub(crate) struct Shell {
     session: Option<Session>,
     /// The game manager. `None` for a game of the command line.
     manager: Option<Manager>,
-    /// The game that the manager asked to start.
-    pending_launch: Option<Launch>,
+    /// The effects of the last manager pass. The buffer keeps its capacity
+    /// between passes.
+    manager_effects: Vec<ShellEffect>,
     /// Whether the manager needs a new frame.
     frame_pending: bool,
     /// Whether the window can show a frame. It cannot while it is
@@ -238,7 +239,7 @@ impl Shell {
         Ok(Self {
             session: None,
             manager: None,
-            pending_launch: None,
+            manager_effects: Vec::new(),
             frame_pending: true,
             window_visible: true,
             stale_frames: 0,
@@ -306,9 +307,9 @@ impl Shell {
             if self.manager.is_none() {
                 return Ok(());
             }
-            match self.run_manager_loop(&mut event_pump) {
-                Some(launch) => self.launch(launch),
-                None => return Ok(()),
+            self.run_manager_loop(&mut event_pump);
+            if self.session.is_none() {
+                return Ok(());
             }
         }
     }
@@ -317,6 +318,9 @@ impl Shell {
     /// when the application quits, the session ends or no session exists.
     fn run_session_loop(&mut self, event_pump: &mut EventPump) {
         'running: loop {
+            if self.should_quit || self.session_ending() {
+                break;
+            }
             for event in event_pump.poll_iter() {
                 self.handle_event(&event);
                 if self.should_quit || self.session_ending() {
