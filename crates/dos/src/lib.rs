@@ -690,6 +690,21 @@ struct RootShellBootConfig {
     initial_drive: u8,
 }
 
+/// Returns the path and the command tail of a `SHELL=` program other than
+/// COMMAND.COM. The root shell executes it in place of `AUTOEXEC.BAT`.
+fn shell_program(cfg: &config::ConfigSys) -> Option<(Vec<u8>, Vec<u8>)> {
+    let shell = cfg.shell.as_ref()?;
+    if process::is_command_processor_path(&shell.path) {
+        return None;
+    }
+    let mut tail = Vec::with_capacity(shell.raw_arguments.len() + 1);
+    if !shell.raw_arguments.is_empty() {
+        tail.push(b' ');
+        tail.extend_from_slice(&shell.raw_arguments);
+    }
+    Some((shell.path.clone(), tail))
+}
+
 fn read_iosys_cursor(memory: &dyn MemoryAccess) -> HardwareCursorState {
     HardwareCursorState {
         visible: memory.read_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_CURSOR_VISIBLE) != 0,
@@ -1041,18 +1056,23 @@ impl NeetanDos {
 
         self.install_native_config_drivers(&cfg, memory, device);
 
-        // Load AUTOEXEC.BAT if present on any mounted drive.
-        let autoexec_lines = self.try_load_autoexec_bat(device);
+        let shell_program = shell_program(&cfg);
+        let autoexec_lines = match shell_program {
+            Some(_) => None,
+            None => self.try_load_autoexec_bat(device),
+        };
 
         let psp = self.state.current_psp;
         self.root_command_com_psp = psp;
         self.state.store_process_fields(memory);
-        if let Some((lines, bat_path)) = autoexec_lines {
-            self.shells
-                .insert(psp, shell::Shell::new_with_autoexec(psp, lines, bat_path));
-        } else {
-            self.shells.insert(psp, shell::Shell::new(psp));
-        }
+        let root_shell = match (shell_program, autoexec_lines) {
+            (Some((path, tail)), _) => shell::Shell::new_with_program(psp, path, tail),
+            (None, Some((lines, bat_path))) => {
+                shell::Shell::new_with_autoexec(psp, lines, bat_path)
+            }
+            (None, None) => shell::Shell::new(psp),
+        };
+        self.shells.insert(psp, root_shell);
     }
 
     /// Installs the critical error stub (`MOV AL,3`, `IRET`) as the `INT 24h`
@@ -1310,10 +1330,6 @@ impl NeetanDos {
                     .initial_drive
                     .unwrap_or(self.state.boot_drive.saturating_sub(1)),
             };
-        }
-
-        if cfg.shell.is_some() {
-            // TODO: Honor CONFIG.SYS SHELL= for non-COMMAND.COM custom shells.
         }
 
         RootShellBootConfig {

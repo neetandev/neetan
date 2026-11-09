@@ -446,6 +446,21 @@ impl Shell {
         }
     }
 
+    /// Creates a root shell that executes the program at `path` with the
+    /// command tail `tail` before its first prompt.
+    pub(crate) fn new_with_program(command_com_psp: u16, path: Vec<u8>, tail: Vec<u8>) -> Self {
+        Self {
+            phase: ShellPhase::WaitingForChild,
+            boot_banner_shown: true,
+            pending_exec: Some(PendingExec {
+                path,
+                tail,
+                output_redirect: None,
+            }),
+            ..Self::new(command_com_psp)
+        }
+    }
+
     pub(crate) fn new_child(command_com_psp: u16, command_tail: &[u8]) -> Self {
         let (startup_command, terminate_after_command) = parse_startup_command(command_tail);
         let pending_terminate = if terminate_after_command && startup_command.is_none() {
@@ -514,6 +529,9 @@ impl Shell {
     }
 
     pub(crate) fn step(&mut self, state: &mut DosState, io: &mut IoAccess, disk: &mut dyn DriveIo) {
+        if self.pending_exec.is_some() {
+            return;
+        }
         if self.queued_line.is_some() {
             if let Some(phase) = self.dispatch_queued_line(state, io, disk) {
                 self.phase = phase;

@@ -190,3 +190,48 @@ fn prompt_shows_drive_letter() {
         "Default prompt should show 'Z:\\>'"
     );
 }
+
+#[test]
+fn shell_program_runs_in_place_of_autoexec() {
+    #[rustfmt::skip]
+    let shell_program: &[u8] = &[
+        0xB8, 0x00, 0x20,                   // MOV AX, 2000h
+        0x8E, 0xD8,                         // MOV DS, AX
+        0xC6, 0x06, 0x00, 0x01, 0x5A,       // MOV BYTE [0100h], 5Ah
+        0x2E, 0xA0, 0x80, 0x00,             // MOV AL, CS:[0080h]
+        0xA2, 0x01, 0x01,                   // MOV [0101h], AL
+        0xB8, 0x00, 0x4C,                   // MOV AX, 4C00h
+        0xCD, 0x21,                         // INT 21h
+    ];
+    #[rustfmt::skip]
+    let autoexec_program: &[u8] = &[
+        0xB8, 0x00, 0x20,                   // MOV AX, 2000h
+        0x8E, 0xD8,                         // MOV DS, AX
+        0xC6, 0x06, 0x02, 0x01, 0xA5,       // MOV BYTE [0102h], A5h
+        0xB8, 0x00, 0x4C,                   // MOV AX, 4C00h
+        0xCD, 0x21,                         // INT 21h
+    ];
+    let floppy = harness::create_test_floppy_with_files(&[
+        (*b"CONFIG  SYS", b"SHELL=SHELLPRG.COM 98EX>NUL\r\n"),
+        (*b"AUTOEXECBAT", b"AUTOPRG\r\n"),
+        (*b"SHELLPRGCOM", shell_program),
+        (*b"AUTOPRG COM", autoexec_program),
+    ]);
+    let machine = harness::boot_hle_with_forced_os(Some(floppy), None);
+
+    assert_eq!(
+        harness::result_byte(&machine.bus, 0),
+        0x5A,
+        "The SHELL= program should run at boot"
+    );
+    assert_eq!(
+        harness::result_byte(&machine.bus, 1),
+        9,
+        "The SHELL= program should receive its arguments unparsed as the command tail"
+    );
+    assert_eq!(
+        harness::result_byte(&machine.bus, 2),
+        0x00,
+        "AUTOEXEC.BAT should not run with a SHELL= program"
+    );
+}
