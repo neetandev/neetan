@@ -5,15 +5,16 @@
 use std::path::Path;
 
 use common::{info, warn};
-use gui::ui::UiContext;
+use gui::component::Update;
 use machine_factory::config::systems::rom_folders;
 
-use super::{ErrorDialog, Manager};
+use super::{ErrorDialog, Manager, ManagerMode, ShellEffect};
 use crate::{
     config::HostLayers,
     editor::{EditedFile, Editor},
     language::catalog_of,
     rom_folders::rom_folder_path,
+    texts::LanguageCatalog,
 };
 
 /// Whether the host settings `before` and `after` give another config
@@ -28,10 +29,10 @@ fn folders_changed(before: &HostLayers, after: &HostLayers) -> bool {
 impl Manager {
     /// Opens the settings page on the settings file with the ROM statuses
     /// of the last ROM check.
-    pub(super) fn open_settings(&mut self, context: &mut UiContext) {
+    pub(super) fn open_settings(&mut self, update: &mut Update<'_, ShellEffect>) {
         let editor = Editor::settings(&self.host, &self.roms)
             .map_err(|error| ErrorDialog::open_failed(&EditedFile::Settings, &error));
-        self.open_editor(context, editor);
+        self.open_editor(editor, update);
     }
 
     /// Reads the host settings again after a save of the settings file
@@ -39,28 +40,32 @@ impl Manager {
     /// new settings. A save that changes the config folder, the ROM folder
     /// or the folder of a ROM key checks the ROM folders and scans the
     /// catalog again, as Refresh does. A save that changes the language of
-    /// the user interface loads the catalog of the new value and keeps it
+    /// the user interface loads the catalog of the new value and returns it
     /// for the switch when its tag differs from `active_language` without
     /// regard to case. A settings file that does not read keeps the host
-    /// settings and opens the error dialog.
-    pub(super) fn settings_saved(&mut self, path: &Path, active_language: &str) {
+    /// settings and returns the error dialog.
+    pub(super) fn settings_saved(
+        &mut self,
+        path: &Path,
+        active_language: &str,
+    ) -> Result<Option<LanguageCatalog>, Box<ErrorDialog>> {
         info!("Game manager: saved {}", path.display());
         let host = match HostLayers::read(&self.start.request, &self.start.locations) {
             Ok(host) => host,
             Err(error) => {
                 warn!("Game manager: the settings do not read: {error}");
-                self.dialog = Some(ErrorDialog::settings_not_applied(&error));
-                return;
+                return Err(Box::new(ErrorDialog::settings_not_applied(&error)));
             }
         };
         let rescan = folders_changed(&self.host, &host);
         let language = host.gui_language();
+        let mut switch = None;
         if language != self.host.gui_language() {
             let catalog = catalog_of(&language, &host.language_folders());
             let tag = catalog.catalog().tag();
             if !tag.eq_ignore_ascii_case(active_language) {
                 info!("Game manager: the GUI language is {tag}");
-                self.catalog_switch = Some(catalog);
+                switch = Some(catalog);
             }
         }
         self.host = host;
@@ -69,9 +74,10 @@ impl Manager {
             self.refresh();
         }
         let statuses = rescan.then_some(self.roms.as_slice());
-        if let Some(editor) = self.editor.as_mut() {
+        if let ManagerMode::Editor(editor) = &mut self.mode {
             editor.host_changed(&self.host, statuses);
         }
+        Ok(switch)
     }
 }
 
@@ -94,7 +100,11 @@ mod tests {
             test_support::{EditorRoot, SettingsRoot, first_rom_folder},
         },
         gui_test_support::{GuiHarness, MINIMUM_HEIGHT, MINIMUM_WIDTH, PassCounts},
-        manager::{FILTER_ID, SETTINGS_ID, game_table::GAME_TABLE_ID, test_support::shown_help},
+        manager::{
+            FILTER_ID, SETTINGS_ID, ShellEffect,
+            game_table::GAME_TABLE_ID,
+            test_support::{pass, settle, shown_help},
+        },
         rom_folders::RomFolderStatus,
         texts::{
             repository::{RepositoryLanguage, repository_languages},
@@ -116,11 +126,6 @@ mod tests {
             locations: root.locations(),
         })
         .expect("manager starts")
-    }
-
-    /// Draws passes of `manager` until it settles.
-    fn settle(harness: &mut GuiHarness, manager: &mut Manager) {
-        harness.settle(|context| manager.show(context));
     }
 
     /// The titles of the games of the selected system.
@@ -265,14 +270,15 @@ mod tests {
         assert_eq!(titles(&manager), ["Brandish", "Later"]);
     }
 
-    /// Opens the popup of the focused dropdown, renders the frame and closes the popup again.
+    /// Opens the popup of the focused dropdown, renders the frame and closes the popup again, without an effect of the
+    /// manager.
     fn popup_pixels(harness: &mut GuiHarness, manager: &mut Manager) -> Vec<u8> {
         harness.input.confirm = true;
-        settle(harness, manager);
+        assert!(settle(harness, manager).is_empty());
         assert!(harness.state.popup_open());
         let pixels = harness.render();
         harness.input.cancel = true;
-        settle(harness, manager);
+        assert!(settle(harness, manager).is_empty());
         assert!(!harness.state.popup_open());
         pixels
     }
@@ -303,7 +309,7 @@ mod tests {
         harness.input.confirm = true;
         settle(&mut harness, &mut manager);
         harness.input.shortcut = Some(Shortcut::ControlS);
-        settle(&mut harness, &mut manager);
+        let mut effects = settle(&mut harness, &mut manager);
         assert_eq!(
             std::fs::read_to_string(root.path("neetan.conf")).expect("settings read"),
             "gui-language = de\n"
@@ -312,11 +318,11 @@ mod tests {
 
         let english = popup_pixels(&mut harness, &mut manager);
         assert_eq!(popup_pixels(&mut harness, &mut manager), english);
-        let catalog = manager
-            .take_catalog_switch()
-            .expect("the save switches the language");
+        let Some(ShellEffect::SwitchCatalog(catalog)) = effects.pop() else {
+            panic!("the save switches the language");
+        };
         assert_eq!(catalog.catalog().name(), "Deutsch");
-        assert!(manager.take_catalog_switch().is_none());
+        assert!(effects.is_empty(), "{effects:?}");
         harness.set_catalog(catalog);
         assert_ne!(popup_pixels(&mut harness, &mut manager), english);
     }
@@ -329,12 +335,12 @@ mod tests {
         root.write("neetan.conf", "gui-language = de\n");
         let mut manager = manager_with(&root, &[]);
         root.write("neetan.conf", "gui-language = DE\n");
-        manager.settings_saved(&root.path("neetan.conf"), "de");
-        assert!(manager.take_catalog_switch().is_none());
+        let switch = manager.settings_saved(&root.path("neetan.conf"), "de");
+        assert!(switch.expect("the settings read").is_none());
         root.write("neetan.conf", "gui-language = en\n");
-        manager.settings_saved(&root.path("neetan.conf"), "de");
-        let catalog = manager
-            .take_catalog_switch()
+        let switch = manager.settings_saved(&root.path("neetan.conf"), "de");
+        let catalog = switch
+            .expect("the settings read")
             .expect("English differs from German");
         assert_eq!(catalog.catalog().tag(), "en");
 
@@ -342,8 +348,8 @@ mod tests {
         root.write("neetan.conf", "gui-language = auto\n");
         let mut manager = manager_with(&root, &[]);
         root.write("neetan.conf", "gui-language = en\n");
-        manager.settings_saved(&root.path("neetan.conf"), "en");
-        assert!(manager.take_catalog_switch().is_none());
+        let switch = manager.settings_saved(&root.path("neetan.conf"), "en");
+        assert!(switch.expect("the settings read").is_none());
     }
 
     /// Verifies that another folder of a ROM key changes the folders and that another audio volume does not.
@@ -530,9 +536,9 @@ mod tests {
                     .is_some_and(|editor| editor.most_note_lines(*section) > 1),
                 "the section {section:?} draws no note of several lines"
             );
-            harness.frame(|context| manager.show(context));
+            harness.frame(|context| pass(&mut manager, context));
             let revision = manager.editor().map(Editor::revision);
-            let (counts, _) = harness.counted_frame(|context| manager.show(context));
+            let (counts, _) = harness.counted_frame(|context| pass(&mut manager, context));
             assert_eq!(
                 counts,
                 PassCounts::NONE,

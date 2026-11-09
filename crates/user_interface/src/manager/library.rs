@@ -10,9 +10,8 @@ use gui::{
 };
 
 use super::{
-    FILTER_ID, Launch, Manager, SETTINGS_ID,
+    FILTER_ID, Manager, ManagerMessage, ManagerOverlay, SETTINGS_ID,
     counts::{GameCounts, write_counts},
-    delete::DeleteRequest,
     entries::TableEntry,
     filter::Filter,
     game_table::{self, GAME_TABLE_ID, GameRows, RowErrors, show_game_table},
@@ -54,25 +53,17 @@ pub(super) struct LibraryTexts {
     sidebar: SidebarTexts,
 }
 
-/// The action of one pass of the library on the selected row.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RowAction {
-    /// Starts the game of the row.
-    Launch,
-    /// Opens the game of the row in the editor.
-    Edit,
-    /// Opens a copy of the game of the row in the editor.
-    Duplicate,
-    /// Asks before the delete of the file of the row.
-    Delete,
-}
-
 impl Manager {
-    /// Draws the sidebar into `area` and switches the system on a new
+    /// Draws the sidebar into `area` and asks for a system switch on a new
     /// selection of the system list or on a shoulder button. The system
-    /// defaults button opens the editor on the system defaults of the
+    /// defaults button asks for the editor on the system defaults of the
     /// selected system.
-    pub(super) fn show_systems(&mut self, context: &mut UiContext, area: Rect) {
+    pub(super) fn show_systems(
+        &mut self,
+        context: &mut UiContext,
+        area: Rect,
+        messages: &mut Vec<ManagerMessage>,
+    ) {
         let count = self.systems.len();
         if count > 0 {
             let selected = self.view.systems.selected.min(count - 1);
@@ -94,7 +85,7 @@ impl Manager {
                 | None => None,
             };
             if let Some(index) = switched {
-                self.select_system(index);
+                messages.push(ManagerMessage::SelectSystem(index));
             }
         }
         let response = show_sidebar(
@@ -105,20 +96,24 @@ impl Manager {
             &mut self.texts.sidebar,
         );
         if response.list.selection_changed {
-            self.select_system(self.view.systems.selected);
-            context.request_pass();
+            messages.push(ManagerMessage::SelectSystem(self.view.systems.selected));
         }
         if response.list.activated.is_some() && self.has_entries() {
             context.set_focus(UiId::from(GAME_TABLE_ID));
         }
         if response.system_defaults {
-            self.open_system_defaults(context);
+            messages.push(ManagerMessage::OpenSystemDefaults);
         }
     }
 
     /// Draws the header with the filter, the toolbar and the game table into
-    /// `area`. Returns the game to start.
-    pub(super) fn show_main(&mut self, context: &mut UiContext, area: Rect) -> Option<Launch> {
+    /// `area`, and asks for the actions of the input on the selected row.
+    pub(super) fn show_main(
+        &mut self,
+        context: &mut UiContext,
+        area: Rect,
+        messages: &mut Vec<ManagerMessage>,
+    ) {
         let theme = context.theme;
         let inner = Rect::new(
             area.x + theme.padding,
@@ -152,9 +147,7 @@ impl Manager {
             &mut self.view.filter,
         );
         if filter.changed {
-            self.refresh_entries();
-            let rows = rows_at(&self.systems, self.view.systems.selected);
-            self.view.refilter(&self.entries, rows);
+            messages.push(ManagerMessage::FilterChanged);
         }
         if filter.submitted && self.has_entries() {
             context.set_focus(UiId::from(GAME_TABLE_ID));
@@ -179,18 +172,17 @@ impl Manager {
         };
         let toolbar = show_toolbar(context, toolbar_area, state);
         if toolbar.refresh || context.shortcut() == Some(Shortcut::F5) {
-            self.refresh();
-            context.request_pass();
+            messages.push(ManagerMessage::Refresh);
         }
         if settings
             || context.shortcut() == Some(Shortcut::F10)
             || context.action_button() == Some(ActionButton::Start)
         {
-            self.open_settings(context);
-            return None;
+            messages.push(ManagerMessage::OpenSettings);
+            return;
         }
 
-        let selected_system = self.view.systems.selected;
+        let selected_system = self.entries_system;
         let hint = match self.systems.get(selected_system) {
             Some(entry) if entry.rows.is_empty() => {
                 let label = entry.system.label;
@@ -215,7 +207,7 @@ impl Manager {
                 detail: "",
             },
         };
-        let rows = rows_at(&self.systems, self.view.systems.selected);
+        let rows = rows_at(&self.systems, self.entries_system);
         let response = show_game_table(
             context,
             table_area,
@@ -229,14 +221,9 @@ impl Manager {
             hint,
         );
         if response.sort_changed {
-            self.refresh_entries();
-            let rows = rows_at(&self.systems, self.view.systems.selected);
-            self.view.restore(&self.entries, rows);
-            context.request_pass();
+            messages.push(ManagerMessage::SortChanged);
         } else if response.selection_changed {
-            let rows = rows_at(&self.systems, self.view.systems.selected);
-            self.view.record(&self.entries, rows);
-            context.request_pass();
+            messages.push(ManagerMessage::SelectionChanged);
         }
 
         let shortcut = context.shortcut();
@@ -246,36 +233,31 @@ impl Manager {
             || context.action_button() == Some(ActionButton::X);
         let duplicate = toolbar.duplicate || shortcut == Some(Shortcut::ControlD);
         if (toolbar.add || shortcut == Some(Shortcut::Insert)) && state.addable {
-            self.open_new_game(context);
-            return None;
+            messages.push(ManagerMessage::AddGame);
+            return;
         }
         let activated = response.activated.is_some();
-        let launchable = self.selected_row()?.launchable();
-        let action = if launchable && (activated || toolbar.launch) {
-            RowAction::Launch
-        } else if launchable && edit {
-            RowAction::Edit
-        } else if launchable && duplicate {
-            RowAction::Duplicate
-        } else if delete_shortcut || toolbar.delete || activated {
-            RowAction::Delete
-        } else {
-            return None;
+        let Some(launchable) = self.selected_row().map(GameRow::launchable) else {
+            return;
         };
-        let row = self.selected_row()?.clone();
-        match action {
-            RowAction::Launch => return Some(self.launch(&row)),
-            RowAction::Edit => self.open_game(context, &row),
-            RowAction::Duplicate => self.open_duplicate(context, &row),
-            RowAction::Delete => self.delete = Some(DeleteRequest::new(&row)),
-        }
-        None
+        let message = if launchable && (activated || toolbar.launch) {
+            ManagerMessage::Launch
+        } else if launchable && edit {
+            ManagerMessage::Edit
+        } else if launchable && duplicate {
+            ManagerMessage::Duplicate
+        } else if delete_shortcut || toolbar.delete || activated {
+            ManagerMessage::AskDelete
+        } else {
+            return;
+        };
+        messages.push(message);
     }
 
-    /// Draws the label of the selected system and its game count into
+    /// Draws the label of the system of the entries and its game count into
     /// `area`.
     fn show_title(&mut self, context: &mut UiContext, area: Rect) {
-        let Some(entry) = self.systems.get(self.view.systems.selected) else {
+        let Some(entry) = self.systems.get(self.entries_system) else {
             return;
         };
         let theme = context.theme;
@@ -349,10 +331,16 @@ impl Manager {
         }
     }
 
-    /// Draws the status line into `area`.
-    pub(super) fn show_status_line(&mut self, context: &mut UiContext, area: Rect) {
+    /// Draws the status line into `area`. With `dialog_open` the hints come
+    /// from the open dialog, else from the focused widget of the library.
+    pub(super) fn show_status_line(
+        &mut self,
+        context: &mut UiContext,
+        area: Rect,
+        dialog_open: bool,
+    ) {
         let catalog = context.catalog;
-        if let Some(request) = &self.delete {
+        if dialog_open && let ManagerOverlay::Delete(request) = &self.overlay {
             let hints = hints_in(catalog, &request.hints());
             status_line(context, area, &hints, StatusEnd::Path(&request.shown_path));
             return;
@@ -365,9 +353,13 @@ impl Manager {
         }
         let mut located = std::mem::take(&mut self.texts.located_error);
         let selected = self.selected_row();
-        let hints = match &self.dialog {
-            Some(dialog) => hints_in(catalog, &dialog.hints(context)),
-            None => library_hints(catalog, self.library_focus(context), selected),
+        let hints = match &self.overlay {
+            ManagerOverlay::Error(dialog) if dialog_open => {
+                hints_in(catalog, &dialog.hints(context))
+            }
+            ManagerOverlay::None | ManagerOverlay::Delete(_) | ManagerOverlay::Error(_) => {
+                library_hints(catalog, self.library_focus(context), selected)
+            }
         };
         let end = status_end(
             catalog,
@@ -392,9 +384,11 @@ mod tests {
         config::LaunchFailure,
         gui_test_support::{GuiHarness, PassCounts},
         manager::{
+            ShellEffect,
             delete::DELETE_LAYER_ID,
             test_support::{
-                TestRoot, first_system, games, sample_root, select, steady_frame, titles,
+                TestRoot, delete_open, first_system, frame, games, sample_root, select, settle,
+                steady_frame, titles,
             },
         },
         texts::{LanguageCatalog, test_catalog},
@@ -410,18 +404,19 @@ mod tests {
         let mut manager = test.manager();
         assert_eq!(titles(&manager), ["A", "|", "b.conf"]);
         let mut harness = GuiHarness::minimum();
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         harness.input.confirm = true;
-        let launch = harness
-            .frame(|context| manager.show(context))
-            .expect("confirm launches");
+        let effects = frame(&mut harness, &mut manager);
+        let [ShellEffect::Launch(launch)] = effects.as_slice() else {
+            panic!("confirm launches: {effects:?}");
+        };
         assert_eq!(launch.title, "A");
         harness.input.navigation = Some(Navigation::Down);
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         assert_eq!(manager.view.table.list.selected, 2);
         harness.input.confirm = true;
-        assert!(harness.settle(|context| manager.show(context)).is_none());
-        assert!(manager.delete.is_some());
+        assert!(settle(&mut harness, &mut manager).is_empty());
+        assert!(delete_open(&manager));
         assert_eq!(harness.state.open_modals(), 1);
         assert_eq!(
             harness.state.focused(),
@@ -436,42 +431,42 @@ mod tests {
         games(&test, &["a", "b"]);
         let mut manager = test.manager();
         let mut harness = GuiHarness::minimum();
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         harness.input.shortcut = Some(Shortcut::ControlF);
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         assert_eq!(harness.state.focused(), Some(UiId::from(FILTER_ID)));
         harness.input.text = "ab".to_owned();
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         harness.input.navigation = Some(Navigation::Left);
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         harness.input.edit = Some(EditCommand::DeleteForward);
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         assert_eq!(manager.view.filter, "a");
-        assert!(manager.delete.is_none());
+        assert!(!delete_open(&manager));
         assert_eq!(harness.state.open_modals(), 0);
         assert_eq!(harness.state.focused(), Some(UiId::from(FILTER_ID)));
         harness.input.cancel = true;
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         assert_eq!(manager.view.filter, "");
 
         harness.state.set_focus(UiId::from(GAME_TABLE_ID));
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         harness.input.action = Some(ActionButton::Y);
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         assert_eq!(harness.state.focused(), Some(UiId::from(FILTER_ID)));
         harness.input.text = "B".to_owned();
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         assert_eq!(titles(&manager), ["b"]);
         harness.input.confirm = true;
-        assert!(harness.frame(|context| manager.show(context)).is_none());
+        assert!(frame(&mut harness, &mut manager).is_empty());
         assert!(harness.state.take_pass_request());
-        assert!(harness.settle(|context| manager.show(context)).is_none());
+        assert!(settle(&mut harness, &mut manager).is_empty());
         assert_eq!(harness.state.focused(), Some(UiId::from(GAME_TABLE_ID)));
         harness.input.action = Some(ActionButton::Y);
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         assert_eq!(harness.state.focused(), Some(UiId::from(FILTER_ID)));
         harness.input.cancel = true;
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         assert_eq!(manager.view.filter, "");
         assert_eq!(titles(&manager), ["a", "b"]);
         assert_eq!(harness.state.focused(), Some(UiId::from(FILTER_ID)));
@@ -487,14 +482,14 @@ mod tests {
         games(&test, &["a"]);
         let mut manager = test.manager();
         let mut harness = GuiHarness::minimum();
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         assert_eq!(harness.state.focused(), Some(UiId::from(GAME_TABLE_ID)));
         harness.input.navigation = Some(Navigation::NextTab);
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         assert_eq!(manager.view.systems.selected, 1);
         assert_eq!(harness.state.focused(), Some(UiId::from(ADD_ID)));
         harness.input.navigation = Some(Navigation::PreviousTab);
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         assert_eq!(manager.view.systems.selected, 0);
         assert_eq!(harness.state.focused(), Some(UiId::from(ADD_ID)));
     }
@@ -506,29 +501,29 @@ mod tests {
         games(&test, &["a", "b"]);
         let mut manager = test.manager();
         let mut harness = GuiHarness::minimum();
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         let keys = |harness: &mut GuiHarness, manager: &mut Manager| {
             let focused = harness.state.focused();
             for navigation in [Navigation::NextTab, Navigation::PreviousTab] {
                 harness.input.navigation = Some(navigation);
-                harness.settle(|context| manager.show(context));
+                settle(harness, manager);
             }
             harness.input.shortcut = Some(Shortcut::ControlF);
-            harness.settle(|context| manager.show(context));
+            settle(harness, manager);
             harness.input.action = Some(ActionButton::Y);
-            harness.settle(|context| manager.show(context));
+            settle(harness, manager);
             harness.input.edit = Some(EditCommand::DeleteForward);
-            harness.settle(|context| manager.show(context));
+            settle(harness, manager);
             harness.input.shortcut = Some(Shortcut::F10);
-            harness.settle(|context| manager.show(context));
-            assert!(manager.editor.is_none());
+            settle(harness, manager);
+            assert!(manager.editor().is_none());
             harness.input.action = Some(ActionButton::Start);
-            harness.settle(|context| manager.show(context));
-            assert!(manager.editor.is_none());
+            settle(harness, manager);
+            assert!(manager.editor().is_none());
             let files = manager.rows().len();
             games(&test, &["new"]);
             harness.input.shortcut = Some(Shortcut::F5);
-            harness.settle(|context| manager.show(context));
+            settle(harness, manager);
             test.remove(&format!("{}/new.conf", first_system().name));
             assert_eq!(manager.rows().len(), files);
             assert_eq!(manager.view.systems.selected, 0);
@@ -537,21 +532,21 @@ mod tests {
         };
 
         harness.input.edit = Some(EditCommand::DeleteForward);
-        harness.settle(|context| manager.show(context));
-        assert!(manager.delete.is_some());
+        settle(&mut harness, &mut manager);
+        assert!(delete_open(&manager));
         keys(&mut harness, &mut manager);
-        assert!(manager.delete.is_some());
+        assert!(delete_open(&manager));
         harness.input.cancel = true;
-        harness.settle(|context| manager.show(context));
-        assert!(manager.delete.is_none());
+        settle(&mut harness, &mut manager);
+        assert!(!delete_open(&manager));
 
         let launch = manager.launch(&manager.rows()[0].clone());
         let layer = manager.launch_failed(&launch, &LaunchFailure::missing_image("/a.d88"));
         harness.state.open_layer(layer);
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         keys(&mut harness, &mut manager);
         assert!(manager.dialog().is_some());
-        assert!(manager.delete.is_none());
+        assert!(!delete_open(&manager));
     }
 
     /// Verifies that a sort from the column header keeps the selected game.
@@ -561,23 +556,23 @@ mod tests {
         games(&test, &["a", "b", "c"]);
         let mut manager = test.manager();
         let mut harness = GuiHarness::minimum();
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         harness.input.navigation = Some(Navigation::Down);
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         let selected = format!("{}/b.conf", first_system().name);
         assert_eq!(manager.view.selected.as_deref(), Some(selected.as_str()));
         harness.state.set_focus(game_table::header_id());
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         harness.input.confirm = true;
-        assert!(harness.frame(|context| manager.show(context)).is_none());
-        harness.settle(|context| manager.show(context));
+        assert!(frame(&mut harness, &mut manager).is_empty());
+        settle(&mut harness, &mut manager);
         assert_eq!(titles(&manager), ["c", "b", "a"]);
         assert_eq!(manager.view.selected.as_deref(), Some(selected.as_str()));
         assert_eq!(manager.view.table.list.selected, 1);
         harness.input.navigation = Some(Navigation::Right);
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         harness.input.confirm = true;
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         assert_eq!(manager.view.selected.as_deref(), Some(selected.as_str()));
     }
 
@@ -596,9 +591,9 @@ mod tests {
             | RomStatus::Unsupported => RomStatus::Found,
         };
         let mut harness = GuiHarness::minimum();
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         harness.input.navigation = Some(Navigation::Down);
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         let selected = format!("{}/b.conf", first_system().name);
         assert_eq!(manager.view.selected.as_deref(), Some(selected.as_str()));
 
@@ -609,12 +604,12 @@ mod tests {
             let view = manager.view.clone();
             if press {
                 harness.state.set_focus(UiId::from(REFRESH_ID));
-                harness.settle(|context| manager.show(context));
+                settle(&mut harness, &mut manager);
                 harness.input.confirm = true;
             } else {
                 harness.input.shortcut = Some(Shortcut::F5);
             }
-            harness.settle(|context| manager.show(context));
+            settle(&mut harness, &mut manager);
             assert_eq!(manager.systems[0].rom_status, actual);
             assert!(titles(&manager).contains(&name.to_owned()), "{name}");
             assert_eq!(manager.view.selected, view.selected);
@@ -632,18 +627,18 @@ mod tests {
         games(&test, &["a"]);
         let mut manager = test.manager();
         let mut harness = GuiHarness::minimum();
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         harness.input.shortcut = Some(Shortcut::ControlF);
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         assert_eq!(harness.state.focused(), Some(UiId::from(FILTER_ID)));
         games(&test, &["b"]);
         harness.input.shortcut = Some(Shortcut::F5);
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         assert_eq!(titles(&manager), ["a"]);
         harness.state.set_focus(UiId::from(GAME_TABLE_ID));
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         harness.input.shortcut = Some(Shortcut::F5);
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         assert_eq!(titles(&manager), ["a", "b"]);
     }
 
@@ -654,23 +649,23 @@ mod tests {
         let mut manager = test.manager();
         let count = manager.systems.len();
         let mut harness = GuiHarness::minimum();
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         assert_eq!(manager.view.systems.selected, 0);
         harness.input.navigation = Some(Navigation::NextTab);
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         assert_eq!(manager.view.systems.selected, 1 % count);
         assert_eq!(
             manager.view.system,
             Some(manager.systems[1 % count].system.name)
         );
         harness.input.navigation = Some(Navigation::PreviousTab);
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         harness.input.navigation = Some(Navigation::PreviousTab);
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         assert_eq!(manager.view.systems.selected, count - 1);
 
         harness.input.navigation = Some(Navigation::NextTab);
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         assert_eq!(manager.view.systems.selected, 0);
     }
 
@@ -685,19 +680,46 @@ mod tests {
         test.game(&format!("{}/edge.conf", second.name), "meta.title = Edge\n");
         let mut manager = test.manager();
         let mut harness = GuiHarness::minimum();
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         assert_eq!(harness.state.focused(), Some(UiId::from(ADD_ID)));
         harness.state.set_focus(UiId::from(SYSTEM_LIST_ID));
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         harness.input.navigation = Some(Navigation::Down);
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         assert_eq!(manager.view.system, Some(second.name));
         assert_eq!(titles(&manager), ["Edge"]);
         harness.input.confirm = true;
-        assert!(harness.frame(|context| manager.show(context)).is_none());
+        assert!(frame(&mut harness, &mut manager).is_empty());
         assert!(harness.state.take_pass_request());
-        assert!(harness.settle(|context| manager.show(context)).is_none());
+        assert!(settle(&mut harness, &mut manager).is_empty());
         assert_eq!(harness.state.focused(), Some(UiId::from(GAME_TABLE_ID)));
+    }
+
+    /// Verifies that a new selection in the system list draws the pass of the switch with the
+    /// table of the system before it, and that the table of the new system follows.
+    #[test]
+    fn a_system_list_switch_draws_the_table_of_the_system_before_in_its_pass() {
+        let Some(second) = compiled_systems().nth(1) else {
+            return;
+        };
+        let test = TestRoot::new("system_list_switch");
+        games(&test, &["a", "b", "c"]);
+        test.game(&format!("{}/edge.conf", second.name), "meta.title = Edge\n");
+        let mut manager = test.manager();
+        let mut harness = GuiHarness::minimum();
+        settle(&mut harness, &mut manager);
+        harness.input.navigation = Some(Navigation::End);
+        settle(&mut harness, &mut manager);
+        assert_eq!(manager.view.table.list.selected, 2);
+        harness.state.set_focus(UiId::from(SYSTEM_LIST_ID));
+        settle(&mut harness, &mut manager);
+        harness.input.navigation = Some(Navigation::Down);
+        assert!(frame(&mut harness, &mut manager).is_empty());
+        assert!(harness.state.take_pass_request());
+        settle(&mut harness, &mut manager);
+        assert_eq!(manager.view.system, Some(second.name));
+        assert_eq!(titles(&manager), ["Edge"]);
+        assert_eq!(manager.view.table.list.selected, 0);
     }
 
     /// The German texts of the count of the library and of the header line of the editor.
@@ -716,17 +738,17 @@ mod tests {
         games(&test, &["A", "B"]);
         let mut manager = test.manager();
         let mut harness = GuiHarness::minimum();
-        harness.settle(|context| manager.show(context));
-        harness.frame(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
+        frame(&mut harness, &mut manager);
         assert_eq!(manager.texts.counts.last_text(), Some("2 games"));
         harness.set_catalog(german());
-        harness.frame(|context| manager.show(context));
+        frame(&mut harness, &mut manager);
         assert_eq!(manager.texts.counts.last_text(), Some("2 Spiele"));
 
         harness.set_catalog(LanguageCatalog::English);
         harness.state.set_focus(UiId::from(GAME_TABLE_ID));
         harness.input.shortcut = Some(Shortcut::F2);
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         let label = manager
             .current()
             .expect("the library selects a game")
@@ -734,8 +756,7 @@ mod tests {
             .label;
         let line = |manager: &Manager| {
             manager
-                .editor
-                .as_ref()
+                .editor()
                 .expect("F2 opens the editor")
                 .cached_header_line()
                 .expect("the editor draws its header line")
@@ -743,7 +764,7 @@ mod tests {
         };
         assert_eq!(line(&manager), format!("{label} game"));
         harness.set_catalog(german());
-        harness.frame(|context| manager.show(context));
+        frame(&mut harness, &mut manager);
         assert_eq!(line(&manager), format!("{label} Spiel"));
     }
 
@@ -755,7 +776,7 @@ mod tests {
         sample_root(&test);
         let mut manager = test.manager();
         let mut harness = GuiHarness::minimum();
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         assert_eq!(
             steady_frame(&mut harness, &mut manager),
             PassCounts::NONE,
@@ -783,9 +804,9 @@ mod tests {
         let mut harness = GuiHarness::minimum();
         select(&mut manager, system.name);
         harness.state.set_focus(UiId::from(GAME_TABLE_ID));
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         harness.input.navigation = Some(Navigation::End);
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         let selected = manager.selected_row().expect("a file with an error");
         assert!(!selected.launchable());
         assert_eq!(
@@ -806,7 +827,7 @@ mod tests {
         harness.set_catalog(LanguageCatalog::Loaded(Box::new(test_catalog(
             "[diagnostic]\nunknown-machine = Maschine {value} unbekannt\n",
         ))));
-        harness.settle(|context| manager.show(context));
+        settle(&mut harness, &mut manager);
         assert_eq!(
             manager.texts.located_error.last_text(),
             Some(

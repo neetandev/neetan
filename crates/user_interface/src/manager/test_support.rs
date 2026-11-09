@@ -2,9 +2,14 @@
 //! the screenshots, the count of a steady frame and the probe of the help area.
 
 use common::temporary::TemporaryFolder;
+use gui::{
+    Rect,
+    component::run,
+    ui::{UiContext, Viewport},
+};
 use machine_factory::config::systems::{System, compiled_systems};
 
-use super::{Manager, entries::TableEntry};
+use super::{Manager, ManagerOverlay, ShellEffect, entries::TableEntry};
 use crate::{
     config::{LaunchRequest, Locations, ManagerStart, SETTINGS_FILE_NAME},
     editor::test_support::shown_help_of,
@@ -275,11 +280,51 @@ pub(super) fn select(manager: &mut Manager, name: &str) {
     manager.select_system(index);
 }
 
+/// The whole window of `harness` in logical units.
+fn window(harness: &GuiHarness) -> Rect {
+    let Viewport {
+        width,
+        height,
+        scale,
+    } = harness.viewport;
+    Rect::new(0.0, 0.0, width as f32 / scale, height as f32 / scale)
+}
+
+/// Runs passes of `manager` over the whole window until they settle and returns the effects of
+/// the passes.
+pub(super) fn settle(harness: &mut GuiHarness, manager: &mut Manager) -> Vec<ShellEffect> {
+    let area = window(harness);
+    harness.run_component(manager, area, ()).1
+}
+
+/// Runs one pass of `manager` over the whole window and returns its effects.
+pub(super) fn frame(harness: &mut GuiHarness, manager: &mut Manager) -> Vec<ShellEffect> {
+    let mut effects = Vec::new();
+    harness.frame(|context| {
+        let area = context.bounds();
+        run(manager, context, area, (), &mut |effect| {
+            effects.push(effect)
+        });
+    });
+    effects
+}
+
+/// Draws one pass of `manager` over the whole window in `context` and drops its effects.
+pub(super) fn pass(manager: &mut Manager, context: &mut UiContext) {
+    let area = context.bounds();
+    run(manager, context, area, (), &mut |_| {});
+}
+
+/// Whether the question before a delete is open in `manager`.
+pub(super) fn delete_open(manager: &Manager) -> bool {
+    matches!(manager.overlay, ManagerOverlay::Delete(_))
+}
+
 /// Draws a frame of `manager` and counts the steady frame after it, the second pass with an
 /// unchanged state.
 pub(super) fn steady_frame(harness: &mut GuiHarness, manager: &mut Manager) -> PassCounts {
-    harness.frame(|context| manager.show(context));
-    let counts = harness.counted_frame(|context| manager.show(context)).0;
+    harness.frame(|context| pass(manager, context));
+    let counts = harness.counted_frame(|context| pass(manager, context)).0;
     assert!(!harness.state.take_pass_request());
     counts
 }
@@ -296,8 +341,6 @@ pub(super) fn shown_help(harness: &mut GuiHarness, manager: &mut Manager) -> Opt
                 .editor()
                 .and_then(|editor| editor.help_setting(context))
         },
-        |manager, context| {
-            manager.show(context);
-        },
+        pass,
     )
 }
