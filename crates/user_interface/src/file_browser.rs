@@ -8,12 +8,14 @@
 //! game file resolve it, and any other path comes back absolute.
 
 use std::{
+    convert::Infallible,
     fmt,
     path::{Path, PathBuf},
 };
 
 use gui::{
     Rect,
+    component::{Component, Layer, Status, Update},
     ui::{
         Align, Button, ButtonKind, Checkbox, HintKey, Icon, ListState, PATH_LINE_HEIGHT,
         RowContent, RowMark, Shortcut, TextBuffer, TextField, TextValue, Truncation, UiContext,
@@ -148,16 +150,22 @@ pub(crate) struct BrowseRequest {
     pub(crate) current: Option<String>,
 }
 
-/// The answer of the browser in a pass.
+/// What the user can ask the browser to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum BrowserOutcome {
-    /// The browser stays open.
-    Open,
+pub(crate) enum BrowserMessage {
+    /// The filter text changed.
+    FilterChanged,
+    /// The checkbox that lifts the extension filter flipped.
+    ShowAllChanged,
+    /// The parent folder opens.
+    OpenParent,
+    /// This folder opens.
+    OpenFolder(PathBuf),
     /// The browser closes without a choice.
-    Cancelled,
+    Cancel,
     /// The browser closes with this value: a path below the root relative
     /// to the root, any other path absolute.
-    Chosen(String),
+    Choose(String),
 }
 
 /// One row of the file list.
@@ -271,6 +279,8 @@ struct BrowserTexts {
 /// The open file browser.
 #[derive(Debug, Clone)]
 pub(crate) struct FileBrowser {
+    /// The message buffer.
+    messages: Vec<BrowserMessage>,
     /// What the setting asks for.
     request: BrowseRequest,
     /// The root folder.
@@ -297,8 +307,6 @@ pub(crate) struct FileBrowser {
     list: ListState,
     /// The hints of the status line of the last pass.
     hints: HintTexts,
-    /// Whether the rows changed after the list drew them, so the pass draws stale widgets.
-    stale: bool,
 }
 
 impl FileBrowser {
@@ -320,6 +328,7 @@ impl FileBrowser {
             .filter(|folder| folder.is_dir())
             .map_or_else(|| root.to_path_buf(), Path::to_path_buf);
         let mut browser = Self {
+            messages: Vec::new(),
             request,
             root: root.to_path_buf(),
             current,
@@ -333,7 +342,6 @@ impl FileBrowser {
             rows: Vec::new(),
             list: ListState::new(),
             hints: HintTexts::new(),
-            stale: false,
         };
         let selected = browser.current.clone();
         browser.open_folder(folder, selected.as_deref());
@@ -410,7 +418,6 @@ impl FileBrowser {
         let first_entry = usize::from(self.rows.first() == Some(&BrowserRow::Parent))
             .min(self.rows.len().saturating_sub(1));
         self.list.select(found.unwrap_or(first_entry));
-        self.stale = true;
     }
 
     /// The path of the entry of `row`. The parent row holds the parent folder.
@@ -455,22 +462,15 @@ impl FileBrowser {
             .map(|path| path_value(path, &self.root))
     }
 
-    /// Answers the activation of `row`: the parent row and a folder of a
-    /// file setting open their folder, a choosable row gives its value.
-    fn activate(&mut self, row: BrowserRow) -> BrowserOutcome {
-        match (self.request.kind, row) {
-            (_, BrowserRow::Parent) => {
-                self.open_parent();
-                BrowserOutcome::Open
+    /// The message of the activation of `row`: the parent row and a folder
+    /// open their folder, a choosable file gives its value.
+    fn activation(&self, row: BrowserRow) -> Option<BrowserMessage> {
+        match row {
+            BrowserRow::Parent => Some(BrowserMessage::OpenParent),
+            BrowserRow::Folder(index) => {
+                Some(BrowserMessage::OpenFolder(self.folders[index].path.clone()))
             }
-            (_, BrowserRow::Folder(index)) => {
-                let folder = self.folders[index].path.clone();
-                self.open_folder(folder, None);
-                BrowserOutcome::Open
-            }
-            (PathKind::File, BrowserRow::File(_)) | (PathKind::Folder, BrowserRow::File(_)) => self
-                .chosen(row)
-                .map_or(BrowserOutcome::Open, BrowserOutcome::Chosen),
+            BrowserRow::File(_) => self.chosen(row).map(BrowserMessage::Choose),
         }
     }
 
@@ -521,31 +521,14 @@ impl FileBrowser {
         })
     }
 
-    /// Draws one pass of the browser in its modal layer, centered in `area`.
-    /// Returns the answer of the pass.
-    pub(crate) fn show(&mut self, context: &mut UiContext, area: Rect) -> BrowserOutcome {
-        context.layer(BROWSER_LAYER_ID, |context| {
-            let outcome = self.panel(context, area);
-            if outcome != BrowserOutcome::Open {
-                context.close_layer();
-            }
-            outcome
-        })
-    }
-
-    /// Draws the panel of the browser centered in `area`.
-    fn panel(&mut self, context: &mut UiContext, area: Rect) -> BrowserOutcome {
-        let outcome = self.draw_panel(context, area);
-        if self.stale {
-            self.stale = false;
-            context.request_pass();
-        }
-        outcome
-    }
-
-    /// Draws the widgets of the panel centered in `area` and returns the
-    /// answer of the pass.
-    fn draw_panel(&mut self, context: &mut UiContext, area: Rect) -> BrowserOutcome {
+    /// Draws the widgets of the panel centered in `area` and pushes the
+    /// messages of the pass.
+    fn draw_panel(
+        &mut self,
+        context: &mut UiContext,
+        area: Rect,
+        messages: &mut Vec<BrowserMessage>,
+    ) {
         let theme = context.theme;
         let catalog = context.catalog;
         let gap = theme.gap;
@@ -555,11 +538,6 @@ impl FileBrowser {
             write_title(catalog, &self.request, out);
         });
         let response = modal_in(context, BROWSER_LAYER_ID, area, PANEL_SIZE, title);
-        let mut outcome = if response.closed {
-            BrowserOutcome::Cancelled
-        } else {
-            BrowserOutcome::Open
-        };
 
         let (location, rest) = response.content.cut_top(TAB_BAR_HEIGHT);
         context.fill(
@@ -594,8 +572,7 @@ impl FileBrowser {
             &mut self.filter,
         );
         if filter.changed {
-            let selected = self.selected_row().and_then(|row| self.row_path(row));
-            self.rebuild_rows(selected.as_deref());
+            messages.push(BrowserMessage::FilterChanged);
         }
         let (extension_area, rest) = rest.cut_top(gap).1.cut_top(PATH_LINE_HEIGHT);
         let extensions = texts
@@ -622,7 +599,7 @@ impl FileBrowser {
 
         context.default_focus(list_id);
         if context.has_focus(list_id) && context.shortcut() == Some(Shortcut::Backspace) {
-            self.open_parent();
+            messages.push(BrowserMessage::OpenParent);
         }
         let rows = &self.rows;
         let current = self.current.as_deref();
@@ -696,25 +673,25 @@ impl FileBrowser {
             let width = checkbox.width(context).min(cancel_area.1.width);
             let checkbox_area = cancel_area.1.cut_left(width).0;
             if checkbox.show(context, checkbox_area, &mut self.show_all) {
-                let selected = selected.and_then(|row| self.row_path(row));
-                self.rebuild_rows(selected.as_deref());
+                messages.push(BrowserMessage::ShowAllChanged);
             }
         }
-        if cancel.show(context, cancel_area.0) {
-            outcome = BrowserOutcome::Cancelled;
-        }
-        if choose.show(context, choose_area)
-            && let Some(value) = choosable.and_then(|row| self.chosen(row))
-        {
-            outcome = BrowserOutcome::Chosen(value);
-        }
-        if let Some(index) = list_response.activated
-            && let Some(row) = self.rows.get(index).copied()
-        {
-            outcome = self.activate(row);
-        }
+        let cancelled = cancel.show(context, cancel_area.0) || response.closed;
+        let chosen = choose
+            .show(context, choose_area)
+            .then(|| choosable.and_then(|row| self.chosen(row)))
+            .flatten();
+        let activated = list_response
+            .activated
+            .and_then(|index| self.rows.get(index).copied());
+        let last = match activated {
+            Some(row) => self.activation(row),
+            None => chosen
+                .map(BrowserMessage::Choose)
+                .or(cancelled.then_some(BrowserMessage::Cancel)),
+        };
+        messages.extend(last);
         self.hints = self.focus_hints(context);
-        outcome
     }
 
     /// The hints of the widget that holds the focus. A hint whose action an
@@ -747,18 +724,65 @@ impl FileBrowser {
     }
 }
 
+impl Component for FileBrowser {
+    type Message = BrowserMessage;
+    type Output = String;
+    type Effect = Infallible;
+    type Input<'a> = ();
+
+    const LAYER: Layer = Layer::Modal(BROWSER_LAYER_ID);
+
+    fn messages(&mut self) -> &mut Vec<BrowserMessage> {
+        &mut self.messages
+    }
+
+    fn view(
+        &mut self,
+        context: &mut UiContext,
+        area: Rect,
+        _input: (),
+        messages: &mut Vec<BrowserMessage>,
+    ) {
+        self.draw_panel(context, area, messages);
+    }
+
+    fn update(
+        &mut self,
+        message: BrowserMessage,
+        _update: &mut Update<'_, Infallible>,
+    ) -> Status<String> {
+        match message {
+            BrowserMessage::FilterChanged | BrowserMessage::ShowAllChanged => {
+                let selected = self.selected_row().and_then(|row| self.row_path(row));
+                self.rebuild_rows(selected.as_deref());
+            }
+            BrowserMessage::OpenParent => self.open_parent(),
+            BrowserMessage::OpenFolder(folder) => self.open_folder(folder, None),
+            BrowserMessage::Cancel => return Status::Closed,
+            BrowserMessage::Choose(value) => return Status::Done(value),
+        }
+        Status::Open
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use gui::component::run;
     use machine_factory::config::settings::find_setting;
 
     use super::*;
     use crate::{
         editor::test_support::EditorRoot,
-        gui_test_support::{GuiHarness, MINIMUM_SCREEN},
+        gui_test_support::{GuiHarness, MINIMUM_SCREEN, apply},
     };
 
     /// The area of the browser in the tests.
     const AREA: Rect = MINIMUM_SCREEN;
+
+    /// Runs one pass of `browser`.
+    fn pass(browser: &mut FileBrowser, context: &mut UiContext) -> Status<String> {
+        run(browser, context, AREA, (), &mut |_| {})
+    }
 
     /// A request for an image of FDD 1 with the current value `current`.
     fn floppy_request(current: Option<&str>) -> BrowseRequest {
@@ -891,17 +915,22 @@ mod tests {
         );
         let row = browser.selected_row().expect("a row is selected");
         assert_eq!(
-            browser.activate(row),
-            BrowserOutcome::Chosen("games/98/YU-NO/YU-NO (Disk 2 of 4).hdm".to_owned())
+            browser.activation(row),
+            Some(BrowserMessage::Choose(
+                "games/98/YU-NO/YU-NO (Disk 2 of 4).hdm".to_owned()
+            ))
         );
-        browser.open_parent();
+        assert_eq!(
+            apply(&mut browser, BrowserMessage::OpenParent),
+            (Status::Open, Vec::new())
+        );
         assert_eq!(browser.folder(), root.path("games/98"));
         assert_eq!(selected(&browser), "YU-NO/");
-        browser.open_parent();
-        browser.open_parent();
+        apply(&mut browser, BrowserMessage::OpenParent);
+        apply(&mut browser, BrowserMessage::OpenParent);
         assert_eq!(browser.folder(), root.root);
         assert_eq!(selected(&browser), "games/");
-        browser.open_parent();
+        apply(&mut browser, BrowserMessage::OpenParent);
         let parent = root
             .root
             .parent()
@@ -910,26 +939,75 @@ mod tests {
         assert_eq!(browser.folder(), parent);
     }
 
+    /// Verifies that the updates of the filter and of the checkbox rebuild the rows and keep the
+    /// selected entry, that a folder opens without a selection and with an empty filter, and
+    /// that cancel and a choice end the browser.
+    #[test]
+    fn the_updates_rebuild_the_rows_and_end_the_browser() {
+        let root = games_root("browser_updates");
+        let mut browser = FileBrowser::new(
+            floppy_request(Some("games/98/YU-NO/YU-NO (Disk 2 of 4).hdm")),
+            &root.root,
+        );
+        browser.filter = "disk".to_owned();
+        assert_eq!(
+            apply(&mut browser, BrowserMessage::FilterChanged),
+            (Status::Open, Vec::new())
+        );
+        assert_eq!(
+            names(&browser),
+            ["..", "YU-NO (Disk 1 of 4).HDM", "YU-NO (Disk 2 of 4).hdm"]
+        );
+        assert_eq!(selected(&browser), "YU-NO (Disk 2 of 4).hdm");
+        browser.filter.clear();
+        browser.show_all = true;
+        assert_eq!(
+            apply(&mut browser, BrowserMessage::ShowAllChanged),
+            (Status::Open, Vec::new())
+        );
+        assert!(names(&browser).contains(&"readme.txt".to_owned()));
+        assert_eq!(selected(&browser), "YU-NO (Disk 2 of 4).hdm");
+        browser.filter = "save".to_owned();
+        assert_eq!(
+            apply(
+                &mut browser,
+                BrowserMessage::OpenFolder(root.path("games/98/YU-NO/Saves"))
+            ),
+            (Status::Open, Vec::new())
+        );
+        assert_eq!(browser.folder(), root.path("games/98/YU-NO/Saves"));
+        assert_eq!(browser.filter, "");
+        assert_eq!(selected(&browser), "save.d88");
+        assert_eq!(
+            apply(&mut browser, BrowserMessage::Cancel),
+            (Status::Closed, Vec::new())
+        );
+        assert_eq!(
+            apply(&mut browser, BrowserMessage::Choose("disk.d88".to_owned())),
+            (Status::Done("disk.d88".to_owned()), Vec::new())
+        );
+    }
+
     /// Verifies the keys of the browser: confirm opens a folder, Backspace opens the parent folder from the list, and Backspace edits the filter while the filter holds the focus.
     #[test]
     fn backspace_opens_the_parent_folder_from_the_list() {
         let root = games_root("browser_keys");
         let mut browser = FileBrowser::new(floppy_request(None), &root.root);
         let mut harness = GuiHarness::minimum();
-        harness.settle(|context| browser.show(context, AREA));
+        harness.settle(|context| pass(&mut browser, context));
         assert_eq!(harness.state.focused(), Some(UiId::from(LIST_ID)));
         assert_eq!(selected(&browser), "games/");
         harness.input.confirm = true;
         assert_eq!(
-            harness.settle(|context| browser.show(context, AREA)),
-            BrowserOutcome::Open
+            harness.settle(|context| pass(&mut browser, context)),
+            Status::Open
         );
         assert_eq!(browser.folder(), root.path("games"));
         harness.input.confirm = true;
-        harness.settle(|context| browser.show(context, AREA));
+        harness.settle(|context| pass(&mut browser, context));
         assert_eq!(names(&browser), ["..", "YU-NO/"]);
         harness.input.confirm = true;
-        harness.settle(|context| browser.show(context, AREA));
+        harness.settle(|context| pass(&mut browser, context));
         assert_eq!(browser.folder(), root.path("games/98/YU-NO"));
         assert_eq!(
             texts::english_labels(browser.hints()),
@@ -937,34 +1015,34 @@ mod tests {
         );
 
         harness.input.backspace = true;
-        harness.settle(|context| browser.show(context, AREA));
+        harness.settle(|context| pass(&mut browser, context));
         assert_eq!(browser.folder(), root.path("games/98"));
         assert_eq!(selected(&browser), "YU-NO/");
         harness.input.confirm = true;
-        harness.settle(|context| browser.show(context, AREA));
+        harness.settle(|context| pass(&mut browser, context));
         harness.input.navigation = Some(gui::ui::Navigation::Down);
-        harness.settle(|context| browser.show(context, AREA));
+        harness.settle(|context| pass(&mut browser, context));
         assert_eq!(selected(&browser), "Saves/");
         assert_eq!(harness.state.focused(), Some(UiId::from(LIST_ID)));
         harness.input.backspace = true;
-        harness.settle(|context| browser.show(context, AREA));
+        harness.settle(|context| pass(&mut browser, context));
 
         harness.state.set_focus(UiId::from(FILTER_ID));
         harness.input.text = "yu".to_owned();
-        harness.settle(|context| browser.show(context, AREA));
+        harness.settle(|context| pass(&mut browser, context));
         assert_eq!(names(&browser), ["..", "YU-NO/"]);
         harness.input.backspace = true;
-        harness.settle(|context| browser.show(context, AREA));
+        harness.settle(|context| pass(&mut browser, context));
         assert_eq!(browser.folder(), root.path("games/98"));
         assert_eq!(browser.filter, "y");
         assert_eq!(texts::english_labels(browser.hints()), ["Clear"]);
         harness.input.cancel = true;
-        harness.settle(|context| browser.show(context, AREA));
+        harness.settle(|context| pass(&mut browser, context));
         assert_eq!(browser.filter, "");
         harness.input.cancel = true;
         assert_eq!(
-            harness.frame(|context| browser.show(context, AREA)),
-            BrowserOutcome::Cancelled
+            harness.frame(|context| pass(&mut browser, context)),
+            Status::Closed
         );
     }
 
@@ -993,12 +1071,12 @@ mod tests {
             None
         );
         let mut harness = GuiHarness::minimum();
-        harness.settle(|context| browser.show(context, AREA));
+        harness.settle(|context| pass(&mut browser, context));
         harness.state.set_focus(UiId::from(SHOW_ALL_ID));
-        harness.settle(|context| browser.show(context, AREA));
+        harness.settle(|context| pass(&mut browser, context));
         assert_eq!(texts::english_labels(browser.hints()), ["Switch", "Close"]);
         harness.input.confirm = true;
-        harness.settle(|context| browser.show(context, AREA));
+        harness.settle(|context| pass(&mut browser, context));
         assert!(browser.show_all);
         assert_eq!(names(&browser), ["..", "manual.pdf"]);
         assert_eq!(browser.english_empty_text(), None);
@@ -1020,14 +1098,14 @@ mod tests {
         let mut browser = FileBrowser::new(request, &root.root);
         assert_eq!(names(&browser), [".."]);
         let mut harness = GuiHarness::minimum();
-        harness.settle(|context| browser.show(context, AREA));
+        harness.settle(|context| pass(&mut browser, context));
         harness.state.set_focus(UiId::from(LIST_ID));
-        harness.settle(|context| browser.show(context, AREA));
+        harness.settle(|context| pass(&mut browser, context));
         assert_eq!(selected(&browser), "..");
         let labels = |browser: &FileBrowser| texts::english_labels(browser.hints());
         assert_eq!(labels(&browser), ["Open", "Close"]);
         harness.state.set_focus(UiId::from(CANCEL_ID));
-        harness.settle(|context| browser.show(context, AREA));
+        harness.settle(|context| pass(&mut browser, context));
         assert_eq!(labels(&browser), ["Cancel"]);
     }
 

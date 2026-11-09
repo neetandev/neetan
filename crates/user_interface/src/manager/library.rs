@@ -4,8 +4,8 @@
 use gui::{
     Rect,
     ui::{
-        ActionButton, Button, ButtonKind, ConfirmResponse, EmptyHint, HEADER_HEIGHT, Icon,
-        Navigation, Shortcut, StatusEnd, TextBuffer, TextField, UiContext, UiId, status_line,
+        ActionButton, Button, ButtonKind, EmptyHint, HEADER_HEIGHT, Icon, Navigation, Shortcut,
+        StatusEnd, TextBuffer, TextField, UiContext, UiId, status_line,
     },
 };
 
@@ -349,17 +349,11 @@ impl Manager {
         }
     }
 
-    /// Draws the status line into `area`. `delete_response` is the answer
-    /// of the open question in this pass.
-    pub(super) fn show_status_line(
-        &mut self,
-        context: &mut UiContext,
-        area: Rect,
-        delete_response: Option<ConfirmResponse>,
-    ) {
+    /// Draws the status line into `area`.
+    pub(super) fn show_status_line(&mut self, context: &mut UiContext, area: Rect) {
         let catalog = context.catalog;
         if let Some(request) = &self.delete {
-            let hints = hints_in(catalog, &request.hints(delete_response.unwrap_or_default()));
+            let hints = hints_in(catalog, &request.hints());
             status_line(context, area, &hints, StatusEnd::Path(&request.shown_path));
             return;
         }

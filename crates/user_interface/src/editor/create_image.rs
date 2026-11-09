@@ -10,10 +10,14 @@
 mod image_name;
 mod type_rows;
 
-use std::path::{Path, PathBuf};
+use std::{
+    convert::Infallible,
+    path::{Path, PathBuf},
+};
 
 use gui::{
     Rect,
+    component::{Component, Ended, Layer, Status, Update, run_child},
     ui::{
         Align, Button, ButtonKind, Icon, List, ListState, PATH_LINE_HEIGHT, RowContent, TextBuffer,
         TextField, Truncation, UiContext, UiId, WrappedText, distinct_hints, label, modal_in,
@@ -35,7 +39,7 @@ use super::{BrowseTarget, Editor, media_list::CreateButton, notes::NoteKind, row
 use crate::{
     config::resolve_path,
     create::create_blank_image,
-    file_browser::{BrowseNoun, BrowseRequest, BrowserOutcome, FileBrowser, path_value},
+    file_browser::{BrowseNoun, BrowseRequest, FileBrowser, path_value},
     media_dialog::{PANEL_SIZE, TAB_BAR_HEIGHT},
     texts::{
         ACTIVATE_KEYS, CANCEL_KEYS, HintText, HintTexts, MAXIMUM_HINTS, common, create_image,
@@ -76,16 +80,30 @@ pub(crate) struct CreateRequest {
     pub(crate) folder: PathBuf,
 }
 
-/// The answer of the dialog in a pass.
+/// What the user can ask the dialog to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum CreateOutcome {
-    /// The dialog stays open.
-    Open,
+pub(crate) enum CreateMessage {
+    /// The selected image type changed.
+    TypeChanged,
+    /// The user edited the name.
+    NameChanged,
+    /// The folder browser opens.
+    Browse,
+    /// The image is created.
+    Create,
     /// The dialog closes without an image.
-    Cancelled,
-    /// The image was created. The value is its path below the root relative to the root, any
-    /// other path absolute.
-    Created(String),
+    Cancel,
+    /// The folder browser ended, with the chosen folder.
+    Browser(Ended<String>),
+}
+
+/// The open child of the dialog.
+#[derive(Debug, Clone)]
+enum CreateOverlay {
+    /// No child is open.
+    None,
+    /// The folder browser is open.
+    Browser(Box<FileBrowser>),
 }
 
 /// The result of a hint of the dialog. Two hints of one action lead to one result, and the
@@ -141,6 +159,8 @@ struct CreateTexts {
 /// The open create image dialog.
 #[derive(Debug, Clone)]
 pub(crate) struct CreateImageDialog {
+    /// The message buffer.
+    messages: Vec<CreateMessage>,
     /// The request of the drive field.
     request: CreateRequest,
     /// The root folder.
@@ -160,8 +180,8 @@ pub(crate) struct CreateImageDialog {
     /// The count of the changes of the check and the failure. The message refills when it
     /// changes.
     revision: u64,
-    /// The open folder browser.
-    browser: Option<FileBrowser>,
+    /// The open child.
+    overlay: CreateOverlay,
     /// The texts of the panel.
     texts: CreateTexts,
     /// The wrapped lines of a message with a fixed text. A message with a file name or an error
@@ -169,8 +189,6 @@ pub(crate) struct CreateImageDialog {
     message_lines: WrappedText,
     /// The hints of the status line of the last pass.
     hints: HintTexts,
-    /// Whether the state changed after the panel drew it, so the pass draws stale widgets.
-    stale: bool,
 }
 
 impl CreateImageDialog {
@@ -184,6 +202,7 @@ impl CreateImageDialog {
             ..CreateTexts::default()
         };
         let mut dialog = Self {
+            messages: Vec::new(),
             folder: request.folder.clone(),
             request,
             root: root.to_path_buf(),
@@ -193,11 +212,10 @@ impl CreateImageDialog {
             check: NameCheck::Valid,
             failure: None,
             revision: 0,
-            browser: None,
+            overlay: CreateOverlay::None,
             texts,
             message_lines: WrappedText::default(),
             hints: HintTexts::new(),
-            stale: false,
         };
         dialog.name = dialog.default_name();
         dialog.run_check();
@@ -206,9 +224,10 @@ impl CreateImageDialog {
 
     /// The hints of the status line of the last pass. The open folder browser gives its own.
     pub(crate) fn hints(&self) -> &HintTexts {
-        self.browser
-            .as_ref()
-            .map_or(&self.hints, |browser| browser.hints())
+        match &self.overlay {
+            CreateOverlay::None => &self.hints,
+            CreateOverlay::Browser(browser) => browser.hints(),
+        }
     }
 
     /// The selected image.
@@ -227,7 +246,6 @@ impl CreateImageDialog {
         self.check = check_name(&self.name, &self.folder, self.selected_image());
         self.failure = None;
         self.revision += 1;
-        self.stale = true;
     }
 
     /// Answers a change of the selected type: an unedited name takes the default name of the
@@ -251,25 +269,24 @@ impl CreateImageDialog {
     }
 
     /// Checks the name once more and writes the image when the check passes.
-    fn create(&mut self) -> CreateOutcome {
+    fn create(&mut self) -> Status<String> {
         self.run_check();
         if self.check != NameCheck::Valid {
-            return CreateOutcome::Open;
+            return Status::Open;
         }
         self.write_image()
     }
 
     /// Writes the image of the selected type at the name in the folder. A failed write keeps the
     /// dialog open with the error.
-    fn write_image(&mut self) -> CreateOutcome {
+    fn write_image(&mut self) -> Status<String> {
         let path = self.folder.join(self.name.trim());
         match create_blank_image(&path, self.selected_image().format) {
-            Ok(()) => CreateOutcome::Created(path_value(&path, &self.root)),
+            Ok(()) => Status::Done(path_value(&path, &self.root)),
             Err(error) => {
                 self.failure = Some(format!("{error:#}"));
                 self.revision += 1;
-                self.stale = true;
-                CreateOutcome::Open
+                Status::Open
             }
         }
     }
@@ -284,42 +301,6 @@ impl CreateImageDialog {
             icon: Icon::Folder,
             current: Some(path_value(&self.folder, &self.root)),
         }
-    }
-
-    /// Draws one pass of the dialog in its modal layer centered in `area`, with the open folder
-    /// browser on top. Returns the answer of the pass.
-    pub(crate) fn show(&mut self, context: &mut UiContext, area: Rect) -> CreateOutcome {
-        let outcome = context.layer(CREATE_LAYER_ID, |context| {
-            let outcome = self.panel(context, area);
-            if outcome != CreateOutcome::Open {
-                context.close_layer();
-            }
-            outcome
-        });
-        if outcome != CreateOutcome::Open {
-            return outcome;
-        }
-        if let Some(mut browser) = self.browser.take() {
-            match browser.show(context, area) {
-                BrowserOutcome::Open => self.browser = Some(browser),
-                BrowserOutcome::Cancelled => context.request_pass(),
-                BrowserOutcome::Chosen(value) => {
-                    self.folder_changed(resolve_path(&self.root, Path::new(&value)));
-                    context.request_pass();
-                }
-            }
-        }
-        outcome
-    }
-
-    /// Draws the panel of the dialog centered in `area`.
-    fn panel(&mut self, context: &mut UiContext, area: Rect) -> CreateOutcome {
-        let outcome = self.draw_panel(context, area);
-        if self.stale {
-            self.stale = false;
-            context.request_pass();
-        }
-        outcome
     }
 
     /// Writes the line below the name in `catalog`: the note of a blank image, the failure of
@@ -358,8 +339,14 @@ impl CreateImageDialog {
         crate::texts::english_text(|catalog, out| self.write_message(catalog, out))
     }
 
-    /// Draws the widgets of the panel centered in `area` and returns the answer of the pass.
-    fn draw_panel(&mut self, context: &mut UiContext, area: Rect) -> CreateOutcome {
+    /// Draws the widgets of the panel centered in `area`, pushes the messages of the pass to
+    /// `messages` and returns the message that ends the pass, which comes last.
+    fn draw_panel(
+        &mut self,
+        context: &mut UiContext,
+        area: Rect,
+        messages: &mut Vec<CreateMessage>,
+    ) -> Option<CreateMessage> {
         let theme = context.theme;
         let catalog = context.catalog;
         let gap = theme.gap;
@@ -371,11 +358,6 @@ impl CreateImageDialog {
             let _ = catalog.write(out, create_image::title(&label));
         });
         let response = modal_in(context, CREATE_LAYER_ID, area, PANEL_SIZE, title);
-        let mut outcome = if response.closed {
-            CreateOutcome::Cancelled
-        } else {
-            CreateOutcome::Open
-        };
 
         let (bar, rest) = response.content.cut_top(TAB_BAR_HEIGHT);
         context.fill(
@@ -431,7 +413,7 @@ impl CreateImageDialog {
             RowContent::new(text).icon(Some(icon)).show(context, row);
         });
         if list_response.selection_changed {
-            self.type_changed();
+            messages.push(CreateMessage::TypeChanged);
         }
 
         let name = TextField::new(NAME_ID, catalog.text(create_image::NAME_PLACEHOLDER))
@@ -440,8 +422,7 @@ impl CreateImageDialog {
             .error(self.check.marks_field())
             .show(context, name_area, &mut self.name);
         if name.changed {
-            self.name_edited = true;
-            self.run_check();
+            messages.push(CreateMessage::NameChanged);
         }
 
         let kind = if self.failure.is_none() && self.check == NameCheck::Valid {
@@ -473,20 +454,18 @@ impl CreateImageDialog {
         let cancel = Button::new(CANCEL_ID, catalog.text(common::CANCEL));
         let (create_area, rest) = footer.cut_right(create.width(context));
         let cancel_area = rest.cut_right(gap).1.cut_right(cancel.width(context)).0;
-        if cancel.show(context, cancel_area) {
-            outcome = CreateOutcome::Cancelled;
-        }
+        let cancelled = cancel.show(context, cancel_area) || response.closed;
         let create_pressed = create.show(context, create_area);
-
-        if browse_pressed {
-            self.browser = Some(FileBrowser::new(self.folder_request(), &self.root));
-        } else if outcome == CreateOutcome::Open
-            && (create_pressed || list_response.activated.is_some() || name.submitted)
-        {
-            outcome = self.create();
-        }
         self.hints = self.focus_hints(context);
-        outcome
+        if cancelled {
+            Some(CreateMessage::Cancel)
+        } else if browse_pressed {
+            Some(CreateMessage::Browse)
+        } else if create_pressed || list_response.activated.is_some() || name.submitted {
+            Some(CreateMessage::Create)
+        } else {
+            None
+        }
     }
 
     /// The hints of the widget that holds the focus. A hint whose action an earlier hint has
@@ -508,6 +487,66 @@ impl CreateImageDialog {
         }
         hints.push(CLOSE_HINT);
         distinct_hints(hints.iter().copied())
+    }
+}
+
+impl Component for CreateImageDialog {
+    type Message = CreateMessage;
+    type Output = String;
+    type Effect = Infallible;
+    type Input<'a> = ();
+
+    const LAYER: Layer = Layer::Modal(CREATE_LAYER_ID);
+
+    fn messages(&mut self) -> &mut Vec<CreateMessage> {
+        &mut self.messages
+    }
+
+    /// Draws one pass of the dialog centered in `area`, with the open folder browser on top.
+    fn view(
+        &mut self,
+        context: &mut UiContext,
+        area: Rect,
+        _input: (),
+        messages: &mut Vec<CreateMessage>,
+    ) {
+        let last = self.draw_panel(context, area, messages);
+        if let CreateOverlay::Browser(browser) = &mut self.overlay {
+            run_child(browser.as_mut(), context, area, (), messages, |event| {
+                CreateMessage::Browser(event.into_ended())
+            });
+        }
+        messages.extend(last);
+    }
+
+    fn update(
+        &mut self,
+        message: CreateMessage,
+        update: &mut Update<'_, Infallible>,
+    ) -> Status<String> {
+        match message {
+            CreateMessage::TypeChanged => self.type_changed(),
+            CreateMessage::NameChanged => {
+                self.name_edited = true;
+                self.run_check();
+            }
+            CreateMessage::Browse => {
+                self.overlay = CreateOverlay::Browser(Box::new(FileBrowser::new(
+                    self.folder_request(),
+                    &self.root,
+                )));
+                update.open::<FileBrowser>();
+            }
+            CreateMessage::Create => return self.create(),
+            CreateMessage::Cancel => return Status::Closed,
+            CreateMessage::Browser(ended) => {
+                self.overlay = CreateOverlay::None;
+                if let Ended::Done(value) = ended {
+                    self.folder_changed(resolve_path(&self.root, Path::new(&value)));
+                }
+            }
+        }
+        Status::Open
     }
 }
 
@@ -596,7 +635,10 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use device::{disk::load_hdd_image, floppy::load_floppy_image};
-    use gui::ui::{EditCommand, Navigation};
+    use gui::{
+        component::run,
+        ui::{EditCommand, Navigation},
+    };
 
     use super::*;
     use crate::{
@@ -604,7 +646,8 @@ mod tests {
             media_list::MediaBrowse,
             test_support::{EditorRoot, fdd1_model, index_of},
         },
-        gui_test_support::{GuiHarness, MINIMUM_SCREEN, assert_hints_fit},
+        file_browser::BROWSER_LAYER_ID,
+        gui_test_support::{GuiHarness, MINIMUM_SCREEN, apply, assert_hints_fit},
         texts::{english_labels, english_text, hints_in, repository::repository_catalogs},
     };
 
@@ -659,8 +702,13 @@ mod tests {
     }
 
     /// Draws passes of `dialog` until they settle and returns the answer of the last pass.
-    fn show(harness: &mut GuiHarness, dialog: &mut CreateImageDialog) -> CreateOutcome {
-        harness.settle(|context| dialog.show(context, AREA))
+    fn show(harness: &mut GuiHarness, dialog: &mut CreateImageDialog) -> Status<String> {
+        harness.settle(|context| pass(dialog, context))
+    }
+
+    /// Runs one pass of `dialog`.
+    fn pass(dialog: &mut CreateImageDialog, context: &mut UiContext) -> Status<String> {
+        run(dialog, context, AREA, (), &mut |_| {})
     }
 
     /// Replaces the name of the focused name field of `dialog` with `text` through the keyboard.
@@ -687,7 +735,7 @@ mod tests {
             let editor = open_editor(&root, model, "");
             let mut dialog = dialog_of(&editor, "hdd1");
             let mut harness = GuiHarness::minimum();
-            assert_eq!(show(&mut harness, &mut dialog), CreateOutcome::Open);
+            assert_eq!(show(&mut harness, &mut dialog), Status::Open);
             assert_eq!(harness.state.focused(), Some(UiId::from(TYPE_LIST_ID)));
             assert_eq!(selected_row(&dialog), row, "{model}");
             assert_eq!(dialog.name, "yu-no-hdd1.hdi");
@@ -754,7 +802,7 @@ mod tests {
         );
         assert_eq!(labels(&dialog), ["Close"]);
         harness.input.confirm = true;
-        assert_eq!(show(&mut harness, &mut dialog), CreateOutcome::Open);
+        assert_eq!(show(&mut harness, &mut dialog), Status::Open);
         assert!(!root.path("save").exists());
     }
 
@@ -822,7 +870,7 @@ mod tests {
             format!("The file {taken} exists. Choose another name.")
         );
         harness.input.confirm = true;
-        assert_eq!(show(&mut harness, &mut dialog), CreateOutcome::Open);
+        assert_eq!(show(&mut harness, &mut dialog), Status::Open);
         assert_eq!(
             std::fs::read_to_string(root.path(&taken)).expect("the file reads"),
             "kept"
@@ -844,8 +892,8 @@ mod tests {
         assert_eq!(selected_row(&dialog), "SASI 5 MB (.hdi)");
         harness.input.confirm = true;
         assert_eq!(
-            harness.frame(|context| dialog.show(context, AREA)),
-            CreateOutcome::Created("yu-no-hdd1.hdi".to_owned())
+            harness.frame(|context| pass(&mut dialog, context)),
+            Status::Done("yu-no-hdd1.hdi".to_owned())
         );
         let path = root.path("yu-no-hdd1.hdi");
         let data = std::fs::read(&path).expect("the image reads");
@@ -856,8 +904,8 @@ mod tests {
         show(&mut harness, &mut dialog);
         harness.input.confirm = true;
         assert_eq!(
-            harness.frame(|context| dialog.show(context, AREA)),
-            CreateOutcome::Created("yu-no-fdd1.d88".to_owned())
+            harness.frame(|context| pass(&mut dialog, context)),
+            Status::Done("yu-no-fdd1.d88".to_owned())
         );
         let path = root.path("yu-no-fdd1.d88");
         let data = std::fs::read(&path).expect("the image reads");
@@ -878,7 +926,7 @@ mod tests {
         assert_eq!(dialog.check, NameCheck::Valid);
         let name = dialog.name.clone();
         root.write(&name, "kept");
-        assert_eq!(dialog.write_image(), CreateOutcome::Open);
+        assert_eq!(dialog.write_image(), Status::Open);
         assert!(
             dialog
                 .english_message()
@@ -889,12 +937,105 @@ mod tests {
         show(&mut harness, &mut dialog);
         assert_eq!(labels(&dialog), ["Create", "Close"]);
         harness.input.confirm = true;
-        assert_eq!(show(&mut harness, &mut dialog), CreateOutcome::Open);
+        assert_eq!(show(&mut harness, &mut dialog), Status::Open);
         assert_eq!(dialog.check, NameCheck::FileExists);
         assert_eq!(dialog.failure, None);
         assert_eq!(
             std::fs::read_to_string(root.path(&name)).expect("the file reads"),
             "kept"
+        );
+    }
+
+    /// Verifies the updates of the dialog: an edited name marks the name as edited and checks
+    /// it, Browse opens the folder browser with its layer, a closed browser keeps the folder, a
+    /// chosen folder takes the default name in it, Create writes the image and ends the dialog
+    /// with its path, a failed write keeps the dialog open with the error, and Cancel closes it.
+    #[test]
+    fn the_updates_follow_the_messages() {
+        let root = EditorRoot::new("create_image_updates");
+        root.write("games/disk.d88", "");
+        let editor = open_editor(&root, fdd1_model(&root), "");
+        let mut dialog = dialog_of(&editor, "fdd1");
+        let default_name = dialog.name.clone();
+        let extension = dialog.selected_image().extensions[0];
+
+        let last_type = dialog.request.images.images.len() - 1;
+        dialog.list.select(last_type);
+        dialog.name = "stale".to_owned();
+        dialog.failure = Some("failed".to_owned());
+        let revision = dialog.revision;
+        assert_eq!(
+            apply(&mut dialog, CreateMessage::TypeChanged),
+            (Status::Open, Vec::new())
+        );
+        assert_eq!(dialog.name, dialog.default_name());
+        assert!(
+            dialog
+                .name
+                .ends_with(&format!(".{}", dialog.selected_image().extensions[0]))
+        );
+        assert_eq!(dialog.check, NameCheck::Valid);
+        assert_eq!(dialog.failure, None);
+        assert_eq!(dialog.revision, revision + 1);
+        dialog.list.select(dialog.request.images.default);
+        apply(&mut dialog, CreateMessage::TypeChanged);
+        assert_eq!(dialog.name, default_name);
+
+        dialog.name = "save".to_owned();
+        assert_eq!(
+            apply(&mut dialog, CreateMessage::NameChanged),
+            (Status::Open, Vec::new())
+        );
+        assert!(dialog.name_edited);
+        assert_eq!(dialog.check, NameCheck::WrongExtension);
+        assert_eq!(
+            apply(&mut dialog, CreateMessage::Create),
+            (Status::Open, Vec::new())
+        );
+        assert!(!root.path("save").exists());
+        dialog.name.clone_from(&default_name);
+        dialog.name_edited = false;
+        dialog.run_check();
+
+        assert_eq!(
+            apply(&mut dialog, CreateMessage::Browse),
+            (Status::Open, vec![UiId::from(BROWSER_LAYER_ID)])
+        );
+        assert!(matches!(dialog.overlay, CreateOverlay::Browser(_)));
+        assert_eq!(
+            apply(&mut dialog, CreateMessage::Browser(Ended::Closed)),
+            (Status::Open, Vec::new())
+        );
+        assert!(matches!(dialog.overlay, CreateOverlay::None));
+        assert_eq!(dialog.folder, root.root);
+
+        apply(&mut dialog, CreateMessage::Browse);
+        assert_eq!(
+            apply(
+                &mut dialog,
+                CreateMessage::Browser(Ended::Done("games".to_owned()))
+            ),
+            (Status::Open, Vec::new())
+        );
+        assert!(matches!(dialog.overlay, CreateOverlay::None));
+        assert_eq!(dialog.folder, root.path("games"));
+        assert_eq!(dialog.name, default_name);
+
+        let name = dialog.name.clone();
+        root.write(&format!("games/{name}"), "kept");
+        assert_eq!(dialog.write_image(), Status::Open);
+        assert!(dialog.failure.is_some());
+        std::fs::remove_file(root.path(&format!("games/{name}"))).expect("the file is removed");
+        assert_eq!(
+            apply(&mut dialog, CreateMessage::Create),
+            (Status::Done(format!("games/{name}")), Vec::new())
+        );
+        assert!(root.path(&format!("games/{name}")).is_file());
+        assert!(name.ends_with(&format!(".{extension}")), "{name}");
+
+        assert_eq!(
+            apply(&mut dialog, CreateMessage::Cancel),
+            (Status::Closed, Vec::new())
         );
     }
 
@@ -912,8 +1053,8 @@ mod tests {
             show(&mut harness, &mut dialog);
             harness.input.cancel = true;
             assert_eq!(
-                harness.frame(|context| dialog.show(context, AREA)),
-                CreateOutcome::Cancelled,
+                harness.frame(|context| pass(&mut dialog, context)),
+                Status::Closed,
                 "{focus}"
             );
             assert!(!root.path(&dialog.name).exists());
@@ -960,7 +1101,7 @@ mod tests {
         assert_eq!(labels(&dialog), ["Browse", "Close"]);
         harness.input.confirm = true;
         show(&mut harness, &mut dialog);
-        assert!(dialog.browser.is_some());
+        assert!(matches!(dialog.overlay, CreateOverlay::Browser(_)));
         assert_eq!(harness.state.open_modals(), 2);
         assert_eq!(labels(&dialog), ["Open", "Parent folder", "Close"]);
         harness.input.confirm = true;
@@ -970,8 +1111,8 @@ mod tests {
             .set_focus(UiId::from(crate::file_browser::CHOOSE_ID));
         show(&mut harness, &mut dialog);
         harness.input.confirm = true;
-        assert_eq!(show(&mut harness, &mut dialog), CreateOutcome::Open);
-        assert!(dialog.browser.is_none());
+        assert_eq!(show(&mut harness, &mut dialog), Status::Open);
+        assert!(matches!(dialog.overlay, CreateOverlay::None));
         assert_eq!(harness.state.open_modals(), 1);
         assert_eq!(dialog.folder, root.path("games/98/YU-NO"));
         assert_eq!(dialog.name, "yu-no-hdd1-2.hdi");

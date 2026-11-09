@@ -8,10 +8,10 @@ use std::{
 
 use gui::{
     Fonts, Instance, Rasterizer, Rect, Scene,
-    component::{Component, Ended, Layer, Status, Update, run, run_child},
+    component::{Component, Ended, Layer, LayerRequests, Status, Update, run, run_child},
     ui::{
         Button, Input, KEYCAP_HEIGHT, STATUS_LINE_HEIGHT, StatusEnd, Theme, ThemeKind, UiContext,
-        UiState, Viewport, status_line,
+        UiId, UiState, Viewport, status_line,
     },
 };
 use i18n::Catalog;
@@ -243,6 +243,20 @@ impl GuiHarness {
     }
 }
 
+/// Applies `message` to `component` outside of a pass with the English texts. Returns the status
+/// of the update and the ids of the layers that it opens for the next pass.
+pub(crate) fn apply<C: Component<Effect = Infallible>>(
+    component: &mut C,
+    message: C::Message,
+) -> (Status<C::Output>, Vec<UiId>) {
+    let mut layers = LayerRequests::new();
+    let mut emit = |never: Infallible| match never {};
+    let catalog = LanguageCatalog::English;
+    let mut update = Update::new(catalog.catalog(), &mut emit, &mut layers);
+    let status = component.update(message, &mut update);
+    (status, layers.ids().to_vec())
+}
+
 /// Asserts that the status line of a window of the minimum size shows every key cap of the
 /// hints that `hints` gives in each language of the repository.
 pub(crate) fn assert_hints_fit(hints: impl for<'c> Fn(&'c Catalog) -> Hints<'c>) {
@@ -404,8 +418,6 @@ impl Component for AnswerDialog {
 
 #[cfg(test)]
 mod tests {
-    use gui::ui::UiId;
-
     use super::*;
 
     /// Verifies that `run_component` runs a component until it settles and returns its status

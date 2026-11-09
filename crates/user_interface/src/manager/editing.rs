@@ -5,11 +5,14 @@
 use std::path::Path;
 
 use common::{info, warn};
-use gui::ui::{STATUS_LINE_HEIGHT, StatusEnd, UiContext, UiId, status_line};
+use gui::{
+    component::{Status, run},
+    ui::{STATUS_LINE_HEIGHT, StatusEnd, UiContext, UiId, status_line},
+};
 use machine_factory::config::systems::System;
 
 use super::{
-    DialogAnswer, EditTarget, ErrorDialog, GameRow, Manager, NextFocus, SETTINGS_ID, rows_at,
+    EditTarget, ErrorChoice, ErrorDialog, GameRow, Manager, NextFocus, SETTINGS_ID, rows_at,
     sidebar::SYSTEM_DEFAULTS_ID,
 };
 use crate::{
@@ -205,14 +208,13 @@ impl Manager {
         if let (Some(path), Some(edited)) = (&pass.saved, &edited) {
             self.file_saved(edited, path, active_language);
         }
-        let answer = self
-            .dialog
-            .as_mut()
-            .map_or(DialogAnswer::Open, |dialog| dialog.show(context, screen));
-        if answer != DialogAnswer::Open {
+        let status = self.dialog.as_mut().map_or(Status::Open, |dialog| {
+            run(dialog, context, screen, (), &mut |_| {})
+        });
+        if status != Status::Open {
             self.dialog = None;
         }
-        if answer == DialogAnswer::Overwrite
+        if status == Status::Done(ErrorChoice::Overwrite)
             && let Some(editor) = self.editor.as_mut()
         {
             let written = match editor.overwrite() {

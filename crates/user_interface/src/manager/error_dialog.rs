@@ -4,11 +4,12 @@
 //! or did not save, a file of the editor that changed outside the manager
 //! before a save, and a saved settings file that does not read.
 
-use std::path::PathBuf;
+use std::{convert::Infallible, path::PathBuf};
 
 use ::common::FlushError;
 use gui::{
     Rect, RectStyle,
+    component::{Component, Layer, Status, Update},
     ui::{
         Align, Button, ButtonKind, HEADER_HEIGHT, Icon, TextBuffer, UiContext, UiId, WrappedText,
         modal_in,
@@ -93,16 +94,23 @@ fn editor_titles(subject: &EditedFile) -> (Key, Key) {
     }
 }
 
-/// The answer of an error dialog in a pass.
+/// What the user can answer to an error dialog.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub(crate) enum DialogAnswer {
-    /// The dialog stays open.
-    Open,
-    /// The close button, OK or cancel closed the dialog.
-    Closed,
-    /// The dialog closed to open its game in the editor.
+pub(crate) enum ErrorMessage {
+    /// The close button, OK or cancel closes the dialog.
+    Close,
+    /// The dialog closes to open its game in the editor.
     Edit,
-    /// The dialog closed to save the changes of the editor over its game file.
+    /// The dialog closes to save the changes of the editor over its game file.
+    Overwrite,
+}
+
+/// The result of an error dialog that closes with a request to its owner.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub(crate) enum ErrorChoice {
+    /// Open the game of the dialog in the editor.
+    Edit,
+    /// Save the changes of the editor over the game file of the dialog.
     Overwrite,
 }
 
@@ -118,6 +126,8 @@ pub(crate) struct EditTarget {
 /// An open error dialog.
 #[derive(Debug, Clone)]
 pub(crate) struct ErrorDialog {
+    /// The message buffer.
+    messages: Vec<ErrorMessage>,
     /// The key of the title of the panel.
     title: Key,
     /// The event of the dialog.
@@ -143,6 +153,7 @@ impl ErrorDialog {
     /// The dialog with the title `title` about `event` with the detail `detail`.
     fn new(title: Key, event: ErrorEvent, detail: ErrorDetail) -> Self {
         Self {
+            messages: Vec::new(),
             title,
             event,
             detail,
@@ -308,21 +319,9 @@ impl ErrorDialog {
         self.detail_text.last_text()
     }
 
-    /// Draws one pass of the dialog in its modal layer, centered in `area`.
-    /// The OK button holds the focus. Returns the answer of the pass, and
-    /// closes the layer when the dialog closes.
-    pub(crate) fn show(&mut self, context: &mut UiContext, area: Rect) -> DialogAnswer {
-        context.layer(LAYER_ID, |context| {
-            let answer = self.panel(context, area);
-            if answer != DialogAnswer::Open {
-                context.close_layer();
-            }
-            answer
-        })
-    }
-
-    /// Draws the panel of the dialog centered in `area` and returns its answer.
-    fn panel(&mut self, context: &mut UiContext, area: Rect) -> DialogAnswer {
+    /// Draws the panel of the dialog centered in `area` and returns the answer
+    /// of the pass.
+    fn panel(&mut self, context: &mut UiContext, area: Rect) -> Option<ErrorMessage> {
         let theme = context.theme;
         let catalog = context.catalog;
         let Self {
@@ -441,18 +440,22 @@ impl ErrorDialog {
         };
         let ok = ok.show(context, ok_area);
         if edit {
-            DialogAnswer::Edit
+            Some(ErrorMessage::Edit)
         } else if response.closed || ok {
-            DialogAnswer::Closed
+            Some(ErrorMessage::Close)
         } else {
-            DialogAnswer::Open
+            None
         }
     }
 
     /// Draws Cancel and the danger button Overwrite into `footer`. Cancel
     /// takes the focus first. Returns the answer of the pass, with `closed`
     /// for the close button and cancel of the modal.
-    fn overwrite_buttons(context: &mut UiContext, footer: Rect, closed: bool) -> DialogAnswer {
+    fn overwrite_buttons(
+        context: &mut UiContext,
+        footer: Rect,
+        closed: bool,
+    ) -> Option<ErrorMessage> {
         let theme = context.theme;
         let cancel_id = UiId::from(CANCEL_ID);
         let catalog = context.catalog;
@@ -470,24 +473,61 @@ impl ErrorDialog {
         let cancelled = cancel.show(context, cancel_area);
         let overwritten = overwrite.show(context, overwrite_area);
         if overwritten {
-            DialogAnswer::Overwrite
+            Some(ErrorMessage::Overwrite)
         } else if closed || cancelled {
-            DialogAnswer::Closed
+            Some(ErrorMessage::Close)
         } else {
-            DialogAnswer::Open
+            None
+        }
+    }
+}
+
+impl Component for ErrorDialog {
+    type Message = ErrorMessage;
+    type Output = ErrorChoice;
+    type Effect = Infallible;
+    type Input<'a> = ();
+
+    const LAYER: Layer = Layer::Modal(LAYER_ID);
+
+    fn messages(&mut self) -> &mut Vec<ErrorMessage> {
+        &mut self.messages
+    }
+
+    /// Draws one pass of the dialog centered in `area`. The OK button holds
+    /// the focus.
+    fn view(
+        &mut self,
+        context: &mut UiContext,
+        area: Rect,
+        _input: (),
+        messages: &mut Vec<ErrorMessage>,
+    ) {
+        messages.extend(self.panel(context, area));
+    }
+
+    fn update(
+        &mut self,
+        message: ErrorMessage,
+        _update: &mut Update<'_, Infallible>,
+    ) -> Status<ErrorChoice> {
+        match message {
+            ErrorMessage::Close => Status::Closed,
+            ErrorMessage::Edit => Status::Done(ErrorChoice::Edit),
+            ErrorMessage::Overwrite => Status::Done(ErrorChoice::Overwrite),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use gui::ui::Navigation;
+    use gui::{component::run, ui::Navigation};
 
     use super::*;
     use crate::{
         config::DocumentError,
         editor::test_support::system_named,
-        gui_test_support::{GuiHarness, MINIMUM_SCREEN, MINIMUM_WINDOW},
+        gui_test_support::{GuiHarness, MINIMUM_SCREEN, MINIMUM_WINDOW, apply},
         texts::{
             LanguageCatalog, english_labels,
             errors::{
@@ -503,9 +543,33 @@ mod tests {
     /// The area of a dialog in the tests.
     const AREA: Rect = MINIMUM_SCREEN;
 
+    /// Runs one pass of `dialog` centered in `area`.
+    fn pass(dialog: &mut ErrorDialog, context: &mut UiContext, area: Rect) -> Status<ErrorChoice> {
+        run(dialog, context, area, (), &mut |_| {})
+    }
+
+    /// Verifies that close ends the dialog without a result and that edit and overwrite end it
+    /// with their choice.
+    #[test]
+    fn each_answer_ends_the_dialog() {
+        let mut dialog = ErrorDialog::changed_outside(&game(), "changed");
+        assert_eq!(
+            apply(&mut dialog, ErrorMessage::Close),
+            (Status::Closed, Vec::new())
+        );
+        assert_eq!(
+            apply(&mut dialog, ErrorMessage::Edit),
+            (Status::Done(ErrorChoice::Edit), Vec::new())
+        );
+        assert_eq!(
+            apply(&mut dialog, ErrorMessage::Overwrite),
+            (Status::Done(ErrorChoice::Overwrite), Vec::new())
+        );
+    }
+
     /// Returns `dialog` after one pass in the English texts.
     fn drawn(mut dialog: ErrorDialog) -> ErrorDialog {
-        GuiHarness::minimum().frame(|context| dialog.show(context, AREA));
+        GuiHarness::minimum().frame(|context| pass(&mut dialog, context, AREA));
         dialog
     }
 
@@ -592,31 +656,31 @@ mod tests {
         let mut dialog =
             ErrorDialog::launch_failed("Edge", &LaunchFailure::Machine("error".to_owned()));
         assert_eq!(
-            harness.frame(|context| dialog.show(context, area)),
-            DialogAnswer::Open
+            harness.frame(|context| pass(&mut dialog, context, area)),
+            Status::Open
         );
         assert_eq!(harness.state.focused(), Some(UiId::from(OK_ID)));
         harness.input.confirm = true;
         assert_eq!(
-            harness.frame(|context| dialog.show(context, area)),
-            DialogAnswer::Closed
+            harness.frame(|context| pass(&mut dialog, context, area)),
+            Status::Closed
         );
 
         let mut dialog = ErrorDialog::game_stopped(Some("X1"), "halt", &Ok(()));
-        harness.frame(|context| dialog.show(context, area));
+        harness.frame(|context| pass(&mut dialog, context, area));
         harness.input.cancel = true;
         assert_eq!(
-            harness.frame(|context| dialog.show(context, area)),
-            DialogAnswer::Closed
+            harness.frame(|context| pass(&mut dialog, context, area)),
+            Status::Closed
         );
 
         let mut dialog =
             ErrorDialog::launch_failed("Edge", &LaunchFailure::Machine("error".to_owned()));
-        harness.frame(|context| dialog.show(context, area));
+        harness.frame(|context| pass(&mut dialog, context, area));
         harness.input.navigation = Some(Navigation::Down);
         assert_eq!(
-            harness.frame(|context| dialog.show(context, area)),
-            DialogAnswer::Open
+            harness.frame(|context| pass(&mut dialog, context, area)),
+            Status::Open
         );
     }
 
@@ -636,16 +700,16 @@ mod tests {
             ErrorDialog::launch_failed("Edge", &LaunchFailure::Machine("error".to_owned()))
                 .with_edit(target.clone());
         assert_eq!(dialog.edit_target(), Some(&target));
-        harness.frame(|context| dialog.show(context, area));
-        harness.frame(|context| dialog.show(context, area));
+        harness.frame(|context| pass(&mut dialog, context, area));
+        harness.frame(|context| pass(&mut dialog, context, area));
         assert_eq!(harness.state.focused(), Some(UiId::from(OK_ID)));
         harness.input.navigation = Some(Navigation::Left);
-        harness.frame(|context| dialog.show(context, area));
+        harness.frame(|context| pass(&mut dialog, context, area));
         assert_eq!(harness.state.focused(), Some(UiId::from(EDIT_ID)));
         harness.input.confirm = true;
         assert_eq!(
-            harness.frame(|context| dialog.show(context, area)),
-            DialogAnswer::Edit
+            harness.frame(|context| pass(&mut dialog, context, area)),
+            Status::Done(ErrorChoice::Edit)
         );
     }
 
@@ -718,12 +782,12 @@ mod tests {
             Some("A new PC-98 game did not open in the editor."),
             Some("the system pc98 is not compiled"),
         );
-        harness.frame(|context| dialog.show(context, AREA));
+        harness.frame(|context| pass(&mut dialog, context, AREA));
         assert_eq!((dialog.message(), dialog.detail()), english_texts);
         harness.set_catalog(LanguageCatalog::Loaded(Box::new(test_catalog(
             GERMAN_ERRORS,
         ))));
-        harness.frame(|context| dialog.show(context, AREA));
+        harness.frame(|context| pass(&mut dialog, context, AREA));
         assert_eq!(
             (dialog.message(), dialog.detail()),
             (
@@ -732,7 +796,7 @@ mod tests {
             )
         );
         harness.set_catalog(LanguageCatalog::English);
-        harness.frame(|context| dialog.show(context, AREA));
+        harness.frame(|context| pass(&mut dialog, context, AREA));
         assert_eq!((dialog.message(), dialog.detail()), english_texts);
     }
 
@@ -752,7 +816,7 @@ mod tests {
         assert_eq!(dialog.title(), GAME_SAVE_FAILED_TITLE);
         let mut labels = |harness: &mut GuiHarness| {
             harness.frame(|context| {
-                dialog.show(context, area);
+                pass(&mut dialog, context, area);
                 english_labels(&dialog.hints(context))
             })
         };
@@ -764,20 +828,20 @@ mod tests {
         assert_eq!(harness.state.focused(), Some(UiId::from(OVERWRITE_ID)));
         harness.input.confirm = true;
         assert_eq!(
-            harness.frame(|context| dialog.show(context, area)),
-            DialogAnswer::Overwrite
+            harness.frame(|context| pass(&mut dialog, context, area)),
+            Status::Done(ErrorChoice::Overwrite)
         );
         for press in [
             |harness: &mut GuiHarness| harness.input.cancel = true,
             |harness: &mut GuiHarness| harness.input.confirm = true,
         ] {
             let mut harness = GuiHarness::minimum();
-            harness.frame(|context| dialog.show(context, area));
-            harness.frame(|context| dialog.show(context, area));
+            harness.frame(|context| pass(&mut dialog, context, area));
+            harness.frame(|context| pass(&mut dialog, context, area));
             press(&mut harness);
             assert_eq!(
-                harness.frame(|context| dialog.show(context, area)),
-                DialogAnswer::Closed
+                harness.frame(|context| pass(&mut dialog, context, area)),
+                Status::Closed
             );
         }
         let plain = ErrorDialog::save_failed(
@@ -844,7 +908,7 @@ mod tests {
         };
         for mut dialog in dialogs {
             let mut harness = GuiHarness::minimum();
-            harness.frame(|context| dialog.show(context, area));
+            harness.frame(|context| pass(&mut dialog, context, area));
             let theme = &harness.theme;
             let instances = harness.scene.instances();
             let panel = instances
@@ -923,7 +987,7 @@ mod tests {
         let area = MINIMUM_SCREEN;
         let mut dialog =
             ErrorDialog::launch_failed("Edge", &LaunchFailure::Machine("error text ".repeat(60)));
-        harness.frame(|context| dialog.show(context, area));
+        harness.frame(|context| pass(&mut dialog, context, area));
         let panel = harness
             .scene
             .instances()

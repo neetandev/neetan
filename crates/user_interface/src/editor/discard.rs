@@ -1,7 +1,10 @@
 //! The question before the editor closes with unsaved changes.
 
+use std::convert::Infallible;
+
 use gui::{
     Rect,
+    component::{Component, Layer, Status, Update},
     ui::{
         CONFIRM_HINTS, ConfirmDialog, ConfirmLines, ConfirmResponse, Icon, TextBuffer, UiContext,
         confirm_hints,
@@ -16,15 +19,13 @@ use crate::texts::{CONFIRM_KEYS, HintText, discard};
 /// The id of the modal layer of the question.
 pub(crate) const DISCARD_LAYER_ID: &str = "discard";
 
-/// The answer of the question in a pass.
+/// What the user can answer to the question.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub(crate) enum DiscardOutcome {
-    /// The question stays open.
-    Open,
+pub(crate) enum DiscardMessage {
     /// The user keeps editing.
-    Kept,
+    Keep,
     /// The user drops the changes and the editor closes.
-    Discarded,
+    Discard,
 }
 
 /// Writes the question about the changes to the file of `subject` in
@@ -40,9 +41,13 @@ fn write_message(catalog: &Catalog, subject: &EditedFile, out: &mut String) {
     };
 }
 
-/// The question before the changes to one file go away.
+/// The question before the changes to one file go away. It ends with
+/// `Done` when the user drops the changes and with `Closed` when the user
+/// keeps editing.
 #[derive(Debug, Clone)]
 pub(crate) struct DiscardQuestion {
+    /// The message buffer.
+    messages: Vec<DiscardMessage>,
     /// The file of the changes.
     subject: EditedFile,
     /// The question in the catalog of the last pass.
@@ -57,6 +62,7 @@ impl DiscardQuestion {
     /// The question about the changes to the file of `subject`.
     pub(crate) fn new(subject: EditedFile) -> Self {
         Self {
+            messages: Vec::new(),
             subject,
             message: TextBuffer::new(),
             lines: ConfirmLines::new(),
@@ -82,9 +88,28 @@ impl DiscardQuestion {
             HintText::new,
         )
     }
+}
 
-    /// Draws one pass of the question centered in `area` and returns its answer.
-    pub(crate) fn show(&mut self, context: &mut UiContext, area: Rect) -> DiscardOutcome {
+impl Component for DiscardQuestion {
+    type Message = DiscardMessage;
+    type Output = ();
+    type Effect = Infallible;
+    type Input<'a> = ();
+
+    const LAYER: Layer = Layer::Widget(DISCARD_LAYER_ID);
+
+    fn messages(&mut self) -> &mut Vec<DiscardMessage> {
+        &mut self.messages
+    }
+
+    /// Draws one pass of the question centered in `area`.
+    fn view(
+        &mut self,
+        context: &mut UiContext,
+        area: Rect,
+        _input: (),
+        messages: &mut Vec<DiscardMessage>,
+    ) {
         let catalog = context.catalog;
         let Self {
             subject,
@@ -107,23 +132,35 @@ impl DiscardQuestion {
         .area(area)
         .show(context, lines);
         if self.response.confirmed {
-            DiscardOutcome::Discarded
+            messages.push(DiscardMessage::Discard);
         } else if self.response.cancelled {
-            DiscardOutcome::Kept
-        } else {
-            DiscardOutcome::Open
+            messages.push(DiscardMessage::Keep);
+        }
+    }
+
+    fn update(
+        &mut self,
+        message: DiscardMessage,
+        _update: &mut Update<'_, Infallible>,
+    ) -> Status<()> {
+        match message {
+            DiscardMessage::Keep => Status::Closed,
+            DiscardMessage::Discard => Status::Done(()),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use gui::ui::{Navigation, UiId};
+    use gui::{
+        component::run,
+        ui::{Navigation, UiId},
+    };
 
     use super::*;
     use crate::{
         editor::test_support::system_named,
-        gui_test_support::{GuiHarness, MINIMUM_SCREEN},
+        gui_test_support::{GuiHarness, MINIMUM_SCREEN, apply},
         texts::{LanguageCatalog, english_labels, test_catalog},
     };
 
@@ -143,10 +180,30 @@ mod tests {
         game("Edge")
     }
 
+    /// Runs one pass of `question`.
+    fn pass(question: &mut DiscardQuestion, context: &mut UiContext) -> Status<()> {
+        run(question, context, AREA, (), &mut |_| {})
+    }
+
+    /// Verifies that keeping the changes closes the question and that dropping them ends it
+    /// with a result.
+    #[test]
+    fn keep_closes_and_discard_ends_with_a_result() {
+        let mut question = DiscardQuestion::new(edge());
+        assert_eq!(
+            apply(&mut question, DiscardMessage::Keep),
+            (Status::Closed, Vec::new())
+        );
+        assert_eq!(
+            apply(&mut question, DiscardMessage::Discard),
+            (Status::Done(()), Vec::new())
+        );
+    }
+
     /// Returns the question that one pass of the question about `subject` draws.
     fn drawn_message(subject: EditedFile) -> Option<String> {
         let mut question = DiscardQuestion::new(subject);
-        GuiHarness::minimum().frame(|context| question.show(context, AREA));
+        GuiHarness::minimum().frame(|context| pass(&mut question, context));
         question.message().map(str::to_owned)
     }
 
@@ -172,7 +229,7 @@ mod tests {
     fn an_open_question_follows_a_catalog_switch() {
         let mut question = DiscardQuestion::new(edge());
         let mut harness = GuiHarness::minimum();
-        harness.settle(|context| question.show(context, AREA));
+        harness.settle(|context| pass(&mut question, context));
         assert_eq!(
             question.message(),
             Some("The changes to Edge are not saved.")
@@ -181,8 +238,8 @@ mod tests {
             GERMAN_DISCARD,
         ))));
         assert_eq!(
-            harness.frame(|context| question.show(context, AREA)),
-            DiscardOutcome::Open
+            harness.frame(|context| pass(&mut question, context)),
+            Status::Open
         );
         assert_eq!(
             question.message(),
@@ -198,8 +255,8 @@ mod tests {
         ));
         let mut harness = GuiHarness::minimum();
         assert_eq!(
-            harness.settle(|context| question.show(context, AREA)),
-            DiscardOutcome::Open
+            harness.settle(|context| pass(&mut question, context)),
+            Status::Open
         );
         assert_eq!(
             question.message(),
@@ -214,26 +271,26 @@ mod tests {
         assert_eq!(english_labels(&question.hints()), ["Keep editing"]);
         harness.input.confirm = true;
         assert_eq!(
-            harness.frame(|context| question.show(context, AREA)),
-            DiscardOutcome::Kept
+            harness.frame(|context| pass(&mut question, context)),
+            Status::Closed
         );
 
         let mut question = DiscardQuestion::new(edge());
-        harness.settle(|context| question.show(context, AREA));
+        harness.settle(|context| pass(&mut question, context));
         harness.input.cancel = true;
         assert_eq!(
-            harness.frame(|context| question.show(context, AREA)),
-            DiscardOutcome::Kept
+            harness.frame(|context| pass(&mut question, context)),
+            Status::Closed
         );
 
         let mut question = DiscardQuestion::new(edge());
-        harness.settle(|context| question.show(context, AREA));
+        harness.settle(|context| pass(&mut question, context));
         harness.input.navigation = Some(Navigation::Right);
-        harness.settle(|context| question.show(context, AREA));
+        harness.settle(|context| pass(&mut question, context));
         harness.input.confirm = true;
         assert_eq!(
-            harness.frame(|context| question.show(context, AREA)),
-            DiscardOutcome::Discarded
+            harness.frame(|context| pass(&mut question, context)),
+            Status::Done(())
         );
     }
 }

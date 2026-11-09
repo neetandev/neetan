@@ -25,14 +25,15 @@ use std::{path::PathBuf, result};
 use common::{FlushError, debug, info};
 use gui::{
     Rect,
-    ui::{ActionButton, ConfirmResponse, RowKind, STATUS_LINE_HEIGHT, Shortcut, UiContext, UiId},
+    component::{Status, run},
+    ui::{ActionButton, RowKind, STATUS_LINE_HEIGHT, Shortcut, UiContext, UiId},
 };
 use machine_factory::config::systems::{System, compiled_systems};
 
 use self::{
-    delete::{DeleteOutcome, DeleteRequest},
+    delete::DeleteRequest,
     entries::{TableEntry, table_entries},
-    error_dialog::{DialogAnswer, EditTarget},
+    error_dialog::{EditTarget, ErrorChoice},
     filter::Filter,
     game_table::GAME_TABLE_ID,
     library::LibraryTexts,
@@ -379,42 +380,34 @@ impl Manager {
 
         self.show_systems(context, sidebar_area);
         let launch = self.show_main(context, main_area);
-        let delete_response = self.show_dialogs(context, screen);
-        self.show_status_line(context, status_area, delete_response);
+        self.show_dialogs(context, screen);
+        self.show_status_line(context, status_area);
         launch
     }
 
     /// Draws the open question and the open error dialog, centered in
-    /// `screen`. A delete scans the catalog again. Returns the answer of the
-    /// question in this pass.
-    fn show_dialogs(&mut self, context: &mut UiContext, screen: Rect) -> Option<ConfirmResponse> {
-        let mut delete_response = None;
+    /// `screen`. A confirmed delete removes the game file and scans the
+    /// catalog again.
+    fn show_dialogs(&mut self, context: &mut UiContext, screen: Rect) {
         if let Some(mut request) = self.delete.take() {
-            let (outcome, response) = request.show(context, screen);
-            match outcome {
-                DeleteOutcome::Open => {
-                    delete_response = Some(response);
-                    self.delete = Some(request);
-                }
-                DeleteOutcome::Kept => {}
-                DeleteOutcome::Deleted => {
-                    info!("Game manager: deleted {}", request.path.display());
-                    self.rescan_after_delete();
-                }
-                DeleteOutcome::Failed { path, error } => {
-                    self.dialog = Some(ErrorDialog::delete_failed(&request.name, path, error));
+            match run(&mut request, context, screen, (), &mut |_| {}) {
+                Status::Open => self.delete = Some(request),
+                Status::Closed => {}
+                Status::Done(()) => {
+                    if let Some(dialog) = remove_game_file(&request) {
+                        self.dialog = Some(dialog);
+                    }
                     self.rescan_after_delete();
                 }
             }
         }
-        let answer = self
-            .dialog
-            .as_mut()
-            .map_or(DialogAnswer::Open, |dialog| dialog.show(context, screen));
-        match answer {
-            DialogAnswer::Open => {}
-            DialogAnswer::Closed | DialogAnswer::Overwrite => self.dialog = None,
-            DialogAnswer::Edit => {
+        let status = self.dialog.as_mut().map_or(Status::Open, |dialog| {
+            run(dialog, context, screen, (), &mut |_| {})
+        });
+        match status {
+            Status::Open => {}
+            Status::Closed | Status::Done(ErrorChoice::Overwrite) => self.dialog = None,
+            Status::Done(ErrorChoice::Edit) => {
                 let target = self
                     .dialog
                     .take()
@@ -424,7 +417,22 @@ impl Manager {
                 }
             }
         }
-        delete_response
+    }
+}
+
+/// Removes the game file of `request`. A failed removal returns the error
+/// dialog that reports it.
+fn remove_game_file(request: &DeleteRequest) -> Option<ErrorDialog> {
+    match std::fs::remove_file(&request.path) {
+        Ok(()) => {
+            info!("Game manager: deleted {}", request.path.display());
+            None
+        }
+        Err(error) => Some(ErrorDialog::delete_failed(
+            &request.name,
+            request.shown_path.clone(),
+            error.to_string(),
+        )),
     }
 }
 
@@ -437,17 +445,19 @@ fn rows_at(systems: &[SystemEntry], index: usize) -> &[GameRow] {
 
 #[cfg(test)]
 mod tests {
+    use common::temporary::TemporaryFolder;
     use gui::ui::{EditCommand, EditModifiers, Navigation, ThemeKind, Viewport};
     use machine_factory::rom_status::RomStatus;
 
     use super::{
         delete::DELETE_LAYER_ID,
+        rows::tests::game,
         sidebar::SYSTEM_LIST_ID,
         test_support::{TestRoot, first_system, games, sample_root, select, steady_frame, titles},
         *,
     };
     use crate::{
-        gui_test_support::{GuiHarness, MINIMUM_HEIGHT, MINIMUM_WIDTH, PassCounts},
+        gui_test_support::{GuiHarness, MINIMUM_HEIGHT, MINIMUM_SCREEN, MINIMUM_WIDTH, PassCounts},
         texts::repository::{RepositoryLanguage, repository_languages},
     };
 
@@ -688,6 +698,43 @@ mod tests {
         harness.input.confirm = true;
         harness.settle(|context| manager.show(context));
         assert!(manager.dialog().is_none());
+    }
+
+    /// The delete request of the game file `name` in `folder`.
+    fn delete_request(folder: &TemporaryFolder, name: &str) -> DeleteRequest {
+        DeleteRequest::new(&GameRow {
+            path: folder.path().join(name),
+            ..game("edge", "Edge", "", "", "")
+        })
+    }
+
+    /// Verifies that the delete of a game file that is a symbolic link removes the link and keeps its target.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_loses_only_itself() {
+        let folder = TemporaryFolder::new("manager_delete_link");
+        folder.write_file("target.conf", b"meta.title = Edge\n");
+        let target = folder.path().join("target.conf");
+        std::os::unix::fs::symlink(&target, folder.path().join("edge.conf")).expect("link");
+        assert!(remove_game_file(&delete_request(&folder, "edge.conf")).is_none());
+        assert!(std::fs::symlink_metadata(folder.path().join("edge.conf")).is_err());
+        assert!(target.is_file());
+    }
+
+    /// Verifies that a file that cannot be removed reports the error with its path.
+    #[test]
+    fn a_failed_removal_reports_the_error() {
+        let folder = TemporaryFolder::new("manager_delete_failed");
+        let request = delete_request(&folder, "edge.conf");
+        let mut dialog = remove_game_file(&request).expect("the removal fails");
+        GuiHarness::minimum()
+            .frame(|context| run(&mut dialog, context, MINIMUM_SCREEN, (), &mut |_| {}));
+        assert_eq!(dialog.message(), Some("Edge was not deleted."));
+        let detail = dialog.detail().unwrap_or_default();
+        let error = detail
+            .strip_prefix(&format!("{}: ", request.shown_path))
+            .unwrap_or_else(|| panic!("the detail starts with the path: {detail}"));
+        assert!(!error.is_empty());
     }
 
     /// Verifies that the delete of the last game gives the focus to Add.
