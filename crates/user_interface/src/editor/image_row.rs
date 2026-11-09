@@ -15,7 +15,7 @@ use super::{
     media_list::{CreateButton, create_id, empty_list_height, empty_list_id, list_box_width},
     media_row::{draw_note_below, shows_empty_toggle},
     notes::write_empty_list_caption,
-    page::PageActions,
+    page::FormResponse,
     rows::{FORM_ROW_PITCH, SettingRow, field_id},
 };
 
@@ -33,7 +33,7 @@ impl Editor {
         &mut self,
         context: &mut UiContext,
         mut row: SettingRow,
-        actions: &mut PageActions,
+        form: &mut FormResponse,
     ) -> f32 {
         let theme = context.theme;
         let catalog = context.catalog;
@@ -60,7 +60,7 @@ impl Editor {
             list_box_width(theme, wide.width),
             theme.control_height,
         );
-        self.draw_path_field(context, control, &mut row, false, actions);
+        self.draw_path_field(context, control, &mut row, false, form);
         let create_button = self.create_button(setting, ignored.is_none());
         match create_button {
             CreateButton::Hidden => {}
@@ -82,7 +82,7 @@ impl Editor {
                     .enabled(enabled)
                     .show(context, area)
                 {
-                    actions.create = Some(BrowseTarget::Path(index));
+                    form.create = Some(BrowseTarget::Path(index));
                 }
             }
         }
@@ -112,7 +112,7 @@ impl Editor {
                 } else {
                     FieldValue::EmptyPath
                 };
-                actions.changed = true;
+                form.changed = true;
             }
             bottom += empty_list_height(theme);
             below_top += empty_list_height(theme);

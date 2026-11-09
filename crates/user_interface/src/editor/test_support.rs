@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use common::temporary::TemporaryFolder;
 use gui::{
     Instance, Rect,
+    component::{Status, run},
     ui::{Navigation, UiContext},
 };
 use machine_factory::{
@@ -18,7 +19,9 @@ use machine_factory::{
     rom_status::{RomCheck, RomStatus},
 };
 
-use super::{Editor, EditorPass, EditorSection, help_area::FormRow, page::help_area};
+use super::{
+    Editor, EditorEffect, EditorSection, SaveFailure, help_area::FormRow, page::help_area,
+};
 use crate::{
     config::{HostLayers, LaunchRequest, Locations, SETTINGS_FILE_NAME},
     gui_test_support::{GuiHarness, MINIMUM_SCREEN, MINIMUM_WIDTH},
@@ -29,23 +32,23 @@ use crate::{
 /// A short page that shows less than one tall media row.
 pub(crate) const SHORT_SCREEN: Rect = Rect::new(0.0, 0.0, MINIMUM_WIDTH, 300.0);
 
-/// Draws passes of `editor` in [`MINIMUM_SCREEN`] until they settle and returns the answers of the
-/// passes.
-pub(crate) fn show(harness: &mut GuiHarness, editor: &mut Editor) -> EditorPass {
+/// Runs passes of `editor` in [`MINIMUM_SCREEN`] until they settle and returns the status of the
+/// last pass and the effects of the passes.
+pub(crate) fn show(
+    harness: &mut GuiHarness,
+    editor: &mut Editor,
+) -> (Status<()>, Vec<EditorEffect>) {
     show_in(harness, editor, MINIMUM_SCREEN)
 }
 
-/// Draws passes of `editor` in `screen` until they settle and returns the answers of the
-/// passes.
-pub(crate) fn show_in(harness: &mut GuiHarness, editor: &mut Editor, screen: Rect) -> EditorPass {
-    let mut answer = EditorPass::default();
-    harness.settle(|context| {
-        let pass = editor.show(context, screen);
-        answer.closed |= pass.closed;
-        answer.saved = answer.saved.clone().or(pass.saved);
-        answer.save_error = answer.save_error.clone().or(pass.save_error);
-    });
-    answer
+/// Runs passes of `editor` in `screen` until they settle and returns the status of the last pass
+/// and the effects of the passes.
+pub(crate) fn show_in(
+    harness: &mut GuiHarness,
+    editor: &mut Editor,
+    screen: Rect,
+) -> (Status<()>, Vec<EditorEffect>) {
+    harness.run_component(editor, screen, ())
 }
 
 /// The glyph indices of the last pass inside the help area of the page in
@@ -136,7 +139,7 @@ pub(crate) fn shown_help_in(
         screen,
         |editor, context| editor.help_setting(context),
         |editor, context| {
-            editor.show(context, screen);
+            run(editor, context, screen, (), &mut |_| {});
         },
     )
 }
@@ -362,4 +365,20 @@ pub(crate) fn first_rom_folder() -> RomFolder {
         .next()
         .expect("one system is compiled")
         .rom_folder()
+}
+
+/// The path of the first file that `effects` report as saved.
+pub(crate) fn saved(effects: &[EditorEffect]) -> Option<PathBuf> {
+    effects.iter().find_map(|effect| match effect {
+        EditorEffect::Saved { path, .. } => Some(path.clone()),
+        EditorEffect::SaveFailed(_) => None,
+    })
+}
+
+/// The first save failure that `effects` report.
+pub(crate) fn save_failure(effects: &[EditorEffect]) -> Option<SaveFailure> {
+    effects.iter().find_map(|effect| match effect {
+        EditorEffect::Saved { .. } => None,
+        EditorEffect::SaveFailed(failure) => Some(failure.clone()),
+    })
 }

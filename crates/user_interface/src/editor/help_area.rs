@@ -8,7 +8,7 @@ use gui::{
 };
 use machine_factory::config::settings::Setting;
 
-use super::{BrowseTarget, Editor};
+use super::{BrowseTarget, Editor, EditorOverlay};
 use crate::texts::setting_help;
 
 /// The most lines of a help text. A longer text ends the last line in an
@@ -181,9 +181,11 @@ impl Editor {
     /// open file browser fills. A metadata row, a widget outside the form
     /// and a dialog give none.
     fn focused_setting(&self, context: &UiContext) -> Option<&'static Setting> {
-        let index = match self.browser.as_ref().map(|(_, target)| *target) {
-            Some(BrowseTarget::Path(index) | BrowseTarget::List(index, _)) => Some(index),
-            None => self
+        let index = match &self.overlay {
+            EditorOverlay::Browser(_, BrowseTarget::Path(index) | BrowseTarget::List(index, _)) => {
+                Some(*index)
+            }
+            EditorOverlay::None | EditorOverlay::Creator(..) | EditorOverlay::Discard(_) => self
                 .widgets
                 .iter()
                 .find(|widget| {
@@ -197,7 +199,10 @@ impl Editor {
 
 #[cfg(test)]
 mod tests {
-    use gui::ui::{Navigation, UiId};
+    use gui::{
+        component::run,
+        ui::{Navigation, UiId},
+    };
     use machine_factory::{
         config::{MachineSelection, settings::MACHINE_KEY, systems::compiled_systems},
         rom_status::RomStatus,
@@ -245,7 +250,7 @@ mod tests {
     /// wraps nothing.
     fn assert_steady(harness: &mut GuiHarness, editor: &mut Editor, screen: Rect) {
         let (counts, _) = harness.counted_frame(|context| {
-            editor.show(context, screen);
+            run(editor, context, screen, (), &mut |_| {});
         });
         assert_eq!(counts, PassCounts::NONE);
     }
@@ -695,11 +700,11 @@ mod tests {
         assert_eq!(shown_help(&mut harness, &mut editor), Some("fdd1"));
         harness.input.confirm = true;
         show(&mut harness, &mut editor);
-        assert!(editor.browser.is_some());
+        assert!(matches!(editor.overlay, EditorOverlay::Browser(..)));
         assert_eq!(shown_help(&mut harness, &mut editor), Some("fdd1"));
         harness.input.cancel = true;
         show(&mut harness, &mut editor);
-        assert!(editor.browser.is_none());
+        assert!(matches!(editor.overlay, EditorOverlay::None));
         assert_eq!(shown_help(&mut harness, &mut editor), Some("fdd1"));
 
         harness.input.cancel = true;
@@ -814,7 +819,7 @@ mod tests {
         let counted = |harness: &mut GuiHarness, editor: &mut Editor| {
             harness
                 .counted_frame(|context| {
-                    editor.show(context, MINIMUM_SCREEN);
+                    run(editor, context, MINIMUM_SCREEN, (), &mut |_| {});
                 })
                 .0
         };

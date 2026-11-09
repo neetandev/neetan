@@ -249,12 +249,23 @@ pub(crate) fn apply<C: Component<Effect = Infallible>>(
     component: &mut C,
     message: C::Message,
 ) -> (Status<C::Output>, Vec<UiId>) {
+    let (status, layers, _) = apply_with_effects(component, message);
+    (status, layers)
+}
+
+/// Applies `message` to `component` outside of a pass with the English texts. Returns the status
+/// of the update, the ids of the layers that it opens for the next pass and its effects.
+pub(crate) fn apply_with_effects<C: Component>(
+    component: &mut C,
+    message: C::Message,
+) -> (Status<C::Output>, Vec<UiId>, Vec<C::Effect>) {
     let mut layers = LayerRequests::new();
-    let mut emit = |never: Infallible| match never {};
+    let mut effects = Vec::new();
+    let mut emit = |effect| effects.push(effect);
     let catalog = LanguageCatalog::English;
     let mut update = Update::new(catalog.catalog(), &mut emit, &mut layers);
     let status = component.update(message, &mut update);
-    (status, layers.ids().to_vec())
+    (status, layers.ids().to_vec(), effects)
 }
 
 /// Asserts that the status line of a window of the minimum size shows every key cap of the

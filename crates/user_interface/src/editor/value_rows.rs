@@ -23,7 +23,7 @@ use super::{
         ChoiceNote, NoteKind, NoteLook, choice_note, decimals_of, followed_by, number_note,
         path_note, write_inherited_placeholder,
     },
-    page::PageActions,
+    page::FormResponse,
     rows::{RowAreas, SettingRow, browse_id, draw_note, field_id, show_dropdown},
 };
 use crate::texts::{common, host_settings, note};
@@ -78,7 +78,7 @@ impl Editor {
         &mut self,
         context: &mut UiContext,
         row: SettingRow,
-        actions: &mut PageActions,
+        form: &mut FormResponse,
     ) -> f32 {
         let SettingRow {
             areas,
@@ -125,7 +125,7 @@ impl Editor {
         ) && selected != before
         {
             field.select(selected);
-            actions.changed = true;
+            form.changed = true;
         }
         let note = texts
             .note
@@ -142,7 +142,7 @@ impl Editor {
         context: &mut UiContext,
         row: SettingRow,
         range: NumberRange,
-        actions: &mut PageActions,
+        form: &mut FormResponse,
     ) -> f32 {
         let SettingRow {
             areas,
@@ -185,10 +185,10 @@ impl Editor {
             theme.control_height,
         );
         if let Some(text) = self.fields[index].text_mut() {
-            actions.changed |= field.show(context, rect, text).changed;
+            form.changed |= field.show(context, rect, text).changed;
         }
         if enabled {
-            actions.changed |= self.clear_on_x(context, id, index);
+            form.changed |= self.clear_on_x(context, id, index);
         }
         let note = texts
             .note
@@ -256,7 +256,7 @@ impl Editor {
         control: Rect,
         row: &mut SettingRow,
         error: bool,
-        actions: &mut PageActions,
+        form: &mut FormResponse,
     ) {
         let theme = context.theme;
         let catalog = context.catalog;
@@ -291,20 +291,20 @@ impl Editor {
             .error(error);
         let field = &mut self.fields[index];
         match field.text_mut() {
-            Some(text) => actions.changed |= text_field.show(context, field_area, text).changed,
+            Some(text) => form.changed |= text_field.show(context, field_area, text).changed,
             None => {
                 let mut typed = String::new();
                 if text_field.show(context, field_area, &mut typed).changed && !typed.is_empty() {
                     field.value = FieldValue::Text(typed);
-                    actions.changed = true;
+                    form.changed = true;
                 }
             }
         }
         if enabled {
-            actions.changed |= self.clear_on_x(context, id, index);
+            form.changed |= self.clear_on_x(context, id, index);
         }
         if browse.show(context, browse_area) {
-            actions.browse = Some(BrowseTarget::Path(index));
+            form.browse = Some(BrowseTarget::Path(index));
         }
     }
 
@@ -316,7 +316,7 @@ impl Editor {
         &mut self,
         context: &mut UiContext,
         mut row: SettingRow,
-        actions: &mut PageActions,
+        form: &mut FormResponse,
     ) -> f32 {
         let theme = context.theme;
         let catalog = context.catalog;
@@ -335,7 +335,7 @@ impl Editor {
             .host_settings()
             .and_then(|settings| settings.flag(setting.key))
             .is_some();
-        self.draw_path_field(context, areas.control, &mut row, error, actions);
+        self.draw_path_field(context, areas.control, &mut row, error, form);
         let texts = row.texts;
         let note = texts
             .note
@@ -386,7 +386,7 @@ impl Editor {
 
 #[cfg(test)]
 mod tests {
-    use gui::ui::NUMBER_FIELD_WIDTH;
+    use gui::{component::run, ui::NUMBER_FIELD_WIDTH};
     use machine_factory::config::systems::compiled_systems;
 
     use super::*;
@@ -564,7 +564,7 @@ mod tests {
                     .expect("the display section");
                 let mut harness = GuiHarness::minimum();
                 harness.settle(|context| {
-                    editor.show(context, MINIMUM_SCREEN);
+                    run(&mut editor, context, MINIMUM_SCREEN, (), &mut |_| {});
                 });
                 let theme = &harness.theme;
                 let frames: Vec<[f32; 4]> = harness

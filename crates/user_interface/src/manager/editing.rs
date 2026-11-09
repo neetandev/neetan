@@ -17,7 +17,7 @@ use super::{
 };
 use crate::{
     catalog::{read_game, read_games},
-    editor::{EditedFile, Editor, OpenError, SaveFailure},
+    editor::{EditedFile, Editor, EditorEffect, OpenError, SaveFailure},
     texts::hints_in,
 };
 
@@ -198,16 +198,26 @@ impl Manager {
         let Some(editor) = self.editor.as_mut() else {
             return;
         };
-        let pass = editor.show(context, screen);
+        let mut effects = std::mem::take(&mut self.editor_effects);
+        effects.clear();
+        let closed = run(editor, context, screen, (), &mut |effect| {
+            effects.push(effect)
+        }) != Status::Open;
         let catalog = context.catalog;
         let active_language = catalog.tag();
-        let edited = pass.saved.as_ref().map(|_| editor.edited_file());
-        if let Some(failure) = &pass.save_error {
-            self.dialog = Some(save_failure_dialog(editor, failure));
+        for effect in effects.drain(..) {
+            match effect {
+                EditorEffect::Saved { edited, path } => {
+                    self.file_saved(&edited, &path, active_language);
+                }
+                EditorEffect::SaveFailed(failure) => {
+                    if let Some(editor) = &self.editor {
+                        self.dialog = Some(save_failure_dialog(editor, &failure));
+                    }
+                }
+            }
         }
-        if let (Some(path), Some(edited)) = (&pass.saved, &edited) {
-            self.file_saved(edited, path, active_language);
-        }
+        self.editor_effects = effects;
         let status = self.dialog.as_mut().map_or(Status::Open, |dialog| {
             run(dialog, context, screen, (), &mut |_| {})
         });
@@ -236,7 +246,7 @@ impl Manager {
         };
         let shown_path = editor.shown_path_text();
         status_line(context, status_area, &hints, StatusEnd::Path(shown_path));
-        if pass.closed {
+        if closed {
             let next = match editor.edited_file() {
                 EditedFile::Game { .. } => NextFocus::Start,
                 EditedFile::SystemDefaults(_) => NextFocus::Widget(UiId::from(SYSTEM_DEFAULTS_ID)),
@@ -783,6 +793,29 @@ mod tests {
             harness.input.navigation = Some(Navigation::NextTab);
             settle(&mut harness, &mut manager);
         }
+    }
+
+    #[cfg(feature = "pc98")]
+    /// Verifies that a save of the editor keeps the capacity of the effect buffer of the
+    /// manager and that the steady frame after the save allocates nothing, fills no text again
+    /// and keeps the revision of the editor. The save itself writes a file and allocates.
+    #[test]
+    fn a_steady_frame_after_a_save_allocates_nothing() {
+        let (root, mut manager, mut harness) = steady_editor("steady_editor_save");
+        harness.input.text = "!".to_owned();
+        settle(&mut harness, &mut manager);
+        harness.input.shortcut = Some(Shortcut::ControlS);
+        settle(&mut harness, &mut manager);
+        let path = root.path(&format!("config/pc98/{STEADY_STEM}.conf"));
+        assert!(
+            std::fs::read_to_string(&path)
+                .expect("file reads")
+                .contains("YU-NO: A Girl Who Chants Love at the Bound of this World!")
+        );
+        assert!(manager.editor().is_some());
+        assert!(manager.editor_effects.is_empty());
+        assert!(manager.editor_effects.capacity() > 0);
+        assert_eq!(steady_frame(&mut harness, &mut manager), PassCounts::NONE);
     }
 
     #[cfg(feature = "pc98")]

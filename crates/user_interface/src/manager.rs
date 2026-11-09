@@ -53,7 +53,7 @@ use crate::{
         EmulatorConfig, HostLayers, LaunchError, LaunchFailure, LaunchRequest, ManagerStart,
         build_configuration,
     },
-    editor::Editor,
+    editor::{Editor, EditorEffect},
     input::KeyOverrides,
     rom_folders::{RomFolderStatus, check_all_folders},
     texts::LanguageCatalog,
@@ -116,6 +116,8 @@ pub(crate) struct Manager {
     dialog: Option<ErrorDialog>,
     /// The open game editor. It takes the whole window while it is open.
     editor: Option<Editor>,
+    /// The effects of the last pass of the editor. The buffer keeps its capacity.
+    editor_effects: Vec<EditorEffect>,
     /// The widget that takes the focus in the next pass of the library.
     next_focus: Option<NextFocus>,
     /// The game that runs.
@@ -146,6 +148,7 @@ impl Manager {
             delete: None,
             dialog: None,
             editor: None,
+            editor_effects: Vec::new(),
             next_focus: Some(NextFocus::Start),
             running: None,
             catalog_switch: None,
