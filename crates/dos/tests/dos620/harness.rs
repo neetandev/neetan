@@ -753,6 +753,22 @@ pub fn create_test_floppy_with_config_and_autoexec(
     build_test_floppy_image("CONFIG", &files)
 }
 
+/// Builds a test floppy with the given root files. Each name is the 11-byte
+/// FCB form of the file name.
+pub fn create_test_floppy_with_files(files: &[([u8; 11], &[u8])]) -> device::floppy::FloppyImage {
+    let specs: Vec<TestFileSpec<'_>> = files
+        .iter()
+        .map(|(name, data)| TestFileSpec {
+            name: *name,
+            data,
+            attributes: 0x20,
+            time: TEST_FILE_TIME,
+            date: TEST_FILE_DATE,
+        })
+        .collect();
+    build_test_floppy_image("FILES", &specs)
+}
+
 /// Boots an HLE machine, then inserts a test floppy as drive A:.
 /// The floppy is inserted after boot so the BIOS doesn't try to boot from it.
 /// BDA_DISK_EQUIP is set before boot so discover_drives() sees the FDD.

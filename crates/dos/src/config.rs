@@ -99,7 +99,7 @@ pub(crate) struct ConfigSys {
     pub country: u16,
     /// Extended Ctrl-Break checking (BREAK=).
     pub ctrl_break: bool,
-    /// Parsed COMMAND.COM-compatible SHELL= configuration.
+    /// Parsed SHELL= configuration.
     pub shell: Option<ShellConfig>,
     /// MSCDEX device name extracted from DEVICE=NECCD.SYS /D:name.
     pub cdrom_device_name: Option<Vec<u8>>,
