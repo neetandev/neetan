@@ -153,7 +153,9 @@
 //!
 //! # The pass loop of the application
 //!
-//! Every pass of [`run`] that changes state asks for another pass. An
+//! Every pass of [`run`] that changes state and leaves the component open
+//! asks for another pass. A pass that ends a child still leads to a pass of
+//! its owner, because the end becomes a message of the owner. An
 //! application runs every chained pass before it renders a frame: after the
 //! pass of an event, it runs passes while the user interface asks for one,
 //! up to its cap of chained passes. The rendered frame then shows the
@@ -440,7 +442,8 @@ impl<'a, E> Update<'a, E> {
 
 /// Runs one pass of `component` in `area`: its view, then its update for
 /// each message of the view, in order. The effects of the updates go to
-/// `emit`. A pass with messages asks for another pass.
+/// `emit`. A pass with messages asks for another pass while the component
+/// stays open.
 ///
 /// With [`Layer::Modal`], the component draws in that modal layer, and the
 /// layer closes when the component ends. The first update that ends the
@@ -468,7 +471,8 @@ pub fn run<C: Component>(
 
 /// Runs the view and the updates of one pass of `component` in the current
 /// layer, opens the layers that the updates request for the next pass and
-/// asks for another pass when the view emitted messages.
+/// asks for another pass when the view emitted messages and the component
+/// stays open.
 fn run_pass<C: Component>(
     component: &mut C,
     context: &mut UiContext,
@@ -500,7 +504,7 @@ fn run_pass<C: Component>(
     for &id in layers.ids() {
         context.open_layer_for_next_pass(id);
     }
-    if changed {
+    if changed && matches!(status, Status::Open) {
         context.request_pass();
     }
     status
@@ -690,6 +694,77 @@ mod tests {
         assert!(harness.state.take_pass_request());
         run_script(&mut harness, &mut script, &[]);
         assert!(!harness.state.take_pass_request());
+    }
+
+    /// Verifies that a pass whose update ends the component asks for no other pass, and that
+    /// an open component with messages still asks for one.
+    #[test]
+    fn a_pass_that_ends_the_component_asks_for_no_other_pass() {
+        let mut harness = Harness::new();
+        let mut script = Script::default();
+        let (status, _) = run_script(&mut harness, &mut script, &[Step::Record(1), Step::Close]);
+        assert_eq!(status, Status::Closed);
+        assert!(!harness.state.take_pass_request());
+        let (status, _) = run_script(&mut harness, &mut script, &[Step::Finish(3)]);
+        assert_eq!(status, Status::Done(3));
+        assert!(!harness.state.take_pass_request());
+        let (status, _) = run_script(&mut harness, &mut script, &[Step::Record(2)]);
+        assert_eq!(status, Status::Open);
+        assert!(harness.state.take_pass_request());
+    }
+
+    /// A screen that runs a [`Script`] as its child.
+    #[derive(Default)]
+    struct ScriptOwner {
+        /// The message buffer.
+        messages: Vec<ChildEvent<u32, u32>>,
+        /// The child.
+        child: Script,
+        /// The messages that the updates applied.
+        applied: Vec<ChildEvent<u32, u32>>,
+    }
+
+    impl Component for ScriptOwner {
+        type Message = ChildEvent<u32, u32>;
+        type Output = Infallible;
+        type Effect = Infallible;
+        type Input<'a> = ();
+
+        fn messages(&mut self) -> &mut Vec<ChildEvent<u32, u32>> {
+            &mut self.messages
+        }
+
+        fn view(
+            &mut self,
+            context: &mut UiContext,
+            area: Rect,
+            _input: (),
+            messages: &mut Vec<ChildEvent<u32, u32>>,
+        ) {
+            run_child(&mut self.child, context, area, (), messages, |event| event);
+        }
+
+        fn update(
+            &mut self,
+            message: ChildEvent<u32, u32>,
+            _update: &mut Update<'_, Infallible>,
+        ) -> Status<Infallible> {
+            self.applied.push(message);
+            Status::Open
+        }
+    }
+
+    /// Verifies that the end of a child asks for another pass of its owner.
+    #[test]
+    fn an_owner_whose_child_ends_asks_for_another_pass() {
+        let mut harness = Harness::new();
+        let mut owner = ScriptOwner::default();
+        owner.child.queued.push(Step::Finish(5));
+        let status = harness
+            .frame(|context| run(&mut owner, context, AREA, (), &mut |never| match never {}));
+        assert_eq!(status, Status::Open);
+        assert_eq!(owner.applied, [ChildEvent::Ended(Ended::Done(5))]);
+        assert!(harness.state.take_pass_request());
     }
 
     /// A message of the [`Dialog`] component.

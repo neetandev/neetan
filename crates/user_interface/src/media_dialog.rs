@@ -2,13 +2,14 @@
 //! configured images of the drive with a filter, and the insert and eject
 //! actions.
 
-use std::path::PathBuf;
+use std::{convert::Infallible, path::PathBuf};
 
 use gui::{
     Rect,
+    component::{Component, Layer, Status, Update},
     ui::{
         Align, Button, ButtonKind, Icon, ListState, PATH_LINE_HEIGHT, RowContent, RowMark, Tab,
-        Truncation, UiContext, UiId, label, list, modal, tab_bar, text_field,
+        Truncation, UiContext, UiId, label, list, modal_in, tab_bar, text_field,
     },
 };
 use i18n::Key;
@@ -23,6 +24,9 @@ pub(crate) const TAB_BAR_HEIGHT: f32 = 40.0;
 
 /// The id of the image list.
 const LIST_ID: &str = "images";
+
+/// The id of the modal layer of the dialog.
+const MEDIA_LAYER_ID: &str = "media";
 
 /// The most drives of the dialog: two floppy drives and the CD-ROM drive.
 pub(crate) const MAXIMUM_DRIVES: usize = 3;
@@ -136,13 +140,26 @@ pub(crate) struct DriveMedia<'a> {
     pub(crate) loaded: Option<usize>,
 }
 
-/// The change that a pass of the dialog asks for.
+/// What the user can ask the media dialog to do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum DialogAction {
-    /// The dialog stays open.
-    None,
-    /// The dialog closes without a change.
+pub(crate) enum MediaMessage {
+    /// The tab bar selects the tab `tab`, whose drive holds the image `loaded`.
+    SwitchTab {
+        /// The index of the tab.
+        tab: usize,
+        /// The index of the loaded image of the drive of the tab.
+        loaded: Option<usize>,
+    },
+    /// The close button or the cancel button closes the dialog without a change.
     Close,
+    /// The insert button, an activated row or a submitted filter chooses the
+    /// selected row.
+    Choose,
+}
+
+/// The change that the media dialog closes with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MediaChoice {
     /// The image `index` goes into `drive`, then the dialog closes.
     Insert {
         /// The drive.
@@ -286,9 +303,8 @@ pub(crate) struct MediaDialog {
     selection: Option<usize>,
     /// Whether the next pass scrolls the selected row into view.
     reveal: bool,
-    /// Whether the tab bar switched the tab in the last pass, so the title
-    /// of that pass belongs to the previous tab.
-    stale: bool,
+    /// The message buffer.
+    messages: Vec<MediaMessage>,
 }
 
 impl MediaDialog {
@@ -308,7 +324,7 @@ impl MediaDialog {
             eject_chosen: false,
             selection: loaded,
             reveal: true,
-            stale: false,
+            messages: Vec::new(),
         }
     }
 
@@ -320,12 +336,6 @@ impl MediaDialog {
     /// The selected tab.
     pub(crate) fn tab(&self) -> usize {
         self.tab
-    }
-
-    /// Whether the last pass drew a stale title and the dialog needs another
-    /// pass. Clears the flag.
-    pub(crate) fn take_stale(&mut self) -> bool {
-        std::mem::take(&mut self.stale)
     }
 
     /// Selects the tab `tab` and the image `loaded` of its drive.
@@ -357,26 +367,31 @@ impl MediaDialog {
         self.rows_source = Some(source);
     }
 
-    /// Draws one pass of the dialog. `media` holds the images of each drive
-    /// in the order of the tabs. Returns the change the pass asks for.
-    pub(crate) fn show(&mut self, context: &mut UiContext, media: &[DriveMedia]) -> DialogAction {
-        context.layer("media", |context| self.panel(context, media))
-    }
-
-    /// Draws the panel of the dialog in its modal layer.
-    fn panel(&mut self, context: &mut UiContext, media: &[DriveMedia]) -> DialogAction {
+    /// Draws the panel of the dialog centered in `area` and pushes the
+    /// messages of the pass before the message that ends the dialog. `media`
+    /// holds the images of each drive in the order of the tabs. Returns the
+    /// message that ends the dialog.
+    fn panel(
+        &mut self,
+        context: &mut UiContext,
+        area: Rect,
+        media: &[DriveMedia],
+        messages: &mut Vec<MediaMessage>,
+    ) -> Option<MediaMessage> {
         let Some(&drive) = self.drives.get(self.tab) else {
-            return DialogAction::Close;
+            return Some(MediaMessage::Close);
         };
         let theme = context.theme;
         let catalog = context.catalog;
         let gap = theme.gap;
-        let response = modal(context, "media", PANEL_SIZE, catalog.text(drive.title()));
-        let mut action = if response.closed {
-            DialogAction::Close
-        } else {
-            DialogAction::None
-        };
+        let response = modal_in(
+            context,
+            MEDIA_LAYER_ID,
+            area,
+            PANEL_SIZE,
+            catalog.text(drive.title()),
+        );
+        let mut ending = response.closed.then_some(MediaMessage::Close);
 
         let (tabs_area, rest) = response.content.cut_top(TAB_BAR_HEIGHT);
         let mut tabs = [Tab::new("", None); MAXIMUM_DRIVES];
@@ -387,10 +402,8 @@ impl MediaDialog {
         let mut tab = self.tab;
         if tab_bar(context, "drives", tabs_area, &tabs[..shown], &mut tab) {
             let loaded = media.get(tab).and_then(|media| media.loaded);
-            self.switch_tab(tab, loaded);
-            self.stale = true;
+            messages.push(MediaMessage::SwitchTab { tab, loaded });
         }
-        let drive = self.drives[self.tab];
         let DriveMedia { entries, loaded } = media.get(self.tab).copied().unwrap_or(DriveMedia {
             entries: &[],
             loaded: None,
@@ -514,18 +527,65 @@ impl MediaDialog {
         let (insert_area, footer) = footer.cut_right(insert.width(context));
         let cancel_area = footer.cut_right(gap).1.cut_right(cancel.width(context)).0;
         if cancel.show(context, cancel_area) {
-            action = DialogAction::Close;
+            ending = Some(MediaMessage::Close);
         }
         let insert = insert.show(context, insert_area);
 
         let filter_activates = filter.submitted && (self.filter.is_empty() || !rows.is_empty());
         if insert || list_response.activated.is_some() || filter_activates {
-            action = match self.selection {
-                Some(index) => DialogAction::Insert { drive, index },
-                None => DialogAction::Eject { drive },
-            };
+            ending = Some(MediaMessage::Choose);
         }
-        action
+        ending
+    }
+}
+
+impl Component for MediaDialog {
+    type Message = MediaMessage;
+    type Output = MediaChoice;
+    type Effect = Infallible;
+    type Input<'a> = &'a [DriveMedia<'a>];
+
+    const LAYER: Layer = Layer::Modal(MEDIA_LAYER_ID);
+
+    fn messages(&mut self) -> &mut Vec<MediaMessage> {
+        &mut self.messages
+    }
+
+    /// Draws one pass of the dialog centered in `area`. `media` holds the
+    /// images of each drive in the order of the tabs.
+    fn view(
+        &mut self,
+        context: &mut UiContext,
+        area: Rect,
+        media: &[DriveMedia<'_>],
+        messages: &mut Vec<MediaMessage>,
+    ) {
+        if let Some(ending) = self.panel(context, area, media, messages) {
+            messages.push(ending);
+        }
+    }
+
+    fn update(
+        &mut self,
+        message: MediaMessage,
+        _update: &mut Update<'_, Infallible>,
+    ) -> Status<MediaChoice> {
+        match message {
+            MediaMessage::SwitchTab { tab, loaded } => {
+                self.switch_tab(tab, loaded);
+                Status::Open
+            }
+            MediaMessage::Close => Status::Closed,
+            MediaMessage::Choose => {
+                let Some(&drive) = self.drives.get(self.tab) else {
+                    return Status::Closed;
+                };
+                Status::Done(match self.selection {
+                    Some(index) => MediaChoice::Insert { drive, index },
+                    None => MediaChoice::Eject { drive },
+                })
+            }
+        }
     }
 }
 
@@ -535,12 +595,13 @@ mod tests {
 
     use gui::{
         Color,
+        component::run,
         ui::{Navigation, ThemeKind, Viewport},
     };
 
     use super::*;
     use crate::{
-        gui_test_support::GuiHarness,
+        gui_test_support::{GuiHarness, apply},
         texts::{
             LanguageCatalog,
             repository::{RepositoryLanguage, repository_languages},
@@ -569,6 +630,32 @@ mod tests {
             .iter()
             .map(|name| ImageEntry::new(PathBuf::from("/home/user/Emulation/PC-98").join(name)))
             .collect()
+    }
+
+    /// The images and the loaded image of each drive of `media` and `loaded`.
+    fn drive_media(
+        media: &[Vec<ImageEntry>; 3],
+        loaded: [Option<usize>; 3],
+    ) -> Vec<DriveMedia<'_>> {
+        media
+            .iter()
+            .zip(loaded)
+            .map(|(entries, loaded)| DriveMedia { entries, loaded })
+            .collect()
+    }
+
+    /// Runs one pass of `dialog` over `media` in front of a background with the pending
+    /// input of `gui`.
+    fn frame(
+        gui: &mut GuiHarness,
+        dialog: &mut MediaDialog,
+        media: &[DriveMedia],
+    ) -> Status<MediaChoice> {
+        gui.frame(|context| {
+            let bounds = context.bounds();
+            context.fill(bounds, Color::hex(0x204080));
+            run(dialog, context, bounds, media, &mut |never| match never {})
+        })
     }
 
     /// The pass state of a dialog without a window and the dialog.
@@ -601,67 +688,53 @@ mod tests {
             }
         }
 
-        /// Runs one pass with the pending input.
-        fn pass(&mut self) -> DialogAction {
-            let media: Vec<DriveMedia> = self
-                .media
-                .iter()
-                .zip(self.loaded)
-                .map(|(entries, loaded)| DriveMedia { entries, loaded })
-                .collect();
-            let dialog = &mut self.dialog;
-            self.gui.frame(|context| {
-                let bounds = context.bounds();
-                context.fill(bounds, Color::hex(0x204080));
-                dialog.show(context, &media)
-            })
+        /// Runs one pass with the pending input and then the passes that the
+        /// dialog asks for, at most four, as the session does. Stops after the
+        /// first pass that ends the dialog. Returns the status of the last pass.
+        fn pass(&mut self) -> Status<MediaChoice> {
+            let media = drive_media(&self.media, self.loaded);
+            let mut status = frame(&mut self.gui, &mut self.dialog, &media);
+            for _ in 0..4 {
+                if !matches!(status, Status::Open) || !self.gui.state.take_pass_request() {
+                    break;
+                }
+                status = frame(&mut self.gui, &mut self.dialog, &media);
+            }
+            status
         }
 
         /// Runs one pass with the pending input and returns the allocations, the text fills
         /// and the wraps of the pass.
         fn counted_pass(&mut self) -> (usize, usize, usize) {
-            let media: Vec<DriveMedia> = self
-                .media
-                .iter()
-                .zip(self.loaded)
-                .map(|(entries, loaded)| DriveMedia { entries, loaded })
-                .collect();
+            let media = drive_media(&self.media, self.loaded);
             let dialog = &mut self.dialog;
             let gui = &mut self.gui;
             let (allocations, (fills, (wraps, _))) = allocation_counter::count_allocations(|| {
-                gui::ui::count_fills(|| {
-                    gui::ui::count_wraps(|| {
-                        gui.frame(|context| {
-                            let bounds = context.bounds();
-                            context.fill(bounds, Color::hex(0x204080));
-                            dialog.show(context, &media)
-                        })
-                    })
-                })
+                gui::ui::count_fills(|| gui::ui::count_wraps(|| frame(gui, dialog, &media)))
             });
             (allocations, fills, wraps)
         }
 
         /// Runs one pass with the navigation event `navigation`.
-        fn navigate(&mut self, navigation: Navigation) -> DialogAction {
+        fn navigate(&mut self, navigation: Navigation) -> Status<MediaChoice> {
             self.gui.input.navigation = Some(navigation);
             self.pass()
         }
 
         /// Runs one pass with the committed text `text`.
-        fn type_text(&mut self, text: &str) -> DialogAction {
+        fn type_text(&mut self, text: &str) -> Status<MediaChoice> {
             self.gui.input.text.push_str(text);
             self.pass()
         }
 
         /// Runs one pass with confirm.
-        fn confirm(&mut self) -> DialogAction {
+        fn confirm(&mut self) -> Status<MediaChoice> {
             self.gui.input.confirm = true;
             self.pass()
         }
 
         /// Runs one pass with cancel.
-        fn cancel(&mut self) -> DialogAction {
+        fn cancel(&mut self) -> Status<MediaChoice> {
             self.gui.input.cancel = true;
             self.pass()
         }
@@ -727,18 +800,151 @@ mod tests {
         assert_eq!(row_of(None, &[1, 4]), 0);
     }
 
+    /// The dialog over two floppy drives and the CD-ROM drive on the first
+    /// floppy drive, with the image 3 selected.
+    fn dialog() -> MediaDialog {
+        MediaDialog::new(available_drives(2, true), 0, Some(3))
+    }
+
+    #[test]
+    fn a_tab_switch_selects_the_loaded_image_of_its_message() {
+        let mut dialog = dialog();
+        dialog.eject_chosen = true;
+        dialog.reveal = false;
+        dialog.list.select(5);
+        assert_eq!(
+            apply(
+                &mut dialog,
+                MediaMessage::SwitchTab {
+                    tab: 1,
+                    loaded: Some(2)
+                }
+            ),
+            (Status::Open, Vec::new())
+        );
+        assert_eq!(dialog.tab(), 1);
+        assert_eq!(dialog.preferred, Some(2));
+        assert_eq!(dialog.selection, Some(2));
+        assert!(!dialog.eject_chosen);
+        assert!(dialog.reveal);
+        assert_eq!(dialog.list.selected, 0);
+    }
+
+    #[test]
+    fn a_tab_switch_stays_on_the_last_drive() {
+        let mut dialog = dialog();
+        assert_eq!(
+            apply(
+                &mut dialog,
+                MediaMessage::SwitchTab {
+                    tab: 7,
+                    loaded: None
+                }
+            ),
+            (Status::Open, Vec::new())
+        );
+        assert_eq!(dialog.tab(), 2);
+        assert_eq!(dialog.selection, None);
+    }
+
+    #[test]
+    fn close_closes_without_a_change() {
+        let mut dialog = dialog();
+        assert_eq!(
+            apply(&mut dialog, MediaMessage::Close),
+            (Status::Closed, Vec::new())
+        );
+    }
+
+    #[test]
+    fn choose_inserts_the_selected_image() {
+        let mut dialog = dialog();
+        assert_eq!(
+            apply(&mut dialog, MediaMessage::Choose),
+            (
+                Status::Done(MediaChoice::Insert {
+                    drive: Drive::Floppy(0),
+                    index: 3
+                }),
+                Vec::new()
+            )
+        );
+    }
+
+    #[test]
+    fn choose_on_the_eject_row_ejects() {
+        let mut dialog = dialog();
+        dialog.selection = None;
+        assert_eq!(
+            apply(&mut dialog, MediaMessage::Choose),
+            (
+                Status::Done(MediaChoice::Eject {
+                    drive: Drive::Floppy(0)
+                }),
+                Vec::new()
+            )
+        );
+    }
+
+    #[test]
+    fn choose_after_a_tab_switch_uses_the_drive_of_the_new_tab() {
+        let mut dialog = dialog();
+        apply(
+            &mut dialog,
+            MediaMessage::SwitchTab {
+                tab: 1,
+                loaded: Some(1),
+            },
+        );
+        assert_eq!(
+            apply(&mut dialog, MediaMessage::Choose),
+            (
+                Status::Done(MediaChoice::Insert {
+                    drive: Drive::Floppy(1),
+                    index: 1
+                }),
+                Vec::new()
+            )
+        );
+        apply(
+            &mut dialog,
+            MediaMessage::SwitchTab {
+                tab: 2,
+                loaded: None,
+            },
+        );
+        assert_eq!(
+            apply(&mut dialog, MediaMessage::Choose),
+            (
+                Status::Done(MediaChoice::Eject {
+                    drive: Drive::CdRom
+                }),
+                Vec::new()
+            )
+        );
+    }
+
+    #[test]
+    fn choose_without_drives_closes() {
+        let mut dialog = MediaDialog::new(Vec::new(), 0, None);
+        assert_eq!(
+            apply(&mut dialog, MediaMessage::Choose),
+            (Status::Closed, Vec::new())
+        );
+    }
+
     #[test]
     fn the_dialog_opens_on_the_loaded_image() {
         let mut harness = Harness::new(Viewport::new(1024, 768, 1.0), ThemeKind::Dark);
-        assert_eq!(harness.pass(), DialogAction::None);
+        assert_eq!(harness.pass(), Status::Open);
         assert_eq!(harness.dialog.list.selected, 4);
         assert_eq!(harness.gui.state.focused(), Some(UiId::from(LIST_ID)));
         assert_eq!(
             harness.confirm(),
-            DialogAction::Insert {
+            Status::Done(MediaChoice::Insert {
                 drive: Drive::Floppy(0),
                 index: 3
-            }
+            })
         );
     }
 
@@ -750,9 +956,9 @@ mod tests {
         assert_eq!(harness.dialog.selection, None);
         assert_eq!(
             harness.confirm(),
-            DialogAction::Eject {
+            Status::Done(MediaChoice::Eject {
                 drive: Drive::Floppy(0)
-            }
+            })
         );
     }
 
@@ -771,10 +977,10 @@ mod tests {
         assert_eq!(harness.dialog.list.selected, 1);
         assert_eq!(
             harness.confirm(),
-            DialogAction::Insert {
+            Status::Done(MediaChoice::Insert {
                 drive: Drive::Floppy(0),
                 index: 2
-            }
+            })
         );
     }
 
@@ -786,10 +992,10 @@ mod tests {
         assert_eq!(harness.gui.state.focused(), Some(UiId::from("filter")));
         harness.type_text("zzz");
         assert_eq!(harness.dialog.selection, None);
-        assert_eq!(harness.confirm(), DialogAction::None);
-        assert_eq!(harness.cancel(), DialogAction::None);
+        assert_eq!(harness.confirm(), Status::Open);
+        assert_eq!(harness.cancel(), Status::Open);
         assert!(harness.dialog.filter.is_empty());
-        assert_eq!(harness.cancel(), DialogAction::Close);
+        assert_eq!(harness.cancel(), Status::Closed);
     }
 
     #[test]
@@ -807,10 +1013,10 @@ mod tests {
         assert_eq!(harness.dialog.selection, Some(3));
         assert_eq!(
             harness.confirm(),
-            DialogAction::Insert {
+            Status::Done(MediaChoice::Insert {
                 drive: Drive::Floppy(0),
                 index: 3
-            }
+            })
         );
     }
 
@@ -825,10 +1031,10 @@ mod tests {
         assert_eq!(harness.dialog.selection, Some(4));
         assert_eq!(
             harness.confirm(),
-            DialogAction::Insert {
+            Status::Done(MediaChoice::Insert {
                 drive: Drive::Floppy(0),
                 index: 4
-            }
+            })
         );
     }
 
@@ -845,9 +1051,9 @@ mod tests {
         assert_eq!(harness.dialog.selection, None);
         assert_eq!(
             harness.confirm(),
-            DialogAction::Eject {
+            Status::Done(MediaChoice::Eject {
                 drive: Drive::Floppy(0)
-            }
+            })
         );
     }
 
@@ -856,9 +1062,15 @@ mod tests {
         let mut harness = Harness::new(Viewport::new(1024, 768, 1.0), ThemeKind::Dark);
         harness.loaded[1] = Some(2);
         harness.pass();
-        harness.navigate(Navigation::NextTab);
-        assert!(harness.dialog.take_stale());
-        assert!(!harness.dialog.take_stale());
+        harness.gui.input.navigation = Some(Navigation::NextTab);
+        let media = drive_media(&harness.media, harness.loaded);
+        assert_eq!(
+            frame(&mut harness.gui, &mut harness.dialog, &media),
+            Status::Open
+        );
+        assert!(harness.gui.state.take_pass_request());
+        harness.pass();
+        assert!(!harness.gui.state.take_pass_request());
         assert_eq!(harness.dialog.tab(), 1);
         assert_eq!(harness.dialog.selection, Some(2));
         assert_eq!(harness.dialog.list.selected, 3);
@@ -867,9 +1079,9 @@ mod tests {
         assert_eq!(harness.dialog.selection, None);
         assert_eq!(
             harness.confirm(),
-            DialogAction::Eject {
+            Status::Done(MediaChoice::Eject {
                 drive: Drive::CdRom
-            }
+            })
         );
         harness.dialog.switch_tab(0, Some(5));
         harness.pass();
@@ -890,6 +1102,7 @@ mod tests {
             (0, 0, 0),
             "the list holds the focus"
         );
+        assert!(!harness.gui.state.take_pass_request());
         harness.navigate(Navigation::Previous);
         harness.type_text("disk");
         harness.pass();
@@ -900,6 +1113,7 @@ mod tests {
             (0, 0, 0),
             "the filter holds the focus"
         );
+        assert!(!harness.gui.state.take_pass_request());
     }
 
     #[test]
@@ -911,14 +1125,14 @@ mod tests {
         assert_eq!(harness.gui.state.focused(), Some(UiId::from("insert")));
         assert_eq!(
             harness.confirm(),
-            DialogAction::Insert {
+            Status::Done(MediaChoice::Insert {
                 drive: Drive::Floppy(0),
                 index: FILES.len() - 1
-            }
+            })
         );
         harness.navigate(Navigation::Left);
         assert_eq!(harness.gui.state.focused(), Some(UiId::from("cancel")));
-        assert_eq!(harness.confirm(), DialogAction::Close);
+        assert_eq!(harness.confirm(), Status::Closed);
     }
 
     /// Renders the dialog at `scale` in the theme `kind` with the texts of

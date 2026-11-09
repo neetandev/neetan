@@ -240,6 +240,7 @@ impl GuiHost {
             ..Input::default()
         };
         self.gamepad.clear();
+        self.chained_passes = 0;
         self.pending = true;
     }
 
@@ -741,6 +742,24 @@ mod tests {
         host.apply(GuiEvent::Confirm);
         host.pass(|context| context.request_pass());
         assert!(host.pending());
+    }
+
+    /// Verifies that a reset after a chained pass gives the next dialog the whole bound of
+    /// chained passes.
+    #[test]
+    fn a_reset_gives_the_next_dialog_every_chained_pass() {
+        let mut host = host();
+        host.pass(|context| context.request_pass());
+        assert!(host.pending());
+        host.reset();
+        let passes = run_pending_passes(|| {
+            let due = host.pending();
+            if due {
+                host.pass(|context| context.request_pass());
+            }
+            due
+        });
+        assert_eq!(passes, MAXIMUM_CHAINED_PASSES + 1);
     }
 
     /// Runs one pass of `screen` in `host`.

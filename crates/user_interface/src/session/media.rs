@@ -1,6 +1,9 @@
 //! The removable media of a session and its media dialog.
 
+use std::convert::Infallible;
+
 use common::{JoystickState, error, info, warn};
+use gui::component::{Status, run};
 use stack_vec::StackVec;
 
 use super::Session;
@@ -8,7 +11,7 @@ use crate::{
     gui_host::GuiEvent,
     host::Host,
     media_dialog::{
-        DialogAction, Drive, DriveMedia, HotkeyAction, MAXIMUM_DRIVES, MediaDialog,
+        Drive, DriveMedia, HotkeyAction, MAXIMUM_DRIVES, MediaChoice, MediaDialog,
         available_drives, hotkey_action,
     },
 };
@@ -207,7 +210,8 @@ impl Session {
         }
     }
 
-    /// Runs one pass of the media dialog and applies the change it asks for.
+    /// Runs one pass of the media dialog and applies the change that it closes
+    /// with.
     pub(super) fn media_pass(&mut self, host: &mut Host) {
         let (Some(gui), Some(dialog)) = (host.gui.as_mut(), self.media_dialog.as_mut()) else {
             return;
@@ -230,23 +234,29 @@ impl Session {
                 },
             })
             .collect();
-        let mut action = gui.pass(|context| dialog.show(context, &media));
-        while action == DialogAction::None && dialog.take_stale() {
-            action = gui.pass(|context| dialog.show(context, &media));
-        }
+        let status = gui.pass(|context| {
+            let area = context.bounds();
+            run(
+                dialog,
+                context,
+                area,
+                &media,
+                &mut |never: Infallible| match never {},
+            )
+        });
         drop(media);
         gui.sync_text_input(&host.window);
-        match action {
-            DialogAction::None => {}
-            DialogAction::Close => self.close_media_dialog(host),
-            DialogAction::Insert { drive, index } => {
+        match status {
+            Status::Open => {}
+            Status::Closed => self.close_media_dialog(host),
+            Status::Done(MediaChoice::Insert { drive, index }) => {
                 let _ = match drive {
                     Drive::Floppy(number) => self.select_floppy(number, index),
                     Drive::CdRom => self.select_cdrom(index),
                 };
                 self.close_media_dialog(host);
             }
-            DialogAction::Eject { drive } => {
+            Status::Done(MediaChoice::Eject { drive }) => {
                 match drive {
                     Drive::Floppy(number) => self.eject_floppy(number),
                     Drive::CdRom => self.eject_cdrom(),
