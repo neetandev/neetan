@@ -1503,36 +1503,6 @@ impl MemoryManager {
         }
     }
 
-    pub(crate) fn umb_allocate(
-        &self,
-        paragraphs: u16,
-        mem: &mut dyn MemoryAccess,
-    ) -> Result<(u16, u16), (u8, u16)> {
-        if !self.umb_enabled {
-            return Err((0xB1, 0));
-        }
-        match memory::allocate(
-            mem,
-            self.umb_first_mcb_segment,
-            paragraphs,
-            MCB_OWNER_DOS,
-            0,
-        ) {
-            Ok(data_segment) => {
-                let mcb_segment = data_segment - 1;
-                let actual_size = memory::read_mcb_size_pub(mem, mcb_segment);
-                Ok((data_segment, actual_size))
-            }
-            Err((_error_code, largest)) => {
-                if largest > 0 {
-                    Err((0xB0, largest))
-                } else {
-                    Err((0xB1, 0))
-                }
-            }
-        }
-    }
-
     pub(crate) fn ems_total_kb(&self) -> u32 {
         if self.ems_window.is_some() {
             self.allocator_total_bytes() / 1024
@@ -1766,8 +1736,6 @@ mod tests {
 
     /// Linear address of the PC-98 EMS page frame.
     const EMS_PAGE_FRAME_BASE: u32 = 0xC0000;
-    /// PC-98 UMB chain: MCB of the leading block with EMS.
-    const UMB_FIRST_MCB_SEGMENT: u16 = 0xD000;
     /// PC-98 UMB chain: size of a free block with EMS.
     const UMB_BLOCK_PARAGRAPHS: u16 = 0x0700;
     /// PC-98 UMB chain: MCB of the leading block without EMS.
@@ -3249,30 +3217,6 @@ mod tests {
         mem.write_word(params_addr + 12, 0);
         mem.write_word(params_addr + 14, 0);
         assert!(mm.xms_move(&mut mem, params_addr).is_ok());
-    }
-
-    #[test]
-    fn test_umb_allocate_basic() {
-        let (mm, mut mem) = create_manager(1024);
-        let (segment, size) = mm.umb_allocate(16, &mut mem).unwrap();
-        assert!(segment > UMB_FIRST_MCB_SEGMENT);
-        assert!(size >= 16);
-    }
-
-    #[test]
-    fn test_umb_allocate_disabled() {
-        let (mm, mut mem) = create_manager_selective(1024, false, false);
-        assert_eq!(mm.umb_allocate(16, &mut mem), Err((0xB1, 0)));
-    }
-
-    #[test]
-    fn test_umb_allocate_too_large() {
-        let (mm, mut mem) = create_manager(1024);
-        let result = mm.umb_allocate(0xFFFF, &mut mem);
-        assert!(result.is_err());
-        let (code, largest) = result.unwrap_err();
-        assert_eq!(code, 0xB0);
-        assert_eq!(largest, UMB_BLOCK_PARAGRAPHS);
     }
 
     #[test]

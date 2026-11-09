@@ -7,17 +7,20 @@
 //!
 //! Loading starts from the parsed CONFIG.SYS device lines. Each referenced file
 //! is opened through the normal boot drive file system, read into memory, and
-//! matched against `WHITELIST`. A matched image is copied into an allocated DOS
-//! memory block, preferably in UMB when the HLE memory manager has UMBs enabled.
-//! If high memory is unavailable, the loader falls back to conventional memory.
+//! matched against `WHITELIST`.
 //!
-//! Driver initialization runs as a guest operation. Boot links the loaded
-//! drivers into the device chain and queues one INIT step per driver. The boot
-//! entry point is the return trap of the guest call area, so the first guest
-//! instruction starts the operation. Each step writes the INIT request and the
-//! command tail of its driver into the guest call area and calls the strategy
-//! and the interrupt routine. The step reads the request status and the end
-//! address afterwards. The operation completes with an IRET into COMMAND.COM.
+//! Driver loading runs as a guest operation with a load step and an INIT step
+//! per driver, in the order of the CONFIG.SYS lines. The boot entry point is
+//! the return trap of the guest call area, so the first guest instruction
+//! starts the operation. Like SYSINIT, the load step copies the image into the
+//! largest free memory block and links the driver into the device chain. A
+//! `DEVICEHIGH=` driver takes the largest UMB when the HLE memory manager has
+//! UMBs enabled and the image fits, otherwise conventional memory. The INIT
+//! step writes the INIT request with the end of that block and the command
+//! tail into the guest call area and calls the strategy and the interrupt
+//! routine. Afterwards the block shrinks to the break address that the driver
+//! returns. A driver that keeps no memory leaves the device chain. The
+//! operation completes with an IRET into COMMAND.COM.
 //!
 //! Whitelisting is intentionally byte-exact. A native driver is accepted only
 //! when its CONFIG.SYS basename, file size, BLAKE3 digest, device header name,
@@ -123,11 +126,24 @@ struct NativeDriverImage {
     data: Vec<u8>,
 }
 
-struct LoadedDriverInit {
-    source_path: Vec<u8>,
-    raw_line: Vec<u8>,
-    image_paragraphs: u16,
-    segment: u16,
+/// Upper bound of the device headers that a device chain walk visits.
+const MAXIMUM_DEVICE_CHAIN_LENGTH: usize = 256;
+
+save_state::runtime_state! {
+    /// Load of one native driver image: the guest step before its INIT.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub(crate) struct NativeDriverLoad {
+        /// Path of the driver for log messages.
+        pub(crate) display_name: Vec<u8>,
+        /// Driver file contents.
+        pub(crate) image: Vec<u8>,
+        /// The `DEVICEHIGH=` directive loads the driver.
+        pub(crate) load_high: bool,
+        /// Name of the MCB of the driver block.
+        pub(crate) mcb_name: Vec<u8>,
+        /// `CONFIG.SYS` line without the `DEVICE=` prefix.
+        pub(crate) line_tail: Vec<u8>,
+    }
 }
 
 save_state::runtime_state! {
@@ -138,7 +154,7 @@ save_state::runtime_state! {
         pub(crate) display_name: Vec<u8>,
         /// Segment of the driver image. The device header lies at offset 0.
         pub(crate) segment: u16,
-        /// First segment behind the driver image.
+        /// First segment behind the memory block of the driver.
         pub(crate) end_segment: u16,
         /// `CONFIG.SYS` line without the `DEVICE=` prefix.
         pub(crate) line_tail: Vec<u8>,
@@ -164,45 +180,16 @@ impl NativeDriverInit {
             data_segment: self.segment,
         }
     }
-
-    /// Checks the status and the end address that the driver returned.
-    pub(crate) fn finish(&self, area: &GuestCallArea, memory: &dyn MemoryAccess) {
-        let request = area.request_address();
-        let status = memory.read_word(request + REQUEST_OFF_STATUS);
-        if status & STATUS_DONE == 0 {
-            warn!(
-                "CONFIG.SYS native driver {} did not set INIT done status ({status:#06X})",
-                display_bytes(&self.display_name)
-            );
-        } else if status & STATUS_ERROR != 0 {
-            warn!(
-                "CONFIG.SYS native driver {} reported INIT error status {status:#06X}",
-                display_bytes(&self.display_name)
-            );
-        }
-
-        let end_segment = memory.read_word(request + INIT_REQUEST_OFF_AVAILABLE_SEGMENT);
-        if end_segment != 0 && end_segment != self.segment {
-            warn!(
-                "CONFIG.SYS native driver {} returned resident segment {end_segment:#06X}, loaded at {:#06X}",
-                display_bytes(&self.display_name),
-                self.segment
-            );
-        }
-    }
 }
 
 impl NeetanDos {
-    /// Loads the whitelisted `CONFIG.SYS` drivers, links them into the device
-    /// chain and queues their INIT calls as the operation that the boot entry
-    /// starts. `cdrom_device` tells whether the built-in CD-ROM device ends the
-    /// built-in character devices of the chain.
+    /// Queues the load and the INIT of the whitelisted `CONFIG.SYS` drivers as
+    /// the operation that the boot entry starts.
     pub(crate) fn install_native_config_drivers(
         &mut self,
         cfg: &config::ConfigSys,
         memory: &mut dyn MemoryAccess,
         disk: &mut impl DriveIo,
-        cdrom_device: bool,
     ) {
         if cfg.devices.is_empty() {
             return;
@@ -213,44 +200,15 @@ impl NeetanDos {
             return;
         }
 
-        let mut loaded = Vec::with_capacity(images.len());
-        for image in images {
-            let paragraphs = image.data.len().div_ceil(16) as u16;
-            let Some(segment) = self.allocate_native_driver_image(
-                memory,
-                &image.source_path,
-                paragraphs,
-                image.directive,
-            ) else {
-                continue;
-            };
-
-            let base = (segment as u32) << 4;
-            memory.write_block(base, &image.data);
-            write_mcb_name(memory, segment - 1, image.spec.mcb_name);
-
-            loaded.push(LoadedDriverInit {
-                source_path: image.source_path,
-                raw_line: image.raw_line,
-                image_paragraphs: paragraphs,
-                segment,
-            });
-        }
-
-        if loaded.is_empty() {
-            return;
-        }
-
-        link_device_chain(self, memory, &loaded, cdrom_device);
-
-        let steps: VecDeque<GuestStep> = loaded
-            .iter()
-            .map(|driver| {
-                GuestStep::NativeDriverInit(NativeDriverInit {
-                    display_name: driver.source_path.clone(),
-                    segment: driver.segment,
-                    end_segment: driver.segment + driver.image_paragraphs,
-                    line_tail: driver.raw_line.clone(),
+        let steps: VecDeque<GuestStep> = images
+            .into_iter()
+            .map(|image| {
+                GuestStep::NativeDriverLoad(NativeDriverLoad {
+                    display_name: image.source_path,
+                    image: image.data,
+                    load_high: image.directive == config::DeviceDirective::DeviceHigh,
+                    mcb_name: image.spec.mcb_name.to_vec(),
+                    line_tail: image.raw_line,
                 })
             })
             .collect();
@@ -268,21 +226,125 @@ impl NeetanDos {
         };
     }
 
+    /// Copies the image of `load` into the largest free memory block, links
+    /// the driver into the device chain and returns its INIT step. Returns no
+    /// step when no block holds the image.
+    pub(crate) fn load_native_driver(
+        &mut self,
+        load: &NativeDriverLoad,
+        memory: &mut dyn MemoryAccess,
+    ) -> Vec<GuestStep> {
+        let image_paragraphs = load.image.len().div_ceil(16) as u16;
+        let Some((segment, block_paragraphs)) = self.allocate_native_driver_block(
+            memory,
+            &load.display_name,
+            image_paragraphs,
+            load.load_high,
+        ) else {
+            return Vec::new();
+        };
+
+        memory.write_block(u32::from(segment) << 4, &load.image);
+        write_mcb_name(memory, segment - 1, &load.mcb_name);
+        append_to_device_chain(self, memory, segment);
+
+        vec![GuestStep::NativeDriverInit(NativeDriverInit {
+            display_name: load.display_name.clone(),
+            segment,
+            end_segment: segment + block_paragraphs,
+            line_tail: load.line_tail.clone(),
+        })]
+    }
+
+    /// Checks the status that the driver returned and keeps its memory up to
+    /// the returned break address.
+    pub(crate) fn finish_native_driver_init(
+        &mut self,
+        init: &NativeDriverInit,
+        area: &GuestCallArea,
+        memory: &mut dyn MemoryAccess,
+    ) {
+        let request = area.request_address();
+        let status = memory.read_word(request + REQUEST_OFF_STATUS);
+        if status & STATUS_DONE == 0 {
+            warn!(
+                "CONFIG.SYS native driver {} did not set INIT done status ({status:#06X})",
+                display_bytes(&init.display_name)
+            );
+        } else if status & STATUS_ERROR != 0 {
+            warn!(
+                "CONFIG.SYS native driver {} reported INIT error status {status:#06X}",
+                display_bytes(&init.display_name)
+            );
+        }
+
+        let break_offset = memory.read_word(request + INIT_REQUEST_OFF_AVAILABLE_OFFSET);
+        let break_segment = memory.read_word(request + INIT_REQUEST_OFF_AVAILABLE_SEGMENT);
+        let break_address = (u32::from(break_segment) << 4) + u32::from(break_offset);
+        let start_address = u32::from(init.segment) << 4;
+        let end_address = u32::from(init.end_segment) << 4;
+        if break_address > end_address {
+            warn!(
+                "CONFIG.SYS native driver {} returned break address {break_segment:04X}:{break_offset:04X} behind its memory block",
+                display_bytes(&init.display_name)
+            );
+        }
+        let resident_bytes = break_address.clamp(start_address, end_address) - start_address;
+        self.keep_native_driver_memory(init, resident_bytes.div_ceil(16) as u16, memory);
+    }
+
+    /// Shrinks the memory block of a driver to `resident_paragraphs`. A driver
+    /// without resident memory leaves the device chain and frees its block.
+    fn keep_native_driver_memory(
+        &mut self,
+        init: &NativeDriverInit,
+        resident_paragraphs: u16,
+        memory: &mut dyn MemoryAccess,
+    ) {
+        let chains = memory::McbChains {
+            first_mcb_segment: self.state.platform.placement.first_mcb_segment,
+            memory_top_segment: self.state.platform.placement.memory_top_segment,
+            umb_first_mcb_segment: self.state.umb_first_mcb_segment(),
+        };
+        if resident_paragraphs == 0 {
+            info!(
+                "CONFIG.SYS native driver {} keeps no memory and leaves the device chain",
+                display_bytes(&init.display_name)
+            );
+            unlink_from_device_chain(self, memory, init.segment);
+            if let Err(error) = memory::free_dos(memory, chains, init.segment) {
+                warn!(
+                    "CONFIG.SYS native driver {} block free failed error={error}",
+                    display_bytes(&init.display_name)
+                );
+            }
+        } else if let Err((error, _)) =
+            memory::resize_dos(memory, chains, init.segment, resident_paragraphs)
+        {
+            warn!(
+                "CONFIG.SYS native driver {} block resize to {resident_paragraphs} paragraphs failed error={error}",
+                display_bytes(&init.display_name)
+            );
+        }
+    }
+
     /// Ends the native driver INIT operation when a driver terminates through
     /// `INT 21h` inside its INIT. The remaining drivers stay uninitialized and
-    /// the IRET frame of the terminate call enters COMMAND.COM. Returns false
+    /// the IRET frame of the terminate call enters COMMAND.COM. The driver
+    /// keeps `keep_paragraphs` from its segment: zero for a normal
+    /// termination and the DX paragraphs of a TSR termination. Returns false
     /// when no INIT operation runs.
     pub(crate) fn end_native_driver_init_on_terminate(
         &mut self,
         cpu: &dyn CpuAccess,
         memory: &mut dyn MemoryAccess,
+        keep_paragraphs: u16,
     ) -> bool {
         let Some(position) = self.guest_calls.iter().rposition(|operation| {
             matches!(operation.in_flight, Some(GuestStep::NativeDriverInit(_)))
         }) else {
             return false;
         };
-        let area = self.guest_call_area();
         let operations = self.guest_calls.split_off(position);
         for operation in &operations {
             if operation.holds_indos {
@@ -290,7 +352,8 @@ impl NeetanDos {
             }
         }
         if let Some(GuestStep::NativeDriverInit(init)) = &operations[0].in_flight {
-            init.finish(&area, memory);
+            let block_paragraphs = init.end_segment - init.segment;
+            self.keep_native_driver_memory(init, keep_paragraphs.min(block_paragraphs), memory);
         }
 
         let iret_base = cpu.linear_address(common::SegmentRegister::SS, cpu.sp());
@@ -301,83 +364,40 @@ impl NeetanDos {
         true
     }
 
-    fn allocate_native_driver_image(
+    /// Allocates the largest free memory block that holds `image_paragraphs`
+    /// and returns its segment and its size in paragraphs. `load_high` tries
+    /// the UMB chain first.
+    fn allocate_native_driver_block(
         &self,
         memory: &mut dyn MemoryAccess,
         display_name: &[u8],
         image_paragraphs: u16,
-        directive: config::DeviceDirective,
-    ) -> Option<u16> {
-        match directive {
-            config::DeviceDirective::Device => self.allocate_conventional_native_block(
-                memory,
-                image_paragraphs,
-                display_name,
-                "image",
-            ),
-            config::DeviceDirective::DeviceHigh => self.allocate_native_block_high_first(
-                memory,
-                image_paragraphs,
-                display_name,
-                "image",
-            ),
-        }
-    }
-
-    fn allocate_native_block_high_first(
-        &self,
-        memory: &mut dyn MemoryAccess,
-        paragraphs: u16,
-        display_name: &[u8],
-        block_name: &str,
-    ) -> Option<u16> {
-        if let Some(mm) = self
-            .state
-            .memory_manager
-            .as_ref()
-            .filter(|mm| mm.is_umb_enabled())
-        {
-            match mm.umb_allocate(paragraphs, memory) {
-                Ok((segment, _actual_size)) => return Some(segment),
-                Err((error, largest)) => {
-                    warn!(
-                        "CONFIG.SYS native driver {} {block_name} high allocation failed error={} largest={} paragraphs; falling back to conventional memory",
-                        display_bytes(display_name),
-                        error,
-                        largest
-                    );
-                }
+        load_high: bool,
+    ) -> Option<(u16, u16)> {
+        if load_high && let Some(umb_first_mcb_segment) = self.state.umb_first_mcb_segment() {
+            if let Some(block) =
+                allocate_largest_block(memory, umb_first_mcb_segment, image_paragraphs)
+            {
+                return Some(block);
             }
+            warn!(
+                "CONFIG.SYS native driver {} does not fit into upper memory; falling back to conventional memory",
+                display_bytes(display_name)
+            );
         }
 
-        self.allocate_conventional_native_block(memory, paragraphs, display_name, block_name)
-    }
-
-    fn allocate_conventional_native_block(
-        &self,
-        memory: &mut dyn MemoryAccess,
-        paragraphs: u16,
-        display_name: &[u8],
-        block_name: &str,
-    ) -> Option<u16> {
-        match memory::allocate(
+        let block = allocate_largest_block(
             memory,
             self.state.platform.placement.first_mcb_segment,
-            paragraphs,
-            tables::MCB_OWNER_DOS,
-            0,
-        ) {
-            Ok(segment) => Some(segment),
-            Err((error, largest)) => {
-                warn!(
-                    "CONFIG.SYS native driver {} {block_name} allocation failed error={} largest={} paragraphs",
-                    display_bytes(display_name),
-                    error,
-                    largest
-                );
-                None
-            }
+            image_paragraphs,
+        );
+        if block.is_none() {
+            warn!(
+                "CONFIG.SYS native driver {} does not fit into conventional memory",
+                display_bytes(display_name)
+            );
         }
+        block
     }
 
     fn collect_native_driver_images(
@@ -544,41 +564,69 @@ fn write_line_tail(memory: &mut dyn MemoryAccess, address: u32, raw_line: &[u8])
     memory.write_block(address, &buffer);
 }
 
-fn link_device_chain(
-    dos: &NeetanDos,
+/// Allocates the largest free block of the MCB chain at `first_mcb_segment`
+/// when it holds `minimum_paragraphs`. Returns its segment and its size.
+fn allocate_largest_block(
     memory: &mut dyn MemoryAccess,
-    drivers: &[LoadedDriverInit],
-    cdrom_device: bool,
-) {
-    if drivers.is_empty() {
-        return;
+    first_mcb_segment: u16,
+    minimum_paragraphs: u16,
+) -> Option<(u16, u16)> {
+    let largest = memory::largest_free_block_paragraphs_pub(memory, first_mcb_segment);
+    if largest == 0 || largest < minimum_paragraphs {
+        return None;
     }
+    memory::allocate(memory, first_mcb_segment, largest, tables::MCB_OWNER_DOS, 0)
+        .ok()
+        .map(|segment| (segment, largest))
+}
 
-    let builtin_tail = builtin_tail(dos, memory);
-    let last_builtin_header = if cdrom_device {
-        tables::DEV_CDROM_OFFSET
-    } else {
-        tables::DEV_AID_NEC_OFFSET
-    };
-    write_far_ptr(
-        memory,
-        dos.state.dos_data_address(last_builtin_header) + tables::DEVHDR_OFF_NEXT_PTR,
-        drivers[0].segment,
-        0x0000,
-    );
+/// Links the driver at `segment` into the device chain behind the built-in
+/// character devices and the native drivers that precede it.
+fn append_to_device_chain(dos: &NeetanDos, memory: &mut dyn MemoryAccess, segment: u16) {
+    let tail = builtin_tail(dos, memory);
+    let mut address = dos.state.dos_data_address(dos.state.nul_device_offset());
+    for _ in 0..MAXIMUM_DEVICE_CHAIN_LENGTH {
+        let next = read_far_ptr(memory, address + tables::DEVHDR_OFF_NEXT_PTR);
+        if next == tail || next.1 == 0xFFFF {
+            write_far_ptr(
+                memory,
+                address + tables::DEVHDR_OFF_NEXT_PTR,
+                segment,
+                0x0000,
+            );
+            write_far_ptr(
+                memory,
+                (u32::from(segment) << 4) + tables::DEVHDR_OFF_NEXT_PTR,
+                next.0,
+                next.1,
+            );
+            return;
+        }
+        address = (u32::from(next.0) << 4) + u32::from(next.1);
+    }
+    warn!("Device chain does not reach its end; native driver at {segment:#06X} stays unlinked");
+}
 
-    for (index, driver) in drivers.iter().enumerate() {
-        let (next_segment, next_offset) = if let Some(next_driver) = drivers.get(index + 1) {
-            (next_driver.segment, 0x0000)
-        } else {
-            builtin_tail
-        };
-        write_far_ptr(
-            memory,
-            ((driver.segment as u32) << 4) + tables::DEVHDR_OFF_NEXT_PTR,
-            next_segment,
-            next_offset,
-        );
+/// Removes the driver at `segment` from the device chain.
+fn unlink_from_device_chain(dos: &NeetanDos, memory: &mut dyn MemoryAccess, segment: u16) {
+    let driver_address = u32::from(segment) << 4;
+    let mut address = dos.state.dos_data_address(dos.state.nul_device_offset());
+    for _ in 0..MAXIMUM_DEVICE_CHAIN_LENGTH {
+        let next = read_far_ptr(memory, address + tables::DEVHDR_OFF_NEXT_PTR);
+        if next.1 == 0xFFFF {
+            return;
+        }
+        if next == (segment, 0x0000) {
+            let following = read_far_ptr(memory, driver_address + tables::DEVHDR_OFF_NEXT_PTR);
+            write_far_ptr(
+                memory,
+                address + tables::DEVHDR_OFF_NEXT_PTR,
+                following.0,
+                following.1,
+            );
+            return;
+        }
+        address = (u32::from(next.0) << 4) + u32::from(next.1);
     }
 }
 
@@ -596,12 +644,17 @@ fn builtin_tail(dos: &NeetanDos, memory: &dyn MemoryAccess) -> (u16, u16) {
     }
 }
 
+/// Reads the far pointer at `address` as `(segment, offset)`.
+fn read_far_ptr(memory: &dyn MemoryAccess, address: u32) -> (u16, u16) {
+    (memory.read_word(address + 2), memory.read_word(address))
+}
+
 fn write_far_ptr(memory: &mut dyn MemoryAccess, address: u32, segment: u16, offset: u16) {
     memory.write_word(address, offset);
     memory.write_word(address + 2, segment);
 }
 
-fn write_mcb_name(memory: &mut dyn MemoryAccess, mcb_segment: u16, name: &[u8; 8]) {
+fn write_mcb_name(memory: &mut dyn MemoryAccess, mcb_segment: u16, name: &[u8]) {
     memory.write_block(((mcb_segment as u32) << 4) + tables::MCB_OFF_NAME, name);
 }
 
@@ -698,13 +751,7 @@ mod tests {
             (u32::from(TEST_DRIVER_SEGMENT) << 4) + tables::DEVHDR_OFF_NAME,
             b"TESTDRV ",
         );
-        let driver = LoadedDriverInit {
-            source_path: b"A:\\TESTDRV.SYS".to_vec(),
-            raw_line: b"A:\\TESTDRV.SYS".to_vec(),
-            image_paragraphs: 1,
-            segment: TEST_DRIVER_SEGMENT,
-        };
-        link_device_chain(&dos, &mut memory, &[driver], cdrom_device);
+        append_to_device_chain(&dos, &mut memory, TEST_DRIVER_SEGMENT);
         (dos, memory)
     }
 
@@ -944,13 +991,8 @@ mod tests {
         let mut memory = mock_memory_with_conventional_chain(0x1000);
         let dos = dos_with_umb(&mut memory);
 
-        let segment = dos
-            .allocate_native_driver_image(
-                &mut memory,
-                b"A:\\GENERIC.SYS",
-                0x20,
-                config::DeviceDirective::Device,
-            )
+        let (segment, _) = dos
+            .allocate_native_driver_block(&mut memory, b"A:\\GENERIC.SYS", 0x20, false)
             .expect("driver image should allocate");
 
         assert_eq!(segment, pc98_first_mcb_segment() + 1);
@@ -961,13 +1003,8 @@ mod tests {
         let mut memory = mock_memory_with_conventional_chain(0x1000);
         let dos = dos_with_umb(&mut memory);
 
-        let segment = dos
-            .allocate_native_driver_image(
-                &mut memory,
-                b"A:\\GENERIC.SYS",
-                0x20,
-                config::DeviceDirective::DeviceHigh,
-            )
+        let (segment, _) = dos
+            .allocate_native_driver_block(&mut memory, b"A:\\GENERIC.SYS", 0x20, true)
             .expect("driver image should allocate");
 
         assert_eq!(segment, UMB_FIRST_MCB_SEGMENT + 1);
@@ -978,13 +1015,8 @@ mod tests {
         let mut memory = mock_memory_with_conventional_chain(0x1000);
         let dos = NeetanDos::new(crate::DosPlatform::pc98());
 
-        let segment = dos
-            .allocate_native_driver_image(
-                &mut memory,
-                b"A:\\GENERIC.SYS",
-                0x20,
-                config::DeviceDirective::DeviceHigh,
-            )
+        let (segment, _) = dos
+            .allocate_native_driver_block(&mut memory, b"A:\\GENERIC.SYS", 0x20, true)
             .expect("driver image should allocate");
 
         assert_eq!(segment, pc98_first_mcb_segment() + 1);
@@ -997,18 +1029,156 @@ mod tests {
         dos.state.allocation_strategy = 0x42;
         dos.state.umb_link = true;
 
-        let segment = dos
-            .allocate_native_driver_image(
-                &mut memory,
-                b"A:\\GENERIC.SYS",
-                0x20,
-                config::DeviceDirective::DeviceHigh,
-            )
+        let (segment, _) = dos
+            .allocate_native_driver_block(&mut memory, b"A:\\GENERIC.SYS", 0x20, true)
             .expect("driver image should allocate");
 
         assert_eq!(segment, UMB_FIRST_MCB_SEGMENT + 1);
         assert_eq!(dos.state.allocation_strategy, 0x42);
         assert!(dos.state.umb_link);
+    }
+
+    /// Free paragraphs of the conventional chain in the load tests.
+    const LOAD_TEST_FREE_PARAGRAPHS: u16 = 0x1000;
+
+    /// Loads a 64-byte driver with the device name `name` and returns its
+    /// INIT step.
+    fn load_test_driver(
+        dos: &mut NeetanDos,
+        memory: &mut MockMemory,
+        name: &[u8; 8],
+        load_high: bool,
+    ) -> NativeDriverInit {
+        let mut image = vec![0u8; 64];
+        image[tables::DEVHDR_OFF_NAME as usize..tables::DEVHDR_OFF_NAME as usize + 8]
+            .copy_from_slice(name);
+        let load = NativeDriverLoad {
+            display_name: b"A:\\TESTDRV.SYS".to_vec(),
+            image,
+            load_high,
+            mcb_name: name.to_vec(),
+            line_tail: b"A:\\TESTDRV.SYS".to_vec(),
+        };
+
+        let mut steps = dos.load_native_driver(&load, memory);
+
+        assert_eq!(steps.len(), 1);
+        let Some(GuestStep::NativeDriverInit(init)) = steps.pop() else {
+            panic!("load must return the INIT step");
+        };
+        init
+    }
+
+    /// Loads a driver named `TESTDRV` into a conventional chain and returns
+    /// its INIT step.
+    fn loaded_test_driver() -> (NeetanDos, MockMemory, NativeDriverInit) {
+        let mut memory = mock_memory_with_conventional_chain(LOAD_TEST_FREE_PARAGRAPHS);
+        let mut dos = NeetanDos::new(crate::DosPlatform::pc98());
+        dos.write_device_chain(&mut memory, false);
+        let init = load_test_driver(&mut dos, &mut memory, b"TESTDRV ", false);
+        (dos, memory, init)
+    }
+
+    /// Returns the owner word of the MCB in front of `segment`.
+    fn mcb_owner(memory: &MockMemory, segment: u16) -> u16 {
+        memory.read_word((u32::from(segment - 1) << 4) + tables::MCB_OFF_OWNER)
+    }
+
+    /// Writes a done status and the break address into the INIT request.
+    fn write_init_result(dos: &NeetanDos, memory: &mut MockMemory, segment: u16, offset: u16) {
+        let request = dos.guest_call_area().request_address();
+        memory.write_word(request + REQUEST_OFF_STATUS, STATUS_DONE);
+        memory.write_word(request + INIT_REQUEST_OFF_AVAILABLE_OFFSET, offset);
+        memory.write_word(request + INIT_REQUEST_OFF_AVAILABLE_SEGMENT, segment);
+    }
+
+    #[test]
+    fn load_step_copies_the_image_into_the_largest_block_and_links_the_driver() {
+        let (dos, memory, init) = loaded_test_driver();
+
+        let segment = pc98_first_mcb_segment() + 1;
+        assert_eq!(init.segment, segment);
+        assert_eq!(init.end_segment, segment + LOAD_TEST_FREE_PARAGRAPHS);
+        let mut name = [0u8; 8];
+        memory.read_block(
+            (u32::from(segment) << 4) + tables::DEVHDR_OFF_NAME,
+            &mut name,
+        );
+        assert_eq!(&name, b"TESTDRV ");
+        let names = crate::test_support::device_chain_names(&dos, &memory);
+        assert_eq!(
+            names[..4],
+            [*b"NUL     ", *b"CON     ", *b"$AID#NEC", *b"TESTDRV "]
+        );
+    }
+
+    #[test]
+    fn init_finish_shrinks_the_block_to_the_break_address() {
+        let (mut dos, mut memory, init) = loaded_test_driver();
+        write_init_result(&dos, &mut memory, init.segment + 0x30, 0x0008);
+
+        let area = dos.guest_call_area();
+        dos.finish_native_driver_init(&init, &area, &mut memory);
+
+        assert_eq!(memory::read_mcb_size_pub(&memory, init.segment - 1), 0x31);
+        let next_mcb = init.segment + 0x31;
+        assert_eq!(
+            memory.read_word((u32::from(next_mcb) << 4) + tables::MCB_OFF_OWNER),
+            tables::MCB_OWNER_FREE
+        );
+        let names = crate::test_support::device_chain_names(&dos, &memory);
+        assert!(names.contains(b"TESTDRV "));
+    }
+
+    #[test]
+    fn init_finish_without_resident_memory_unlinks_and_frees_the_driver() {
+        let (mut dos, mut memory, init) = loaded_test_driver();
+        write_init_result(&dos, &mut memory, init.segment, 0x0000);
+
+        let area = dos.guest_call_area();
+        dos.finish_native_driver_init(&init, &area, &mut memory);
+
+        assert_eq!(mcb_owner(&memory, init.segment), tables::MCB_OWNER_FREE);
+        let names = crate::test_support::device_chain_names(&dos, &memory);
+        assert!(!names.contains(b"TESTDRV "));
+    }
+
+    #[test]
+    fn second_driver_loads_behind_the_resident_memory_of_the_first() {
+        let (mut dos, mut memory, first) = loaded_test_driver();
+        write_init_result(&dos, &mut memory, first.segment + 0x30, 0x0000);
+        let area = dos.guest_call_area();
+        dos.finish_native_driver_init(&first, &area, &mut memory);
+
+        let second = load_test_driver(&mut dos, &mut memory, b"SECOND  ", false);
+
+        assert_eq!(second.segment, first.segment + 0x30 + 1);
+        let names = crate::test_support::device_chain_names(&dos, &memory);
+        assert_eq!(
+            names[..5],
+            [
+                *b"NUL     ",
+                *b"CON     ",
+                *b"$AID#NEC",
+                *b"TESTDRV ",
+                *b"SECOND  "
+            ]
+        );
+    }
+
+    #[test]
+    fn devicehigh_driver_shrinks_its_upper_memory_block() {
+        let mut memory = mock_memory_with_conventional_chain(LOAD_TEST_FREE_PARAGRAPHS);
+        let mut dos = dos_with_umb(&mut memory);
+        dos.write_device_chain(&mut memory, false);
+        let init = load_test_driver(&mut dos, &mut memory, b"TESTDRV ", true);
+        assert_eq!(init.segment, UMB_FIRST_MCB_SEGMENT + 1);
+        write_init_result(&dos, &mut memory, init.segment + 0x10, 0x0000);
+
+        let area = dos.guest_call_area();
+        dos.finish_native_driver_init(&init, &area, &mut memory);
+
+        assert_eq!(memory::read_mcb_size_pub(&memory, init.segment - 1), 0x10);
     }
 
     fn test_driver_init() -> NativeDriverInit {
@@ -1071,35 +1241,59 @@ mod tests {
         assert_eq!(memory.read_byte(0x9000 + max_text + 1), 0x00);
     }
 
-    #[test]
-    fn terminate_inside_init_enters_command_com() {
-        let mut dos = NeetanDos::new(crate::DosPlatform::pc98());
+    /// Writes the INIT request of `init` and puts it in flight as the boot
+    /// operation of `dos`.
+    fn start_init_operation(dos: &mut NeetanDos, memory: &mut MockMemory, init: &NativeDriverInit) {
         dos.root_command_com_psp = 0x2345;
         let area = dos.guest_call_area();
+        init.prepare(&area, memory);
         let mut operation = GuestOperation::deferred(
             &area,
-            VecDeque::from([GuestStep::NativeDriverInit(test_driver_init())]),
+            VecDeque::new(),
             GuestCompletion::EnterProgram(BootEntryPoint::command_com(0x2345)),
         );
-        operation.in_flight = Some(GuestStep::NativeDriverInit(test_driver_init()));
+        operation.in_flight = Some(GuestStep::NativeDriverInit(init.clone()));
         operation.awaiting_start = false;
         dos.guest_calls.push(operation);
+    }
 
-        let cpu = MockCpu {
+    /// CPU of a terminate call with its IRET frame at `8000:0100`.
+    fn terminating_cpu() -> MockCpu {
+        MockCpu {
             ss: 0x8000,
             sp: 0x0100,
             ..MockCpu::default()
-        };
-        let mut memory = MockMemory::with_extended_memory(0x100000, 0);
-        memory.write_word(area.request_address() + 3, STATUS_DONE);
+        }
+    }
 
-        assert!(dos.end_native_driver_init_on_terminate(&cpu, &mut memory));
+    #[test]
+    fn terminate_inside_init_enters_command_com_and_removes_the_driver() {
+        let (mut dos, mut memory, init) = loaded_test_driver();
+        start_init_operation(&mut dos, &mut memory, &init);
+        let cpu = terminating_cpu();
+
+        assert!(dos.end_native_driver_init_on_terminate(&cpu, &mut memory, 0));
 
         let iret_addr = (0x8000u32 << 4) + 0x0100;
         assert_eq!(memory.read_word(iret_addr), 0x0100);
         assert_eq!(memory.read_word(iret_addr + 2), 0x2345);
         assert_eq!(memory.read_word(iret_addr + 4), 0x0202);
         assert!(dos.guest_calls.is_empty());
-        assert!(!dos.end_native_driver_init_on_terminate(&cpu, &mut memory));
+        assert_eq!(mcb_owner(&memory, init.segment), tables::MCB_OWNER_FREE);
+        let names = crate::test_support::device_chain_names(&dos, &memory);
+        assert!(!names.contains(b"TESTDRV "));
+        assert!(!dos.end_native_driver_init_on_terminate(&cpu, &mut memory, 0));
+    }
+
+    #[test]
+    fn tsr_termination_inside_init_keeps_the_requested_paragraphs() {
+        let (mut dos, mut memory, init) = loaded_test_driver();
+        start_init_operation(&mut dos, &mut memory, &init);
+
+        assert!(dos.end_native_driver_init_on_terminate(&terminating_cpu(), &mut memory, 0x20));
+
+        assert_eq!(memory::read_mcb_size_pub(&memory, init.segment - 1), 0x20);
+        let names = crate::test_support::device_chain_names(&dos, &memory);
+        assert!(names.contains(b"TESTDRV "));
     }
 }
