@@ -550,21 +550,22 @@ fn compose_pegc(
     let pegc_flags = pegc.pegc_flags;
     let is_one_screen = (pegc_flags & 0x02) != 0;
     let display_page = (pegc_flags >> 2) & 1;
-    // PEGC has either one 512 KB screen or two 256 KB pages. Address masking
-    // is kept separate from `page_base` so short test VRAM slices can still be
-    // handled by the loader fallback.
-    let vram_size: u32 = if is_one_screen { 0x80000 } else { 0x40000 };
-    let vram_mask = vram_size - 1;
+    // PEGC has either one 512 KB screen or two 256 KB pages. A scanline
+    // address wraps inside the displayed page.
+    let page_size: u32 = if is_one_screen { 0x80000 } else { 0x40000 };
     let page_base: u32 = if !is_one_screen && display_page != 0 {
-        vram_size
+        page_size
     } else {
         0
+    };
+    let page = PegcPage {
+        base: page_base as usize,
+        mask: page_size - 1,
     };
     let mut text_scroll_iter = ScrollLineIter::new(inputs.gdc_scroll_start_line);
     let mut pegc_scanline_iter = PegcScanlineBaseIter::new(
         inputs.gdc_graphics_scroll,
         graphics_pitch,
-        page_base,
         inputs.gdc_graphics_display_mode_is_graphics,
     );
 
@@ -581,13 +582,13 @@ fn compose_pegc(
         let cursor_active_for_scanline = font_line >= cursor_top && font_line <= cursor_bottom;
         let text_cell_base = text_scroll_start.wrapping_add(row.wrapping_mul(text_pitch));
 
-        let pegc_scanline_base = pegc_scanline_iter.next();
+        let pegc_scanline_offset = pegc_scanline_iter.next();
 
         if graphics_enabled {
             load_pegc_indices(
                 pegc.vram,
-                pegc_scanline_base,
-                vram_mask,
+                page,
+                pegc_scanline_offset,
                 &mut scratch.pegc_indices,
             );
         } else {
@@ -772,21 +773,28 @@ impl GraphicsByteBaseIter {
     }
 }
 
+/// Displayed PEGC VRAM page: its byte offset in VRAM and the mask that wraps
+/// a pixel offset inside it.
+#[derive(Clone, Copy)]
+struct PegcPage {
+    base: usize,
+    mask: u32,
+}
+
 /// PEGC scanline address iterator. PEGC is byte-per-pixel, so the GDC word
-/// address is expanded to pixels here and `load_pegc_indices` adds X.
+/// address is expanded to a pixel offset inside the displayed page here and
+/// `load_pegc_indices` adds X.
 struct PegcScanlineBaseIter {
     scroll_iter: ScrollLineIter,
     pitch: u32,
-    page_base: u32,
     graphics_display_mode: bool,
 }
 
 impl PegcScanlineBaseIter {
-    fn new(scrolls: [u32; 4], pitch: u32, page_base: u32, graphics_display_mode: bool) -> Self {
+    fn new(scrolls: [u32; 4], pitch: u32, graphics_display_mode: bool) -> Self {
         Self {
             scroll_iter: ScrollLineIter::new(scrolls),
             pitch,
-            page_base,
             graphics_display_mode,
         }
     }
@@ -798,11 +806,10 @@ impl PegcScanlineBaseIter {
         } else {
             self.pitch.wrapping_mul(2)
         };
-        let inner = start_address
+        start_address
             .wrapping_mul(2)
             .wrapping_add(scanline.wrapping_mul(line_pitch))
-            .wrapping_mul(8);
-        self.page_base.wrapping_add(inner)
+            .wrapping_mul(8)
     }
 }
 
@@ -1037,28 +1044,31 @@ fn load_graphics_row(plane: &[u8], byte_base: u32, dst: &mut [u8; CELLS_PER_ROW]
     }
 }
 
-fn load_pegc_indices(vram: &[u8], scanline_base: u32, vram_mask: u32, dst: &mut [u8]) {
+/// Copies one scanline of PEGC palette indices from the displayed page. The
+/// pixel offset wraps inside the page.
+fn load_pegc_indices(vram: &[u8], page: PegcPage, scanline_offset: u32, dst: &mut [u8]) {
     debug_assert_eq!(dst.len(), SoftwareRenderer::WIDTH);
 
-    let vram_size = (vram_mask as usize).wrapping_add(1);
-    if vram.len() >= vram_size {
-        let base = (scanline_base & vram_mask) as usize;
-        let pixels_until_wrap = vram_size - base;
+    let page_size = (page.mask as usize).wrapping_add(1);
+    if vram.len() >= page.base + page_size {
+        let page_vram = &vram[page.base..page.base + page_size];
+        let start = (scanline_offset & page.mask) as usize;
+        let pixels_until_wrap = page_size - start;
         if pixels_until_wrap >= SoftwareRenderer::WIDTH {
             // PEGC stores one palette index per pixel, so a whole scanline is
             // copied into scratch before text overlay.
-            dst.copy_from_slice(&vram[base..base + SoftwareRenderer::WIDTH]);
+            dst.copy_from_slice(&page_vram[start..start + SoftwareRenderer::WIDTH]);
         } else {
-            dst[..pixels_until_wrap].copy_from_slice(&vram[base..vram_size]);
+            dst[..pixels_until_wrap].copy_from_slice(&page_vram[start..]);
             let remaining = SoftwareRenderer::WIDTH - pixels_until_wrap;
-            dst[pixels_until_wrap..].copy_from_slice(&vram[..remaining]);
+            dst[pixels_until_wrap..].copy_from_slice(&page_vram[..remaining]);
         }
         return;
     }
 
     for (i, slot) in dst.iter_mut().enumerate() {
-        let addr = (scanline_base.wrapping_add(i as u32) & vram_mask) as usize;
-        *slot = vram.get(addr).copied().unwrap_or(0);
+        let address = page.base + (scanline_offset.wrapping_add(i as u32) & page.mask) as usize;
+        *slot = vram.get(address).copied().unwrap_or(0);
     }
 }
 
