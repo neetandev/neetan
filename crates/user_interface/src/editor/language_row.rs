@@ -19,7 +19,7 @@ use super::{
     inherited::{Inherited, InheritedSource},
     note_writer::{NoteText, NoteView},
     notes::{NoteLook, write_invalid_value},
-    page::PageActions,
+    page::FormResponse,
     rows::{RowAreas, draw_note, field_id, show_dropdown},
 };
 use crate::{
@@ -295,7 +295,7 @@ impl Editor {
         areas: RowAreas,
         index: usize,
         setting: &'static Setting,
-        actions: &mut PageActions,
+        form: &mut FormResponse,
     ) -> f32 {
         let id = field_id(setting.key);
         self.widgets
@@ -320,7 +320,7 @@ impl Editor {
         ) && selected != before
         {
             field.select(selected);
-            actions.changed = true;
+            form.changed = true;
         }
         let note = row.note(catalog, generation, field, inherited, &settings.flags);
         draw_note(context, areas.note, note)

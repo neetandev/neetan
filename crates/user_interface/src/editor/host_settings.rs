@@ -493,7 +493,8 @@ mod tests {
             rom_rows::tests::rom_status_text,
             rows::field_id,
             test_support::{
-                SettingsRoot, first_rom_folder, index_of, settings_page, show, statuses_with,
+                SettingsRoot, first_rom_folder, index_of, save_failure, settings_page, show,
+                statuses_with,
             },
         },
         gui_test_support::GuiHarness,
@@ -954,9 +955,9 @@ mod tests {
         show(&mut harness, &mut editor);
         std::fs::write(test.settings_file(), "backend = legacy\n").expect("file is written");
         harness.input.shortcut = Some(Shortcut::ControlS);
-        let pass = show(&mut harness, &mut editor);
+        let (_, effects) = show(&mut harness, &mut editor);
         assert!(matches!(
-            pass.save_error,
+            save_failure(&effects),
             Some(SaveFailure::ChangedOutside(_))
         ));
         assert_eq!(

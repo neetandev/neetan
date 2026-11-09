@@ -13,7 +13,7 @@ use i18n::Key;
 use machine_factory::config::settings::ValueKind;
 
 use super::{
-    Editor, EditorFile, Subject,
+    Editor, EditorFile, EditorFocus, Subject,
     fields::is_single_image,
     form::{EditorSection, FieldSource},
     help_area::FormRow,
@@ -22,7 +22,7 @@ use super::{
     kept_lines::draw_kept_lines,
     note_writer::NoteView,
     notes::{NoteKind, NoteLook},
-    page::{PageActions, TABS_ID},
+    page::{FormResponse, TABS_ID},
     rows::{RowAreas, RowTexts, SettingRow, draw_label, draw_note, draw_note_text, field_id},
 };
 use crate::{
@@ -63,7 +63,7 @@ fn draw_section_note(context: &mut UiContext, content: Rect, y: f32, note: NoteV
 impl Editor {
     /// Gives `id` the focus when the first widget of the section takes it.
     fn claim_first_focus(&mut self, context: &mut UiContext, id: UiId) {
-        if std::mem::take(&mut self.focus_first) {
+        if matches!(self.focus.take(), Some(EditorFocus::FirstWidget)) {
             context.set_focus(id);
         }
     }
@@ -74,7 +74,7 @@ impl Editor {
         &mut self,
         context: &mut UiContext,
         content: Rect,
-        actions: &mut PageActions,
+        form: &mut FormResponse,
     ) -> f32 {
         let catalog = context.catalog;
         let generation = context.catalog_generation;
@@ -184,7 +184,7 @@ impl Editor {
         }
         for index in 0..self.fields.len() {
             if self.fields[index].section == section {
-                y += self.draw_field(context, content, y, index, actions);
+                y += self.draw_field(context, content, y, index, form);
             }
         }
         if section == EditorSection::Advanced && !self.kept.is_empty() {
@@ -193,7 +193,7 @@ impl Editor {
         if section == EditorSection::Folders && self.host_settings().is_some() {
             y += draw_settings_file_block(context, content, y, &mut self.texts.settings_file_lines);
         }
-        if std::mem::take(&mut self.focus_first) {
+        if matches!(self.focus.take(), Some(EditorFocus::FirstWidget)) {
             context.set_focus(UiId::from(TABS_ID));
         }
         y - content.y
@@ -241,12 +241,12 @@ impl Editor {
         content: Rect,
         y: f32,
         index: usize,
-        actions: &mut PageActions,
+        form: &mut FormResponse,
     ) -> f32 {
         let mut texts = std::mem::take(&mut self.row_texts[index]);
         let first_widget = self.widgets.len();
         let takes_pointer = context.takes_pointer();
-        let height = self.draw_field_with(context, content, y, index, &mut texts, actions);
+        let height = self.draw_field_with(context, content, y, index, &mut texts, form);
         self.row_texts[index] = texts;
         for widget in &mut self.widgets[first_widget..] {
             widget.field = Some(index);
@@ -271,7 +271,7 @@ impl Editor {
         y: f32,
         index: usize,
         texts: &mut RowTexts,
-        actions: &mut PageActions,
+        form: &mut FormResponse,
     ) -> f32 {
         let theme = context.theme;
         let catalog = context.catalog;
@@ -290,7 +290,7 @@ impl Editor {
                     true,
                 );
                 self.claim_first_focus(context, id);
-                let note = self.draw_metadata(context, areas, index, texts, actions);
+                let note = self.draw_metadata(context, areas, index, texts, form);
                 return RowAreas::height(theme, note);
             }
             FieldSource::Setting(setting) => setting,
@@ -317,22 +317,20 @@ impl Editor {
         };
         match setting.kind {
             ValueKind::Language if matches!(self.subject, Subject::Host(_)) => {
-                let note = self.draw_language(context, areas, index, setting, actions);
+                let note = self.draw_language(context, areas, index, setting, form);
                 RowAreas::height(theme, note)
             }
             ValueKind::Choice(_) | ValueKind::OnOff | ValueKind::Language => {
-                let note = self.draw_choice(context, row, actions);
+                let note = self.draw_choice(context, row, form);
                 RowAreas::height(theme, note)
             }
             ValueKind::Number(range) => {
-                let note = self.draw_number(context, row, range, actions);
+                let note = self.draw_number(context, row, range, form);
                 RowAreas::height(theme, note)
             }
-            ValueKind::Path(_) if is_single_image(setting) => {
-                self.draw_image(context, row, actions)
-            }
-            ValueKind::Path(_) => self.draw_path(context, row, actions),
-            ValueKind::PathList => self.draw_media(context, row, actions),
+            ValueKind::Path(_) if is_single_image(setting) => self.draw_image(context, row, form),
+            ValueKind::Path(_) => self.draw_path(context, row, form),
+            ValueKind::PathList => self.draw_media(context, row, form),
         }
     }
 
@@ -358,7 +356,7 @@ impl Editor {
         areas: RowAreas,
         index: usize,
         texts: &mut RowTexts,
-        actions: &mut PageActions,
+        form: &mut FormResponse,
     ) -> f32 {
         let theme = context.theme;
         let catalog = context.catalog;
@@ -389,9 +387,9 @@ impl Editor {
                     .clears_on_cancel(false)
                     .show(context, areas.control, text)
             };
-            actions.changed |= response.changed;
+            form.changed |= response.changed;
         }
-        actions.changed |= self.clear_on_x(context, id, index);
+        form.changed |= self.clear_on_x(context, id, index);
         let note = texts.note.note(
             catalog,
             context.catalog_generation,
@@ -412,7 +410,7 @@ impl Editor {
 
 #[cfg(test)]
 mod tests {
-    use gui::ui::Navigation;
+    use gui::{component::run, ui::Navigation};
     use machine_factory::{
         config::{
             Target,
@@ -572,7 +570,7 @@ mod tests {
                         "{key} {x} {y}"
                     );
                     let (counts, _) = harness.counted_frame(|context| {
-                        editor.show(context, MINIMUM_SCREEN);
+                        run(editor, context, MINIMUM_SCREEN, (), &mut |_| {});
                     });
                     assert_eq!(counts, PassCounts::NONE, "{key}");
                     assert_eq!(
@@ -830,7 +828,7 @@ mod tests {
                         "{name} {key} {control:?} {form:?}"
                     );
                     let (counts, _) = harness.counted_frame(|context| {
-                        editor.show(context, SHORT_SCREEN);
+                        run(&mut editor, context, SHORT_SCREEN, (), &mut |_| {});
                     });
                     assert_eq!(counts, PassCounts::NONE, "{name} {key} {height}");
                     let hovered = |editor: &Editor| {

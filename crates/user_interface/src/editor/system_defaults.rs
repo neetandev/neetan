@@ -44,7 +44,7 @@ mod tests {
             form::DEFAULTS_SECTIONS,
             notes::tests::english_inherited_label,
             rows::field_id,
-            test_support::{EditorRoot, index_of, show},
+            test_support::{EditorRoot, index_of, saved, show},
         },
         gui_test_support::GuiHarness,
     };
@@ -111,8 +111,8 @@ mod tests {
         editor.refresh();
         let mut harness = GuiHarness::minimum();
         harness.input.shortcut = Some(Shortcut::ControlS);
-        let pass = show(&mut harness, &mut editor);
-        assert_eq!(pass.saved, Some(path.clone()));
+        let (_, effects) = show(&mut harness, &mut editor);
+        assert_eq!(saved(&effects), Some(path.clone()));
         assert_eq!(
             std::fs::read_to_string(&path).expect("file reads"),
             "crt = on\n"
@@ -125,7 +125,10 @@ mod tests {
         editor.refresh();
         let model = editor.fields[machine].choices[0].clone();
         harness.input.shortcut = Some(Shortcut::ControlS);
-        assert_eq!(show(&mut harness, &mut editor).saved, Some(path.clone()));
+        assert_eq!(
+            saved(&show(&mut harness, &mut editor).1),
+            Some(path.clone())
+        );
         assert_eq!(
             std::fs::read_to_string(&path).expect("file reads"),
             format!("machine = {model}\ncrt = on\n")

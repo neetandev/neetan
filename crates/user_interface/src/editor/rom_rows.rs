@@ -15,8 +15,8 @@ use machine_factory::{
 };
 
 use super::{
-    Editor, Subject, host_settings::HostSettings, note_writer::NoteWriter, notes::NoteKind,
-    rows::field_id,
+    Editor, EditorMessage, Subject, host_settings::HostSettings, note_writer::NoteWriter,
+    notes::NoteKind, rows::field_id,
 };
 use crate::{
     rom_folders::{RomSeverity, rom_severity},
@@ -150,54 +150,57 @@ impl Editor {
         }
     }
 
-    /// Checks the ROM folder of every ROM key whose folder for the next
-    /// launch differs from the folder of its last check, once the user
-    /// leaves the field. A field of the key or the ROM folder field that
-    /// holds the focus in `context` defers the check. Returns whether a
-    /// check ran.
-    pub(super) fn check_changed_roms(&mut self, context: &UiContext) -> bool {
+    /// Pushes [`EditorMessage::CheckRoms`] for every ROM row whose folder
+    /// for the next launch differs from the folder of its last check, once
+    /// the user leaves the field. A field of the key or the ROM folder field
+    /// that holds the focus in `context` defers the check.
+    pub(super) fn request_rom_checks(
+        &self,
+        context: &UiContext,
+        messages: &mut Vec<EditorMessage>,
+    ) {
         let Some(settings) = self.host_settings() else {
-            return false;
+            return;
         };
         if context.has_focus(field_id(ROMS_FOLDER_KEY)) {
-            return false;
+            return;
         }
-        let pending: Vec<usize> = settings
-            .roms
-            .iter()
-            .enumerate()
-            .filter(|(_, row)| !context.has_focus(field_id(row.folder.key)))
-            .filter(|(_, row)| {
-                !row.checked
-                    .as_ref()
-                    .is_some_and(|(checked, _)| *checked == row.location)
-            })
-            .map(|(index, _)| index)
-            .collect();
+        for (index, row) in settings.roms.iter().enumerate() {
+            let checked = row
+                .checked
+                .as_ref()
+                .is_some_and(|(checked, _)| *checked == row.location);
+            if !checked && !context.has_focus(field_id(row.folder.key)) {
+                messages.push(EditorMessage::CheckRoms(index));
+            }
+        }
+    }
+
+    /// Checks the ROM folder of the ROM row at `index` at its folder for the
+    /// next launch and marks the row as checked.
+    pub(super) fn check_rom_row(&mut self, index: usize) {
         let Subject::Host(settings) = &mut self.subject else {
-            return false;
+            return;
         };
-        for index in &pending {
-            let row = &mut settings.roms[*index];
-            let check = check_rom_folder(&row.folder, &row.location);
-            info!(
-                "Settings: checked the {} ROM folder {}: {:?}",
-                row.folder.label,
-                row.location.display(),
-                check.status
-            );
-            row.checked = Some((row.location.clone(), check));
-        }
-        if !pending.is_empty() {
-            self.revision += 1;
-        }
-        !pending.is_empty()
+        let Some(row) = settings.roms.get_mut(index) else {
+            return;
+        };
+        let check = check_rom_folder(&row.folder, &row.location);
+        info!(
+            "Settings: checked the {} ROM folder {}: {:?}",
+            row.folder.label,
+            row.location.display(),
+            check.status
+        );
+        row.checked = Some((row.location.clone(), check));
+        self.revision += 1;
     }
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use common::temporary::TemporaryFolder;
+    use gui::component::Status;
     use machine_factory::config::{
         settings::find_setting,
         systems::{SYSTEMS, compiled_systems},
@@ -206,7 +209,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::{
         editor::{
-            EditorSection,
+            EditorFocus, EditorSection,
             fields::FieldValue,
             form::SETTINGS_SECTIONS,
             notes::{
@@ -218,7 +221,7 @@ pub(crate) mod tests {
                 SettingsRoot, first_rom_folder, index_of, settings_page, show, statuses_with,
             },
         },
-        gui_test_support::GuiHarness,
+        gui_test_support::{GuiHarness, apply_with_effects},
         rom_folders::check_all_folders,
     };
 
@@ -249,6 +252,15 @@ pub(crate) mod tests {
             .host_path_note(index_of(editor, key), find_setting(key).expect("a ROM key"))
             .expect("a ROM key has a status");
         (notes.note, notes.error)
+    }
+
+    /// The ROM checks that a pass of `editor` asks for.
+    fn rom_checks(harness: &mut GuiHarness, editor: &Editor) -> Vec<EditorMessage> {
+        harness.frame(|context| {
+            let mut messages = Vec::new();
+            editor.request_rom_checks(context, &mut messages);
+            messages
+        })
     }
 
     /// Verifies the found, missing, optional and partial statuses with their texts and looks, and the statuses of the empty temporary ROM folders of every compiled system.
@@ -408,7 +420,7 @@ pub(crate) mod tests {
             .iter()
             .position(|section| *section == EditorSection::Roms)
             .expect("the ROMs section");
-        editor.focus_first = true;
+        editor.focus = Some(EditorFocus::FirstWidget);
         show(&mut harness, &mut editor);
         harness.state.set_focus(field_id(folder.key));
         show(&mut harness, &mut editor);
@@ -452,6 +464,44 @@ pub(crate) mod tests {
         assert_eq!(editor.cached_note(folder.key), Some(note.text.as_str()));
     }
 
+    /// Verifies that `CheckRoms` checks the folder of its ROM row at the folder of the next
+    /// launch, marks the row as checked and leaves the other rows as they are.
+    #[test]
+    fn check_roms_checks_the_folder_of_its_row() {
+        let test = SettingsRoot::new("update_check", Some(""));
+        let host = test.host(&[]);
+        let mut editor = settings_page(&host, &statuses_with(&host, RomStatus::Found));
+        let folder = first_rom_folder();
+        let empty = test.root().join("empty");
+        std::fs::create_dir(&empty).expect("folder is created");
+        let field = index_of(&editor, folder.key);
+        editor.fields[field].value = FieldValue::Text("empty".to_owned());
+        apply_with_effects(&mut editor, EditorMessage::FieldChanged);
+        let before = editor.host_settings().expect("a page").roms.clone();
+        let index = before
+            .iter()
+            .position(|row| row.folder.key == folder.key)
+            .expect("a ROM row of the key");
+        assert_eq!(before[index].location, empty);
+        let revision = editor.revision();
+        assert_eq!(
+            apply_with_effects(&mut editor, EditorMessage::CheckRoms(index)),
+            (Status::Open, Vec::new(), Vec::new())
+        );
+        assert_eq!(editor.revision(), revision + 1);
+        let rows = &editor.host_settings().expect("a page").roms;
+        let (path, check) = rows[index].checked.as_ref().expect("the row is checked");
+        assert_eq!(*path, empty);
+        assert_eq!(*check, check_rom_folder(&folder, &empty));
+        for (row, old) in rows.iter().zip(&before) {
+            if row.folder.key != folder.key {
+                assert_eq!(row, old, "{}", row.folder.key);
+            }
+        }
+        let mut harness = GuiHarness::minimum();
+        assert!(!rom_checks(&mut harness, &editor).contains(&EditorMessage::CheckRoms(index)));
+    }
+
     /// Verifies that the page opens on the statuses of the start without a check, for an empty ROM folder value and for a relative ROM key, and that a new ROM folder value shows an unset key as not checked yet.
     #[test]
     fn the_page_opens_without_a_check() {
@@ -464,14 +514,14 @@ pub(crate) mod tests {
         let statuses = check_all_folders(&host);
         assert!(statuses.iter().any(|status| status.folder.key == folder.key
             && status.location.path == relative.root().join("sets").join("first")));
-        let mut editor = settings_page(&host, &statuses);
+        let editor = settings_page(&host, &statuses);
         let mut harness = GuiHarness::minimum();
-        assert!(!harness.frame(|context| editor.check_changed_roms(context)));
+        assert_eq!(rom_checks(&mut harness, &editor), []);
 
         let empty = SettingsRoot::new("no_check_empty", Some("roms-folder =\n"));
         let host = empty.host(&[]);
         let mut editor = settings_page(&host, &check_all_folders(&host));
-        assert!(!harness.frame(|context| editor.check_changed_roms(context)));
+        assert_eq!(rom_checks(&mut harness, &editor), []);
         assert_ne!(note_of(&editor, folder.key).0.text, NOT_CHECKED_TEXT);
         let roms = index_of(&editor, ROMS_FOLDER_KEY);
         editor.fields[roms].value = FieldValue::Text("firmware".to_owned());

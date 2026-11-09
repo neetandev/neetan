@@ -19,7 +19,7 @@ use super::{
     },
     note_writer::{NoteView, NoteWriter},
     notes::{NoteLook, followed_by, media_note, write_empty_drive_hint, write_empty_list_caption},
-    page::PageActions,
+    page::FormResponse,
     rows::{SettingRow, draw_note, field_id, image_icon},
 };
 
@@ -84,7 +84,7 @@ impl Editor {
         &mut self,
         context: &mut UiContext,
         row: SettingRow,
-        actions: &mut PageActions,
+        form: &mut FormResponse,
     ) -> f32 {
         let SettingRow {
             areas,
@@ -186,7 +186,7 @@ impl Editor {
             }
         };
         if response.changed {
-            actions.changed = true;
+            form.changed = true;
         }
         if response.empty_list_flipped {
             field.value = if empty_list {
@@ -194,13 +194,13 @@ impl Editor {
             } else {
                 FieldValue::EmptyList
             };
-            actions.changed = true;
+            form.changed = true;
         }
         if let Some(browse) = response.browse {
-            actions.browse = Some(BrowseTarget::List(index, browse));
+            form.browse = Some(BrowseTarget::List(index, browse));
         }
         if response.create {
-            actions.create = Some(BrowseTarget::List(index, MediaBrowse::Add));
+            form.create = Some(BrowseTarget::List(index, MediaBrowse::Add));
         }
         let mut below_top = wide.bottom();
         if shows_toggle {
@@ -283,7 +283,7 @@ mod tests {
             assert_eq!(editor.fields[index].section, EditorSection::Media);
             let mut harness = GuiHarness::minimum();
             harness.frame(|context| {
-                let mut actions = PageActions::default();
+                let mut form = FormResponse::default();
                 let mut texts = RowTexts::default();
                 let row = SettingRow {
                     areas: RowAreas::new(context.theme, MINIMUM_SCREEN, 0.0),
@@ -292,7 +292,7 @@ mod tests {
                     ignored: None,
                     texts: &mut texts,
                 };
-                editor.draw_media(context, row, &mut actions)
+                editor.draw_media(context, row, &mut form)
             })
         };
         let inherited = height("");

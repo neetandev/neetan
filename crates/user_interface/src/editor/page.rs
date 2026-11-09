@@ -12,7 +12,7 @@ use gui::{
 use i18n::Catalog;
 
 use super::{
-    BrowseTarget, EditedFile, Editor, EditorFile, Subject,
+    BrowseTarget, EditedFile, Editor, EditorFile, EditorFocus, Subject,
     form::EDITOR_SECTIONS,
     help_area::help_area_height,
     hints::{EditorWidget, WidgetKind},
@@ -55,21 +55,26 @@ const TITLE_SHARE: f32 = 0.5;
 /// a warning.
 const WARNED_TITLE_SHARE: f32 = 0.4;
 
-/// The changes that a pass of the page asks for.
+/// The response of the rows of the form in a pass.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(super) struct PageActions {
+pub(super) struct FormResponse {
     /// A field changed.
     pub(super) changed: bool,
-    /// The save button was activated.
-    pub(super) save: bool,
-    /// Ctrl+S or Start asked for a save.
-    pub(super) save_shortcut: bool,
-    /// The close button, the cancel button or cancel asked to close.
-    pub(super) close: bool,
     /// A field asked the file browser for a path.
     pub(super) browse: Option<BrowseTarget>,
     /// A field asked the create image dialog for a new image.
     pub(super) create: Option<BrowseTarget>,
+}
+
+/// The response of the page in a pass.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct PageResponse {
+    /// The response of the rows of the form.
+    pub(super) form: FormResponse,
+    /// The save button, Ctrl+S or Start asked for a save.
+    pub(super) save: bool,
+    /// The close button, the cancel button or cancel asked to close.
+    pub(super) close: bool,
 }
 
 /// The areas of the page in `screen`: the header, the tab bar, the form, the
@@ -246,14 +251,14 @@ fn write_header_line(
 }
 
 impl Editor {
-    /// Draws the page into `screen` and returns the changes it asks for.
-    pub(super) fn draw_page(&mut self, context: &mut UiContext, screen: Rect) -> PageActions {
+    /// Draws the page into `screen` and returns its response.
+    pub(super) fn draw_page(&mut self, context: &mut UiContext, screen: Rect) -> PageResponse {
         let theme = context.theme;
-        let mut actions = PageActions::default();
+        let mut response = PageResponse::default();
         context.fill(screen, theme.colors.panel);
         let areas = PageAreas::new(theme, screen);
         if self.draw_header(context, areas.header) {
-            actions.close = true;
+            response.close = true;
         }
 
         let catalog = context.catalog;
@@ -273,7 +278,7 @@ impl Editor {
             self.scroll = ScrollState::new();
             self.help_tracking.leave_section();
             if !context.has_focus(tabs_id) {
-                self.focus_first = true;
+                self.focus = Some(EditorFocus::FirstWidget);
             }
         }
         self.widgets
@@ -285,7 +290,7 @@ impl Editor {
             FORM_ID,
             areas.form,
             &mut scroll,
-            |context, content| self.draw_section(context, content, &mut actions),
+            |context, content| self.draw_section(context, content, &mut response.form),
         );
         self.scroll = scroll;
 
@@ -294,16 +299,16 @@ impl Editor {
         self.track_help(context);
         let setting = self.help_setting(context);
         self.help.show(context, areas.help, setting);
-        self.draw_footer(context, areas.footer, &mut actions);
+        self.draw_footer(context, areas.footer, &mut response);
         if context.shortcut() == Some(Shortcut::ControlS)
             || context.action_button() == Some(ActionButton::Start)
         {
-            actions.save_shortcut = true;
+            response.save = true;
         }
         if context.cancelled() {
-            actions.close = true;
+            response.close = true;
         }
-        actions
+        response
     }
 
     /// Draws the title, the line beside it and the close button into
@@ -437,7 +442,7 @@ impl Editor {
 
     /// Draws the footer: the validation error or the unsaved changes, Cancel
     /// and Save.
-    fn draw_footer(&mut self, context: &mut UiContext, footer: Rect, actions: &mut PageActions) {
+    fn draw_footer(&mut self, context: &mut UiContext, footer: Rect, response: &mut PageResponse) {
         let theme = context.theme;
         let catalog = context.catalog;
         let dirty = self.is_dirty();
@@ -504,10 +509,10 @@ impl Editor {
         self.widgets
             .push(EditorWidget::new(UiId::from(SAVE_ID), WidgetKind::Save));
         if cancel.show(context, cancel_area) {
-            actions.close = true;
+            response.close = true;
         }
         if save.show(context, save_area) {
-            actions.save = true;
+            response.save = true;
         }
     }
 }
@@ -516,7 +521,7 @@ impl Editor {
 mod tests {
     use std::path::PathBuf;
 
-    use gui::ui::Navigation;
+    use gui::{component::run, ui::Navigation};
     use machine_factory::config::{
         settings::{SETTINGS, ValueKind},
         systems::compiled_systems,
@@ -628,7 +633,7 @@ mod tests {
             let mut editor =
                 Editor::open(&root.host(), root.system(), &path).expect("the editor opens");
             let mut harness = GuiHarness::minimum();
-            harness.frame(|context| editor.show(context, MINIMUM_SCREEN));
+            harness.frame(|context| run(&mut editor, context, MINIMUM_SCREEN, (), &mut |_| {}));
             let danger = harness.theme.colors.danger_text.to_linear();
             harness.scene.instances().iter().any(|instance| {
                 instance.kind[0] == gui::Instance::KIND_GLYPH

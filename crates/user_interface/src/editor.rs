@@ -41,7 +41,7 @@ use std::path::{Path, PathBuf};
 
 use gui::{
     Rect,
-    component::{Status, run},
+    component::{Component, Ended, Status, Update, run_child},
     ui::{ScrollState, UiContext},
 };
 use i18n::Catalog;
@@ -271,19 +271,66 @@ impl Subject {
     }
 }
 
-/// The response of the editor in a pass.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct EditorPass {
-    /// The editor closes.
-    pub(crate) closed: bool,
-    /// The file at this path was saved.
-    pub(crate) saved: Option<PathBuf>,
+/// What the user can ask the editor to do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum EditorMessage {
+    /// A widget changed the value of a field.
+    FieldChanged,
+    /// The ROM folder of the ROM row at this index is checked.
+    CheckRoms(usize),
+    /// The file browser opens for the field of the target.
+    Browse(BrowseTarget),
+    /// The create image dialog opens for the field of the target.
+    Create(BrowseTarget),
+    /// The changes are saved.
+    Save,
+    /// The editor closes, after a question when changes are unsaved.
+    Close,
+    /// The file browser ended, with the chosen path.
+    Browser(Ended<String>),
+    /// The create image dialog ended, with the path of the new image.
+    Creator(Ended<String>),
+    /// The question before the changes go away ended. `Done` discards them.
+    Discard(Ended<()>),
+}
+
+/// What the editor reports to its owner while it stays open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum EditorEffect {
+    /// The file at `path` of `edited` was saved.
+    Saved {
+        /// The kind of the saved file.
+        edited: EditedFile,
+        /// The path of the saved file.
+        path: PathBuf,
+    },
     /// The save failed.
-    pub(crate) save_error: Option<SaveFailure>,
+    SaveFailed(SaveFailure),
+}
+
+/// The open child of the editor.
+enum EditorOverlay {
+    /// No child is open.
+    None,
+    /// The file browser is open for the field of the target.
+    Browser(Box<FileBrowser>, BrowseTarget),
+    /// The create image dialog is open for the field of the target.
+    Creator(Box<CreateImageDialog>, BrowseTarget),
+    /// The question before the changes go away is open.
+    Discard(Box<DiscardQuestion>),
+}
+
+/// A focus request of the editor for the next pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EditorFocus {
+    /// The first enabled widget of the selected section, else the tab bar.
+    FirstWidget,
 }
 
 /// The open editor of a game file, a system defaults file or the settings file.
 pub(crate) struct Editor {
+    /// The message buffer.
+    messages: Vec<EditorMessage>,
     /// The kind of the edited file with the state of its form.
     subject: Subject,
     /// The root folder.
@@ -307,14 +354,10 @@ pub(crate) struct Editor {
     section: usize,
     /// The scroll position of the form.
     scroll: ScrollState,
-    /// The open file browser and the field it fills.
-    browser: Option<(FileBrowser, BrowseTarget)>,
-    /// The open create image dialog and the field it fills.
-    creator: Option<(CreateImageDialog, BrowseTarget)>,
-    /// The open question before the changes go away.
-    discard: Option<DiscardQuestion>,
-    /// Whether the first widget of the section takes the focus in the next pass.
-    focus_first: bool,
+    /// The open child.
+    overlay: EditorOverlay,
+    /// The focus request for the next pass.
+    focus: Option<EditorFocus>,
     /// The focusable widgets of the last pass.
     widgets: Vec<EditorWidget>,
     /// The rows of the fields that the last pass drew.
@@ -354,6 +397,7 @@ impl Editor {
         let fields = subject.fields(&document);
         let kept = kept_lines(&document, &fields);
         let mut editor = Self {
+            messages: Vec::new(),
             subject,
             root: root.to_path_buf(),
             file,
@@ -366,10 +410,8 @@ impl Editor {
             kept,
             section: 0,
             scroll: ScrollState::new(),
-            browser: None,
-            creator: None,
-            discard: None,
-            focus_first: true,
+            overlay: EditorOverlay::None,
+            focus: Some(EditorFocus::FirstWidget),
             widgets: Vec::new(),
             rows: Vec::new(),
             hints: HintTexts::new(),
@@ -587,13 +629,13 @@ impl Editor {
     /// Whether the file browser is open.
     #[cfg(all(test, feature = "pc98"))]
     pub(crate) fn browser_open(&self) -> bool {
-        self.browser.is_some()
+        matches!(self.overlay, EditorOverlay::Browser(..))
     }
 
     /// Whether the create image dialog is open.
     #[cfg(test)]
     pub(crate) fn creator_open(&self) -> bool {
-        self.creator.is_some()
+        matches!(self.overlay, EditorOverlay::Creator(..))
     }
 
     /// Computes the inherited values, the missing files, the file of a game
@@ -701,83 +743,45 @@ impl Editor {
         self.save(true)
     }
 
-    /// Asks to close the editor: with unsaved changes the question opens,
-    /// else the editor closes. Returns whether it closes.
-    fn request_close(&mut self) -> bool {
-        if self.is_dirty() {
-            self.discard = Some(DiscardQuestion::new(self.edited_file()));
-            false
-        } else {
-            true
+    /// Saves the changes of a dirty editor whose fields are valid and
+    /// reports the saved file or the failure through `update`.
+    fn save_changes(&mut self, update: &mut Update<'_, EditorEffect>) {
+        if !self.is_dirty() || validation_error(&self.fields).is_some() {
+            return;
+        }
+        match self.save(false) {
+            Ok(path) => update.emit(EditorEffect::Saved {
+                edited: self.edited_file(),
+                path,
+            }),
+            Err(failure) => update.emit(EditorEffect::SaveFailed(failure)),
         }
     }
 
-    /// Draws one pass of the editor into `screen`, the window above the
-    /// status line, with its file browser, its create image dialog and its question on top.
-    pub(crate) fn show(&mut self, context: &mut UiContext, screen: Rect) -> EditorPass {
-        let mut pass = EditorPass::default();
-        self.widgets.clear();
-        self.rows.clear();
-        let actions = self.draw_page(context, screen);
-        if actions.changed {
-            self.refresh();
-            context.request_pass();
+    /// Asks to close the editor: with unsaved changes the question opens
+    /// with its layer, else the editor closes. An open child keeps the
+    /// editor open as it is.
+    fn request_close(&mut self, update: &mut Update<'_, EditorEffect>) -> Status<()> {
+        if !matches!(self.overlay, EditorOverlay::None) {
+            return Status::Open;
         }
-        if self.check_changed_roms(context) {
-            context.request_pass();
+        if !self.is_dirty() {
+            return Status::Closed;
         }
-        if (actions.save || actions.save_shortcut)
-            && self.is_dirty()
-            && validation_error(&self.fields).is_none()
-        {
-            match self.save(false) {
-                Ok(path) => pass.saved = Some(path),
-                Err(error) => pass.save_error = Some(error),
-            }
-            context.request_pass();
-        }
-        if actions.close && self.request_close() {
-            pass.closed = true;
-        }
-        if let Some(target) = actions.browse {
-            let request = self.browse_request(target);
-            self.browser = Some((FileBrowser::new(request, &self.root), target));
-        }
+        self.overlay = EditorOverlay::Discard(Box::new(DiscardQuestion::new(self.edited_file())));
+        update.open::<DiscardQuestion>();
+        Status::Open
+    }
 
-        if let Some((mut browser, target)) = self.browser.take() {
-            match run(&mut browser, context, screen, (), &mut |_| {}) {
-                Status::Open => self.browser = Some((browser, target)),
-                Status::Closed => {}
-                Status::Done(value) => {
-                    self.apply_browsed(target, value);
-                    context.request_pass();
-                }
-            }
-        }
-        if let Some(target) = actions.create
-            && let Some(request) = self.create_request(target)
+    /// Takes the end `ended` of the file browser or of the create image
+    /// dialog. A path goes into the field that the dialog fills.
+    fn path_dialog_ended(&mut self, ended: Ended<String>) {
+        let overlay = std::mem::replace(&mut self.overlay, EditorOverlay::None);
+        if let EditorOverlay::Browser(_, target) | EditorOverlay::Creator(_, target) = overlay
+            && let Ended::Done(value) = ended
         {
-            self.creator = Some((CreateImageDialog::new(request, &self.root), target));
+            self.apply_browsed(target, value);
         }
-        if let Some((mut dialog, target)) = self.creator.take() {
-            match run(&mut dialog, context, screen, (), &mut |_| {}) {
-                Status::Open => self.creator = Some((dialog, target)),
-                Status::Closed => {}
-                Status::Done(value) => {
-                    self.apply_browsed(target, value);
-                    context.request_pass();
-                }
-            }
-        }
-        if let Some(mut question) = self.discard.take() {
-            match run(&mut question, context, screen, (), &mut |_| {}) {
-                Status::Open => self.discard = Some(question),
-                Status::Closed => {}
-                Status::Done(()) => pass.closed = true,
-            }
-        }
-        self.hints = self.status_hints(context);
-        pass
     }
 
     /// Returns `None` when the editor enables `setting`, else the model and
@@ -806,38 +810,134 @@ impl Editor {
         }
     }
 
-    /// The hints of the status line after a pass.
+    /// The hints of the status line after a pass: the hints of the last
+    /// pass of the open child, else the hints of the page.
     fn status_hints(&self, context: &UiContext) -> HintTexts {
-        if let Some((dialog, _)) = &self.creator {
-            return dialog.hints().clone();
+        match &self.overlay {
+            EditorOverlay::None => hints::editor_hints(context, &self.widgets),
+            EditorOverlay::Browser(browser, _) => browser.hints().clone(),
+            EditorOverlay::Creator(dialog, _) => dialog.hints().clone(),
+            EditorOverlay::Discard(question) => question.hints().iter().copied().collect(),
         }
-        if let Some((browser, _)) = &self.browser {
-            return browser.hints().clone();
+    }
+}
+
+impl Component for Editor {
+    type Message = EditorMessage;
+    type Output = ();
+    type Effect = EditorEffect;
+    type Input<'a> = ();
+
+    fn messages(&mut self) -> &mut Vec<EditorMessage> {
+        &mut self.messages
+    }
+
+    /// Draws one pass of the editor into `screen`, the window above the
+    /// status line, with its open child on top. The close of the page
+    /// comes last.
+    fn view(
+        &mut self,
+        context: &mut UiContext,
+        screen: Rect,
+        _input: (),
+        messages: &mut Vec<EditorMessage>,
+    ) {
+        self.widgets.clear();
+        self.rows.clear();
+        let page = self.draw_page(context, screen);
+        if page.form.changed {
+            messages.push(EditorMessage::FieldChanged);
         }
-        if let Some(question) = &self.discard {
-            return question.hints().iter().copied().collect();
+        self.request_rom_checks(context, messages);
+        if let Some(target) = page.form.browse {
+            messages.push(EditorMessage::Browse(target));
         }
-        hints::editor_hints(context, &self.widgets)
+        if let Some(target) = page.form.create {
+            messages.push(EditorMessage::Create(target));
+        }
+        if page.save {
+            messages.push(EditorMessage::Save);
+        }
+        match &mut self.overlay {
+            EditorOverlay::None => {}
+            EditorOverlay::Browser(browser, _) => {
+                run_child(&mut **browser, context, screen, (), messages, |event| {
+                    EditorMessage::Browser(event.into_ended())
+                });
+            }
+            EditorOverlay::Creator(dialog, _) => {
+                run_child(&mut **dialog, context, screen, (), messages, |event| {
+                    EditorMessage::Creator(event.into_ended())
+                });
+            }
+            EditorOverlay::Discard(question) => {
+                run_child(&mut **question, context, screen, (), messages, |event| {
+                    EditorMessage::Discard(event.into_ended())
+                });
+            }
+        }
+        self.hints = self.status_hints(context);
+        if page.close {
+            messages.push(EditorMessage::Close);
+        }
+    }
+
+    fn update(
+        &mut self,
+        message: EditorMessage,
+        update: &mut Update<'_, EditorEffect>,
+    ) -> Status<()> {
+        match message {
+            EditorMessage::FieldChanged => self.refresh(),
+            EditorMessage::CheckRoms(row) => self.check_rom_row(row),
+            EditorMessage::Browse(target) => {
+                let browser = FileBrowser::new(self.browse_request(target), &self.root);
+                self.overlay = EditorOverlay::Browser(Box::new(browser), target);
+                update.open::<FileBrowser>();
+            }
+            EditorMessage::Create(target) => {
+                if let Some(request) = self.create_request(target) {
+                    let dialog = CreateImageDialog::new(request, &self.root);
+                    self.overlay = EditorOverlay::Creator(Box::new(dialog), target);
+                    update.open::<CreateImageDialog>();
+                }
+            }
+            EditorMessage::Save => self.save_changes(update),
+            EditorMessage::Close => return self.request_close(update),
+            EditorMessage::Browser(ended) | EditorMessage::Creator(ended) => {
+                self.path_dialog_ended(ended);
+            }
+            EditorMessage::Discard(ended) => {
+                self.overlay = EditorOverlay::None;
+                if ended == Ended::Done(()) {
+                    return Status::Closed;
+                }
+            }
+        }
+        Status::Open
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use gui::ui::{Navigation, Shortcut};
+    use gui::{
+        component::run,
+        ui::{Navigation, Shortcut, UiId},
+    };
     use machine_factory::config::settings::{find_setting, value_error::ValueError};
 
     use super::{
         media_list::{self, MediaBrowse},
         rows::field_id,
-        test_support::{EditorRoot, fdd1_model, index_of, show},
+        test_support::{EditorRoot, fdd1_model, index_of, save_failure, saved, show},
         *,
     };
     #[cfg(feature = "pc98")]
     use crate::texts::{LanguageCatalog, test_catalog};
     use crate::{
         config::check_value,
-        file_browser::path_value,
-        gui_test_support::{GuiHarness, MINIMUM_SCREEN},
+        file_browser::{BROWSER_LAYER_ID, path_value},
+        gui_test_support::{GuiHarness, MINIMUM_SCREEN, apply_with_effects},
         texts::english_labels,
     };
 
@@ -853,7 +953,7 @@ mod tests {
             .iter()
             .position(|candidate| *candidate == section)
             .expect("a section");
-        editor.focus_first = true;
+        editor.focus = Some(EditorFocus::FirstWidget);
         show(harness, editor);
     }
 
@@ -987,8 +1087,8 @@ mod tests {
         assert_eq!(editor.field("crt").and_then(Field::chosen), Some("on"));
         assert!(editor.is_dirty());
         harness.input.shortcut = Some(Shortcut::ControlS);
-        let pass = show(&mut harness, &mut editor);
-        assert_eq!(pass.saved, Some(editor.path()));
+        let (_, effects) = show(&mut harness, &mut editor);
+        assert_eq!(saved(&effects), Some(editor.path()));
         let model = root.system().default_model;
         assert_eq!(
             std::fs::read_to_string(editor.path()).expect("file reads"),
@@ -1035,10 +1135,10 @@ mod tests {
         show(&mut harness, &mut editor);
         harness.input.confirm = true;
         show(&mut harness, &mut editor);
-        assert!(editor.browser.is_some());
+        assert!(matches!(editor.overlay, EditorOverlay::Browser(..)));
         harness.input.confirm = true;
         show(&mut harness, &mut editor);
-        assert!(editor.browser.is_none());
+        assert!(matches!(editor.overlay, EditorOverlay::None));
         assert_eq!(
             editor.fields[fdd1].values(),
             ["games/missing.d88", "games/disk.d88"]
@@ -1101,7 +1201,7 @@ mod tests {
         let mut harness = GuiHarness::minimum();
         show(&mut harness, &mut editor);
         harness.input.cancel = true;
-        assert!(show(&mut harness, &mut editor).closed);
+        assert_eq!(show(&mut harness, &mut editor).0, Status::Closed);
 
         let mut editor = open(&root, "edge", "meta.title = Edge\n");
         assert!(!editor.is_dirty());
@@ -1109,23 +1209,24 @@ mod tests {
         harness.input.text = "!".to_owned();
         show(&mut harness, &mut editor);
         harness.input.cancel = true;
-        let pass = harness.frame(|context| editor.show(context, MINIMUM_SCREEN));
-        assert!(!pass.closed);
-        assert!(editor.discard.is_some());
+        let status =
+            harness.frame(|context| run(&mut editor, context, MINIMUM_SCREEN, (), &mut |_| {}));
+        assert_eq!(status, Status::Open);
+        assert!(matches!(editor.overlay, EditorOverlay::Discard(_)));
         assert_eq!(harness.state.open_modals(), 1);
         show(&mut harness, &mut editor);
-        assert!(editor.discard.is_some());
+        assert!(matches!(editor.overlay, EditorOverlay::Discard(_)));
         assert_eq!(english_labels(editor.hints()), ["Keep editing"]);
         harness.input.confirm = true;
-        assert!(!show(&mut harness, &mut editor).closed);
-        assert!(editor.discard.is_none());
+        assert_eq!(show(&mut harness, &mut editor).0, Status::Open);
+        assert!(matches!(editor.overlay, EditorOverlay::None));
         assert_eq!(editor.field(TITLE_KEY).map(Field::text), Some("Edge!"));
         harness.input.cancel = true;
         show(&mut harness, &mut editor);
         harness.input.navigation = Some(Navigation::Right);
         show(&mut harness, &mut editor);
         harness.input.confirm = true;
-        assert!(show(&mut harness, &mut editor).closed);
+        assert_eq!(show(&mut harness, &mut editor).0, Status::Closed);
         assert_eq!(
             std::fs::read_to_string(editor.path()).expect("file reads"),
             "meta.title = Edge\n"
@@ -1150,8 +1251,8 @@ mod tests {
         let folder = root.path(&format!("config/{}", system.name));
         assert_eq!(editor.path(), folder.join("ys-ii.conf"));
         harness.input.shortcut = Some(Shortcut::ControlS);
-        let pass = show(&mut harness, &mut editor);
-        assert_eq!(pass.saved, Some(folder.join("ys-ii.conf")));
+        let (_, effects) = show(&mut harness, &mut editor);
+        assert_eq!(saved(&effects), Some(folder.join("ys-ii.conf")));
         harness.input.text = " Eternal".to_owned();
         show(&mut harness, &mut editor);
         assert_eq!(editor.path(), folder.join("ys-ii.conf"));
@@ -1178,7 +1279,7 @@ mod tests {
         harness.input.text = "19".to_owned();
         show(&mut harness, &mut editor);
         harness.input.shortcut = Some(Shortcut::ControlS);
-        assert_eq!(show(&mut harness, &mut editor).saved, None);
+        assert_eq!(saved(&show(&mut harness, &mut editor).1), None);
         assert_eq!(
             std::fs::read_to_string(editor.path()).expect("file reads"),
             "meta.year = 1993\n"
@@ -1262,9 +1363,9 @@ mod tests {
         show(&mut harness, &mut editor);
         std::fs::write(editor.path(), "meta.title = Edge 2\ncrt = on\n").expect("file is written");
         harness.input.shortcut = Some(Shortcut::ControlS);
-        let pass = show(&mut harness, &mut editor);
-        assert_eq!(pass.saved, None);
-        let failure = pass.save_error.expect("the save fails");
+        let (_, effects) = show(&mut harness, &mut editor);
+        assert_eq!(saved(&effects), None);
+        let failure = save_failure(&effects).expect("the save fails");
         assert!(
             matches!(failure, SaveFailure::ChangedOutside(_)),
             "{failure:?}"
@@ -1293,7 +1394,10 @@ mod tests {
         harness.input.text = "?".to_owned();
         show(&mut harness, &mut editor);
         harness.input.shortcut = Some(Shortcut::ControlS);
-        assert_eq!(show(&mut harness, &mut editor).saved, Some(editor.path()));
+        assert_eq!(
+            saved(&show(&mut harness, &mut editor).1),
+            Some(editor.path())
+        );
     }
 
     /// Verifies that a save that fails to write leaves the required field unset and the changes in place.
@@ -1332,8 +1436,8 @@ mod tests {
         assert_eq!(editor.path(), folder.join("edge.conf"));
         root.game("edge", "meta.title = Another edge\n");
         harness.input.shortcut = Some(Shortcut::ControlS);
-        let pass = show(&mut harness, &mut editor);
-        assert_eq!(pass.saved, Some(folder.join("edge-2.conf")));
+        let (_, effects) = show(&mut harness, &mut editor);
+        assert_eq!(saved(&effects), Some(folder.join("edge-2.conf")));
         assert_eq!(
             std::fs::read_to_string(folder.join("edge.conf")).expect("file reads"),
             "meta.title = Another edge\n"
@@ -1508,6 +1612,177 @@ mod tests {
         harness.state.set_focus(field_id("hdd1"));
         show(&mut harness, &mut editor);
         assert!(!editor.fields[index].is_set());
+    }
+
+    /// Verifies that `FieldChanged` refreshes the editor: the file of a new game follows its title
+    /// and the revision counts up.
+    #[test]
+    fn a_changed_field_refreshes_the_editor() {
+        let root = EditorRoot::new("editor_update_changed");
+        let system = root.system();
+        let mut editor = Editor::new_game(&root.host(), system).expect("compiled system");
+        let revision = editor.revision();
+        editor.field_mut(TITLE_KEY).expect("title field").value =
+            FieldValue::Text("Edge".to_owned());
+        assert_eq!(
+            apply_with_effects(&mut editor, EditorMessage::FieldChanged),
+            (Status::Open, Vec::new(), Vec::new())
+        );
+        let folder = root.path(&format!("config/{}", system.name));
+        assert_eq!(editor.path(), folder.join("edge.conf"));
+        assert_eq!(editor.revision(), revision + 1);
+    }
+
+    /// Verifies that `Save` reports nothing without changes, writes a changed file and reports
+    /// it as saved, and reports the failure of a save over a file that changed outside.
+    #[test]
+    fn save_reports_the_saved_file_or_the_failure() {
+        let root = EditorRoot::new("editor_update_save");
+        let mut editor = open(&root, "edge", "meta.title = Edge\n");
+        assert_eq!(
+            apply_with_effects(&mut editor, EditorMessage::Save),
+            (Status::Open, Vec::new(), Vec::new())
+        );
+        editor.field_mut(TITLE_KEY).expect("title field").value =
+            FieldValue::Text("Edge!".to_owned());
+        apply_with_effects(&mut editor, EditorMessage::FieldChanged);
+        let saved = apply_with_effects(&mut editor, EditorMessage::Save);
+        assert_eq!(
+            saved,
+            (
+                Status::Open,
+                Vec::new(),
+                vec![EditorEffect::Saved {
+                    edited: editor.edited_file(),
+                    path: editor.path(),
+                }]
+            )
+        );
+        let model = root.system().default_model;
+        assert_eq!(
+            std::fs::read_to_string(editor.path()).expect("file reads"),
+            format!("meta.title = Edge!\nmachine = {model}\n")
+        );
+
+        editor.field_mut(TITLE_KEY).expect("title field").value =
+            FieldValue::Text("Edge?".to_owned());
+        apply_with_effects(&mut editor, EditorMessage::FieldChanged);
+        std::fs::write(editor.path(), "meta.title = Edge 2\ncrt = on\n").expect("file is written");
+        let (status, layers, effects) = apply_with_effects(&mut editor, EditorMessage::Save);
+        assert_eq!((status, layers), (Status::Open, Vec::new()));
+        assert!(
+            matches!(
+                effects.as_slice(),
+                [EditorEffect::SaveFailed(SaveFailure::ChangedOutside(_))]
+            ),
+            "{effects:?}"
+        );
+    }
+
+    /// Verifies that `Close` closes an editor without changes, that with changes it opens the
+    /// discard question with its layer, that Keep editing keeps the editor and that Discard
+    /// closes it.
+    #[test]
+    fn close_asks_before_unsaved_changes_go_away() {
+        let root = EditorRoot::new("editor_update_close");
+        let mut editor = open(&root, "edge", "meta.title = Edge\n");
+        assert_eq!(
+            apply_with_effects(&mut editor, EditorMessage::Close),
+            (Status::Closed, Vec::new(), Vec::new())
+        );
+        editor.field_mut(TITLE_KEY).expect("title field").value =
+            FieldValue::Text("Edge!".to_owned());
+        apply_with_effects(&mut editor, EditorMessage::FieldChanged);
+        assert_eq!(
+            apply_with_effects(&mut editor, EditorMessage::Close),
+            (
+                Status::Open,
+                vec![UiId::from(discard::DISCARD_LAYER_ID)],
+                Vec::new()
+            )
+        );
+        assert!(matches!(editor.overlay, EditorOverlay::Discard(_)));
+        assert_eq!(
+            apply_with_effects(&mut editor, EditorMessage::Discard(Ended::Closed)),
+            (Status::Open, Vec::new(), Vec::new())
+        );
+        assert!(matches!(editor.overlay, EditorOverlay::None));
+        assert_eq!(editor.field(TITLE_KEY).map(Field::text), Some("Edge!"));
+        apply_with_effects(&mut editor, EditorMessage::Close);
+        assert_eq!(
+            apply_with_effects(&mut editor, EditorMessage::Discard(Ended::Done(()))),
+            (Status::Closed, Vec::new(), Vec::new())
+        );
+        assert!(matches!(editor.overlay, EditorOverlay::None));
+    }
+
+    /// Verifies that a `Close` after a `Browse` of the same pass on a dirty editor keeps the
+    /// browser open and requests no layer of the discard question.
+    #[test]
+    fn close_keeps_an_open_browser() {
+        let root = EditorRoot::new("editor_update_close_browser");
+        let model = fdd1_model(&root);
+        let mut editor = open(&root, "edge", &format!("machine = {model}\n"));
+        editor.field_mut(TITLE_KEY).expect("title field").value =
+            FieldValue::Text("Edge".to_owned());
+        apply_with_effects(&mut editor, EditorMessage::FieldChanged);
+        let target = BrowseTarget::List(index_of(&editor, "fdd1"), MediaBrowse::Add);
+        apply_with_effects(&mut editor, EditorMessage::Browse(target));
+        assert_eq!(
+            apply_with_effects(&mut editor, EditorMessage::Close),
+            (Status::Open, Vec::new(), Vec::new())
+        );
+        assert!(matches!(editor.overlay, EditorOverlay::Browser(_, open) if open == target));
+    }
+
+    /// Verifies that `Browse` opens the file browser with its layer for the field, that the end
+    /// of the browser with a path fills the field and a cancel leaves it, and that `Create`
+    /// opens the create image dialog with its layer and its end adds the new image.
+    #[test]
+    fn browse_and_create_open_their_dialogs() {
+        let root = EditorRoot::new("editor_update_browse");
+        let model = fdd1_model(&root);
+        let mut editor = open(&root, "edge", &format!("machine = {model}\n"));
+        let fdd1 = index_of(&editor, "fdd1");
+        let target = BrowseTarget::List(fdd1, MediaBrowse::Add);
+        assert_eq!(
+            apply_with_effects(&mut editor, EditorMessage::Browse(target)),
+            (Status::Open, vec![UiId::from(BROWSER_LAYER_ID)], Vec::new())
+        );
+        assert!(matches!(editor.overlay, EditorOverlay::Browser(_, open) if open == target));
+        assert_eq!(
+            apply_with_effects(
+                &mut editor,
+                EditorMessage::Browser(Ended::Done("games/disk.d88".to_owned()))
+            ),
+            (Status::Open, Vec::new(), Vec::new())
+        );
+        assert!(matches!(editor.overlay, EditorOverlay::None));
+        assert_eq!(editor.fields[fdd1].values(), ["games/disk.d88"]);
+        assert_eq!(editor.missing[fdd1], [true]);
+        apply_with_effects(&mut editor, EditorMessage::Browse(target));
+        apply_with_effects(&mut editor, EditorMessage::Browser(Ended::Closed));
+        assert!(matches!(editor.overlay, EditorOverlay::None));
+        assert_eq!(editor.fields[fdd1].values(), ["games/disk.d88"]);
+
+        assert_eq!(
+            apply_with_effects(&mut editor, EditorMessage::Create(target)),
+            (
+                Status::Open,
+                vec![UiId::from(create_image::CREATE_LAYER_ID)],
+                Vec::new()
+            )
+        );
+        assert!(editor.creator_open());
+        apply_with_effects(
+            &mut editor,
+            EditorMessage::Creator(Ended::Done("games/new.d88".to_owned())),
+        );
+        assert!(matches!(editor.overlay, EditorOverlay::None));
+        assert_eq!(
+            editor.fields[fdd1].values(),
+            ["games/disk.d88", "games/new.d88"]
+        );
     }
 
     /// Verifies that a value of the file that the launch rejects stays in the file and is invalid in the editor.
