@@ -1,6 +1,6 @@
 //! A fake machine and a session over it for the session tests.
 
-use std::{cell::RefCell, rc::Rc, time::Instant};
+use std::{cell::RefCell, path::Path, rc::Rc, time::Instant};
 
 use common::{FlushError, JoystickState, Machine, MediaBacking, MediaImage};
 
@@ -13,7 +13,8 @@ use crate::{
 /// The calls a fake machine records.
 pub(super) type CallLog = Rc<RefCell<Vec<&'static str>>>;
 
-/// A machine that records its flushes and panics on request.
+/// A machine that records its flushes and its media changes and panics on
+/// request.
 pub(super) struct FakeMachine {
     /// The recorded calls.
     pub(super) log: CallLog,
@@ -66,7 +67,31 @@ impl Machine for FakeMachine {
         Err("no floppy drive".to_owned())
     }
 
-    fn eject_floppy(&mut self, _drive: usize) {}
+    fn insert_floppy_from_path(&mut self, drive: usize, _path: &Path) -> Result<String, String> {
+        self.log.borrow_mut().push(match drive {
+            0 => "insert floppy 0",
+            1 => "insert floppy 1",
+            _ => "insert floppy of another drive",
+        });
+        Ok(String::new())
+    }
+
+    fn eject_floppy(&mut self, drive: usize) {
+        self.log.borrow_mut().push(match drive {
+            0 => "eject floppy 0",
+            1 => "eject floppy 1",
+            _ => "eject floppy of another drive",
+        });
+    }
+
+    fn insert_cdrom(&mut self, _path: &Path) -> Result<String, String> {
+        self.log.borrow_mut().push("insert cdrom");
+        Ok(String::new())
+    }
+
+    fn eject_cdrom(&mut self) {
+        self.log.borrow_mut().push("eject cdrom");
+    }
 
     fn flush_floppies(&mut self) -> Result<(), FlushError> {
         self.log.borrow_mut().push("floppies");

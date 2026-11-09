@@ -16,7 +16,8 @@ use sdl3::{
 use super::Shell;
 use crate::{
     gui_host::{GuiEvent, GuiHost, keys::pointer_or_text_event, run_pending_passes},
-    manager::ShellEffect,
+    manager::{Launch, ShellEffect},
+    texts::LanguageCatalog,
 };
 
 /// The longest wait for an event while nothing repeats.
@@ -78,6 +79,57 @@ fn frame_still_pending(
     *stale_frames < MAXIMUM_STALE_FRAMES
 }
 
+/// Returns whether the chain of manager passes runs another pass: the
+/// manager is open in `manager_open`, no session runs in `session_runs` and
+/// the user interface asks for a pass in `pass_pending`.
+fn manager_pass_due(manager_open: bool, session_runs: bool, pass_pending: bool) -> bool {
+    manager_open && !session_runs && pass_pending
+}
+
+/// What the effects of the manager change in the shell.
+trait ManagerEffectTarget {
+    /// Whether a session runs.
+    fn session_runs(&self) -> bool;
+
+    /// Starts the game of `launch`.
+    fn start_game(&mut self, launch: Launch);
+
+    /// Switches the user interface to `catalog`.
+    fn switch_catalog(&mut self, catalog: LanguageCatalog);
+}
+
+/// Applies `effects` to `target` in their order and leaves the buffer empty
+/// with its capacity: a launch starts the game while no session runs, and a
+/// catalog switch changes the language of the user interface.
+fn apply_effects(target: &mut impl ManagerEffectTarget, effects: &mut Vec<ShellEffect>) {
+    for effect in effects.drain(..) {
+        match effect {
+            ShellEffect::Launch(launch) => {
+                if !target.session_runs() {
+                    target.start_game(launch);
+                }
+            }
+            ShellEffect::SwitchCatalog(catalog) => target.switch_catalog(catalog),
+        }
+    }
+}
+
+impl ManagerEffectTarget for Shell {
+    fn session_runs(&self) -> bool {
+        self.session.is_some()
+    }
+
+    fn start_game(&mut self, launch: Launch) {
+        self.launch(launch);
+    }
+
+    fn switch_catalog(&mut self, catalog: LanguageCatalog) {
+        if let Some(gui) = self.host.gui.as_mut() {
+            gui.set_catalog(catalog);
+        }
+    }
+}
+
 impl Shell {
     /// Runs the manager until the application quits or a game starts.
     ///
@@ -105,9 +157,11 @@ impl Shell {
                 gui.poll_edge_repeat(Instant::now());
             }
             run_pending_passes(|| {
-                let due = self.manager.is_some()
-                    && self.session.is_none()
-                    && self.host.gui.as_ref().is_some_and(GuiHost::pending);
+                let due = manager_pass_due(
+                    self.manager.is_some(),
+                    ManagerEffectTarget::session_runs(self),
+                    self.host.gui.as_ref().is_some_and(GuiHost::pending),
+                );
                 if due {
                     self.manager_pass();
                 }
@@ -242,20 +296,7 @@ impl Shell {
     /// dialog before the next pass.
     fn apply_manager_effects(&mut self) {
         let mut effects = mem::take(&mut self.manager_effects);
-        for effect in effects.drain(..) {
-            match effect {
-                ShellEffect::Launch(launch) => {
-                    if self.session.is_none() {
-                        self.launch(launch);
-                    }
-                }
-                ShellEffect::SwitchCatalog(catalog) => {
-                    if let Some(gui) = self.host.gui.as_mut() {
-                        gui.set_catalog(catalog);
-                    }
-                }
-            }
-        }
+        apply_effects(self, &mut effects);
         self.manager_effects = effects;
     }
 
@@ -276,7 +317,10 @@ impl Shell {
 
 #[cfg(test)]
 mod tests {
+    use stack_vec::StackVec;
+
     use super::*;
+    use crate::texts::test_catalog;
 
     /// Verifies that a pending frame retries soon only while the window can show it.
     #[test]
@@ -341,5 +385,169 @@ mod tests {
         assert!(!frame_still_pending(true, &mut stale_frames, || false));
         assert_eq!(stale_frames, 0);
         assert!(frame_still_pending(true, &mut stale_frames, || true));
+    }
+
+    /// A call that [`RecordingShell`] received.
+    #[derive(Debug, PartialEq)]
+    enum Call {
+        /// A game of this model started.
+        StartGame(&'static str),
+        /// The catalog switched to the English catalog.
+        SwitchToEnglish,
+        /// The catalog switched to a loaded catalog.
+        SwitchToLoaded,
+    }
+
+    /// A shell that records the effects of the manager. A started game runs
+    /// a session.
+    #[derive(Default)]
+    struct RecordingShell {
+        /// The recorded calls in their order.
+        calls: StackVec<Call, 4>,
+        /// Whether a session runs.
+        session_runs: bool,
+    }
+
+    impl ManagerEffectTarget for RecordingShell {
+        fn session_runs(&self) -> bool {
+            self.session_runs
+        }
+
+        fn start_game(&mut self, launch: Launch) {
+            self.calls.push(Call::StartGame(launch.model));
+            self.session_runs = true;
+        }
+
+        fn switch_catalog(&mut self, catalog: LanguageCatalog) {
+            self.calls.push(match catalog {
+                LanguageCatalog::English => Call::SwitchToEnglish,
+                LanguageCatalog::Loaded(_) => Call::SwitchToLoaded,
+            });
+        }
+    }
+
+    /// A launch of a game of the model `model`.
+    fn launch_effect(model: &'static str) -> ShellEffect {
+        let system = machine_factory::config::systems::compiled_systems()
+            .next()
+            .expect("one system is compiled");
+        ShellEffect::Launch(Launch {
+            request: crate::config::LaunchRequest::default(),
+            title: String::new(),
+            system,
+            model,
+        })
+    }
+
+    /// Verifies that a launch starts its game.
+    #[test]
+    fn a_launch_starts_the_game() {
+        let mut shell = RecordingShell::default();
+        let mut effects = vec![launch_effect("Touhou")];
+        apply_effects(&mut shell, &mut effects);
+        assert_eq!(*shell.calls, [Call::StartGame("Touhou")]);
+        assert!(shell.session_runs);
+    }
+
+    /// Verifies that a second launch in the same buffer is dropped while the session of the first runs.
+    #[test]
+    fn a_second_launch_is_dropped_while_the_first_session_runs() {
+        let mut shell = RecordingShell::default();
+        let mut effects = vec![launch_effect("First"), launch_effect("Second")];
+        apply_effects(&mut shell, &mut effects);
+        assert_eq!(*shell.calls, [Call::StartGame("First")]);
+    }
+
+    /// Verifies that the catalog switches in the order of the effects.
+    #[test]
+    fn a_catalog_switch_is_applied_in_its_order() {
+        let mut shell = RecordingShell::default();
+        let mut effects = vec![
+            ShellEffect::SwitchCatalog(LanguageCatalog::Loaded(Box::new(test_catalog("")))),
+            launch_effect("Game"),
+            ShellEffect::SwitchCatalog(LanguageCatalog::English),
+        ];
+        apply_effects(&mut shell, &mut effects);
+        assert_eq!(
+            *shell.calls,
+            [
+                Call::SwitchToLoaded,
+                Call::StartGame("Game"),
+                Call::SwitchToEnglish,
+            ]
+        );
+    }
+
+    /// Verifies that the buffer is empty after the effects and keeps its capacity.
+    #[test]
+    fn the_buffer_is_empty_afterwards_and_keeps_its_capacity() {
+        let mut shell = RecordingShell::default();
+        let mut effects = Vec::with_capacity(8);
+        effects.push(ShellEffect::SwitchCatalog(LanguageCatalog::English));
+        effects.push(launch_effect("Game"));
+        let capacity = effects.capacity();
+        apply_effects(&mut shell, &mut effects);
+        assert!(effects.is_empty());
+        assert_eq!(effects.capacity(), capacity);
+    }
+
+    /// Runs the chain of manager passes over `shell` while the user interface
+    /// asks for `requested_passes` passes. Each pass emits the effects of
+    /// `pass_effects`. Returns the count of passes.
+    fn run_manager_chain(
+        shell: &mut RecordingShell,
+        requested_passes: u32,
+        mut pass_effects: impl FnMut(&mut Vec<ShellEffect>),
+    ) -> u32 {
+        let mut effects = Vec::new();
+        let mut requests_left = requested_passes;
+        run_pending_passes(|| {
+            let due = manager_pass_due(true, shell.session_runs(), requests_left > 0);
+            if due {
+                requests_left -= 1;
+                pass_effects(&mut effects);
+                apply_effects(shell, &mut effects);
+            }
+            due
+        })
+    }
+
+    /// Verifies that a pass that starts a game ends the chain of passes after that pass.
+    #[test]
+    fn a_pass_that_starts_a_game_ends_the_chain() {
+        let mut shell = RecordingShell::default();
+        let passes = run_manager_chain(&mut shell, 5, |effects| {
+            effects.push(launch_effect("Game"));
+        });
+        assert_eq!(passes, 1);
+        assert_eq!(*shell.calls, [Call::StartGame("Game")]);
+    }
+
+    /// Verifies that passes without a game keep the chain going while the user interface asks for one.
+    #[test]
+    fn a_pass_without_a_game_keeps_the_chain_going() {
+        let mut shell = RecordingShell::default();
+        let passes = run_manager_chain(&mut shell, 3, |effects| {
+            effects.push(ShellEffect::SwitchCatalog(LanguageCatalog::English));
+        });
+        assert_eq!(passes, 3);
+        assert_eq!(
+            *shell.calls,
+            [
+                Call::SwitchToEnglish,
+                Call::SwitchToEnglish,
+                Call::SwitchToEnglish,
+            ]
+        );
+        assert!(!shell.session_runs);
+    }
+
+    /// Verifies that the chain of manager passes runs a pass only while the manager is open, no session runs and the user interface asks for one.
+    #[test]
+    fn a_manager_pass_is_due_only_for_an_open_manager_without_a_session() {
+        assert!(manager_pass_due(true, false, true));
+        assert!(!manager_pass_due(false, false, true));
+        assert!(!manager_pass_due(true, true, true));
+        assert!(!manager_pass_due(true, false, false));
     }
 }
