@@ -1385,7 +1385,7 @@ impl NeetanDos {
         return_code: u8,
         termination_type: u8,
     ) {
-        if self.end_native_driver_init_on_terminate(cpu, mem) {
+        if self.end_native_driver_init_on_terminate(cpu, mem, 0) {
             self.state.last_return_code = return_code;
             self.state.last_termination_type = termination_type;
             return;
@@ -1609,7 +1609,7 @@ impl NeetanDos {
         return_code: u8,
         keep_paragraphs: u16,
     ) {
-        if self.end_native_driver_init_on_terminate(cpu, mem) {
+        if self.end_native_driver_init_on_terminate(cpu, mem, keep_paragraphs) {
             self.state.last_return_code = return_code;
             self.state.last_termination_type = 3;
             return;

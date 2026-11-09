@@ -2177,14 +2177,18 @@ mod tests {
     fn int21h_4ah_requires_linked_umb_and_sets_bx_to_max_on_invalid_block() {
         let (mut dos, mut memory) = prepare_dos_with_umb();
         let mut cpu = MockCpu::default();
-        let segment = dos
+        let umb_first_mcb_segment = dos
             .state
-            .memory_manager
-            .as_ref()
-            .expect("memory manager should exist")
-            .umb_allocate(0x10, &mut memory)
-            .expect("UMB allocation should succeed")
-            .0;
+            .umb_first_mcb_segment()
+            .expect("UMB chain should exist");
+        let segment = memory::allocate(
+            &mut memory,
+            umb_first_mcb_segment,
+            0x10,
+            crate::tables::MCB_OWNER_DOS,
+            0,
+        )
+        .expect("UMB allocation should succeed");
 
         let expected_max =
             memory::largest_available_dos(&memory, dos.state.mcb_chains(&memory, None), 0);
@@ -2242,14 +2246,18 @@ mod tests {
         let (mut dos, mut memory) = prepare_dos_with_umb();
         let mut cpu = MockCpu::default();
 
-        let mm = dos
+        let umb_first_mcb_segment = dos
             .state
-            .memory_manager
-            .as_mut()
-            .expect("memory manager should exist");
-        let (alloc_segment, _) = mm
-            .umb_allocate(0x10, &mut memory)
-            .expect("UMB allocation should succeed");
+            .umb_first_mcb_segment()
+            .expect("UMB chain should exist");
+        let alloc_segment = memory::allocate(
+            &mut memory,
+            umb_first_mcb_segment,
+            0x10,
+            crate::tables::MCB_OWNER_DOS,
+            0,
+        )
+        .expect("UMB allocation should succeed");
 
         cpu.set_ax(0x0003);
         cpu.set_bx(1);

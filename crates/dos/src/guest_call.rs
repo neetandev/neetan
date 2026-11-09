@@ -34,7 +34,7 @@ use crate::{
     guest_cdrom::GuestCdromStep,
     guest_character::GuestCharacterStep,
     guest_volume::{GuestBlockStep, SectorWrite},
-    native_driver::NativeDriverInit,
+    native_driver::{NativeDriverInit, NativeDriverLoad},
     tables,
     trap::TRAP_PORT,
 };
@@ -389,6 +389,8 @@ pub(crate) enum GuestStep {
     Character(GuestCharacterStep),
     /// A request to a guest block unit.
     Block(GuestBlockStep),
+    /// Load of a native `CONFIG.SYS` driver image.
+    NativeDriverLoad(NativeDriverLoad),
     /// INIT of a native `CONFIG.SYS` driver.
     NativeDriverInit(NativeDriverInit),
     /// INIT of a device of the chain that `IO.SYS` hands to the kernel entry.
@@ -411,6 +413,8 @@ const STEP_TAG_KERNEL_DEVICE_INIT: u8 = 3;
 const STEP_TAG_CDROM: u8 = 4;
 /// Save state tag of `GuestStep::CriticalError`.
 const STEP_TAG_CRITICAL_ERROR: u8 = 5;
+/// Save state tag of `GuestStep::NativeDriverLoad`.
+const STEP_TAG_NATIVE_DRIVER_LOAD: u8 = 6;
 
 impl save_state::StateEncode for GuestStep {
     fn encode_state(&self, output: &mut Vec<u8>) {
@@ -421,6 +425,10 @@ impl save_state::StateEncode for GuestStep {
             }
             Self::Block(step) => {
                 save_state::StateEncode::encode_state(&STEP_TAG_BLOCK, output);
+                save_state::StateEncode::encode_state(step, output);
+            }
+            Self::NativeDriverLoad(step) => {
+                save_state::StateEncode::encode_state(&STEP_TAG_NATIVE_DRIVER_LOAD, output);
                 save_state::StateEncode::encode_state(step, output);
             }
             Self::NativeDriverInit(step) => {
@@ -452,6 +460,9 @@ impl save_state::StateDecode for GuestStep {
                 decoder,
             )?)),
             STEP_TAG_BLOCK => Ok(Self::Block(save_state::StateDecode::decode_state(decoder)?)),
+            STEP_TAG_NATIVE_DRIVER_LOAD => Ok(Self::NativeDriverLoad(
+                save_state::StateDecode::decode_state(decoder)?,
+            )),
             STEP_TAG_NATIVE_DRIVER_INIT => Ok(Self::NativeDriverInit(
                 save_state::StateDecode::decode_state(decoder)?,
             )),
@@ -898,6 +909,9 @@ impl NeetanDos {
         match step {
             GuestStep::Character(step) => self.prepare_character_step(step, &area, memory),
             GuestStep::Block(step) => self.prepare_block_step(step, &area, memory),
+            GuestStep::NativeDriverLoad(load) => {
+                StepStart::Finished(self.load_native_driver(load, memory))
+            }
             GuestStep::NativeDriverInit(init) => StepStart::Call(init.prepare(&area, memory)),
             GuestStep::KernelDeviceInit(device) => {
                 StepStart::Call(self.prepare_kernel_device_init(*device, &area, memory))
@@ -919,8 +933,9 @@ impl NeetanDos {
         match step {
             GuestStep::Character(step) => self.finish_character_step(step, &area, memory),
             GuestStep::Block(step) => self.finish_block_step(step, &area, memory),
+            GuestStep::NativeDriverLoad(_) => Vec::new(),
             GuestStep::NativeDriverInit(init) => {
-                init.finish(&area, memory);
+                self.finish_native_driver_init(&init, &area, memory);
                 Vec::new()
             }
             GuestStep::KernelDeviceInit(device) => {

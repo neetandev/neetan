@@ -1039,7 +1039,7 @@ impl NeetanDos {
             self.state.memory_manager = Some(mm);
         }
 
-        self.install_native_config_drivers(&cfg, memory, device, cdrom_device);
+        self.install_native_config_drivers(&cfg, memory, device);
 
         // Load AUTOEXEC.BAT if present on any mounted drive.
         let autoexec_lines = self.try_load_autoexec_bat(device);

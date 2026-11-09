@@ -134,7 +134,8 @@ fn largest_free_block_paragraphs(mem: &dyn MemoryAccess, first_segment: u16) -> 
     largest_free_block_paragraphs_until(mem, first_segment, None)
 }
 
-#[cfg(test)]
+/// Returns the size of the largest free block of the MCB chain at
+/// `first_segment` in paragraphs.
 pub(crate) fn largest_free_block_paragraphs_pub(mem: &dyn MemoryAccess, first_segment: u16) -> u16 {
     largest_free_block_paragraphs(mem, first_segment).min(u16::MAX as u32) as u16
 }
@@ -474,6 +475,7 @@ fn format_debug_number(value: u32) -> String {
     result.chars().rev().collect()
 }
 
+#[cfg(test)]
 pub(crate) fn read_mcb_size_pub(mem: &dyn MemoryAccess, segment: u16) -> u16 {
     read_mcb_size(mem, segment)
 }
