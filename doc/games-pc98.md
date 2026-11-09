@@ -33,6 +33,7 @@ AS and AP machines do not support loading a real BIOS yet. But HLE BIOS and HLE 
 | Star Cruiser 2                                           | スター クルーザー２            |      RA      |    ✅     |    ✅     |   ✅    | Supports MT-32 (LA) and SC-55 (GS)      |
 | Tamashii no Mon - Dante Shinkyoku yori                   | 魂の門 ダンテ「神曲」より         |      VX      |    ✅     |    ✅     |   ✅    |                                         |
 | Teitoku no Ketsudan                                      | 提督の決断                 |      VX      |    ✅     |    ✅     |  ⁿ̸ₐ   |                                         |
+| TFX                                                     | TFX                   |      AP      |    ❌️    |    ✅     |   ✅    | Must load RMOUSE.SYS in CONFIG.SYS and SET DOS16M=1 in AUTOEXEC.BAT |
 | Travel Junction                                          | トラベル　ジャンクション          |      RA      |    ✅     |    ✅     |   ✅    |                                         |
 | YU-NO: A Girl Who Chants Love at the Bound of this World | この世の果てで恋を唄う少女YU-NO    |      RA      |    ✅     |    ✅     |   ✅    |                                         |
 
