@@ -11,7 +11,7 @@ use sdl3::{
 
 use super::Shell;
 use crate::{
-    gui_host::{GuiEvent, GuiHost, keys::pointer_or_text_event},
+    gui_host::{GuiEvent, GuiHost, keys::pointer_or_text_event, run_pending_passes},
     manager::Launch,
 };
 
@@ -80,6 +80,9 @@ impl Shell {
     ///
     /// The events that wait from the end of a session reach the manager
     /// before its first frame, so the frame has the restored window size.
+    /// The passes that the user interface asks for run before each frame, so
+    /// the frame shows the settled state. A game that waits to start ends the
+    /// chain of passes.
     pub(super) fn run_manager_loop(&mut self, event_pump: &mut EventPump) -> Option<Launch> {
         for event in event_pump.poll_iter() {
             self.handle_event(&event);
@@ -98,9 +101,15 @@ impl Shell {
             if let Some(gui) = self.host.gui.as_mut() {
                 gui.poll_edge_repeat(Instant::now());
             }
-            if self.host.gui.as_ref().is_some_and(GuiHost::pending) {
-                self.manager_pass();
-            }
+            run_pending_passes(|| {
+                let due = self.manager.is_some()
+                    && self.pending_launch.is_none()
+                    && self.host.gui.as_ref().is_some_and(GuiHost::pending);
+                if due {
+                    self.manager_pass();
+                }
+                due
+            });
             if let Some(launch) = self.pending_launch.take() {
                 return Some(launch);
             }

@@ -103,6 +103,28 @@ impl UiContext<'_> {
         self.request_pass();
     }
 
+    /// Opens the modal `id` for the next pass, for a modal that opens after
+    /// the widgets of this pass drew. The modal joins the top of the stack
+    /// and counts as drawn by this pass, so it stays open at its end. It
+    /// blocks the layers below it from the first widget of the next pass on.
+    /// The next pass must draw the id in [`UiContext::layer`], or the modal
+    /// closes at the end of that pass. The widget that holds the focus now
+    /// takes it back when the modal closes. Asks for another pass. A modal
+    /// that is open already keeps its place.
+    pub(crate) fn open_layer_for_next_pass(&mut self, id: UiId) {
+        match self.state.modals.iter_mut().find(|modal| modal.id == id) {
+            Some(modal) => modal.seen = true,
+            None => self.state.modals.push(OpenModal {
+                id,
+                return_focus: self.state.focus,
+                seen: true,
+                drawn: false,
+                fresh: false,
+            }),
+        }
+        self.request_pass();
+    }
+
     /// Gives the focus to the default widget of the current layer,
     /// registered from the ring position `start` on, when the focus lies
     /// below the layer or outside the ring. Asks for another pass when the
@@ -807,6 +829,69 @@ mod tests {
         );
         harness.frame(|context| draw(context, false));
         assert_eq!(harness.state.focused(), Some(UiId::from("below")));
+    }
+
+    /// Verifies that a modal opened for the next pass in a pass that does not draw it survives
+    /// that pass, blocks the base from the start of the next pass, keeps the key of that pass
+    /// out of the base, takes the focus when it draws and gives the focus of the opening pass
+    /// back when it closes, also after a navigation of the next pass moved the focus in the
+    /// base before the modal drew.
+    #[test]
+    fn a_modal_opened_for_the_next_pass_blocks_the_base_until_it_closes() {
+        let mut harness = Harness::new();
+        let draw = |context: &mut UiContext, open: bool| {
+            let other = button(context, "other", Rect::new(0.0, 40.0, 100.0, 30.0));
+            let [below, first, second] = draw(context, open);
+            [below || other, first, second]
+        };
+        harness.state.set_focus(UiId::from("below"));
+        harness.frame(|context| draw(context, false));
+        harness.frame(|context| {
+            draw(context, false);
+            context.open_layer_for_next_pass(UiId::from("dialog"));
+        });
+        assert_eq!(harness.state.open_modals(), 1);
+        assert_eq!(harness.state.focused(), Some(UiId::from("below")));
+        assert!(harness.state.take_pass_request());
+        harness.input.confirm = true;
+        harness.navigate(Navigation::Down);
+        let activations = harness.frame(|context| {
+            let blocked = context.is_blocked();
+            let focus = context.focused();
+            (blocked, focus, draw(context, true))
+        });
+        assert_eq!(activations, (true, Some(UiId::from("other")), [false; 3]));
+        assert_eq!(harness.state.focused(), Some(UiId::from("first")));
+        harness.input.confirm = true;
+        assert_eq!(
+            harness.frame(|context| draw(context, true)),
+            [false, true, false]
+        );
+        harness.frame(|context| draw(context, false));
+        assert_eq!(harness.state.open_modals(), 0);
+        assert_eq!(harness.state.focused(), Some(UiId::from("below")));
+    }
+
+    /// Verifies that a modal opened for the next pass closes at the end of a next pass that does
+    /// not draw it, and that the key after it reaches the base.
+    #[test]
+    fn a_modal_opened_for_the_next_pass_closes_when_the_next_pass_does_not_draw_it() {
+        let mut harness = Harness::new();
+        harness.state.set_focus(UiId::from("below"));
+        harness.frame(|context| draw(context, false));
+        harness.frame(|context| {
+            draw(context, false);
+            context.open_layer_for_next_pass(UiId::from("dialog"));
+        });
+        harness.input.confirm = true;
+        assert_eq!(harness.frame(|context| draw(context, false)), [false; 3]);
+        assert_eq!(harness.state.open_modals(), 0);
+        assert_eq!(harness.state.focused(), Some(UiId::from("below")));
+        harness.input.confirm = true;
+        assert_eq!(
+            harness.frame(|context| draw(context, false)),
+            [true, false, false]
+        );
     }
 
     #[test]

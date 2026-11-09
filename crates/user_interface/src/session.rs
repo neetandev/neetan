@@ -21,6 +21,7 @@ pub(crate) use self::panic_guard::catch_panic;
 use crate::{
     Result,
     config::{AspectMode, Backend, EmulatorConfig, ScalingMode, WindowMode},
+    gui_host::run_pending_passes,
     host::{Host, graphics_display_aspect_mode, wants_large_native_target},
     input::{KeyOverrides, KeyboardForwardingState},
     machines::{initialize_machine, sdl_host_date_time_source},
@@ -355,8 +356,9 @@ impl Session {
         }
     }
 
-    /// Runs the pending pass of the open media dialog, the gamepad key repeat
-    /// and the edge repeat of a text drag of the GUI.
+    /// Runs the pending passes of the open media dialog, the gamepad key repeat
+    /// and the edge repeat of a text drag of the GUI. The passes run until the
+    /// GUI settles, so the next frame shows the settled dialog.
     pub(crate) fn update_dialog(&mut self, host: &mut Host) {
         if self.media_dialog.is_none() {
             return;
@@ -371,9 +373,14 @@ impl Session {
         if let Some(gui) = host.gui.as_mut() {
             gui.poll_edge_repeat(Instant::now());
         }
-        if host.gui.as_ref().is_some_and(|gui| gui.pending()) {
-            self.media_pass(host);
-        }
+        run_pending_passes(|| {
+            let due =
+                self.media_dialog.is_some() && host.gui.as_ref().is_some_and(|gui| gui.pending());
+            if due {
+                self.media_pass(host);
+            }
+            due
+        });
     }
 
     /// Stops fast forward when the window loses the focus.

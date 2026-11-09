@@ -16,6 +16,10 @@
 //! scene: the context with the input and the focus of a frame, the theme,
 //! the icons and the widgets.
 //!
+//! The [`component`] module builds screens and dialogs on these widgets:
+//! a view that emits messages, an update that applies them and a status
+//! that tells the owner whether the component stays open.
+//!
 //! The records are `#[repr(C)]` and offer byte views for an upload to the GPU.
 
 #![deny(missing_docs)]
@@ -23,6 +27,7 @@
 
 mod bytes;
 mod color;
+pub mod component;
 pub mod fonts;
 mod outline;
 mod path;

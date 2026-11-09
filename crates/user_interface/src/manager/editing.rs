@@ -737,6 +737,7 @@ mod tests {
         let revision = manager.editor().map(Editor::revision);
         let (counts, _) = harness.counted_frame(|context| manager.show(context));
         assert_eq!(manager.editor().map(Editor::revision), revision);
+        assert!(!harness.state.take_pass_request());
         counts
     }
 
