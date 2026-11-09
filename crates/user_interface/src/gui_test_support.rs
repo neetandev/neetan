@@ -1,13 +1,17 @@
 //! The font, the pass state and the screenshot output of the user interface
 //! tests without a window.
 
-use std::path::{Path, PathBuf};
+use std::{
+    convert::Infallible,
+    path::{Path, PathBuf},
+};
 
 use gui::{
     Fonts, Instance, Rasterizer, Rect, Scene,
+    component::{Component, Ended, Layer, Status, Update, run, run_child},
     ui::{
-        Input, KEYCAP_HEIGHT, STATUS_LINE_HEIGHT, StatusEnd, Theme, ThemeKind, UiContext, UiState,
-        Viewport, status_line,
+        Button, Input, KEYCAP_HEIGHT, STATUS_LINE_HEIGHT, StatusEnd, Theme, ThemeKind, UiContext,
+        UiState, Viewport, status_line,
     },
 };
 use i18n::Catalog;
@@ -180,6 +184,37 @@ impl GuiHarness {
         result
     }
 
+    /// Runs one pass of `component` in `area` with `input` and the pending input, and then the
+    /// passes that it asks for, at most four, as the GUI host does. Stops after the first pass
+    /// that ends the component. Returns the status of the last pass and the effects of every
+    /// pass.
+    pub(crate) fn run_component<'input, C: Component>(
+        &mut self,
+        component: &mut C,
+        area: Rect,
+        input: C::Input<'input>,
+    ) -> (Status<C::Output>, Vec<C::Effect>)
+    where
+        C::Input<'input>: Copy,
+    {
+        let mut effects = Vec::new();
+        let mut pass = |harness: &mut Self| {
+            harness.frame(|context| {
+                run(component, context, area, input, &mut |effect| {
+                    effects.push(effect);
+                })
+            })
+        };
+        let mut status = pass(self);
+        for _ in 0..4 {
+            if !matches!(status, Status::Open) || !self.state.take_pass_request() {
+                break;
+            }
+            status = pass(self);
+        }
+        (status, effects)
+    }
+
     /// Draws the scene of the last pass through the CPU rasterizer into RGBA8 pixels.
     pub(crate) fn render(&self) -> Vec<u8> {
         let Viewport { width, height, .. } = self.viewport;
@@ -255,4 +290,150 @@ pub(crate) fn write_ppm(name: &str, width: u32, height: u32, pixels: &[u8]) {
     }
     std::fs::write(directory.join(format!("{name}.ppm")), bytes)
         .expect("the screenshot is written");
+}
+
+/// The id of the button of the [`AskScreen`] that opens its dialog.
+pub(crate) const ASK_BUTTON: &str = "ask";
+
+/// The id of the button of the [`AnswerDialog`].
+pub(crate) const ANSWER_BUTTON: &str = "answer";
+
+/// The id of the modal layer of the [`AnswerDialog`].
+const ANSWER_LAYER: &str = "answer dialog";
+
+/// What the [`AskScreen`] reports when its dialog was answered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Answered;
+
+/// A message of the [`AskScreen`].
+pub(crate) enum AskMessage {
+    /// The ask button opens the dialog.
+    Ask,
+    /// The dialog ended.
+    Answer(Ended<()>),
+}
+
+/// A screen with a button that opens an [`AnswerDialog`] in an update, for the tests of the
+/// passes of a component.
+#[derive(Default)]
+pub(crate) struct AskScreen {
+    /// The message buffer.
+    messages: Vec<AskMessage>,
+    /// The open dialog.
+    dialog: Option<AnswerDialog>,
+}
+
+impl Component for AskScreen {
+    type Message = AskMessage;
+    type Output = Infallible;
+    type Effect = Answered;
+    type Input<'a> = ();
+
+    fn messages(&mut self) -> &mut Vec<AskMessage> {
+        &mut self.messages
+    }
+
+    fn view(
+        &mut self,
+        context: &mut UiContext,
+        area: Rect,
+        _input: (),
+        messages: &mut Vec<AskMessage>,
+    ) {
+        if Button::new(ASK_BUTTON, "Ask").show(context, Rect::new(area.x, area.y, 120.0, 32.0)) {
+            messages.push(AskMessage::Ask);
+        }
+        if let Some(dialog) = self.dialog.as_mut() {
+            run_child(dialog, context, area, (), messages, |event| {
+                AskMessage::Answer(event.into_ended())
+            });
+        }
+    }
+
+    fn update(
+        &mut self,
+        message: AskMessage,
+        update: &mut Update<'_, Answered>,
+    ) -> Status<Infallible> {
+        match message {
+            AskMessage::Ask => {
+                self.dialog = Some(AnswerDialog::default());
+                update.open::<AnswerDialog>();
+            }
+            AskMessage::Answer(ended) => {
+                self.dialog = None;
+                if ended == Ended::Done(()) {
+                    update.emit(Answered);
+                }
+            }
+        }
+        Status::Open
+    }
+}
+
+/// A dialog in a modal layer with one button that answers it.
+#[derive(Default)]
+pub(crate) struct AnswerDialog {
+    /// The message buffer.
+    messages: Vec<()>,
+}
+
+impl Component for AnswerDialog {
+    type Message = ();
+    type Output = ();
+    type Effect = Infallible;
+    type Input<'a> = ();
+
+    const LAYER: Layer = Layer::Modal(ANSWER_LAYER);
+
+    fn messages(&mut self) -> &mut Vec<()> {
+        &mut self.messages
+    }
+
+    fn view(&mut self, context: &mut UiContext, area: Rect, _input: (), messages: &mut Vec<()>) {
+        let button = Rect::new(area.x + 200.0, area.y + 200.0, 120.0, 32.0);
+        if Button::new(ANSWER_BUTTON, "Answer").show(context, button) {
+            messages.push(());
+        }
+    }
+
+    fn update(&mut self, _message: (), _update: &mut Update<'_, Infallible>) -> Status<()> {
+        Status::Done(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gui::ui::UiId;
+
+    use super::*;
+
+    /// Verifies that `run_component` runs a component until it settles and returns its status
+    /// and its effects, and that a dialog that an update opens draws and takes the focus
+    /// within the settled passes.
+    #[test]
+    fn run_component_settles_and_returns_the_effects() {
+        let mut harness = GuiHarness::minimum();
+        let mut screen = AskScreen::default();
+        harness.state.set_focus(UiId::from(ASK_BUTTON));
+        assert_eq!(
+            harness.run_component(&mut screen, MINIMUM_SCREEN, ()),
+            (Status::Open, Vec::new())
+        );
+        harness.input.confirm = true;
+        assert_eq!(
+            harness.run_component(&mut screen, MINIMUM_SCREEN, ()),
+            (Status::Open, Vec::new())
+        );
+        assert!(!harness.state.take_pass_request());
+        assert_eq!(harness.state.open_modals(), 1);
+        assert_eq!(harness.state.focused(), Some(UiId::from(ANSWER_BUTTON)));
+        harness.input.confirm = true;
+        assert_eq!(
+            harness.run_component(&mut screen, MINIMUM_SCREEN, ()),
+            (Status::Open, vec![Answered])
+        );
+        assert_eq!(harness.state.open_modals(), 0);
+        assert_eq!(harness.state.focused(), Some(UiId::from(ASK_BUTTON)));
+    }
 }

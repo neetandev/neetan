@@ -102,6 +102,18 @@ impl GuiEvent {
     }
 }
 
+/// Runs passes until `pass` runs none, so the next frame shows the settled state of the user
+/// interface. `pass` runs one pass when the user interface waits for one and returns whether
+/// it ran. The chain ends because a host stops waiting after [`MAXIMUM_CHAINED_PASSES`]
+/// chained passes without an event. Returns the count of passes.
+pub(crate) fn run_pending_passes(mut pass: impl FnMut() -> bool) -> u32 {
+    let mut passes = 0;
+    while pass() {
+        passes += 1;
+    }
+    passes
+}
+
 /// The theme kind of the GUI theme setting `theme`.
 pub(crate) fn theme_kind(theme: GuiTheme) -> ThemeKind {
     match theme {
@@ -518,6 +530,7 @@ mod tests {
 
     use gui::{
         Rect,
+        component::run,
         ui::{Palette, button, text_field},
     };
     use sdl3::event::Event;
@@ -533,7 +546,7 @@ mod tests {
         *,
     };
     use crate::{
-        gui_test_support::repository_font,
+        gui_test_support::{ANSWER_BUTTON, ASK_BUTTON, AskScreen, MINIMUM_SCREEN, repository_font},
         texts::{common::SAVE, test_catalog},
     };
 
@@ -728,6 +741,41 @@ mod tests {
         host.apply(GuiEvent::Confirm);
         host.pass(|context| context.request_pass());
         assert!(host.pending());
+    }
+
+    /// Runs one pass of `screen` in `host`.
+    fn ask_pass(host: &mut GuiHost, screen: &mut AskScreen) {
+        host.pass(|context| run(screen, context, MINIMUM_SCREEN, (), &mut |_| {}));
+    }
+
+    /// Runs the passes that `host` waits for with [`run_pending_passes`], as the manager and the
+    /// media dialog do before a frame. Returns the count of passes.
+    fn settle(host: &mut GuiHost, screen: &mut AskScreen) -> u32 {
+        run_pending_passes(|| {
+            let due = host.pending();
+            if due {
+                ask_pass(host, screen);
+            }
+            due
+        })
+    }
+
+    /// Verifies that the frame after an event whose update opens a dialog shows the dialog with
+    /// its focus once the pending passes ran, and that the pass of the event alone does not.
+    #[test]
+    fn a_frame_after_an_event_that_opens_a_dialog_shows_the_dialog_with_its_focus() {
+        let mut host = host();
+        let mut screen = AskScreen::default();
+        host.state.set_focus(UiId::from(ASK_BUTTON));
+        settle(&mut host, &mut screen);
+        host.apply(GuiEvent::Confirm);
+        ask_pass(&mut host, &mut screen);
+        assert!(host.pending());
+        assert_eq!(host.state.focused(), Some(UiId::from(ASK_BUTTON)));
+        assert!(settle(&mut host, &mut screen) <= MAXIMUM_CHAINED_PASSES);
+        assert!(!host.pending());
+        assert_eq!(host.state.open_modals(), 1);
+        assert_eq!(host.state.focused(), Some(UiId::from(ANSWER_BUTTON)));
     }
 
     /// Verifies that a key navigation reaches the input with its modifiers from the keyboard and

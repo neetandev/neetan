@@ -279,7 +279,9 @@ pub(super) fn select(manager: &mut Manager, name: &str) {
 /// unchanged state.
 pub(super) fn steady_frame(harness: &mut GuiHarness, manager: &mut Manager) -> PassCounts {
     harness.frame(|context| manager.show(context));
-    harness.counted_frame(|context| manager.show(context)).0
+    let counts = harness.counted_frame(|context| manager.show(context)).0;
+    assert!(!harness.state.take_pass_request());
+    counts
 }
 
 /// The key of the setting of the help area of the open editor of `manager`, read by
