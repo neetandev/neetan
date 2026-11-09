@@ -67,7 +67,8 @@
 //!   the application in every event.
 //! - A view emits the message that ends its component last. [`run`] stops at
 //!   the first update that returns [`Status::Closed`] or [`Status::Done`],
-//!   drops the messages after it, and a debug build panics.
+//!   drops the messages after it, and panics in every build, so that a lost
+//!   input of the user never goes unnoticed.
 //!
 //! # Status, end and child events
 //!
@@ -150,6 +151,35 @@
 //! The owner removes the child from its overlay in the update of the end
 //! message.
 //!
+//! A child that takes the whole area of its owner, such as an editor that
+//! replaces a list, is a mode of the owner. It sits in a mode enum, with one
+//! variant for each mode, including the one without a child, apart from the
+//! overlay. The owner draws the mode, then the overlay above it, so a dialog
+//! can be open over the mode child. While a child of the overlay is open, it
+//! decides the hints, otherwise the mode child decides. A mode child draws
+//! in the layer of its owner ([`Layer::Owner`]), so the update sets it
+//! directly and needs no layer request. The other rules of the overlay hold
+//! for the mode enum as well: one child at a time, run through
+//! [`run_child`], removed in the update of its end message.
+//!
+//! # The delay of derived values
+//!
+//! In a pass, the widgets of the view write their bound values at once,
+//! while the values derived from them change only in the updates after the
+//! view. Until then the view draws the bound values of this pass next to the
+//! derived values of the last update. A view that pairs them without care
+//! draws a bound value out of step with the values derived from it. Code in
+//! the view that pairs a bound value with derived values takes one of two
+//! ways:
+//!
+//! 1. The default: it reads the bound value that the derived values were
+//!    built from. The update records that value next to the derived values,
+//!    such as the selection of one list for which it built the rows of
+//!    another list, and the view reads the recorded value.
+//! 2. A view that has to show the result of its own update in the same pass
+//!    computes that result at the site, as the update of the message will
+//!    leave it, and the site carries a short comment.
+//!
 //! # Focus
 //!
 //! [`Update`] has no access to the focus.
@@ -188,6 +218,10 @@
 //! To add a feature, add a message, emit it in `view` where the widget or
 //! the shortcut is, handle it in `update`, test `update` directly and add
 //! one test of the input that emits it.
+//!
+//! The compiled example below is the template for a new dialog. The fixed
+//! part of `impl Component` stays written out, because it is the contract
+//! that the reader of a component reads first.
 //!
 //! ```
 //! use std::convert::Infallible;
@@ -463,7 +497,7 @@ impl<'a, E> Update<'a, E> {
 ///
 /// With [`Layer::Modal`], the component draws in that modal layer, and the
 /// layer closes when the component ends. The first update that ends the
-/// component ends the pass, and the messages after it are dropped. A debug
+/// component ends the pass, and the messages after it are dropped. Every
 /// build panics on them, because a view emits the message that ends its
 /// component last.
 pub fn run<C: Component>(
@@ -510,7 +544,7 @@ fn run_pass<C: Component>(
             break;
         }
     }
-    debug_assert_eq!(
+    assert_eq!(
         pending.len(),
         0,
         "a view emits the message that ends its component last"
@@ -686,7 +720,7 @@ mod tests {
         assert_eq!(status, Status::Closed);
     }
 
-    /// Verifies that the first update that ends the component ends the pass, and that a debug
+    /// Verifies that the first update that ends the component ends the pass, and that every
     /// build reports the dropped messages after it.
     #[test]
     fn an_end_stops_the_remaining_messages() {
@@ -697,16 +731,12 @@ mod tests {
             run_script(&mut harness, &mut script, &steps)
         }));
         assert_eq!(script.applied, [Step::Record(1), Step::Finish(9)]);
-        if cfg!(debug_assertions) {
-            let payload = result.expect_err("a debug build reports the dropped message");
-            let message = payload
-                .downcast_ref::<String>()
-                .map(String::as_str)
-                .unwrap_or_default();
-            assert!(message.contains("a view emits the message that ends its component last"));
-        } else {
-            assert_eq!(result.ok(), Some((Status::Done(9), Vec::new())));
-        }
+        let payload = result.expect_err("every build reports the dropped message");
+        let message = payload
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .unwrap_or_default();
+        assert!(message.contains("a view emits the message that ends its component last"));
     }
 
     /// Verifies that a pass with messages asks for another pass and that a pass without messages
