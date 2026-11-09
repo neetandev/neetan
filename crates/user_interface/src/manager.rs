@@ -357,9 +357,12 @@ impl Manager {
         build_configuration(&launch.request, &self.start.locations)
     }
 
-    /// Records that the game of `launch` runs.
+    /// Records that the game of `launch` runs and closes the open dialog,
+    /// because the state of the user interface forgets its layer at the end
+    /// of the session.
     pub(crate) fn game_started(&mut self, launch: Launch) {
         self.running = Some(launch);
+        self.overlay = ManagerOverlay::None;
     }
 
     /// Opens the error dialog of `launch` that did not start with `failure`.
@@ -411,9 +414,8 @@ impl Manager {
     }
 
     /// Opens `dialog` with its layer from an update.
-    fn show_error(&mut self, dialog: Box<ErrorDialog>, update: &mut Update<'_, ShellEffect>) {
-        self.overlay = ManagerOverlay::Error(dialog);
-        update.open::<ErrorDialog>();
+    fn show_error(&mut self, dialog: ErrorDialog, update: &mut Update<'_, ShellEffect>) {
+        self.overlay = ManagerOverlay::Error(Box::new(update.open(dialog)));
     }
 
     /// The open error dialog.
@@ -488,8 +490,7 @@ impl Manager {
         let Some(row) = self.selected_row() else {
             return;
         };
-        self.overlay = ManagerOverlay::Delete(Box::new(DeleteRequest::new(row)));
-        update.open::<DeleteRequest>();
+        self.overlay = ManagerOverlay::Delete(Box::new(update.open(DeleteRequest::new(row))));
     }
 
     /// Takes the end `ended` of the question before a delete. A confirmed
@@ -499,7 +500,7 @@ impl Manager {
         let overlay = std::mem::replace(&mut self.overlay, ManagerOverlay::None);
         if let (ManagerOverlay::Delete(request), Ended::Done(())) = (overlay, ended) {
             if let Some(dialog) = remove_game_file(&request) {
-                self.show_error(Box::new(dialog), update);
+                self.show_error(dialog, update);
             }
             self.rescan_after_delete();
         }
@@ -978,9 +979,9 @@ mod tests {
         games(&test, &["A", "B"]);
         let mut manager = test.manager();
         let launch = manager.launch(&manager.rows()[0].clone());
-        let layer = manager.launch_failed(&launch, &LaunchFailure::missing_image("/a.d88"));
         let mut harness = GuiHarness::minimum();
         settle(&mut harness, &mut manager);
+        let layer = manager.launch_failed(&launch, &LaunchFailure::missing_image("/a.d88"));
         harness.state.open_layer(layer);
         settle(&mut harness, &mut manager);
         assert_eq!(
@@ -1149,6 +1150,44 @@ mod tests {
         assert_eq!(titles(&manager), ["b"]);
         let path = test.root.path().join("config").join(first_system().name);
         assert!(!path.join("a.conf").exists());
+    }
+
+    /// Verifies that a game that starts closes the open dialog of the manager.
+    #[test]
+    fn a_started_game_closes_the_open_dialog() {
+        let test = TestRoot::new("started_game_dialog");
+        games(&test, &["a", "b"]);
+        let mut manager = test.manager();
+        apply_with_effects(&mut manager, ManagerMessage::AskDelete);
+        assert!(delete_open(&manager));
+        let launch = manager.launch(&manager.rows()[0].clone());
+        manager.game_started(launch);
+        assert!(!delete_open(&manager));
+        assert!(manager.dialog().is_none());
+    }
+
+    /// Verifies that the first pass of the manager after a game that ended normally and the reset
+    /// of the state of the user interface draws the library without the dialog that was open at
+    /// the start of the game.
+    #[test]
+    fn the_first_pass_after_a_session_draws_no_dialog_of_before() {
+        let test = TestRoot::new("pass_after_session");
+        games(&test, &["a", "b"]);
+        let mut manager = test.manager();
+        let mut harness = GuiHarness::minimum();
+        settle(&mut harness, &mut manager);
+        apply_with_effects(&mut manager, ManagerMessage::AskDelete);
+        harness.state.open_layer(UiId::from(DELETE_LAYER_ID));
+        settle(&mut harness, &mut manager);
+        assert!(delete_open(&manager));
+        assert_eq!(harness.state.open_modals(), 1);
+        let launch = manager.launch(&manager.rows()[0].clone());
+        manager.game_started(launch);
+        assert_eq!(manager.game_ended(None, Ok(())), None);
+        harness.state.reset();
+        settle(&mut harness, &mut manager);
+        assert!(!delete_open(&manager));
+        assert_eq!(harness.state.open_modals(), 0);
     }
 
     /// Verifies that a confirmed delete whose removal fails opens the error dialog with its

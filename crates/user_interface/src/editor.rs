@@ -776,8 +776,8 @@ impl Editor {
         if !self.is_dirty() {
             return Status::Closed;
         }
-        self.overlay = EditorOverlay::Discard(Box::new(DiscardQuestion::new(self.edited_file())));
-        update.open::<DiscardQuestion>();
+        let question = update.open(DiscardQuestion::new(self.edited_file()));
+        self.overlay = EditorOverlay::Discard(Box::new(question));
         Status::Open
     }
 
@@ -900,14 +900,12 @@ impl Component for Editor {
             EditorMessage::CheckRoms(row) => self.check_rom_row(row),
             EditorMessage::Browse(target) => {
                 let browser = FileBrowser::new(self.browse_request(target), &self.root);
-                self.overlay = EditorOverlay::Browser(Box::new(browser), target);
-                update.open::<FileBrowser>();
+                self.overlay = EditorOverlay::Browser(Box::new(update.open(browser)), target);
             }
             EditorMessage::Create(target) => {
                 if let Some(request) = self.create_request(target) {
                     let dialog = CreateImageDialog::new(request, &self.root);
-                    self.overlay = EditorOverlay::Creator(Box::new(dialog), target);
-                    update.open::<CreateImageDialog>();
+                    self.overlay = EditorOverlay::Creator(Box::new(update.open(dialog)), target);
                 }
             }
             EditorMessage::Save => self.save_changes(update),

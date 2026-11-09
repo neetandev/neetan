@@ -125,6 +125,12 @@ impl UiContext<'_> {
         self.request_pass();
     }
 
+    /// Whether the modal `id` is in the stack of open modals: drawn by the
+    /// last pass, opened for the next pass or opened between passes.
+    pub(crate) fn layer_open(&self, id: UiId) -> bool {
+        self.state.modals.iter().any(|modal| modal.id == id)
+    }
+
     /// Gives the focus to the default widget of the current layer,
     /// registered from the ring position `start` on, when the focus lies
     /// below the layer or outside the ring. Asks for another pass when the

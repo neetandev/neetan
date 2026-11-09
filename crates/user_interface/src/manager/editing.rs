@@ -57,7 +57,7 @@ impl Manager {
                 info!("Game manager: editing {}", editor.path().display());
                 self.mode = ManagerMode::Editor(Box::new(editor));
             }
-            Err(dialog) => self.show_error(Box::new(dialog), update),
+            Err(dialog) => self.show_error(dialog, update),
         }
     }
 
@@ -198,7 +198,7 @@ impl Manager {
                 match self.settings_saved(path, active_language) {
                     Ok(Some(catalog)) => update.emit(ShellEffect::SwitchCatalog(catalog)),
                     Ok(None) => {}
-                    Err(dialog) => self.show_error(dialog, update),
+                    Err(dialog) => self.show_error(*dialog, update),
                 }
             }
         }
@@ -216,7 +216,7 @@ impl Manager {
             EditorEffect::SaveFailed(failure) => {
                 if let ManagerMode::Editor(editor) = &self.mode {
                     let dialog = save_failure_dialog(editor, &failure);
-                    self.show_error(Box::new(dialog), update);
+                    self.show_error(dialog, update);
                 }
             }
         }
@@ -236,7 +236,7 @@ impl Manager {
             }
             Err(failure) => {
                 let dialog = save_failure_dialog(editor, &failure);
-                self.show_error(Box::new(dialog), update);
+                self.show_error(dialog, update);
             }
         }
     }
