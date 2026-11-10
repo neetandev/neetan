@@ -947,6 +947,13 @@ impl Shell {
             return ShellPhase::ExecutingCommand(running);
         }
 
+        if let Some(name_length) = internal_name_length(cmd_name)
+            && let Some(cmd) = self.find_command(&cmd_upper[..name_length])
+        {
+            let running = cmd.start(&trimmed[name_length..]);
+            return ShellPhase::ExecutingCommand(running);
+        }
+
         match find_command_file(cmd_name, &cmd_upper, state, io.memory, disk) {
             Some(FoundCommandFile::External(path)) => {
                 let output_redirect = self.current_redirect.take();
@@ -1082,6 +1089,16 @@ fn split_command(line: &[u8]) -> (&[u8], &[u8]) {
     } else {
         (line, &[])
     }
+}
+
+/// Returns the length of the name in a command word that continues with a path
+/// or switch character, as in `CD\`, `CD..` or `DIR/W`. COMMAND.COM ends the
+/// name of an internal command at these characters and passes them on as the
+/// start of the arguments.
+fn internal_name_length(word: &[u8]) -> Option<usize> {
+    word.iter()
+        .position(|byte| matches!(byte, b'\\' | b'/' | b'.'))
+        .filter(|&length| length > 0)
 }
 
 fn eq_ignore_ascii_case(left: &[u8], right: &[u8]) -> bool {
