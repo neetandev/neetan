@@ -638,6 +638,18 @@ fn batch_pause() {
 }
 
 #[test]
+fn batch_copy_to_bare_drive_uses_current_directory() {
+    let machine = run_test_batch(
+        b"@ECHO OFF\r\nMD SUB\r\nCD SUB\r\nCOPY \\TESTFILE.TXT A: > NUL\r\nIF EXIST A:TESTFILE.TXT ECHO COPIED HERE\r\nCD \\\r\n",
+    );
+    assert_screen_contains(
+        &machine,
+        "COPIED HERE",
+        "COPY to a bare drive should write to the current directory of that drive",
+    );
+}
+
+#[test]
 fn batch_drive_change_applies_before_following_lines() {
     let first_floppy_image = create_test_floppy_with_program(
         b"SWITCH  BAT",
