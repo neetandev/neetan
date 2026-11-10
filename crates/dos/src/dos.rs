@@ -1719,6 +1719,7 @@ pub(crate) fn route_for_character_device(memory: &dyn MemoryAccess, is_nul: bool
 /// Normalizes a DOS path by resolving `.` and `..` components.
 /// Input/output is a byte vector like `A:\FOO\BAR\..\BAZ`. MS-DOS accepts `/`
 /// as a path separator in its file functions, and the result holds `\` for it.
+/// A bare drive `X:` names the current directory of that drive and stays `X:`.
 pub(crate) fn normalize_path(path: &[u8]) -> Vec<u8> {
     let path: Vec<u8> = path
         .iter()
@@ -1759,11 +1760,6 @@ pub(crate) fn normalize_path(path: &[u8]) -> Vec<u8> {
         result.extend_from_slice(component);
     }
 
-    // Ensure at least "X:\"
-    if result.len() == 2 && result[1] == b':' {
-        result.push(b'\\');
-    }
-
     result
 }
 
@@ -1794,6 +1790,8 @@ mod tests {
         assert_eq!(super::normalize_path(b"\\PD\\..\\RUN386"), b"\\RUN386");
         assert_eq!(super::normalize_path(b"PD\\FILE"), b"PD\\FILE");
         assert_eq!(super::normalize_path(b"C:MSCDEX"), b"C:MSCDEX");
+        assert_eq!(super::normalize_path(b"C:"), b"C:");
+        assert_eq!(super::normalize_path(b"C:\\"), b"C:\\");
         assert_eq!(super::normalize_path(b"Q:\\PD\\.\\FILE"), b"Q:\\PD\\FILE");
     }
 
