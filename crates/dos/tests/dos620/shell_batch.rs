@@ -638,6 +638,26 @@ fn batch_pause() {
 }
 
 #[test]
+fn batch_pause_redirected_to_nul_hides_message() {
+    let mut machine =
+        boot_with_batch_file(b"@ECHO OFF\r\nECHO BEFORE\r\nPAUSE > NUL\r\nECHO AFTER\r\n");
+    prepare_test_batch(&mut machine);
+    type_string(&mut machine.bus, b"TEST\r");
+
+    run_until_screen_contains(&mut machine, "BEFORE", "batch should start");
+    machine.run_for(20_000_000);
+    assert_screen_lacks(&machine, "AFTER", "PAUSE > NUL should still wait for a key");
+    submit_command(&mut machine, b" ");
+
+    assert_screen_contains(&machine, "AFTER", "batch should continue after PAUSE > NUL");
+    assert_screen_lacks(
+        &machine,
+        "Press",
+        "PAUSE > NUL should send its message to NUL",
+    );
+}
+
+#[test]
 fn batch_internal_command_name_ends_at_backslash_and_dot() {
     let machine = run_test_batch(
         b"@ECHO OFF\r\nMD SUB\r\nCD SUB\r\nCD\\\r\nIF EXIST TESTFILE.TXT ECHO ROOT1\r\nCD SUB\r\nCD..\r\nIF EXIST TESTFILE.TXT ECHO ROOT2\r\n",
