@@ -29,6 +29,15 @@ impl Command for Copy {
     fn start(&self, args: &[u8]) -> Box<dyn RunningCommand> {
         Box::new(RunningCopy {
             args: args.to_vec(),
+            confirm_overwrite: true,
+            phase: CopyPhase::Init,
+        })
+    }
+
+    fn start_in_batch(&self, args: &[u8]) -> Box<dyn RunningCommand> {
+        Box::new(RunningCopy {
+            args: args.to_vec(),
+            confirm_overwrite: false,
             phase: CopyPhase::Init,
         })
     }
@@ -614,10 +623,17 @@ fn encode_copy_transfer(
 /// Serializable state of an executing COPY command.
 pub(crate) struct RunningCopy {
     args: Vec<u8>,
+    /// COPY asks before it replaces a file unless `/Y` is given. A COPY of a
+    /// batch file replaces files without asking unless `/-Y` is given.
+    confirm_overwrite: bool,
     phase: CopyPhase,
 }
 
-state_struct_codec!(RunningCopy { args, phase });
+state_struct_codec!(RunningCopy {
+    args,
+    confirm_overwrite,
+    phase
+});
 
 impl RunningCommand for RunningCopy {
     fn step(
@@ -692,7 +708,7 @@ impl RunningCopy {
             print_help(io);
             return StepResult::Done(0);
         }
-        match init_copy(state, io, drive, &self.args) {
+        match init_copy(state, io, drive, &self.args, self.confirm_overwrite) {
             Ok(InitOutcome::Plan(cs)) => {
                 self.phase = CopyPhase::NextItem(cs);
                 StepResult::Continue
@@ -1500,6 +1516,7 @@ fn init_copy(
     io: &mut IoAccess,
     drive: &mut dyn DriveIo,
     args: &[u8],
+    confirm_overwrite: bool,
 ) -> Result<InitOutcome, &'static [u8]> {
     let args = args.trim_ascii();
     if args.is_empty() {
@@ -1507,14 +1524,16 @@ fn init_copy(
     }
 
     let mut verify = false;
-    let mut overwrite_all = false;
+    let mut overwrite_all = !confirm_overwrite;
     let mut tokens: Vec<&[u8]> = Vec::new();
 
     for part in args.split(|&b| b == b' ' || b == b'\t') {
         if part.is_empty() {
             continue;
         }
-        if part.len() >= 2 && part[0] == b'/' {
+        if part.eq_ignore_ascii_case(b"/-Y") {
+            overwrite_all = false;
+        } else if part.len() >= 2 && part[0] == b'/' {
             match part[1].to_ascii_uppercase() {
                 b'V' => verify = true,
                 b'Y' => overwrite_all = true,

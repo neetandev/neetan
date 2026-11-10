@@ -791,7 +791,7 @@ impl Shell {
                     },
                 });
             }
-            return self.dispatch_single(state, io, disk, &first);
+            return self.dispatch_single(state, io, disk, &first, LineSource::Prompt);
         }
 
         // Split on pipes
@@ -807,10 +807,10 @@ impl Shell {
             let parsed = parse_redirections(&first);
             self.current_redirect = None;
             self.redirect_buffer = Some(Vec::new());
-            return self.dispatch_parsed(state, io, disk, &parsed.command);
+            return self.dispatch_parsed(state, io, disk, &parsed.command, LineSource::Prompt);
         }
 
-        self.dispatch_single(state, io, disk, trimmed)
+        self.dispatch_single(state, io, disk, trimmed, LineSource::Prompt)
     }
 
     fn dispatch_single(
@@ -819,6 +819,7 @@ impl Shell {
         io: &mut IoAccess,
         disk: &mut dyn DriveIo,
         segment: &[u8],
+        source: LineSource,
     ) -> ShellPhase {
         let parsed = parse_redirections(segment);
 
@@ -843,7 +844,7 @@ impl Shell {
             }
         }
 
-        self.dispatch_parsed(state, io, disk, &parsed.command)
+        self.dispatch_parsed(state, io, disk, &parsed.command, source)
     }
 
     pub(crate) fn dispatch_parsed(
@@ -852,6 +853,7 @@ impl Shell {
         io: &mut IoAccess,
         disk: &mut dyn DriveIo,
         command: &[u8],
+        source: LineSource,
     ) -> ShellPhase {
         let trimmed = command.trim_ascii();
         if trimmed.is_empty() {
@@ -865,14 +867,14 @@ impl Shell {
             && eq_ignore_ascii_case(&trimmed[..5], b"PATH=")
             && let Some(cmd) = self.find_command(b"PATH")
         {
-            let running = cmd.start(&trimmed[4..]);
+            let running = start_command(cmd, &trimmed[4..], source);
             return ShellPhase::ExecutingCommand(running);
         }
 
         if eq_ignore_ascii_case(trimmed, b"PATH;")
             && let Some(cmd) = self.find_command(b"PATH")
         {
-            let running = cmd.start(b";");
+            let running = start_command(cmd, b";", source);
             return ShellPhase::ExecutingCommand(running);
         }
 
@@ -904,7 +906,7 @@ impl Shell {
             } else {
                 &trimmed[5..]
             };
-            let running = cmd.start(args);
+            let running = start_command(cmd, args, source);
             return ShellPhase::ExecutingCommand(running);
         }
 
@@ -943,14 +945,14 @@ impl Shell {
 
         // Look up in command registry
         if let Some(cmd) = self.find_command(&cmd_upper) {
-            let running = cmd.start(args);
+            let running = start_command(cmd, args, source);
             return ShellPhase::ExecutingCommand(running);
         }
 
         if let Some(name_length) = internal_name_length(cmd_name)
             && let Some(cmd) = self.find_command(&cmd_upper[..name_length])
         {
-            let running = cmd.start(&trimmed[name_length..]);
+            let running = start_command(cmd, &trimmed[name_length..], source);
             return ShellPhase::ExecutingCommand(running);
         }
 
@@ -1021,7 +1023,7 @@ impl Shell {
             }
         }
 
-        self.dispatch_parsed(state, io, disk, &pending.parsed.command)
+        self.dispatch_parsed(state, io, disk, &pending.parsed.command, LineSource::Prompt)
     }
 
     fn find_command(&self, name: &[u8]) -> Option<&dyn Command> {
@@ -1088,6 +1090,27 @@ fn split_command(line: &[u8]) -> (&[u8], &[u8]) {
         (&line[..pos], &line[pos + 1..])
     } else {
         (line, &[])
+    }
+}
+
+/// Origin of a command line.
+#[derive(Clone, Copy)]
+pub(crate) enum LineSource {
+    /// A line typed at the prompt or given to the shell with `/C`.
+    Prompt,
+    /// A line of a batch file.
+    Batch,
+}
+
+/// Starts a command for a line from `source`.
+fn start_command(
+    command: &dyn Command,
+    args: &[u8],
+    source: LineSource,
+) -> Box<dyn RunningCommand> {
+    match source {
+        LineSource::Prompt => command.start(args),
+        LineSource::Batch => command.start_in_batch(args),
     }
 }
 

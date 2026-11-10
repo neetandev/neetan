@@ -229,7 +229,7 @@ impl BatchState {
         }
 
         shell.echo_on = self.echo_on;
-        let phase = shell.dispatch_single(state, io, disk, command);
+        let phase = shell.dispatch_single(state, io, disk, command, super::LineSource::Batch);
         match phase {
             super::ShellPhase::ExecutingCommand(cmd) => {
                 self.running_command = Some(cmd);
@@ -411,7 +411,8 @@ impl BatchState {
 
         // Regular command: dispatch through shell
         shell.echo_on = self.echo_on;
-        let phase = shell.dispatch_single(state, io, disk, &effective_line);
+        let phase =
+            shell.dispatch_single(state, io, disk, &effective_line, super::LineSource::Batch);
         match phase {
             super::ShellPhase::ExecutingCommand(cmd) => {
                 self.running_command = Some(cmd);
