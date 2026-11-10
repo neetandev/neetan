@@ -684,6 +684,45 @@ fn batch_copy_to_bare_drive_uses_current_directory() {
 }
 
 #[test]
+fn batch_copy_overwrites_without_prompt() {
+    let machine = run_test_batch(
+        b"@ECHO OFF\r\nCOPY TESTFILE.TXT COPY.TXT > NUL\r\nCOPY TESTFILE.TXT COPY.TXT > NUL\r\nECHO FINISHED\r\n",
+    );
+    assert_screen_contains(
+        &machine,
+        "FINISHED",
+        "COPY in a batch file should replace a file without asking",
+    );
+    assert_screen_lacks(
+        &machine,
+        "Overwrite",
+        "COPY in a batch file should not ask before it replaces a file",
+    );
+}
+
+#[test]
+fn batch_copy_with_minus_y_asks_before_overwrite() {
+    let mut machine = boot_with_batch_file(
+        b"@ECHO OFF\r\nCOPY TESTFILE.TXT COPY.TXT > NUL\r\nCOPY /-Y TESTFILE.TXT COPY.TXT\r\nECHO FINISHED\r\n",
+    );
+    prepare_test_batch(&mut machine);
+    type_string(&mut machine.bus, b"TEST\r");
+
+    run_until_screen_contains(
+        &mut machine,
+        "Overwrite",
+        "COPY /-Y in a batch file should ask before it replaces a file",
+    );
+    submit_command(&mut machine, b"Y");
+
+    assert_screen_contains(
+        &machine,
+        "FINISHED",
+        "batch should continue after the answer",
+    );
+}
+
+#[test]
 fn batch_drive_change_applies_before_following_lines() {
     let first_floppy_image = create_test_floppy_with_program(
         b"SWITCH  BAT",

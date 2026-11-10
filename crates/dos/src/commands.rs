@@ -56,6 +56,11 @@ pub(crate) trait Command: Send {
     /// Create a running instance of this command with the given arguments.
     /// Arguments are raw bytes (Shift-JIS, as typed by the user).
     fn start(&self, args: &[u8]) -> Box<dyn RunningCommand>;
+
+    /// Create a running instance of this command for a line of a batch file.
+    fn start_in_batch(&self, args: &[u8]) -> Box<dyn RunningCommand> {
+        self.start(args)
+    }
 }
 
 pub(crate) trait RunningCommandObject {
