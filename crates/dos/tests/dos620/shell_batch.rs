@@ -638,6 +638,20 @@ fn batch_pause() {
 }
 
 #[test]
+fn batch_internal_command_name_ends_at_backslash_and_dot() {
+    let machine = run_test_batch(
+        b"@ECHO OFF\r\nMD SUB\r\nCD SUB\r\nCD\\\r\nIF EXIST TESTFILE.TXT ECHO ROOT1\r\nCD SUB\r\nCD..\r\nIF EXIST TESTFILE.TXT ECHO ROOT2\r\n",
+    );
+    assert_screen_contains(&machine, "ROOT1", "CD\\ should change to the root");
+    assert_screen_contains(&machine, "ROOT2", "CD.. should change to the parent");
+    assert_screen_lacks(
+        &machine,
+        "Bad command",
+        "CD\\ and CD.. should run the internal CD command",
+    );
+}
+
+#[test]
 fn batch_copy_to_bare_drive_uses_current_directory() {
     let machine = run_test_batch(
         b"@ECHO OFF\r\nMD SUB\r\nCD SUB\r\nCOPY \\TESTFILE.TXT A: > NUL\r\nIF EXIST A:TESTFILE.TXT ECHO COPIED HERE\r\nCD \\\r\n",
