@@ -381,8 +381,14 @@ impl BatchState {
         }
 
         // PAUSE
-        if upper == b"PAUSE" || upper.starts_with(b"PAUSE ") {
-            io.println(b"Press any key to continue . . .");
+        let parsed = super::parse_redirections(&effective_line);
+        let pause_upper = parsed.command.trim_ascii().to_ascii_uppercase();
+        if pause_upper == b"PAUSE" || pause_upper.starts_with(b"PAUSE ") {
+            const PAUSE_MESSAGE: &[u8] = b"Press any key to continue . . .\r\n";
+            match parsed.output_redirect {
+                Some(spec) => super::write_redirect_to_file(state, io, disk, PAUSE_MESSAGE, &spec),
+                None => io.print(PAUSE_MESSAGE),
+            }
             self.paused = true;
             return BatchStepResult::Continue;
         }
