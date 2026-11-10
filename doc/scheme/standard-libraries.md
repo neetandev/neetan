@@ -108,7 +108,7 @@ Runtime evaluation of Scheme datums in a specified environment.
 - `(environment list ...)` - build an environment from the named library import
   sets -> environment specifier.
 
-*In the neetan-auto sandbox `eval` is available but rarely needed inside tests.*
+_In the neetan-auto sandbox `eval` is available but rarely needed inside tests._
 
 ## (scheme file)
 
@@ -133,10 +133,10 @@ Opening files and running procedures over file ports.
 - `(with-output-to-file string thunk)` - call `thunk` with the current output
   port bound to the file -> result of `thunk`.
 
-*In the neetan-auto sandbox file procedures resolve paths beneath the script
+_In the neetan-auto sandbox file procedures resolve paths beneath the script
 directory (data and source) or the artifact root. Absolute paths, `..` escapes,
 and symlink escapes are rejected. Prefer the Neetan media and artifact APIs for
-real I/O.*
+real I/O._
 
 ## (scheme inexact)
 
@@ -187,7 +187,7 @@ Loading and evaluating source files.
 - `(load string)` / `(load string environment)` - read and evaluate the source
   file, optionally in the given environment.
 
-*In the neetan-auto sandbox `load` resolves the file under the script directory.*
+_In the neetan-auto sandbox `load` resolves the file under the script directory._
 
 ## (scheme process-context)
 
@@ -207,10 +207,10 @@ Access to the process command line, environment, and exit status.
 - `(get-environment-variables)` - all environment variables -> alist of
   name/value string pairs.
 
-*In the neetan-auto sandbox `command-line` is backed by the script arguments
+_In the neetan-auto sandbox `command-line` is backed by the script arguments
 passed after `--`. `get-environment-variable` and `get-environment-variables`
 work, and `exit`/`emergency-exit` work as well, but `exit` produces an orderly
-executor outcome rather than tearing down the host process.*
+executor outcome rather than tearing down the host process._
 
 ## (scheme read)
 
@@ -223,7 +223,7 @@ Reading external datum representations.
 - `(read)` / `(read port)` - read one datum from the current input port or
   `port` -> datum or the end-of-file object.
 
-*In the neetan-auto sandbox `read` is available but rarely needed inside tests.*
+_In the neetan-auto sandbox `read` is available but rarely needed inside tests._
 
 ## (scheme repl)
 
@@ -236,8 +236,8 @@ Access to the interactive top-level environment.
 - `(interaction-environment)` - the mutable interaction environment
   -> environment specifier.
 
-*In the neetan-auto sandbox `interaction-environment` is available but rarely
-needed inside tests.*
+_In the neetan-auto sandbox `interaction-environment` is available but rarely
+needed inside tests._
 
 ## (scheme time)
 
@@ -251,8 +251,8 @@ Access to the system clock and a monotonic tick counter.
 - `(current-second)` - current time in TAI seconds -> inexact real.
 - `(jiffies-per-second)` - number of jiffies in one second -> integer.
 
-*In the neetan-auto sandbox `current-second` and `current-jiffy` come from the
-fixed deterministic clock, not wall time, so tests stay reproducible.*
+_In the neetan-auto sandbox `current-second` and `current-jiffy` come from the
+fixed deterministic clock, not wall time, so tests stay reproducible._
 
 ## (scheme write)
 

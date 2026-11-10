@@ -4,7 +4,7 @@ Select the MSX family with `--machine` set to `MSX`, `MSX2`, or `MSX2PLUS`.
 All three are single-Z80 machines running at the fixed Japanese NTSC clock.
 
 | Machine | `--machine` | Model         | CPU / Clock   | Main RAM | VRAM    | Video   | Sound                   | Drives |
-|---------|-------------|---------------|---------------|----------|---------|---------|-------------------------|--------|
+| ------- | ----------- | ------------- | ------------- | -------- | ------- | ------- | ----------------------- | ------ |
 | MSX     | `MSX`       | Sony HB-201   | Z80 ~3.58 MHz | 64 KiB   | 16 KiB  | TMS9118 | YM2149 + Y8950          | None   |
 | MSX2    | `MSX2`      | Sony HB-F1XD  | Z80 ~3.58 MHz | 512 KiB  | 128 KiB | V9938   | YM2149 + Y8950          | 1      |
 | MSX2+   | `MSX2PLUS`  | Sony HB-F1XDJ | Z80 ~3.58 MHz | 512 KiB  | 128 KiB | V9958   | YM2149 + YM2413 + Y8950 | 1      |
@@ -30,7 +30,7 @@ To use the mouse, capture the pointer with `Right Ctrl + M` (see
 ## Platform options
 
 | Option               | Description                                | Default |
-|----------------------|--------------------------------------------|---------|
+| -------------------- | ------------------------------------------ | ------- |
 | `--msx-roms <PATH>`  | Directory with the MSX ROM sets (required) | -       |
 | `--cartridge <PATH>` | One cartridge ROM image                    | -       |
 | `--cassette <PATH>`  | Cassette image (`.cas`)                    | -       |
@@ -73,7 +73,7 @@ firmware comes from the MAME software list item `msx1_cart:fsca1` or from the
 openMSX system ROM pack:
 
 | Target | ROM sources                  |
-|--------|------------------------------|
+| ------ | ---------------------------- |
 | MSX    | `hb201`, `msx1_cart:fsca1`   |
 | MSX2   | `hbf1xd`, `msx1_cart:fsca1`  |
 | MSX2+  | `hbf1xdj`, `msx1_cart:fsca1` |

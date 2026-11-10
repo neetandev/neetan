@@ -15,9 +15,9 @@ Like the PC-8801MC, it has no HLE firmware and requires a real ROM set (see
 
 ## Platform options
 
-| Option                  | Description                                       | Default |
-|-------------------------|---------------------------------------------------|---------|
-| `--pc88va-roms <PATH>`  | Directory with the PC-88VA2 ROM set (required)    | -       |
+| Option                 | Description                                    | Default |
+| ---------------------- | ---------------------------------------------- | ------- |
+| `--pc88va-roms <PATH>` | Directory with the PC-88VA2 ROM set (required) | -       |
 
 ## ROM set
 

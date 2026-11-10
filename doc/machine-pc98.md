@@ -5,7 +5,7 @@ support all 16-bit era DOS games and emulates them accurately for 7 idealized
 machine targets:
 
 | Machine   | `--machine` | CPU      | CPU Speed  | FPU (x87) | Extended RAM | Graphics | Interface | CD-ROM |
-|-----------|-------------|----------|------------|-----------|--------------|----------|-----------|--------|
+| --------- | ----------- | -------- | ---------- | --------- | ------------ | -------- | --------- | ------ |
 | PC-9801F  | `PC9801F`   | 8086     | 5 / 8 MHz  | No        | None         | GDC      | SASI      | No     |
 | PC-9801VM | `PC9801VM`  | V30      | 8 / 10 MHz | No        | None         | GRCG     | SASI      | No     |
 | PC-9801VX | `PC9801VX`  | 80286    | 8 / 10 MHz | No        | 4 MiB        | EGC      | SASI      | No     |
@@ -30,15 +30,15 @@ games that used the PC-98's N88 (86) BASIC ROM.
 
 We support the following sound cards via `--soundboard`:
 
-* PC beeper
-* PC-9801-14 Music Generator (TMS3631 8-channel synth)
-* PC-9801-26k
-* PC-9801-86
-* PC-9801-86 + PC-9801-26k combo
-* Sound Blaster 16
-* Sound Blaster 16 + PC-9801-26k combo
-* Roland MT-32 using the MPU-PC98II interface
-* Roland SC-55 using the MPU-PC98II interface
+- PC beeper
+- PC-9801-14 Music Generator (TMS3631 8-channel synth)
+- PC-9801-26k
+- PC-9801-86
+- PC-9801-86 + PC-9801-26k combo
+- Sound Blaster 16
+- Sound Blaster 16 + PC-9801-26k combo
+- Roland MT-32 using the MPU-PC98II interface
+- Roland SC-55 using the MPU-PC98II interface
 
 The MT-32 and SC-55 modules are configured separately via `--midi`; see
 [MIDI sound modules](#midi-sound-modules).
@@ -46,7 +46,7 @@ The MT-32 and SC-55 modules are configured separately via `--midi`; see
 ## Platform options
 
 | Option                       | Description                                                           | Default  |
-|------------------------------|-----------------------------------------------------------------------|----------|
+| ---------------------------- | --------------------------------------------------------------------- | -------- |
 | `--soundboard <TYPE>`        | Sound board: `none`, `14`, `26k`, `86`, `86+26k`, `sb16`, `sb16+26k`  | `86+26k` |
 | `--adpcm-ram [on\|off]`      | ADPCM RAM option for the PC-9801-86                                   | `on`     |
 | `--ems [on\|off]`            | Enable EMS expanded memory                                            | `on`     |
@@ -92,8 +92,8 @@ available from the manufacturer:
 The PC-98 reaches a MIDI sound module through the emulated MPU-PC98II interface (a
 C-Bus MPU-401). Two modules are supported:
 
-* Roland MT-32 - using a Rust port of [munt](https://github.com/munt/munt)
-* Roland SC-55 - using a Rust port of [Nuked-SC55](https://github.com/nukeykt/Nuked-SC55)
+- Roland MT-32 - using a Rust port of [munt](https://github.com/munt/munt)
+- Roland SC-55 - using a Rust port of [Nuked-SC55](https://github.com/nukeykt/Nuked-SC55)
 
 Both require external ROM files. Set the device and point at the ROM directory:
 

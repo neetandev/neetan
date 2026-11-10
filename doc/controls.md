@@ -6,7 +6,7 @@ Right Ctrl is the shortcut modifier of the emulator. The emulated machine uses
 Left Ctrl.
 
 | Key                | Action                                                 |
-|--------------------|--------------------------------------------------------|
+| ------------------ | ------------------------------------------------------ |
 | Right Ctrl + M     | Toggle mouse capture                                   |
 | Right Ctrl + Esc   | Quit the emulator. A game of the manager returns to it |
 | Right Ctrl + Enter | Toggle fullscreen                                      |

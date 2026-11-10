@@ -3,7 +3,7 @@
 ## Floppy disk image formats
 
 | Format  | Extensions                     | Description                                         |
-|---------|--------------------------------|-----------------------------------------------------|
+| ------- | ------------------------------ | --------------------------------------------------- |
 | D88     | `.d88`, `.d98`, `.88d`, `.98d` | Standard PC-98 disk image with per-sector metadata  |
 | HDM     | `.hdm`                         | Headerless raw sector image (2HD only)              |
 | NFD     | `.nfd`                         | T98Next format with per-sector metadata             |
@@ -24,7 +24,7 @@ source file for all formats.
 CD-ROM discs apply to the PC-9821, PC-8801, PC/AT, FM Towns, and X68000 SUPER/XVI targets.
 
 | Format  | Extensions | Description                                                                                          |
-|---------|------------|------------------------------------------------------------------------------------------------------|
+| ------- | ---------- | ---------------------------------------------------------------------------------------------------- |
 | CUE/BIN | `.cue`     | CUE sheet referencing a raw BIN image                                                                |
 | CloneCD | `.ccd`     | CloneCD control file with sibling `.img` (raw 2352-byte sectors) and optional `.sub` subchannel data |
 | ISO     | `.iso`     | Single data track of 2048-byte or raw 2352-byte sectors                                              |
@@ -76,7 +76,7 @@ produces a headerless image: `.xdf` or `.2hd` for `2hd` (X68000), `.img` or `.im
 is unformatted. Format it in the emulated system before `copy` writes to it.
 
 | Option          | Description                                                                             | Default |
-|-----------------|-----------------------------------------------------------------------------------------|---------|
+| --------------- | --------------------------------------------------------------------------------------- | ------- |
 | `--type <TYPE>` | `2hd` (1232 KB), `2hd144` (1440 KB), `2dd` (640 KB), `2dd720` (720 KB) or `2d` (320 KB) | `2hd`   |
 
 ### create-hdd
@@ -87,7 +87,7 @@ for the headerless X68000 types, and a `.hdd` path for the PC/AT flat images.
 `--type` is required.
 
 | Interface   | `--type` values                                                |
-|-------------|----------------------------------------------------------------|
+| ----------- | -------------------------------------------------------------- |
 | SASI        | `sasi5`, `sasi10`, `sasi15`, `sasi20`, `sasi30`, `sasi40`      |
 | IDE         | `ide40`, `ide80`, `ide120`, `ide200`, `ide500`                 |
 | SCSI        | `scsi20`, `scsi40`, `scsi100`, `scsi200`, `scsi340`, `scsi540` |

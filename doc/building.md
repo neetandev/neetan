@@ -2,10 +2,10 @@
 
 ## Requirements
 
-* [Rust 1.97](https://rustup.rs/)
-* [SDL3](https://github.com/libsdl-org/SDL) (see the
+- [Rust 1.97](https://rustup.rs/)
+- [SDL3](https://github.com/libsdl-org/SDL) (see the
   [sdl3_sys description](https://docs.rs/sdl3-sys/latest/sdl3_sys/#usage))
-* Linux: the [mold linker](https://github.com/rui314/mold)
+- Linux: the [mold linker](https://github.com/rui314/mold)
 
 Build a release binary with:
 
@@ -31,7 +31,7 @@ Every machine family and both frontends are selectable at build time. All of the
 on by default. A plain `cargo build` produces the full emulator.
 
 | Feature        | Builds                                              |
-|----------------|-----------------------------------------------------|
+| -------------- | --------------------------------------------------- |
 | `gui`          | The `neetan` binary and its SDL3 frontend           |
 | `auto`         | The `neetan-auto` binary and its Scheme interpreter |
 | `all-machines` | All ten machine families                            |
@@ -62,7 +62,7 @@ by default. Both use a copyleft licenses and change the license of the resulting
 binary:
 
 | Build configuration       | Binary license   |
-|---------------------------|------------------|
+| ------------------------- | ---------------- |
 | Without `mt32` and `sc55` | BSD 3-Clause     |
 | `mt32` enabled            | LGPL 2.1         |
 | `sc55` enabled            | GPL 2.0 or later |

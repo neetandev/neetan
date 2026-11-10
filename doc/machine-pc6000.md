@@ -4,7 +4,7 @@ Select the PC-6000 family with `--machine` set to one of `PC6001`, `PC6001MK2`,
 `PC6601`, `PC6001MK2SR` or `PC6601SR`. All five are single-Z80 machines:
 
 | Machine       | `--machine`   | CPU / Clock   | RAM    | Sound      | Voice   | Built-in FDD |
-|---------------|---------------|---------------|--------|------------|---------|--------------|
+| ------------- | ------------- | ------------- | ------ | ---------- | ------- | ------------ |
 | PC-6001       | `PC6001`      | Z80 ~4 MHz    | 16 KiB | AY-3-8910  | No      | No           |
 | PC-6001mkII   | `PC6001MK2`   | Z80 ~4 MHz    | 64 KiB | AY-3-8910  | uPD7752 | No           |
 | PC-6601       | `PC6601`      | Z80 ~4 MHz    | 64 KiB | AY-3-8910  | uPD7752 | 5.25"        |
@@ -25,7 +25,7 @@ a real ROM set (see [ROM set](#rom-set)).
 ## Platform options
 
 | Option                 | Description                                   | Default |
-|------------------------|-----------------------------------------------|---------|
+| ---------------------- | --------------------------------------------- | ------- |
 | `--pc6000-roms <PATH>` | Directory with the PC-6000 ROM set (required) | -       |
 | `--cartridge <PATH>`   | Cartridge ROM image to insert                 | -       |
 | `--cassette <PATH>`    | Cassette tape image (`.cas`, `.p6`, `.p6t`)   | -       |

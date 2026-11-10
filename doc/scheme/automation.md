@@ -195,12 +195,12 @@ See the joystick-control table in the API index for the `control` vocabulary.
   `HDF` for the X68000 sizes and `HDD` for the PC/AT sizes. A floppy takes the
   container of the first blank floppy image of the model:
 
-  | Family                                              | Floppy format |
-  |-----------------------------------------------------|---------------|
-  | PC-98, PC-88, PC-88VA, PC-6000, FM Towns, X1, FM-7  | `D88`         |
-  | MSX                                                 | `DSK`         |
-  | X68000                                              | `XDF`         |
-  | PC/AT                                               | `IMG`         |
+  | Family                                             | Floppy format |
+  | -------------------------------------------------- | ------------- |
+  | PC-98, PC-88, PC-88VA, PC-6000, FM Towns, X1, FM-7 | `D88`         |
+  | MSX                                                | `DSK`         |
+  | X68000                                             | `XDF`         |
+  | PC/AT                                              | `IMG`         |
 
 - `(media-format! machine type slot)` / `(media-format! machine type slot table)`
   -> `#t`. Formats the floppy or hard disk in `slot` in place. The guest sees
@@ -217,8 +217,8 @@ See the joystick-control table in the API index for the `control` vocabulary.
     the other machine families raise `neetan/unsupported`.
 
   | Family   | Floppy geometries                                              |
-  |----------|----------------------------------------------------------------|
-  | PC-98    | 2HD 1.2 MB (`\|2hd\|`), 2DD 640 KB (8 sectors of 512 bytes)     |
+  | -------- | -------------------------------------------------------------- |
+  | PC-98    | 2HD 1.2 MB (`\|2hd\|`), 2DD 640 KB (8 sectors of 512 bytes)    |
   | FM Towns | 2HD 1.2 MB (`\|2hd\|`), 2HC 1.2 MB, 2HD 1.44 MB (`\|2hd144\|`) |
   | PC/AT    | 2HD 1.44 MB (`\|2hd144\|`), 2DD 720 KB (`\|2dd720\|`)          |
   | MSX      | 2DD 720 KB (`\|2dd720\|`)                                      |

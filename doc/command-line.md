@@ -33,19 +33,19 @@ These options apply to every family or to several families. The `System` column
 names the families that read an option. The other families ignore it. Options of a
 single family are listed on the page of that family:
 
-* [NEC PC-9801 / PC-9821](machine-pc98.md#platform-options)
-* [NEC PC-88VA2](machine-pc88va.md#platform-options)
-* [NEC PC-8001 / PC-8801](machine-pc88.md#platform-options)
-* [NEC PC-6001 / PC-6601](machine-pc6000.md#platform-options)
-* [MSX / MSX2 / MSX2+](machine-msx.md#platform-options)
-* [Fujitsu FM Towns](machine-towns.md#platform-options)
-* [Fujitsu FM-7 / FM-77AV](machine-fm7.md#platform-options)
-* [Sharp X68000](machine-x68k.md#platform-options)
-* [Sharp X1](machine-x1.md#platform-options)
-* [IBM PC/AT (DOS/V)](machine-at.md#platform-options)
+- [NEC PC-9801 / PC-9821](machine-pc98.md#platform-options)
+- [NEC PC-88VA2](machine-pc88va.md#platform-options)
+- [NEC PC-8001 / PC-8801](machine-pc88.md#platform-options)
+- [NEC PC-6001 / PC-6601](machine-pc6000.md#platform-options)
+- [MSX / MSX2 / MSX2+](machine-msx.md#platform-options)
+- [Fujitsu FM Towns](machine-towns.md#platform-options)
+- [Fujitsu FM-7 / FM-77AV](machine-fm7.md#platform-options)
+- [Sharp X68000](machine-x68k.md#platform-options)
+- [Sharp X1](machine-x1.md#platform-options)
+- [IBM PC/AT (DOS/V)](machine-at.md#platform-options)
 
 | Option                      | System                                                            | Description                                                                     | Default                      |
-|-----------------------------|-------------------------------------------------------------------|---------------------------------------------------------------------------------|------------------------------|
+| --------------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------- | ---------------------------- |
 | `-c, --config <PATH>`       | All                                                               | Load a game file (repeatable)                                                   | -                            |
 | `--settings <PATH>`         | All                                                               | Load this settings file. Its folder is the root                                 | discovered                   |
 | `--config-folder <PATH>`    | All                                                               | Folder of the system defaults and the game files                                | `config`                     |
@@ -88,7 +88,7 @@ folder of its system below `--roms-folder`. See [ROMs](roms.md) for the files of
 each set.
 
 | Option                 | System   | Default       |
-|------------------------|----------|---------------|
+| ---------------------- | -------- | ------------- |
 | `--pc98-roms <PATH>`   | PC-98    | `roms/pc98`   |
 | `--pc88-roms <PATH>`   | PC-88    | `roms/pc88`   |
 | `--pc88va-roms <PATH>` | PC-88VA  | `roms/pc88va` |
@@ -107,7 +107,7 @@ The PC-98, the FM Towns and the PC/AT run without a ROM set on the HLE BIOS.
 The `--machine <TYPE>` values are:
 
 | System   | Values                                                                            |
-|----------|-----------------------------------------------------------------------------------|
+| -------- | --------------------------------------------------------------------------------- |
 | PC-98    | `PC9801F`, `PC9801VM`, `PC9801VX`, `PC9801RS`, `PC9801RA`, `PC9821AS`, `PC9821AP` |
 | PC-88    | `PC8801MC`                                                                        |
 | PC-88VA  | `PC88VA2`                                                                         |
@@ -125,7 +125,7 @@ without a `machine` key selects its machine.
 ## Commands
 
 | Command                           | Description                                               |
-|-----------------------------------|-----------------------------------------------------------|
+| --------------------------------- | --------------------------------------------------------- |
 | `create-fdd <PATH> [OPTIONS]`     | Create an empty floppy disk image                         |
 | `create-hdd <PATH> --type <TYPE>` | Create an empty hard disk image                           |
 | `convert-hdd <INPUT> <OUTPUT>`    | Convert a hard disk image between SASI and IDE formats    |

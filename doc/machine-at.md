@@ -6,7 +6,7 @@ correct for the DOS/V era (roughly 1990 to the release of Windows 95). They
 differ only in clock:
 
 | Machine      | `--machine` | CPU     | Bus / core clock | RAM    | VGA                    |
-|--------------|-------------|---------|------------------|--------|------------------------|
+| ------------ | ----------- | ------- | ---------------- | ------ | ---------------------- |
 | AT 486DX2-50 | `AT486DX50` | i486DX2 | 25 MHz / 50 MHz  | 16 MiB | Tseng ET4000AX (1 MiB) |
 | AT 486DX2-66 | `AT486DX66` | i486DX2 | 33 MHz / 66 MHz  | 16 MiB | Tseng ET4000AX (1 MiB) |
 
@@ -27,7 +27,7 @@ floppy images (IBM PC DOS J5.0x/V through PC DOS 7.0/V, and MS-DOS 5.0/V and
 ## Installed hardware
 
 | Card / device           | Notes                                                    |
-|-------------------------|----------------------------------------------------------|
+| ----------------------- | -------------------------------------------------------- |
 | Tseng ET4000AX SVGA     | 1 MiB, full VGA plus the Tseng extensions and SVGA modes |
 | Sound Blaster 16        | CT1741 DSP, CT1745 mixer, YMF262 OPL3, at 0x220 / 0x388  |
 | MPU-401 (0x330)         | Intelligent and UART MIDI, IRQ 9                         |
@@ -40,7 +40,7 @@ floppy images (IBM PC DOS J5.0x/V through PC DOS 7.0/V, and MS-DOS 5.0/V and
 ## Platform options
 
 | Option             | Description                                                       | Default  |
-|--------------------|-------------------------------------------------------------------|----------|
+| ------------------ | ----------------------------------------------------------------- | -------- |
 | `--at-roms <PATH>` | Directory with the `ct486` and `et4000` ROM sets, by content hash | -        |
 | `--bios [on\|off]` | Boot the real BIOS from `--at-roms` instead of the HLE BIOS       | HLE BIOS |
 
@@ -55,14 +55,14 @@ Floppy images attach with `--fdd1` / `--fdd2`, hard disks with `--hdd1` /
 Floppy images are raw sector images (`.img`) whose geometry is detected from the
 file size, plus the existing container formats where their geometry matches:
 
-| Format                     | Geometry            | Size (bytes) |
-|----------------------------|---------------------|--------------|
-| 5.25" 2D (360 KB)          | 40x2x9x512          | 368,640      |
-| 3.5" 2DD (720 KB)          | 80x2x9x512          | 737,280      |
-| 5.25" 2HD (1.2 MB)         | 80x2x15x512         | 1,228,800    |
-| 3.5" 2HD 3-mode (1.23 MB)  | 77x2x8x1024         | 1,261,568    |
-| 3.5" 2HD (1.44 MB)         | 80x2x18x512         | 1,474,560    |
-| 3.5" 2HD IBM XDF (1.84 MB) | mixed sectors       | 1,884,160    |
+| Format                     | Geometry      | Size (bytes) |
+| -------------------------- | ------------- | ------------ |
+| 5.25" 2D (360 KB)          | 40x2x9x512    | 368,640      |
+| 3.5" 2DD (720 KB)          | 80x2x9x512    | 737,280      |
+| 5.25" 2HD (1.2 MB)         | 80x2x15x512   | 1,228,800    |
+| 3.5" 2HD 3-mode (1.23 MB)  | 77x2x8x1024   | 1,261,568    |
+| 3.5" 2HD (1.44 MB)         | 80x2x18x512   | 1,474,560    |
+| 3.5" 2HD IBM XDF (1.84 MB) | mixed sectors | 1,884,160    |
 
 The 3-mode 1.23 MB format is the PC-98-style geometry that Japanese DOS/V machines
 read through their 3-mode drives. IBM XDF is the high-capacity distribution format
@@ -84,8 +84,8 @@ guest uses a real ATAPI driver plus the real MSCDEX shipped with DOS/V.
 
 The MPU-401 drives an external MT-32 or SC-55, exactly as on the other machines:
 
-* Roland MT-32 - using a Rust port of [munt](https://github.com/munt/munt)
-* Roland SC-55 - using a Rust port of [Nuked-SC55](https://github.com/nukeykt/Nuked-SC55)
+- Roland MT-32 - using a Rust port of [munt](https://github.com/munt/munt)
+- Roland SC-55 - using a Rust port of [Nuked-SC55](https://github.com/nukeykt/Nuked-SC55)
 
 Both require external ROM files. Set the device and point at the ROM directory:
 

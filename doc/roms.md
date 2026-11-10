@@ -42,20 +42,20 @@ There are two exceptions where file names are used. Every Roland SC-55 set is ma
 by file name (see that section). The Roland MT-32 loader reads only files with the
 `.rom` extension (see that section).
 
-| Machine            | Option           | Default folder | Required?                        |
-|--------------------|------------------|----------------|----------------------------------|
-| PC-9801 / PC-9821  | `--pc98-roms`    | `roms/pc98`    | Optional (HLE BIOS by default)   |
-| PC-8001 / PC-8801  | `--pc88-roms`    | `roms/pc88`    | Required                         |
-| PC-88VA2           | `--pc88va-roms`  | `roms/pc88va`  | Required                         |
-| PC-6001 / PC-6601  | `--pc6000-roms`  | `roms/pc6000`  | Required                         |
-| FM Towns           | `--towns-roms`   | `roms/towns`   | Optional (HLE BIOS by default)   |
-| Sharp X68000       | `--x68k-roms`    | `roms/x68k`    | Required                         |
-| MSX                | `--msx-roms`     | `roms/msx`     | Required                         |
-| Sharp X1           | `--x1-roms`      | `roms/x1`      | Required                         |
-| FM-7 / FM-77AV     | `--fm7-roms`     | `roms/fm7`     | Required                         |
-| PC/AT (DOS/V)      | `--at-roms`      | `roms/at`      | Optional (HLE BIOS by default)   |
-| Roland MT-32       | `--mt32-roms`    | `roms/mt32`    | Required for `--midi mt32`       |
-| Roland SC-55       | `--sc55-roms`    | `roms/sc55`    | Required for `--midi sc55`       |
+| Machine           | Option          | Default folder | Required?                      |
+| ----------------- | --------------- | -------------- | ------------------------------ |
+| PC-9801 / PC-9821 | `--pc98-roms`   | `roms/pc98`    | Optional (HLE BIOS by default) |
+| PC-8001 / PC-8801 | `--pc88-roms`   | `roms/pc88`    | Required                       |
+| PC-88VA2          | `--pc88va-roms` | `roms/pc88va`  | Required                       |
+| PC-6001 / PC-6601 | `--pc6000-roms` | `roms/pc6000`  | Required                       |
+| FM Towns          | `--towns-roms`  | `roms/towns`   | Optional (HLE BIOS by default) |
+| Sharp X68000      | `--x68k-roms`   | `roms/x68k`    | Required                       |
+| MSX               | `--msx-roms`    | `roms/msx`     | Required                       |
+| Sharp X1          | `--x1-roms`     | `roms/x1`      | Required                       |
+| FM-7 / FM-77AV    | `--fm7-roms`    | `roms/fm7`     | Required                       |
+| PC/AT (DOS/V)     | `--at-roms`     | `roms/at`      | Optional (HLE BIOS by default) |
+| Roland MT-32      | `--mt32-roms`   | `roms/mt32`    | Required for `--midi mt32`     |
+| Roland SC-55      | `--sc55-roms`   | `roms/sc55`    | Required for `--midi sc55`     |
 
 The derived folders of the PC-98, the FM Towns, the PC/AT, the MT-32 and the SC-55
 apply only when they exist. A missing derived folder of another system ends with an
@@ -68,7 +68,7 @@ MAME ROM collection matching your MAME version, then extract it into the directo
 for that machine.
 
 | Machine / model       | MAME set(s)                               | Notes                                                                               |
-|-----------------------|-------------------------------------------|-------------------------------------------------------------------------------------|
+| --------------------- | ----------------------------------------- | ----------------------------------------------------------------------------------- |
 | PC-9801F              | `pc9801f`                                 | BIOS assembled from `urm01-02`..`urm06-02`                                          |
 | PC-9801VM             | `pc9801vm`                                | BIOS assembled from the `cpu_board_*` chips                                         |
 | PC-9801VX             | `pc9801vx`                                | BIOS assembled from the four `..._yll0x` chips; ships the font ROM                  |
@@ -392,7 +392,7 @@ BIOS chips (assembled per model). Extract the model's MAME set into `--pc98-roms
 PC-9801F (MAME set `pc9801f`):
 
 | File           | Size   | BLAKE3                                                             |
-|----------------|--------|--------------------------------------------------------------------|
+| -------------- | ------ | ------------------------------------------------------------------ |
 | `urm01-02.bin` | 16 KiB | `cbac44179293aa4ad530c72fa19f2e3ac8278f3e6816a8691db82fa81d82e11c` |
 | `urm02-02.bin` | 16 KiB | `e2717e5f6145218f2ddfa53d57c51df4da117b3b97ce044f81e90032bda4db69` |
 | `urm03-02.bin` | 16 KiB | `a3ae6097b2203e5a5434dedb83f3eaeb9417551649e96af0e07cae1b8e8d4a7f` |
@@ -402,26 +402,26 @@ PC-9801F (MAME set `pc9801f`):
 
 PC-9801VM (MAME set `pc9801vm`):
 
-| File                          | Size   | BLAKE3                                                             |
-|-------------------------------|--------|--------------------------------------------------------------------|
-| `cpu_board_1a_23128e.bin`     | 16 KiB | `eb16e6050452c218497e6cf28591e8c049cca0a313bb5d9b8f30e2b22a58a939` |
-| `cpu_board_2a_d23c256ec.bin`  | 32 KiB | `f8b7cda3cf40c9feca6899cc1045cdd65cd85a90511560eace8028253e1ce1f3` |
-| `cpu_board_3a_23c256e.bin`    | 32 KiB | `13218482d54793a10a25ea712a5be362d1d490c568c3e0228939af3f2c244b9c` |
-| `cpu_board_4a_d23128ec.bin`   | 16 KiB | `00b3558c12b28dff9ab823354b289ad559c59d3695e80c1586f07e23890d45a6` |
+| File                         | Size   | BLAKE3                                                             |
+| ---------------------------- | ------ | ------------------------------------------------------------------ |
+| `cpu_board_1a_23128e.bin`    | 16 KiB | `eb16e6050452c218497e6cf28591e8c049cca0a313bb5d9b8f30e2b22a58a939` |
+| `cpu_board_2a_d23c256ec.bin` | 32 KiB | `f8b7cda3cf40c9feca6899cc1045cdd65cd85a90511560eace8028253e1ce1f3` |
+| `cpu_board_3a_23c256e.bin`   | 32 KiB | `13218482d54793a10a25ea712a5be362d1d490c568c3e0228939af3f2c244b9c` |
+| `cpu_board_4a_d23128ec.bin`  | 16 KiB | `00b3558c12b28dff9ab823354b289ad559c59d3695e80c1586f07e23890d45a6` |
 
 PC-9801VX (MAME set `pc9801vx`):
 
-| File                                       | Size   | BLAKE3                                                             |
-|--------------------------------------------|--------|--------------------------------------------------------------------|
-| `nec_d27c256d-15_cpu_extboard_yll01.bin`   | 32 KiB | `04de20aabdf46d943cd5148e4bbfdd7ba843fe19d8fec7afbaa48630f6887e52` |
-| `nec_d27c256d-15_cpu_extboard_yll02.bin`   | 32 KiB | `3de5476a72aadd3e32870f3525bc4fc945e941f8c3cfe81aeb0fd73c955294ee` |
-| `nec_d27c256d-15_cpu_extboard_yll03.bin`   | 32 KiB | `05e3220b53a61c9325ceb694629bddc20c593dbf2218ee78a9e5635e8a7bf5f6` |
-| `nec_d27c256d-15_cpu_extboard_yll04.bin`   | 32 KiB | `a0f6e1e87afa336c21648f972c96e20ea88dda792a1fc3d0acf26d8c50546158` |
+| File                                     | Size   | BLAKE3                                                             |
+| ---------------------------------------- | ------ | ------------------------------------------------------------------ |
+| `nec_d27c256d-15_cpu_extboard_yll01.bin` | 32 KiB | `04de20aabdf46d943cd5148e4bbfdd7ba843fe19d8fec7afbaa48630f6887e52` |
+| `nec_d27c256d-15_cpu_extboard_yll02.bin` | 32 KiB | `3de5476a72aadd3e32870f3525bc4fc945e941f8c3cfe81aeb0fd73c955294ee` |
+| `nec_d27c256d-15_cpu_extboard_yll03.bin` | 32 KiB | `05e3220b53a61c9325ceb694629bddc20c593dbf2218ee78a9e5635e8a7bf5f6` |
+| `nec_d27c256d-15_cpu_extboard_yll04.bin` | 32 KiB | `a0f6e1e87afa336c21648f972c96e20ea88dda792a1fc3d0acf26d8c50546158` |
 
 PC-9801RS / PC-9801RA (MAME set `pc9801rs`, shared by both models):
 
 | File          | Size   | BLAKE3                                                             |
-|---------------|--------|--------------------------------------------------------------------|
+| ------------- | ------ | ------------------------------------------------------------------ |
 | `itf_rs.rom`  | 32 KiB | `c1881b44dc07a7f20ceff00a24fe4467a933fd2c94e64213c9a8526d60e4d3d1` |
 | `bios_rs.rom` | 96 KiB | `ac5b46fbec4a5ac6b3185066d86af8e3d76cd1b66955301dad3cae8736b31f2d` |
 
@@ -432,7 +432,7 @@ Font ROM (V98 format, 282 KiB). Every model accepts any of these dumps. The `pc9
 and `pc9801vm` sets ship no font.
 
 | Dump          | Source     | BLAKE3                                                             |
-|---------------|------------|--------------------------------------------------------------------|
+| ------------- | ---------- | ------------------------------------------------------------------ |
 | `font_rs.rom` | `pc9801rs` | `4b6f751f34e633e072ded2a109c25ddb90ac70350792dc55914a4cefa4dbe005` |
 | `font_ux.rom` | `pc9801vx` | `3c1efa858b80fc11bb7482bdc5e15004dd9a015d7d22d48159cd43ed63f540dc` |
 | PC-9821As     | -          | `a567134a3d5c2a215b9573ee07b5204fff243631052e7a40be340e863aff8eef` |
@@ -442,7 +442,7 @@ and `pc9801vm` sets ship no font.
 Sound ROM of the PC-9801-26K board (present in every PC-98 set):
 
 | File        | Size   | BLAKE3                                                             |
-|-------------|--------|--------------------------------------------------------------------|
+| ----------- | ------ | ------------------------------------------------------------------ |
 | `sound.rom` | 16 KiB | `93816a6e42ed9a10135af634ed500e10b1d266e0b4158d3f8471910609255e24` |
 
 ## PC-8001 / PC-8801
@@ -453,7 +453,7 @@ The optional N80 boot-mode ROMs come from the `pc8001mk2` and `pc8001mk2sr` sets
 These ROMs are always required:
 
 | Slot       | Size    | Contents                         | BLAKE3                                                             |
-|------------|---------|----------------------------------|--------------------------------------------------------------------|
+| ---------- | ------- | -------------------------------- | ------------------------------------------------------------------ |
 | `n88`      | 32 KiB  | N88-BASIC main ROM               | `40457b507b82dd57cce0fcecf6bc65543a60bd46558ca947b0f69dd3658cdad8` |
 | `n88_ext0` | 8 KiB   | N88-BASIC extension bank 0       | `6a50a88231062ec871c65f63266fa7062a303ab870aed81c49f1f333f594a518` |
 | `n88_ext1` | 8 KiB   | N88-BASIC extension bank 1       | `d5583fcce4eabf078d17666a1fddefa6a0d8bdc7f56d4499d526818728777252` |
@@ -468,11 +468,11 @@ These ROMs are always required:
 
 These ROMs are required only when the matching boot mode is selected:
 
-| Slot         | Size   | Required by boot mode | MAME set       | BLAKE3                                                             |
-|--------------|--------|-----------------------|----------------|--------------------------------------------------------------------|
-| `n80_mkii`   | 32 KiB | `n80`                 | `pc8001mk2`    | `9e4ec9c53f4432a88583dccd04ae3186f4d7849f80ea7774ac1efbdb93c992f2` |
-| `n80_mkiisr` | 32 KiB | `n80sr`               | `pc8001mk2sr`  | `56406a79fd664a197c458cb3feeeb6994c34266a1e02728877b6ea5ef86e15ba` |
-| `n80sr`      | 40 KiB | `n80sr`               | `pc8001mk2sr`  | `7b81e27b831ad00f264170d1d98c645298fa688b07d5a9f0c19c1d6a73fe4273` |
+| Slot         | Size   | Required by boot mode | MAME set      | BLAKE3                                                             |
+| ------------ | ------ | --------------------- | ------------- | ------------------------------------------------------------------ |
+| `n80_mkii`   | 32 KiB | `n80`                 | `pc8001mk2`   | `9e4ec9c53f4432a88583dccd04ae3186f4d7849f80ea7774ac1efbdb93c992f2` |
+| `n80_mkiisr` | 32 KiB | `n80sr`               | `pc8001mk2sr` | `56406a79fd664a197c458cb3feeeb6994c34266a1e02728877b6ea5ef86e15ba` |
+| `n80sr`      | 40 KiB | `n80sr`               | `pc8001mk2sr` | `7b81e27b831ad00f264170d1d98c645298fa688b07d5a9f0c19c1d6a73fe4273` |
 
 ## PC-88VA2
 
@@ -482,7 +482,7 @@ The floppy sub-CPU ROM (`subsys`) comes from the separate MAME device set
 PC-88VA emulators name this file `VASUBSYS.ROM`. All slots are required:
 
 | Slot         | Size    | Contents                  | BLAKE3                                                             |
-|--------------|---------|---------------------------|--------------------------------------------------------------------|
+| ------------ | ------- | ------------------------- | ------------------------------------------------------------------ |
 | `rom00`      | 512 KiB | ROM0 low image (varom00)  | `bba5011412fb266b3c15ff08d2508716ba2ac54fec3aa172b59e441486807eab` |
 | `rom08`      | 128 KiB | ROM0 high image (varom08) | `4cdf3da9a1423e874f9618a8d8859107fa5e3d20a91f4dcf908e042763c41bbb` |
 | `rom1`       | 128 KiB | ROM1 image (varom1)       | `1239bf390d444ff205f70c700527cb50bc90107904050fa8713a415a17bf0e42` |
@@ -499,26 +499,26 @@ ROM (BASIC or, on the SR models, the system ROM) and its base character generato
 kanji, extended character generator, and voice ROMs are loaded when present. Several
 dumps are bit-identical across models, so a single file can satisfy more than one slot.
 
-| Slot          | Size   | Contents                          | Required for                            | BLAKE3                                                             |
-|---------------|--------|-----------------------------------|-----------------------------------------|--------------------------------------------------------------------|
-| `basic60`     | 16 KiB | PC-6001 BASIC                     | `PC6001`                                | `13bc0696487984f7836f094312b64fb0702dcb5ac3b941a79bd6f174e657697d` |
-| `basic62`     | 32 KiB | PC-6001mkII BASIC                 | `PC6001MK2`                             | `d951eae886dec98a063e5fb11e12b0385f5dd4617c0546fe7cf9fd77b17ae41c` |
-| `basic66`     | 32 KiB | PC-6601 BASIC                     | `PC6601`                                | `d9eaf3e5e6cb1f71db527e6eeadf7a1968f8a558234b74c6812198c588ae46d1` |
-| `basic68`     | 32 KiB | PC-6601SR mkII-compat BASIC       | `PC6601SR` (optional)                   | `c4901a2149f3c8e65d3db78bbf3776fc2d963f270152923ba920274d44a0224b` |
-| `system1`     | 64 KiB | SR system ROM, first half         | `PC6001MK2SR`, `PC6601SR`               | `6ca4e747c8b17307a77150441e5d8721d5c242fcc8b8ef35737d3f5edf6e2d74` |
-| `system2`     | 64 KiB | SR system ROM, second half        | `PC6001MK2SR`, `PC6601SR`               | `998a90c4bd0bf4ae4a600a0d94f3eca96c3b8db754311ce1c8029126dbcf0a9a` |
-| `subsys`      | 8 KiB  | SR sub / disk ROM                 | `PC6601SR` (optional)                   | `becb7c1502d41a9f160b651e142044610ffa172a8bbf47eaa11aa0086953a080` |
-| `cg60`        | 4 KiB  | PC-6001 base character generator  | `PC6001`                                | `f537afe76997ec4f8b377a29771f45c39414a25f7e071d2d38b143cdd8bee7bc` |
-| `cg62`        | 8 KiB  | PC-6001mkII base CG               | `PC6001MK2`                             | `581f6d2db80386732ed09706ad3b8961f8b77b7ea024e65cec37e56ad2adf07c` |
-| `cg66`        | 8 KiB  | PC-6601 base CG                   | `PC6601`                                | `63829a1c32924a77f85716f445c445ab7be178c4438cfd8cf6ffaff5731a0965` |
-| `cg68base`    | 8 KiB  | PC-6601SR base CG                 | `PC6001MK2SR`, `PC6601SR` (optional)    | `24e524d4938809a87720f98abfba71c8e9162d742c67a167d8b87566cc1d4258` |
-| `cgext`       | 8 KiB  | Extended CG (mkII / 6601)         | `PC6001MK2`, `PC6601` (optional)        | `ba0dd650539dd3fdbf63da36982b41bfda8f4c2ea0dcda2c1c2ac56427ee26ed` |
-| `cg68ext`     | 8 KiB  | PC-6601SR extended CG             | `PC6001MK2SR`, `PC6601SR` (optional)    | `067c732525260eadfcfecbb9fc4ef9535c0c2f77caa049453bf2ab992ec3fca3` |
-| `cg68`        | 16 KiB | SR native CG                      | `PC6001MK2SR`, `PC6601SR`               | `b49b056ca06bd0c2253e6db0806969787a6fca4fc78228728422c9cf63f1e472` |
-| `kanji`       | 32 KiB | Kanji font ROM                    | mkII and later (optional)               | `f0af53e54b1b09b229d03efc9f65e65597a0c4f6aa9e3e7c0e553274ccd481fb` |
-| `voice62`     | 16 KiB | uPD7752 voice data (PC-6001mkII)  | `PC6001MK2` (optional)                  | `633e73f55479bee65ed344d818a35b15ab109f188ad5c09826c066d6ec2596c5` |
-| `voice66`     | 16 KiB | uPD7752 voice data (PC-6601)      | `PC6601` (optional)                     | `88a747147725fd618668e07744b05f34288b4454698d6182c4db2e680c7b76d0` |
-| `voice68`     | 16 KiB | uPD7752 voice data (SR models)    | `PC6001MK2SR`, `PC6601SR` (optional)    | `8ed4a9a3e9ae2e4aa0fccc0f170081f3f61c09e293812b7973a7ab9c23e22b68` |
+| Slot       | Size   | Contents                         | Required for                         | BLAKE3                                                             |
+| ---------- | ------ | -------------------------------- | ------------------------------------ | ------------------------------------------------------------------ |
+| `basic60`  | 16 KiB | PC-6001 BASIC                    | `PC6001`                             | `13bc0696487984f7836f094312b64fb0702dcb5ac3b941a79bd6f174e657697d` |
+| `basic62`  | 32 KiB | PC-6001mkII BASIC                | `PC6001MK2`                          | `d951eae886dec98a063e5fb11e12b0385f5dd4617c0546fe7cf9fd77b17ae41c` |
+| `basic66`  | 32 KiB | PC-6601 BASIC                    | `PC6601`                             | `d9eaf3e5e6cb1f71db527e6eeadf7a1968f8a558234b74c6812198c588ae46d1` |
+| `basic68`  | 32 KiB | PC-6601SR mkII-compat BASIC      | `PC6601SR` (optional)                | `c4901a2149f3c8e65d3db78bbf3776fc2d963f270152923ba920274d44a0224b` |
+| `system1`  | 64 KiB | SR system ROM, first half        | `PC6001MK2SR`, `PC6601SR`            | `6ca4e747c8b17307a77150441e5d8721d5c242fcc8b8ef35737d3f5edf6e2d74` |
+| `system2`  | 64 KiB | SR system ROM, second half       | `PC6001MK2SR`, `PC6601SR`            | `998a90c4bd0bf4ae4a600a0d94f3eca96c3b8db754311ce1c8029126dbcf0a9a` |
+| `subsys`   | 8 KiB  | SR sub / disk ROM                | `PC6601SR` (optional)                | `becb7c1502d41a9f160b651e142044610ffa172a8bbf47eaa11aa0086953a080` |
+| `cg60`     | 4 KiB  | PC-6001 base character generator | `PC6001`                             | `f537afe76997ec4f8b377a29771f45c39414a25f7e071d2d38b143cdd8bee7bc` |
+| `cg62`     | 8 KiB  | PC-6001mkII base CG              | `PC6001MK2`                          | `581f6d2db80386732ed09706ad3b8961f8b77b7ea024e65cec37e56ad2adf07c` |
+| `cg66`     | 8 KiB  | PC-6601 base CG                  | `PC6601`                             | `63829a1c32924a77f85716f445c445ab7be178c4438cfd8cf6ffaff5731a0965` |
+| `cg68base` | 8 KiB  | PC-6601SR base CG                | `PC6001MK2SR`, `PC6601SR` (optional) | `24e524d4938809a87720f98abfba71c8e9162d742c67a167d8b87566cc1d4258` |
+| `cgext`    | 8 KiB  | Extended CG (mkII / 6601)        | `PC6001MK2`, `PC6601` (optional)     | `ba0dd650539dd3fdbf63da36982b41bfda8f4c2ea0dcda2c1c2ac56427ee26ed` |
+| `cg68ext`  | 8 KiB  | PC-6601SR extended CG            | `PC6001MK2SR`, `PC6601SR` (optional) | `067c732525260eadfcfecbb9fc4ef9535c0c2f77caa049453bf2ab992ec3fca3` |
+| `cg68`     | 16 KiB | SR native CG                     | `PC6001MK2SR`, `PC6601SR`            | `b49b056ca06bd0c2253e6db0806969787a6fca4fc78228728422c9cf63f1e472` |
+| `kanji`    | 32 KiB | Kanji font ROM                   | mkII and later (optional)            | `f0af53e54b1b09b229d03efc9f65e65597a0c4f6aa9e3e7c0e553274ccd481fb` |
+| `voice62`  | 16 KiB | uPD7752 voice data (PC-6001mkII) | `PC6001MK2` (optional)               | `633e73f55479bee65ed344d818a35b15ab109f188ad5c09826c066d6ec2596c5` |
+| `voice66`  | 16 KiB | uPD7752 voice data (PC-6601)     | `PC6601` (optional)                  | `88a747147725fd618668e07744b05f34288b4454698d6182c4db2e680c7b76d0` |
+| `voice68`  | 16 KiB | uPD7752 voice data (SR models)   | `PC6001MK2SR`, `PC6601SR` (optional) | `8ed4a9a3e9ae2e4aa0fccc0f170081f3f61c09e293812b7973a7ab9c23e22b68` |
 
 ## FM Towns
 
@@ -532,14 +532,14 @@ The merged set is the packed 2 MiB MAME BIOS image plus the 32-byte serial ROM (
 is what the `fmtownsmx` set contains):
 
 | File                  | Size     | BLAKE3                                                             |
-|-----------------------|----------|--------------------------------------------------------------------|
+| --------------------- | -------- | ------------------------------------------------------------------ |
 | `fmtownsiimxbios.m79` | 2 MiB    | `f5c2cc7c2876a4b30f320fe6fb721bd32f3ba43bbb9b0b42c398fa6b59d72ce8` |
 | `mytownsmx.rom`       | 32 bytes | `d5dc70e34d072889c28bed51ef3ccaac7f6f3fdd9e448d89297847247a901538` |
 
 The split set provides the five images individually plus the serial ROM:
 
 | File            | Size     | BLAKE3                                                             |
-|-----------------|----------|--------------------------------------------------------------------|
+| --------------- | -------- | ------------------------------------------------------------------ |
 | `FMT_SYS.ROM`   | 256 KiB  | `fba6e75d9727b6a192bf6b3e351f6ed7ae118162a0f71fea9c825a6b5f143022` |
 | `FMT_DOS.ROM`   | 512 KiB  | `7f07a3c51743b51b02f347251057cfd1bfff9ff718b6c0fd3540e0da77c8a4da` |
 | `FMT_FNT.ROM`   | 256 KiB  | `0c365fb76a886c9f426893949d73390456ed6fc6c83f3109f699b0ded8b1ef24` |
@@ -558,7 +558,7 @@ by the chosen model. A directory may contain additional IPL variants; they are
 ignored rather than substituted for the requested model.
 
 | Slot                                      | Size    | Required for  | BLAKE3                                                             |
-|-------------------------------------------|---------|---------------|--------------------------------------------------------------------|
+| ----------------------------------------- | ------- | ------------- | ------------------------------------------------------------------ |
 | `cgrom`                                   | 768 KiB | All models    | `095cfc5c21d704cce7340982b717dadc9fa20bfb86637ce9a594af88c87dc6b8` |
 | IPL even half (`rh-ix0897cezz.ic12`)      | 64 KiB  | `X68000`      | `50f6e84f88feb32e1cf2421ea6376fed44851c269f8bd48706c2e8061ceba313` |
 | IPL odd half (`rh-ix0898cezz.ic11`)       | 64 KiB  | `X68000`      | `2bc789c7b172ebbe70d5099a9b8820653234e26cb5f7b4a171b4d73ee647ddaa` |
@@ -597,7 +597,7 @@ The file `fs-ca1.rom` of the openMSX system ROM pack is a third dump with RAM
 contents in it. neetan rejects it.
 
 | Model | Firmware image      | Size    | Contents             | BLAKE3                                                             |
-|-------|---------------------|---------|----------------------|--------------------------------------------------------------------|
+| ----- | ------------------- | ------- | -------------------- | ------------------------------------------------------------------ |
 | MSX   | `201bios.ic9`       | 32 KiB  | BIOS and BASIC       | `038b7767b129a59483f1b0f0e94bfc479c3895a7222928515e8d0084736033aa` |
 | MSX   | `201note.ic8`       | 16 KiB  | Personal Data Bank   | `7acf34a44a5798c4ca4382e33c8096347de552633722533878ab24b3d4a002b3` |
 | MSX2  | `f1xdbios.rom.ic27` | 32 KiB  | BIOS and BASIC       | `d5425c727a090ab43aca5d98a8092b28d87aa55bc275f5a72a65f16363a7f72f` |
@@ -622,17 +622,17 @@ font. The turbo additionally requires the four kanji ROMs. The ANK font is
 byte-identical across both sets, so a single file can satisfy the matching slot for
 both models.
 
-| Slot              | Size   | Contents                    | Required for            | BLAKE3                                                             |
-|-------------------|--------|-----------------------------|-------------------------|--------------------------------------------------------------------|
-| `ipl` (X1)        | 4 KiB  | IPL boot ROM                | `X1`                    | `194f351bc1024188162856e2374d92bc608d9c742ca007d8c19a4b4eed44abbc` |
-| `ipl` (X1turbo)   | 32 KiB | IPL boot ROM                | `X1TURBO`               | `871c77226a6e65bf1820c0a3e6f63a330cb1d2eb6c135fc9e4da9741ce38106c` |
-| `cgrom` (X1)      | 2 KiB  | 8x8 character generator     | `X1`                    | `61440d736fdec066b825428f4d26fbdb04b3a4fcc7f05bbdd4b5bbe9e55318c3` |
-| `cgrom` (turbo)   | 2 KiB  | 8x8 character generator     | `X1TURBO`               | `f26c67af04f3b4819e0bd474ded7b083e3d370a62ea0672f09787b8ca4ebc4a6` |
-| `ank`             | 8 KiB  | 8x16 ANK font               | both models             | `a8695470e98492a2d969ba3fdeee76ee9b3573f525eee20f98627fb5e98279a0` |
-| `kanji1`          | 32 KiB | Kanji ROM, first quarter    | `X1TURBO`               | `212d081a600377a1068d56f4049d03916ea705465eb2feca950b6df186a12ba4` |
-| `kanji2`          | 32 KiB | Kanji ROM, second quarter   | `X1TURBO`               | `0bd59d087b3197c8136e5664e311234930ec566b61d184204144f04a84ba769b` |
-| `kanji3`          | 32 KiB | Kanji ROM, third quarter    | `X1TURBO`               | `f2495255441c15bfce5c7441f6d94809d4f0e0dba1c7f43f9153991e326b881a` |
-| `kanji4`          | 32 KiB | Kanji ROM, fourth quarter   | `X1TURBO`               | `84e0afa27e1f4ef01b6e5dac452835f487c98968e14fceaac3c93331524b51d7` |
+| Slot            | Size   | Contents                  | Required for | BLAKE3                                                             |
+| --------------- | ------ | ------------------------- | ------------ | ------------------------------------------------------------------ |
+| `ipl` (X1)      | 4 KiB  | IPL boot ROM              | `X1`         | `194f351bc1024188162856e2374d92bc608d9c742ca007d8c19a4b4eed44abbc` |
+| `ipl` (X1turbo) | 32 KiB | IPL boot ROM              | `X1TURBO`    | `871c77226a6e65bf1820c0a3e6f63a330cb1d2eb6c135fc9e4da9741ce38106c` |
+| `cgrom` (X1)    | 2 KiB  | 8x8 character generator   | `X1`         | `61440d736fdec066b825428f4d26fbdb04b3a4fcc7f05bbdd4b5bbe9e55318c3` |
+| `cgrom` (turbo) | 2 KiB  | 8x8 character generator   | `X1TURBO`    | `f26c67af04f3b4819e0bd474ded7b083e3d370a62ea0672f09787b8ca4ebc4a6` |
+| `ank`           | 8 KiB  | 8x16 ANK font             | both models  | `a8695470e98492a2d969ba3fdeee76ee9b3573f525eee20f98627fb5e98279a0` |
+| `kanji1`        | 32 KiB | Kanji ROM, first quarter  | `X1TURBO`    | `212d081a600377a1068d56f4049d03916ea705465eb2feca950b6df186a12ba4` |
+| `kanji2`        | 32 KiB | Kanji ROM, second quarter | `X1TURBO`    | `0bd59d087b3197c8136e5664e311234930ec566b61d184204144f04a84ba769b` |
+| `kanji3`        | 32 KiB | Kanji ROM, third quarter  | `X1TURBO`    | `f2495255441c15bfce5c7441f6d94809d4f0e0dba1c7f43f9153991e326b881a` |
+| `kanji4`        | 32 KiB | Kanji ROM, fourth quarter | `X1TURBO`    | `84e0afa27e1f4ef01b6e5dac452835f487c98968e14fceaac3c93331524b51d7` |
 
 ## Fujitsu FM-7 / FM-77AV
 
@@ -650,7 +650,7 @@ and kanji ROMs are byte-identical across both sets, so a single file satisfies
 the matching slot for both models.
 
 | Slot               | Size    | Contents                | Required for                 | BLAKE3                                                             |
-|--------------------|---------|-------------------------|------------------------------|--------------------------------------------------------------------|
+| ------------------ | ------- | ----------------------- | ---------------------------- | ------------------------------------------------------------------ |
 | `fbasic` (FM-7)    | 31 KiB  | F-BASIC v3.0 ROM        | `FM7`                        | `059a5c926109fc156f07d91aaad05307ff0bd9d3eb5bffa805d554863f4a01bc` |
 | `fbasic` (FM-77AV) | 31 KiB  | F-BASIC v3.0 ROM        | `FM77AV`                     | `276f3953b3f8fe975d29d13463261d9e70ce9c339d2af12536cf2010ae0f2a8d` |
 | `boot_bas`         | 512 B   | Boot ROM, BASIC mode    | `FM7`                        | `d6a8dda5482a337e28aaf7b838be0543411277ba17f260ae62f9f1af46592b2d` |
@@ -676,10 +676,10 @@ ET4000AX VGA BIOS. Extract both into the one `--at-roms` directory (or into
 are identified by BLAKE3 content hash, so file names do not matter, and the extra
 files in the two MAME sets are ignored.
 
-| Slot        | Size   | Contents                | From set  | BLAKE3                                                             |
-|-------------|--------|-------------------------|-----------|--------------------------------------------------------------------|
-| system-bios | 64 KiB | AMI CS4031 system BIOS  | `ct486`   | `bcd8d7424756ca90c5853ac24c2a7f3621d5ff1f6f7a170027e0fbe2b10fd6f1` |
-| vga-bios    | 32 KiB | Tseng ET4000AX VGA BIOS | `et4000`  | `24a00c4924d76f1bbb9afb554ff49009d004212d269bd7665fdfda9084bf3ec6` |
+| Slot        | Size   | Contents                | From set | BLAKE3                                                             |
+| ----------- | ------ | ----------------------- | -------- | ------------------------------------------------------------------ |
+| system-bios | 64 KiB | AMI CS4031 system BIOS  | `ct486`  | `bcd8d7424756ca90c5853ac24c2a7f3621d5ff1f6f7a170027e0fbe2b10fd6f1` |
+| vga-bios    | 32 KiB | Tseng ET4000AX VGA BIOS | `et4000` | `24a00c4924d76f1bbb9afb554ff49009d004212d269bd7665fdfda9084bf3ec6` |
 
 The system BIOS is `chips_1.ami` from `ct486`. The VGA BIOS is `et4000.bin`; the
 alternate ColorImage dump `cvet4kax.bin` (BLAKE3
@@ -699,7 +699,7 @@ Recommended: MT-32 control ROM v1.07 (`8f123c1f...`) with the MT-32 PCM ROM
 the files you use to `.rom`:
 
 | MAME file             | Contents                     | Rename to (example)  |
-|-----------------------|------------------------------|----------------------|
+| --------------------- | ---------------------------- | -------------------- |
 | `mt32_1.0.7.ic27.bin` | Control v1.07, half a (Mux0) | `MT32_CONTROL_A.ROM` |
 | `mt32_1.0.7.ic26.bin` | Control v1.07, half b (Mux1) | `MT32_CONTROL_B.ROM` |
 | `r15449121.ic37.bin`  | MT-32 PCM ROM                | `MT32_PCM.ROM`       |
@@ -707,7 +707,7 @@ the files you use to `.rom`:
 The control ROM version determines the emulated model:
 
 | Model                     | Control ROM versions                  |
-|---------------------------|---------------------------------------|
+| ------------------------- | ------------------------------------- |
 | MT-32                     | v1.04, v1.05, v1.06, v1.07, BlueRidge |
 | MT-32 (new / "old" v2)    | v2.04, v2.06, v2.07                   |
 | CM-32L / LAPC-I           | v1.00, v1.02                          |
@@ -719,7 +719,7 @@ compatibility; v1.07 is recommended.
 Full ROMs (a single control ROM plus a single PCM ROM is enough):
 
 | Description                             | Type    | Size    | BLAKE3                                                             |
-|-----------------------------------------|---------|---------|--------------------------------------------------------------------|
+| --------------------------------------- | ------- | ------- | ------------------------------------------------------------------ |
 | MT-32 Control v1.04                     | Control | 64 KiB  | `9102699229706ff459a718924884559d50a6a8749a2d27fe58548f3c0606f66a` |
 | MT-32 Control v1.05                     | Control | 64 KiB  | `6b05c40c21d67c6780c39dac669dc7869d2b9fbde62bfc73a03ec3634282658f` |
 | MT-32 Control v1.06                     | Control | 64 KiB  | `93e8a9bd5fdea0f3e92d9a9949e307bc98dc7d9ff7650b28d9dbfd2e863054bb` |
@@ -737,7 +737,7 @@ Full ROMs (a single control ROM plus a single PCM ROM is enough):
 Half dumps (merged automatically into the corresponding full ROM):
 
 | Description                 | Half   | Size    | BLAKE3                                                             |
-|-----------------------------|--------|---------|--------------------------------------------------------------------|
+| --------------------------- | ------ | ------- | ------------------------------------------------------------------ |
 | MT-32 Control v1.04 (a)     | Mux0   | 32 KiB  | `3b0bdc08828f383711334a5db13252b98df79cbd9fa7a21cd37e55355dd41963` |
 | MT-32 Control v1.04 (b)     | Mux1   | 32 KiB  | `a3feacf1522d04d283fcb20c262f8cdfe469a667eb4e4689899b168660923993` |
 | MT-32 Control v1.05 (a)     | Mux0   | 32 KiB  | `2d970225f29d20dc38ef47e48db1ded49ee223f27a6b8c0e9072b55ebe85aa0f` |
@@ -765,7 +765,7 @@ Recommended: SC-55 v1.21 (mk1) - place `sc55_rom1.bin`, `sc55_rom2.bin`,
 `sc55` holds these files under other names. Rename them:
 
 | MAME file                           | Rename to           |
-|-------------------------------------|---------------------|
+| ----------------------------------- | ------------------- |
 | `roland_r15199778_6435328a97f.ic30` | `sc55_rom1.bin`     |
 | `roland_r15209363.ic23`             | `sc55_rom2.bin`     |
 | `roland-gss.a_r15209276.ic28`       | `sc55_waverom1.bin` |
@@ -773,7 +773,7 @@ Recommended: SC-55 v1.21 (mk1) - place `sc55_rom1.bin`, `sc55_rom2.bin`,
 | `roland-gss.c_r15209281.ic26`       | `sc55_waverom3.bin` |
 
 | Model                    | Required files                                                                                       |
-|--------------------------|------------------------------------------------------------------------------------------------------|
+| ------------------------ | ---------------------------------------------------------------------------------------------------- |
 | SC-55mk2 / SC-155mk2     | `rom1.bin`, `rom2.bin`, `rom_sm.bin`, `waverom1.bin`, `waverom2.bin`                                 |
 | SC-55st                  | `rom1.bin`, `rom2_st.bin`, `rom_sm.bin`, `waverom1.bin`, `waverom2.bin`                              |
 | SC-55 (mk1, recommended) | `sc55_rom1.bin`, `sc55_rom2.bin`, `sc55_waverom1.bin`, `sc55_waverom2.bin`, `sc55_waverom3.bin`      |

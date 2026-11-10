@@ -4,7 +4,7 @@ Select the Fujitsu FM-7 family with `--machine` set to `FM7` or `FM77AV`. Both a
 dual-CPU machines with two MC68B09 processors (`--cpu-mode` is ignored):
 
 | Machine | `--machine` | CPU / Clock                         | Main RAM | Sound              | Drive default |
-|---------|-------------|-------------------------------------|----------|--------------------|---------------|
+| ------- | ----------- | ----------------------------------- | -------- | ------------------ | ------------- |
 | FM-7    | `FM7`       | 2x MC68B09, 1.8 MHz main, 2 MHz sub | 64 KiB   | AY-3-8910 + buzzer | 5.25" 2D      |
 | FM-77AV | `FM77AV`    | 2x MC68B09, 1.8 MHz main, 2 MHz sub | 128 KiB  | YM2203 + buzzer    | 5.25" 2D      |
 
@@ -28,7 +28,7 @@ have no HLE firmware and require a real ROM set (see [ROM set](#rom-set)).
 ## Platform options
 
 | Option               | Description                                          | Default |
-|----------------------|------------------------------------------------------|---------|
+| -------------------- | ---------------------------------------------------- | ------- |
 | `--fm7-roms <PATH>`  | Directory with the FM-7 / FM-77AV ROM set (required) | -       |
 | `--boot-mode <MODE>` | Boot mode: `basic`, `dos`                            | `basic` |
 | `--cassette <PATH>`  | Cassette tape image (`.t77`)                         | -       |

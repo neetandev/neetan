@@ -3,10 +3,10 @@
 Select the Sharp X1 family with `--machine` set to `X1` or `X1TURBO`. Both are
 single-Z80 machines running at a fixed 4 MHz (`--cpu-mode` is ignored):
 
-| Machine    | `--machine` | CPU / Clock | Main RAM | Sound              | Drive default |
-|------------|-------------|-------------|----------|--------------------|---------------|
-| Sharp X1   | `X1`        | Z80A 4 MHz  | 64 KiB   | AY-3-8910          | 5.25" 2D      |
-| X1 turbo   | `X1TURBO`   | Z80A 4 MHz  | 64 KiB   | AY-3-8910 + YM2151 | 5.25" 2D      |
+| Machine  | `--machine` | CPU / Clock | Main RAM | Sound              | Drive default |
+| -------- | ----------- | ----------- | -------- | ------------------ | ------------- |
+| Sharp X1 | `X1`        | Z80A 4 MHz  | 64 KiB   | AY-3-8910          | 5.25" 2D      |
+| X1 turbo | `X1TURBO`   | Z80A 4 MHz  | 64 KiB   | AY-3-8910 + YM2151 | 5.25" 2D      |
 
 The base X1 (CZ-800C) offers 640x200 and 320x200 graphics with a digital 8-color
 palette, a programmable character generator (PCG), text attributes, and the
@@ -30,12 +30,12 @@ targets have HLE firmware, and they require a real ROM set (see [ROM set](#rom-s
 
 ## Platform options
 
-| Option                  | Description                                    | Default |
-|-------------------------|------------------------------------------------|---------|
-| `--x1-roms <PATH>`      | Directory with the Sharp X1 ROM set (required) | -       |
-| `--x1-keyboard <A\|B>`  | X1 turbo keyboard mode switch                  | `A`     |
-| `--monitor <MODE>`      | Monitor timing: `auto`, `15k`, `24k` (turbo)   | `auto`  |
-| `--cassette <PATH>`     | Cassette tape image (`.tap`)                   | -       |
+| Option                 | Description                                    | Default |
+| ---------------------- | ---------------------------------------------- | ------- |
+| `--x1-roms <PATH>`     | Directory with the Sharp X1 ROM set (required) | -       |
+| `--x1-keyboard <A\|B>` | X1 turbo keyboard mode switch                  | `A`     |
+| `--monitor <MODE>`     | Monitor timing: `auto`, `15k`, `24k` (turbo)   | `auto`  |
+| `--cassette <PATH>`    | Cassette tape image (`.tap`)                   | -       |
 
 The X1 turbo keyboard has a physical A/B mode switch. Mode A is the standard
 layout; mode B rearranges the kana assignments and lets games read the key matrix

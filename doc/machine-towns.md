@@ -5,7 +5,7 @@ Select the FM Towns family with `--machine FMTowns`, `--machine FMTownsIICX` or
 differ mainly in CPU and clock:
 
 | Machine        | `--machine`   | CPU      | CPU Speed   | Sound             | CD-ROM |
-|----------------|---------------|----------|-------------|-------------------|--------|
+| -------------- | ------------- | -------- | ----------- | ----------------- | ------ |
 | FM Towns       | `FMTowns`     | 80386SX  | 16 MHz      | YMF276 OPN2 + PCM | Yes    |
 | FM Towns II CX | `FMTownsIICX` | 80386DX  | 16 / 20 MHz | YMF276 OPN2 + PCM | Yes    |
 | FM Towns II MX | `FMTownsIIMX` | 80486DX2 | 33 / 66 MHz | YMF276 OPN2 + PCM | Yes    |
@@ -28,7 +28,7 @@ need no ROM files (see [ROM set](#rom-set)).
 ## Platform options
 
 | Option                     | Description                                         | Default  |
-|----------------------------|-----------------------------------------------------|----------|
+| -------------------------- | --------------------------------------------------- | -------- |
 | `--towns-roms <PATH>`      | Directory with the FM Towns ROM set (optional)      | -        |
 | `--bios [on\|off]`         | Boot the real system and OS ROMs of the ROM set     | HLE BIOS |
 | `--towns-pad <2\|6>`       | Game pad type: `2` (2-button) or `6` (6-button)     | `6`      |
@@ -60,8 +60,8 @@ See the [FM Towns ROMs](roms.md#fm-towns) section for the exact files and hashes
 The FM Towns reaches a MIDI sound module through RS-MIDI over its RS-232C port.
 Two modules are supported:
 
-* Roland MT-32 - using a Rust port of [munt](https://github.com/munt/munt)
-* Roland SC-55 - using a Rust port of [Nuked-SC55](https://github.com/nukeykt/Nuked-SC55)
+- Roland MT-32 - using a Rust port of [munt](https://github.com/munt/munt)
+- Roland SC-55 - using a Rust port of [Nuked-SC55](https://github.com/nukeykt/Nuked-SC55)
 
 Both require external ROM files. Set the device and point at the ROM directory:
 
