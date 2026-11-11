@@ -31,6 +31,7 @@ AS and AP machines do not support loading a real BIOS yet. But HLE BIOS and HLE 
 | Power DoLLs 2                                            | ドパワードール ２                 |      AS      |    ❌️    |    ✅    |   ✅   | Best sound with SC-55 (GS)                                          |
 | Rance 4.2                                                | ランス４.２                       |      AS      |    ❌️    |    ✅    |   ✅   | Force GDC Clock to 2.5 MHz                                          |
 | SimCity 2000                                             | シムシティ2000                    |      AS      |    ❌️    |    ✅    |   ✅   |                                                                     |
+| Sorcerian                                                | ソーサリアン                      |      F       |    ✅    |    ✅    |   ⁿ̸ₐ   |                                                                     |
 | Star Cruiser 2                                           | スター クルーザー２               |      RA      |    ✅    |    ✅    |   ✅   | Supports MT-32 (LA) and SC-55 (GS)                                  |
 | Tamashii no Mon - Dante Shinkyoku yori                   | 魂の門 ダンテ「神曲」より         |      VX      |    ✅    |    ✅    |   ✅   |                                                                     |
 | Teitoku no Ketsudan                                      | 提督の決断                        |      VX      |    ✅    |    ✅    |   ⁿ̸ₐ   |                                                                     |

@@ -8,6 +8,9 @@ const OPNA_DATA_LO: u16 = 0x018A;
 const OPNA_ADDR_HI: u16 = 0x018C;
 const OPNA_DATA_HI: u16 = 0x018E;
 
+const MEMORY_SWITCH_4: u32 = 0xA3FEE;
+const MEMORY_SWITCH_4_EXPANSION_ROM_CC000: u8 = 0x08;
+
 fn setup_86_bus(model: MachineModel) -> Pc9801Bus<NoTrace> {
     let mut bus = Pc9801Bus::<NoTrace>::new(model, CpuMode::High, OUTPUT_SAMPLE_RATE);
     bus.install_soundboard_86(None, true);
@@ -105,4 +108,13 @@ fn soundboard_86_cbus_wait_pcm86_write_66mhz() {
         bus.io_write_byte(port, 0x00);
         assert_eq!(bus.drain_wait_cycles(), expected, "port {port:#06X}");
     }
+}
+
+#[test]
+fn soundboard_86_declares_sound_rom_in_memory_switch_4() {
+    let mut bus = setup_86_bus(MachineModel::PC9801RA);
+    assert_eq!(
+        bus.read_byte(MEMORY_SWITCH_4),
+        MEMORY_SWITCH_4_EXPANSION_ROM_CC000
+    );
 }

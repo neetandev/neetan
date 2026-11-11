@@ -36,9 +36,9 @@ const FRONT_BANK_DEFAULTS: [u8; BANK_SIZE] = [
     // 0x861E - DSW3: 640 KB, DMA compat, FDD motor ctrl, auto-switch FDD
     //   bits 6-0 = 011_1001 -> 4 ones (even) -> parity bit 7 = 1
     0xB9,
-    // 0x871E - MEMSW init yes, BEEP loud
-    //   bits 6-0 = 010_1100 -> 3 ones (odd) -> parity bit 7 = 0
-    0x2C,
+    // 0x871E - MEMSW init no, BEEP loud
+    //   bits 6-0 = 000_1100 -> 2 ones (even) -> parity bit 7 = 1
+    0x8C,
     // 0x881E - sound enabled
     //   bits 6-0 = 010_0000 -> 1 one (odd) -> parity bit 7 = 0
     0x20, // 0x891E - modem defaults (no modem); parity shared with 0x8A1E

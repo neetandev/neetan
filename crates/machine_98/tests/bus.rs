@@ -726,8 +726,8 @@ fn sdip_ports_return_parity_correct_defaults_on_pc9821() {
     assert_eq!(bus.io_read_byte(0x841E), 0xF8);
     // 0x851E: GDC 2.5 MHz, HDD connected, 25 lines, 80 cols
     assert_eq!(bus.io_read_byte(0x851E), 0xE3);
-    // 0x871E bit 5: MEMSW init = 1 (do initialize memory switches)
-    assert_ne!(bus.io_read_byte(0x871E) & 0x20, 0);
+    // 0x871E bit 5: MEMSW init = 0 (keep memory switches)
+    assert_eq!(bus.io_read_byte(0x871E) & 0x20, 0);
 }
 
 #[test]
@@ -840,8 +840,13 @@ fn port_31_synthesizes_dip_switch_2_from_sdip_on_pc9821() {
     //   bits {7,6,5,3,2,1,0} from register 1 (0x851E)
     //   bit 4 (memsw init) from register 3 (0x871E) bit 5
     //
-    // Defaults: SDIP[1]=0xE3, SDIP[3]=0x2C (bit 5 set).
-    // Result: (0xE3 & 0xEF) | ((0x2C & 0x20) >> 1) = 0xE3 | 0x10 = 0xF3.
+    // Defaults: SDIP[1]=0xE3, SDIP[3]=0x8C (bit 5 clear).
+    // Result: (0xE3 & 0xEF) | ((0x8C & 0x20) >> 1) = 0xE3 | 0x00 = 0xE3.
+    assert_eq!(bus.io_read_byte(0x31), 0xE3);
+
+    // Set register 3 bit 5 (memsw init = ON): port 0x31 bit 4 should go high.
+    bus.io_write_byte(0x871E, 0x2C);
+    // (0xE3 & 0xEF) | ((0x2C & 0x20) >> 1) = 0xE3 | 0x10 = 0xF3
     assert_eq!(bus.io_read_byte(0x31), 0xF3);
 
     // Write to SDIP register 1: verify port 0x31 uses bits from reg1 except bit 4.
