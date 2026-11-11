@@ -30,6 +30,8 @@ VEC_N88_BASIC   equ 0xF3        ; N88-BASIC ROM entry was invoked
 
 ; Boot entry constants.
 IPL_SEG         equ 0x1FC0      ; Segment the bootstrap loads the IPL to
+IPL_STACK_SEG   equ 0x0030      ; Stack segment of the IPL call
+IPL_STACK_TOP   equ 0x00EA      ; Stack pointer before the far call to the IPL
 TEXT_VRAM_SEG   equ 0xA000      ; Text VRAM character plane
 TEXT_COLUMNS    equ 80          ; Text cells in one row
 SYSTEM_DISK_ROW equ 12          ; Text row of the system disk message
@@ -507,12 +509,19 @@ vector_table:
     dw 0xFFFF                                  ; Sentinel
 
 ; --- IPL call ---
-; Far-calls the IPL at 1FC0:0000. An IPL that returns shows the system disk
-; message and halts with interrupts disabled. The screen is set to 80x25 text
-; with the simple graphics attribute mode, cleared with spaces of attribute
-; E1h (white) and the message is written at row 12, column 22. Each kanji
-; fills the left cell of its two cells.
+; Far-calls the IPL at 1FC0:0000 on the BIOS stack at 0030:00EA. The IPL
+; starts with SS:SP at 0030:00E6 like on the NEC BIOS. The stack lies below
+; linear 0400h and stays clear of the memory that loaders fill from 0060:0000
+; upwards. An IPL that returns shows the system disk message and halts with
+; interrupts disabled. The screen is set to 80x25 text with the simple
+; graphics attribute mode, cleared with spaces of attribute E1h (white) and
+; the message is written at row 12, column 22. Each kanji fills the left cell
+; of its two cells.
 ipl_call:
+    mov  ax, IPL_STACK_SEG
+    mov  ss, ax
+    mov  sp, IPL_STACK_TOP
+    xor  ax, ax
     call IPL_SEG:0x0000
     mov  ax, 0x0A04                     ; CRT mode: 80x25, simple graphics
     int  0x18

@@ -17,6 +17,7 @@ AS and AP machines do not support loading a real BIOS yet. But HLE BIOS and HLE 
 | Doom                                                     | Doom                              |      AP      |    ❌️    |    ✅    |   ✅   | Best sound with SB16 and SC-55 (GS)                                 |
 | Door Door                                                | ドアドア                          |   F (Low)    |    ✅    |    ❌️    |   ⁿ̸ₐ   | Needs N88 Basic of an original ROM                                  |
 | D.P.S.                                                   | D.P.S.                            |      VX      |    ✅    |    ❌️    |   ⁿ̸ₐ   | Needs N88 Basic of an original ROM                                  |
+| Dragon Slayer: The Legend of Heroes                      | ドラゴンスレイヤー英雄伝説        |      RS      |    ✅    |    ✅    |   ⁿ̸ₐ   |                                                                     |
 | Edge                                                     | エッジ                            |      AP      |    ❌️    |    ✅    |   ✅   | Best sound with 86 and SC-55                                        |
 | EVE Burst Error                                          | EVE Burst Error                   |      RA      |    ✅    |    ✅    |   ✅   |                                                                     |
 | Illusion City                                            | 幻影都市 ILLUSION CITY            |      RA      |    ✅    |    ✅    |   ✅   |                                                                     |
