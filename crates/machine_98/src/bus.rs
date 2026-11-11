@@ -1136,7 +1136,8 @@ impl<T: TraceSink> Pc9801Bus<T> {
     ///
     /// When `alternate_timers` is `true`, the board uses `FmTimer2A`/`FmTimer2B`
     /// event kinds instead of `FmTimerA`/`FmTimerB` (for dual-board configurations
-    /// where the 86 board uses the primary timer events).
+    /// where the 86 board uses the primary timer events). Memory switch 4
+    /// declares the sound BIOS ROM of the board at CC000h.
     pub fn install_soundboard_26k(&mut self, alternate_timers: bool) {
         let sample_rate = self.clocks.sample_rate;
         self.soundboard_26k = Some(Soundboard26k::new(
@@ -1145,6 +1146,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
             alternate_timers,
         ));
         self.resolve_dual_soundboard_irq_conflict();
+        self.declare_expansion_roms_in_memory_switch();
     }
 
     /// Installs the PC-9801-14 Music Generator board (TMS3631).
@@ -1158,7 +1160,8 @@ impl<T: TraceSink> Pc9801Bus<T> {
     /// `rhythm_rom` is the optional 8 KB `ym2608.rom` ADPCM-A rhythm ROM.
     /// `adpcm_ram` enables the 256 KiB ADPCM-B sample RAM upgrade.
     /// When installed, the 86 board replaces the 26K for FM/SSG ports
-    /// and adds extended register and PCM86 ports.
+    /// and adds extended register and PCM86 ports. Memory switch 4 declares
+    /// the sound BIOS ROM of the board at CC000h.
     pub fn install_soundboard_86(&mut self, rhythm_rom: Option<&[u8]>, adpcm_ram: bool) {
         let sample_rate = self.clocks.sample_rate;
         self.soundboard_86 = Some(Soundboard86::new(
@@ -1169,6 +1172,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
             self.machine_model,
         ));
         self.resolve_dual_soundboard_irq_conflict();
+        self.declare_expansion_roms_in_memory_switch();
     }
 
     /// Installs a Creative Sound Blaster 16 (CT2720) sound board.

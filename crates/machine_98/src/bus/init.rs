@@ -36,6 +36,12 @@ use crate::{
     scheduler::{Event98, Pc98Scheduler},
 };
 
+/// Offset of memory switch 4 in text VRAM.
+const MEMORY_SWITCH_4_OFFSET: usize = 0x3FEE;
+
+/// Memory switch 4 bit 3: an expansion ROM occupies CC000h-CFFFFh.
+const MEMORY_SWITCH_4_EXPANSION_ROM_CC000: u8 = 0x08;
+
 #[rustfmt::skip]
 const KEYBOARD_TABLES: [[u8; 0x60]; 8] = [
     // Table 0: normal
@@ -606,6 +612,23 @@ impl<T: TraceSink> Pc9801Bus<T> {
         self.memory.state.ram[0x007B] = 0xE8; // segment high
     }
 
+    /// Returns the expansion ROM bits of memory switch 4 for the installed boards.
+    ///
+    /// The PC-9801-26K and PC-9801-86 boards map their sound BIOS ROM at CC000h.
+    fn memory_switch_4_expansion_roms(&self) -> u8 {
+        if self.soundboard_26k.is_some() || self.soundboard_86.is_some() {
+            MEMORY_SWITCH_4_EXPANSION_ROM_CC000
+        } else {
+            0x00
+        }
+    }
+
+    /// Sets the expansion ROM bits of the installed boards in memory switch 4.
+    pub(super) fn declare_expansion_roms_in_memory_switch(&mut self) {
+        let expansion_roms = self.memory_switch_4_expansion_roms();
+        self.memory.state.text_vram[MEMORY_SWITCH_4_OFFSET] |= expansion_roms;
+    }
+
     /// Sets all device state to match the PC-98 post-BIOS state.
     pub(super) fn initialize_post_boot_state(&mut self) {
         // Load stub BIOS ROM, keyboard tables, and populate IVT.
@@ -960,7 +983,8 @@ impl<T: TraceSink> Pc9801Bus<T> {
         // MSW3 bits 0-2 encode conventional memory in 128 KB units above
         // the base 128 KB: 0x04 = 4 * 128 KB + 128 KB = 640 KB.
         let year_bcd = self.host_date_time_source.now().to_bcd_bytes()[0];
-        let msw_values: [u8; 8] = [0x48, 0x05, 0x04, 0x00, 0x01, 0x00, 0x00, year_bcd];
+        let msw4 = self.memory_switch_4_expansion_roms();
+        let msw_values: [u8; 8] = [0x48, 0x05, 0x04, msw4, 0x01, 0x00, 0x00, year_bcd];
         let msw_offsets: [usize; 8] = [
             0x3FE2, 0x3FE6, 0x3FEA, 0x3FEE, 0x3FF2, 0x3FF6, 0x3FFA, 0x3FFE,
         ];

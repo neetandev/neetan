@@ -104,7 +104,7 @@ const _DIPSW2_TEXT_HEIGHT_20: u8 = 0x08;
 
 /// DIP SW 2-5 (bit 4): Memory switch initialization.
 /// OFF (1) = initialize memory switch with system defaults, ON (0) = keep current.
-const DIPSW2_MEMSW_INIT: u8 = 0x10;
+const _DIPSW2_MEMSW_INIT: u8 = 0x10;
 
 /// DIP SW 2-6 (bit 5): Unused (OFF on VM).
 const DIPSW2_UNUSED_6: u8 = 0x20;
@@ -116,22 +116,24 @@ const DIPSW2_UNUSED_7: u8 = 0x40;
 /// OFF (1) = 2.5 MHz, ON (0) = 5 MHz.
 const DIPSW2_GDC_CLOCK_2_5MHZ: u8 = 0x80;
 
-/// Default for DIP switch 2: 0xF3.
+/// Default for DIP switch 2: 0xE3.
 ///
 /// Shared by all emulated models (VM, VX, RA).
 ///
-/// Bit layout (`1111_0011b`):
+/// The BIOS keeps the memory switches, which hold the machine configuration
+/// such as the expansion ROM of an installed sound board.
+///
+/// Bit layout (`1110_0011b`):
 ///   SW2-1 (bit 0) = 1 OFF: normal boot (System Specification off)
 ///   SW2-2 (bit 1) = 1 OFF: terminal mode disabled
 ///   SW2-3 (bit 2) = 0 ON:  80 chars/line
 ///   SW2-4 (bit 3) = 0 ON:  25 lines/screen
-///   SW2-5 (bit 4) = 1 OFF: initialize memory switch with system defaults
+///   SW2-5 (bit 4) = 0 ON:  keep memory switch
 ///   SW2-6 (bit 5) = 1 OFF: unused
 ///   SW2-7 (bit 6) = 1 OFF: unused
 ///   SW2-8 (bit 7) = 1 OFF: GDC clock 2.5 MHz
 const DIPSW2_DEFAULT: u8 = DIPSW2_SYSTEM_SPEC
     | DIPSW2_TERMINAL_MODE
-    | DIPSW2_MEMSW_INIT
     | DIPSW2_UNUSED_6
     | DIPSW2_UNUSED_7
     | DIPSW2_GDC_CLOCK_2_5MHZ;
@@ -167,12 +169,12 @@ pub struct I8255SystemPpiState {
     /// DIP switch 2 register (read-only via port 0x31).
     ///
     /// Bit mapping is `SW2:8..SW2:1` (bit7..bit0), where `1=OFF`, `0=ON`.
-    /// Default `0xF3` (`1111_0011b`) for all models:
+    /// Default `0xE3` (`1110_0011b`) for all models:
     /// - SW2-1 (bit0)=1 OFF: normal boot path
     /// - SW2-2 (bit1)=1 OFF: terminal mode disabled
     /// - SW2-3 (bit2)=0 ON: 80 chars/line
     /// - SW2-4 (bit3)=0 ON: 25 lines/screen
-    /// - SW2-5 (bit4)=1 OFF: initialize memory switch
+    /// - SW2-5 (bit4)=0 ON: keep memory switch
     /// - SW2-6 (bit5)=1 OFF: unused
     /// - SW2-7 (bit6)=1 OFF: unused
     /// - SW2-8 (bit7)=1 OFF: GDC clock 2.5 MHz

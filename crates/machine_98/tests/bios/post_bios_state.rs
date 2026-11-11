@@ -307,7 +307,7 @@ fn post_bios_state_vm() {
     // === System PPI ===
     check!(f, state.system_ppi.port_b, 0x82, "System PPI port B");
     check!(f, state.system_ppi.port_c, 0x18, "System PPI port C");
-    check!(f, state.system_ppi.dip_switch_2, 0xF3, "DIP switch 2");
+    check!(f, state.system_ppi.dip_switch_2, 0xE3, "DIP switch 2");
     check!(
         f,
         state.system_ppi.rs232c_modem_signals,
@@ -863,7 +863,7 @@ fn post_bios_state_vx() {
     // === System PPI ===
     check!(f, state.system_ppi.port_b, 0x80, "System PPI port B");
     check!(f, state.system_ppi.port_c, 0xB8, "System PPI port C");
-    check!(f, state.system_ppi.dip_switch_2, 0xF3, "DIP switch 2");
+    check!(f, state.system_ppi.dip_switch_2, 0xE3, "DIP switch 2");
 
     // === CGROM ===
     check_true!(f, state.cgrom.cg_ram, "VX has CG RAM");
