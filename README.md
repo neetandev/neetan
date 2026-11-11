@@ -1,18 +1,14 @@
 # Neetan (ねーたん)
 
-Neetan is an emulator of Japanese personal computers of the 1980s and 1990s written
-in Rust. A game manager keeps one library of games for each system and starts them
-with their own configuration.
+Neetan is an emulator of Japanese personal computers of the 1980s and 1990s
+written in Rust. We strive to provide an easy-to-use emulator with a good out
+of the box experience. Our prime emulator for the PC-98 does not need any
+BIOS or OS files to run the vast majority of the games for that system.
 
 [Download](https://github.com/neetandev/neetan/releases) |
 [Documentation](#documentation) |
 [Building](#building) |
 [License](#license)
-
-<p align="center">
-  <img src="assets/01-Manager.png" alt="The game manager showing the PC-98 library">
-  <img src="assets/02-Software.png" alt="Japanese Windows 3.1 running in Neetan">
-</p>
 
 ## Supported systems
 
@@ -38,24 +34,28 @@ DOS.
 ## Features
 
 * Game manager with one library for each system.
-* Yamaha FM synthesis through a Rust port of ymfm. Roland MT-32 and SC-55 emulation
-  through Rust ports of munt and Nuked-SC55.
-* CRT effect, pixel-art scaling and a choice of 4:3 or square pixel aspect.
-* Quick save and restore of the full machine state in memory.
-* Copy of on-screen Japanese text to the clipboard on the PC-98, for use with
-  translation tools.
 * Built-in MS-DOS 6.20 compatible DOS with EMS, XMS and MSCDEX drivers for the PC-98.
-* User interface in English, Japanese, German, French, Spanish, Simplified Chinese
-  and Traditional Chinese.
-* Commands to create disk images, convert hard disk images and copy files into
-  FAT-formatted images.
-* A headless frontend, `neetan-auto`, that runs R7RS Scheme scripts against a machine
-  at exact frame boundaries.
+* Runtime savestates for fast saving and loading.
+* CRT effect, pixel-art scaling and a choice of 4:3 or square pixel aspect.
+* Yamaha FM synthesis (OPN, OPNA, OPM, OPL, SSG).
+* MIDI Roland MT-32 and SC-55 emulation.
+* User interface in English, Japanese, German, French, Spanish, Simplified Chinese and Traditional Chinese.
+* Copy of on-screen Japanese text to the clipboard on the PC-98, for use with translation tools.
+* Commands to create disk images, convert hard disk images and copy files into FAT-formatted images.
+* A headless frontend, `neetan-auto`, that runs R7RS Scheme scripts against an emulated machine.
+
+## Screenshots
+
+<p align="center">
+  <img src="assets/01-Manager.png" alt="The game manager showing the PC-98 library">
+  <img src="assets/02-Software.png" alt="Japanese Windows 3.1 running in Neetan">
+</p>
 
 ## CPU cores
 
-We try to provide the best possible accuracy for CPUs where game software actually depended on exact timing behaviour.
-The older the CPUs are, the more important cycle exact timings become.
+We try to provide the best possible accuracy for CPUs where game software actually
+depended on exact timing behaviour. The older the CPUs are, the more important cycle
+exact timings become.
 
 | CPU     | Systems                        | Timing                                                                         |
 |---------|--------------------------------|--------------------------------------------------------------------------------|
