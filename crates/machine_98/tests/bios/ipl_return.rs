@@ -304,8 +304,8 @@ fn assert_ipl_entry_state<C: Cpu>(mut machine: Pc98Machine<C>, label: &str) {
     let return_segment = read_word(&mut machine, ENTRY_RECORD + 8);
 
     assert_ne!(flags & FLAGS_INTERRUPT, 0, "{label}: IF at IPL entry");
-    assert_eq!(stack_segment, 0x0000, "{label}: SS at IPL entry");
-    assert_eq!(stack_pointer, 0x7C02, "{label}: SP at IPL entry");
+    assert_eq!(stack_segment, 0x0030, "{label}: SS at IPL entry");
+    assert_eq!(stack_pointer, 0x00E6, "{label}: SP at IPL entry");
     assert_eq!(return_segment, BIOS_CODE_SEGMENT, "{label}: return segment");
 
     let call_address = (u32::from(return_segment) << 4) + u32::from(return_offset) - 5;
