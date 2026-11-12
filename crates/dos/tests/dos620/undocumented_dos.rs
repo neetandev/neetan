@@ -1033,7 +1033,7 @@ fn server_call_5d06_returns_swappable_data_area() {
     let returned_bx = harness::result_word(&machine.bus, 10);
     assert_eq!(flags & 1, 0, "AX=5D06h should return CF=0");
     assert_eq!(returned_bx, 0xA55A, "AX=5D06h should pass BX through");
-    let sda_layout = harness::pc98_structures().swappable_data_area;
+    let sda_layout = harness::pc98_data_area().swappable_data_area;
     assert_eq!(segment, harness::dos_data_segment());
     assert_eq!(offset, 0x0F40);
     assert_eq!(offset, sda_layout.data_offset);

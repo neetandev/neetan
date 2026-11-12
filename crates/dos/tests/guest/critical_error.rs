@@ -17,7 +17,7 @@ use crate::{
     },
 };
 
-/// Offset of the critical error stub of the 3.10 layout.
+/// Offset of the critical error stub of the FM Towns data area.
 const CRITICAL_ERROR_STUB: u16 = 0x0A18;
 
 /// Drive index of D: (the RAM disk).

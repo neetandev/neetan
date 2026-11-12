@@ -100,7 +100,7 @@ impl NeetanDos {
             }
             0x08 => {
                 cpu.set_es(self.state.dos_data_segment());
-                cpu.set_di(self.state.structures().private_area.error_retriever_stub);
+                cpu.set_di(self.state.data_area().private_area.error_retriever_stub);
             }
             // DL=01h/03h/05h/07h/09h set the tables; DOS 5+ ignores them.
             0x01 | 0x03 | 0x05 | 0x07 | 0x09 => {}
@@ -128,14 +128,14 @@ impl NeetanDos {
         let len = message.len().min(tables::ERROR_MESSAGE_BUFFER_SIZE - 1);
         let buffer = self
             .state
-            .dos_data_address(self.state.structures().private_area.error_message_buffer);
+            .dos_data_address(self.state.data_area().private_area.error_message_buffer);
         memory.write_byte(buffer, len as u8);
         memory.write_block(buffer + 1, &message[..len]);
         if len + 1 < tables::ERROR_MESSAGE_BUFFER_SIZE {
             memory.write_byte(buffer + 1 + len as u32, 0);
         }
         cpu.set_es(self.state.dos_data_segment());
-        cpu.set_di(self.state.structures().private_area.error_message_buffer);
+        cpu.set_di(self.state.data_area().private_area.error_message_buffer);
     }
 
     /// AH=16h: Windows enhanced mode broadcasts and DOSMGR API.
@@ -160,14 +160,18 @@ impl NeetanDos {
     /// 5+/6.20 kernels: CX=0 returns the patch table, CX=1 acknowledges the
     /// device-specific flags, CX=2/3/4/5 implement the optional services
     /// DOSMGR uses to probe for HMA, instance data, and kernel device
-    /// drivers.
+    /// drivers. A data area without the DOSMGR tables gives no answer and
+    /// leaves every register and the carry flag.
     fn int2fh_1607h_dosmgr_api(&self, cpu: &mut dyn CpuAccess, memory: &mut dyn MemoryAccess) {
+        let Some(dosmgr) = self.state.windows_dosmgr_layout() else {
+            return;
+        };
         match cpu.cx() {
             0x0000 if cpu.dx() == 0x0000 => {
                 cpu.set_cx(0x0001);
                 cpu.set_dx(0x0000);
                 cpu.set_es(self.state.dos_data_segment());
-                cpu.set_bx(tables::WINDOWS_DOSMGR_PATCH_TABLE_OFFSET);
+                cpu.set_bx(dosmgr.patch_table);
                 self.state.set_iret_carry(cpu, memory, false);
             }
             0x0001 => {
@@ -254,7 +258,7 @@ impl NeetanDos {
             }
             0x10 if xms_active => {
                 cpu.set_es(self.state.dos_data_segment());
-                cpu.set_bx(tables::XMS_ENTRY_STUB_OFFSET);
+                cpu.set_bx(self.state.self_boot_layout().xms_entry_stub);
             }
             _ => {}
         }
@@ -394,5 +398,79 @@ fn critical_error_message(error_number: u16) -> &'static [u8] {
         0x25 => b"Code page mismatch",
         0x26 => b"Cannot complete file operation",
         _ => b"Critical error",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        CpuAccess, DosPlacement, DosPlatform, MemoryAccess, NeetanDos,
+        test_support::{MockCpu, MockMemory},
+    };
+
+    /// Placement of an FM Towns kernel in the tests.
+    const TOWNS_PLACEMENT: DosPlacement = DosPlacement {
+        dos_data_segment: 0x1076,
+        first_mcb_segment: 0x1800,
+        memory_top_segment: 0xC000,
+    };
+
+    /// Size of the mock memory.
+    const TEST_MEMORY_SIZE: usize = 0x3_0000;
+
+    /// `AX` of the Windows enhanced mode DOSMGR API.
+    const DOSMGR_FUNCTION: u16 = 0x1607;
+
+    /// `BX` of the DOSMGR virtual device.
+    const DOSMGR_DEVICE: u16 = 0x0015;
+
+    /// Flags word of the IRET frame in front of the call.
+    const IRET_FLAGS: u16 = 0x0203;
+
+    /// Calls the DOSMGR API with `CX=subfunction` and returns the CPU and the
+    /// flags word of the IRET frame after the call.
+    fn call_dosmgr(platform: DosPlatform, subfunction: u16) -> (MockCpu, u16) {
+        let mut dos = NeetanDos::new(platform);
+        let mut memory = MockMemory::with_extended_memory(TEST_MEMORY_SIZE, 0);
+        let mut cpu = MockCpu::default();
+        cpu.set_ax(DOSMGR_FUNCTION);
+        cpu.set_bx(DOSMGR_DEVICE);
+        cpu.set_cx(subfunction);
+        cpu.set_dx(0x0000);
+        cpu.set_es(0x4321);
+        memory.write_word(cpu.iret_flags_addr(), IRET_FLAGS);
+        dos.int2fh_16h_windows_check(&mut cpu, &mut memory);
+        let flags = memory.read_word(cpu.iret_flags_addr());
+        (cpu, flags)
+    }
+
+    #[test]
+    fn fm_towns_gives_no_dosmgr_answer() {
+        for subfunction in [0x0000, 0x0001] {
+            let (cpu, flags) = call_dosmgr(DosPlatform::fm_towns(TOWNS_PLACEMENT), subfunction);
+            assert_eq!(cpu.ax(), DOSMGR_FUNCTION, "CX={subfunction:04X}h");
+            assert_eq!(cpu.bx(), DOSMGR_DEVICE, "CX={subfunction:04X}h");
+            assert_eq!(cpu.cx(), subfunction, "CX={subfunction:04X}h");
+            assert_eq!(cpu.dx(), 0x0000, "CX={subfunction:04X}h");
+            assert_eq!(cpu.es(), 0x4321, "CX={subfunction:04X}h");
+            assert_eq!(flags, IRET_FLAGS, "CX={subfunction:04X}h");
+        }
+    }
+
+    #[test]
+    fn pc98_returns_the_dosmgr_patch_table() {
+        let platform = DosPlatform::pc98();
+        let dos_data_segment = platform.placement.dos_data_segment;
+        let patch_table = platform
+            .data_area
+            .layout()
+            .self_boot
+            .and_then(|self_boot| self_boot.windows_dosmgr)
+            .expect("the PC-98 6.20 self boot has the DOSMGR tables")
+            .patch_table;
+        let (cpu, _) = call_dosmgr(platform, 0x0000);
+        assert_eq!(cpu.cx(), 0x0001);
+        assert_eq!(cpu.es(), dos_data_segment);
+        assert_eq!(cpu.bx(), patch_table);
     }
 }

@@ -93,7 +93,7 @@ const CALL_FAR_CS_INDIRECT: [u8; 3] = [0x2E, 0xFF, 0x1E];
 /// Upper bound of runs of one entry without a guest step in between.
 const IMMEDIATE_RUN_LIMIT: usize = 0x1000;
 
-/// Smallest stack of the guest calls that a layout must leave.
+/// Smallest stack of the guest calls that a data area must leave.
 const MINIMUM_STACK_SIZE: u16 = 0x0380;
 
 save_state::runtime_state! {
@@ -140,9 +140,9 @@ pub(crate) struct GuestCallArea {
 
 impl GuestCallArea {
     /// Returns the area of `state`: the private tail of the swappable data
-    /// area of the layout.
+    /// area of the data area layout.
     pub(crate) fn of(state: &DosState) -> Self {
-        let swappable_data_area = &state.structures().swappable_data_area;
+        let swappable_data_area = &state.data_area().swappable_data_area;
         let base_offset = swappable_data_area.private_tail_offset;
         let size = swappable_data_area.data_offset + swappable_data_area.size - base_offset;
         debug_assert!(size >= STACK_BOTTOM_OFFSET + MINIMUM_STACK_SIZE);
@@ -882,7 +882,7 @@ impl NeetanDos {
                     };
                     self.state.record_extended_error(memory, extended_code);
                     cpu.set_ax(crate::extended_error::function_error_code(
-                        self.state.platform.layout,
+                        self.state.platform.data_area.format(),
                         function,
                         code,
                     ));

@@ -6,7 +6,7 @@
 
 use common::warn;
 
-use crate::{CdAudioState, CdromIo, MemoryAccess};
+use crate::{CdAudioState, CdromIo, FarPointer, MemoryAccess};
 
 /// Default CD-ROM device name on PC-9821.
 const DEFAULT_DEVICE_NAME: &[u8] = b"CD_101  ";
@@ -20,6 +20,8 @@ const STATUS_DONE: u16 = 0x0100;
 const STATUS_BUSY: u16 = 0x0200;
 /// Status word: error flag.
 const STATUS_ERROR: u16 = 0x8000;
+/// Status word of a request with an unknown command or control code.
+pub(crate) const STATUS_UNKNOWN_COMMAND: u16 = STATUS_DONE | STATUS_ERROR | 0x03;
 
 fn status_to_result(status: u16) -> Result<(), u16> {
     if status & STATUS_ERROR != 0 {
@@ -110,6 +112,40 @@ fn write_address(memory: &mut dyn MemoryAccess, address: u32, lba: u32, mode: u8
     }
 }
 
+impl crate::DosState {
+    /// Returns the header of the built-in CD-ROM device in the device chain,
+    /// or `None` for a data area without self boot regions.
+    pub(crate) fn builtin_cdrom_device_header(&self) -> Option<FarPointer> {
+        self.data_area()
+            .self_boot
+            .map(|self_boot| FarPointer::new(self.dos_data_segment(), self_boot.cdrom_device))
+    }
+
+    /// Returns the paragraph aligned mirror header of the built-in CD-ROM
+    /// device, or `None` for a data area without self boot regions.
+    pub(crate) fn builtin_cdrom_mirror_header(&self) -> Option<FarPointer> {
+        self.data_area().self_boot.map(|self_boot| {
+            FarPointer::new(
+                self.dos_data_segment() + self_boot.cdrom_stubs.mirror_header_paragraphs(),
+                0,
+            )
+        })
+    }
+
+    /// Returns true when the SFT entry at `sft_addr` points at the header of
+    /// the built-in CD-ROM device.
+    pub(crate) fn sft_is_builtin_cdrom_device(
+        &self,
+        memory: &dyn MemoryAccess,
+        sft_addr: u32,
+    ) -> bool {
+        self.builtin_cdrom_device_header().is_some_and(|device| {
+            memory.read_word(sft_addr + crate::tables::SFT_ENT_DEV_PTR) == device.offset
+                && memory.read_word(sft_addr + crate::tables::SFT_ENT_DEV_PTR + 2) == device.segment
+        })
+    }
+}
+
 impl crate::NeetanDos {
     /// Returns true when the built-in CD-ROM device driver exists. The
     /// platform serves the machine CD-ROM drive without an MSCDEX
@@ -118,29 +154,40 @@ impl crate::NeetanDos {
         self.state.platform.machine.has_implicit_mscdex() && cdrom.cdrom_present()
     }
 
+    /// Handles the request header that the strategy stub of the built-in
+    /// CD-ROM device stored.
     pub(crate) fn cdrom_device_request(
         &mut self,
         memory: &mut dyn MemoryAccess,
         cdrom: &mut dyn CdromIo,
     ) {
+        let (Some(self_boot), Some(mirror_header)) = (
+            self.state.data_area().self_boot,
+            self.state.builtin_cdrom_mirror_header(),
+        ) else {
+            warn!("MSCDEX: CD-ROM device interrupt without the built-in CD-ROM device");
+            return;
+        };
         let request_pointer = self
             .state
-            .dos_data_address(crate::tables::CDROM_REQUEST_PTR_OFFSET);
+            .dos_data_address(self_boot.cdrom_stubs.request_pointer);
         let request_offset = memory.read_word(request_pointer) as u32;
         let request_segment = memory.read_word(request_pointer + 2) as u32;
         let request_addr = (request_segment << 4) + request_offset;
-        self.handle_device_request(memory, cdrom, request_addr);
+        self.handle_device_request(memory, cdrom, request_addr, mirror_header);
     }
 
     /// Handles a device driver request from INT 2Fh AX=1510h.
     ///
     /// The request header is at `es_bx` (ES:BX linear address).
     /// Format: +0 length, +1 subunit, +2 command, +3..4 status (written back).
+    /// `device` is the header of the device that serves the request.
     pub(crate) fn handle_device_request(
         &mut self,
         memory: &mut dyn MemoryAccess,
         cdrom: &mut dyn CdromIo,
         request_addr: u32,
+        device: FarPointer,
     ) {
         let command = memory.read_byte(request_addr + 2);
         let transfer_offset = memory.read_word(request_addr + 14) as u32;
@@ -149,7 +196,7 @@ impl crate::NeetanDos {
 
         let mut status = match command {
             0 => STATUS_DONE, // INIT: no-op for HLE driver.
-            3 => self.ioctl_input(memory, cdrom, transfer_addr),
+            3 => self.ioctl_input(memory, cdrom, transfer_addr, device),
             7 => STATUS_DONE,
             12 => self.ioctl_output(memory, cdrom, transfer_addr),
             13 => {
@@ -171,7 +218,7 @@ impl crate::NeetanDos {
             }
             _ => {
                 warn!("MSCDEX: unknown device command {command}");
-                STATUS_DONE | STATUS_ERROR | 0x03
+                STATUS_UNKNOWN_COMMAND
             }
         };
 
@@ -182,13 +229,16 @@ impl crate::NeetanDos {
         memory.write_word(request_addr + 3, status);
     }
 
+    /// Reads the IOCTL input control block at `transfer_addr` from the
+    /// CD-ROM device with the header `device`.
     pub(crate) fn read_cdrom_control_channel(
         &self,
         memory: &mut dyn MemoryAccess,
         cdrom: &dyn CdromIo,
         transfer_addr: u32,
+        device: FarPointer,
     ) -> Result<(), u16> {
-        status_to_result(self.ioctl_input(memory, cdrom, transfer_addr))
+        status_to_result(self.ioctl_input(memory, cdrom, transfer_addr, device))
     }
 
     pub(crate) fn write_cdrom_control_channel(
@@ -200,22 +250,21 @@ impl crate::NeetanDos {
         status_to_result(self.ioctl_output(memory, cdrom, transfer_addr))
     }
 
-    /// IOCTL Input (command 3): dispatches by control block code.
+    /// IOCTL Input (command 3): dispatches by control block code. Code 0
+    /// returns `device`, the header of the device that serves the request.
     fn ioctl_input(
         &self,
         memory: &mut dyn MemoryAccess,
         cdrom: &dyn CdromIo,
         transfer_addr: u32,
+        device: FarPointer,
     ) -> u16 {
         let code = memory.read_byte(transfer_addr);
         match code {
             0 => {
                 // Device header address.
-                memory.write_word(transfer_addr + 1, 0);
-                memory.write_word(
-                    transfer_addr + 3,
-                    self.state.dos_data_segment() + crate::tables::CDROM_MIRROR_HEADER_PARAGRAPHS,
-                );
+                memory.write_word(transfer_addr + 1, device.offset);
+                memory.write_word(transfer_addr + 3, device.segment);
                 STATUS_DONE
             }
             1 => {
@@ -369,7 +418,7 @@ impl crate::NeetanDos {
             }
             _ => {
                 warn!("MSCDEX: unknown IOCTL Input code {code}");
-                STATUS_DONE | STATUS_ERROR | 0x03
+                STATUS_UNKNOWN_COMMAND
             }
         }
     }
@@ -406,7 +455,7 @@ impl crate::NeetanDos {
             5 => STATUS_DONE, // Close tray: no-op.
             _ => {
                 warn!("MSCDEX: unknown IOCTL Output code {code}");
-                STATUS_DONE | STATUS_ERROR | 0x03
+                STATUS_UNKNOWN_COMMAND
             }
         }
     }
@@ -430,7 +479,7 @@ impl crate::NeetanDos {
         let raw = match memory.read_byte(request_addr + 24) {
             0 => false,
             1 => true,
-            _ => return STATUS_DONE | STATUS_ERROR | 0x03,
+            _ => return STATUS_UNKNOWN_COMMAND,
         };
         let sector_size: u32 = if raw { 2352 } else { 2048 };
 
@@ -617,7 +666,11 @@ mod tests {
         memory.write_word(REQUEST_ADDRESS + 18, 2);
         memory.write_block(REQUEST_ADDRESS + 20, &start_sector);
         memory.write_byte(REQUEST_ADDRESS + 24, data_read_mode);
-        dos.handle_device_request(&mut memory, &mut cdrom, REQUEST_ADDRESS);
+        let mirror_header = dos
+            .state
+            .builtin_cdrom_mirror_header()
+            .expect("the PC-98 has the built-in CD-ROM device");
+        dos.handle_device_request(&mut memory, &mut cdrom, REQUEST_ADDRESS, mirror_header);
 
         let mut transfer = vec![0u8; 2 * 2352 + 1];
         memory.read_block(TRANSFER_ADDRESS, &mut transfer);
@@ -672,7 +725,97 @@ mod tests {
     #[test]
     fn read_long_rejects_unknown_data_read_mode() {
         let (status, transfer) = send_read_long(0, [4, 0, 0, 0], 2);
-        assert_eq!(status, STATUS_DONE | STATUS_ERROR | 0x03);
+        assert_eq!(status, STATUS_UNKNOWN_COMMAND);
         assert!(transfer.iter().all(|&byte| byte == 0));
+    }
+
+    /// Placement of an FM Towns kernel in the tests.
+    const TOWNS_PLACEMENT: crate::DosPlacement = crate::DosPlacement {
+        dos_data_segment: 0x1076,
+        first_mcb_segment: 0x1800,
+        memory_top_segment: 0xC000,
+    };
+
+    /// Size of the mock memory of the FM Towns tests.
+    const TOWNS_MEMORY_SIZE: usize = 0x2_0000;
+
+    /// Offset of the CD-ROM device header of the PC-98 self boot.
+    const PC98_CDROM_DEVICE_OFFSET: u16 = 0x007E;
+
+    /// IOCTL input command code of a device request.
+    const COMMAND_IOCTL_INPUT: u8 = 3;
+
+    /// Returns a NeetanDos instance of the FM Towns kernel.
+    fn towns_dos() -> crate::NeetanDos {
+        crate::NeetanDos::new(crate::DosPlatform::fm_towns(TOWNS_PLACEMENT))
+    }
+
+    /// Verifies that IOCTL input code 0 returns the header of the device
+    /// that serves the request.
+    #[test]
+    fn ioctl_device_header_address_returns_the_driver_header() {
+        let mut cdrom = marked_cooked_disc();
+        let mut memory = crate::test_support::MockMemory::with_extended_memory(0x10000, 0);
+        let mut dos = towns_dos();
+        let driver_header = FarPointer::new(0x0F00, 0x0048);
+        memory.write_byte(REQUEST_ADDRESS + 2, COMMAND_IOCTL_INPUT);
+        memory.write_word(REQUEST_ADDRESS + 14, TRANSFER_OFFSET);
+        memory.write_word(REQUEST_ADDRESS + 16, TRANSFER_SEGMENT);
+        memory.write_block(TRANSFER_ADDRESS, &[0x00, 0xAA, 0xAA, 0xAA, 0xAA]);
+        dos.handle_device_request(&mut memory, &mut cdrom, REQUEST_ADDRESS, driver_header);
+        assert_eq!(memory.read_word(REQUEST_ADDRESS + 3), STATUS_DONE);
+        assert_eq!(memory.read_word(TRANSFER_ADDRESS + 1), 0x0048);
+        assert_eq!(memory.read_word(TRANSFER_ADDRESS + 3), 0x0F00);
+    }
+
+    /// Verifies that the trap of the built-in CD-ROM device on a data area
+    /// without self boot regions handles no request.
+    #[test]
+    fn cdrom_device_interrupt_without_the_builtin_device_handles_no_request() {
+        let mut cdrom = marked_cooked_disc();
+        let mut memory =
+            crate::test_support::MockMemory::with_extended_memory(TOWNS_MEMORY_SIZE, 0);
+        let mut dos = towns_dos();
+        let pc98_request_pointer = crate::DataArea::Pc98Dos620
+            .layout()
+            .self_boot
+            .expect("the PC-98 6.20 data area has self boot regions")
+            .cdrom_stubs
+            .request_pointer;
+        crate::tables::write_far_ptr(
+            &mut memory,
+            TOWNS_PLACEMENT.dos_data_address(pc98_request_pointer),
+            0x0000,
+            REQUEST_ADDRESS as u16,
+        );
+        memory.write_byte(REQUEST_ADDRESS + 2, COMMAND_IOCTL_INPUT);
+        memory.write_word(REQUEST_ADDRESS + 14, TRANSFER_OFFSET);
+        memory.write_word(REQUEST_ADDRESS + 16, TRANSFER_SEGMENT);
+        dos.cdrom_device_request(&mut memory, &mut cdrom);
+        assert_eq!(memory.read_word(REQUEST_ADDRESS + 3), 0x0000);
+    }
+
+    /// Verifies that only a data area with self boot regions treats an SFT
+    /// entry at the built-in CD-ROM device header as the CD-ROM device.
+    #[test]
+    fn builtin_cdrom_handle_check_needs_the_self_boot_regions() {
+        let sft_address = 0x0100;
+        for (dos, expected) in [
+            (towns_dos(), false),
+            (crate::NeetanDos::new(crate::DosPlatform::pc98()), true),
+        ] {
+            let mut memory =
+                crate::test_support::MockMemory::with_extended_memory(TOWNS_MEMORY_SIZE, 0);
+            crate::tables::write_far_ptr(
+                &mut memory,
+                sft_address + crate::tables::SFT_ENT_DEV_PTR,
+                dos.state.dos_data_segment(),
+                PC98_CDROM_DEVICE_OFFSET,
+            );
+            assert_eq!(
+                dos.state.sft_is_builtin_cdrom_device(&memory, sft_address),
+                expected
+            );
+        }
     }
 }

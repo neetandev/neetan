@@ -5,7 +5,7 @@
 //! NeetanDos therefore loads the whole volume of a guest CD-ROM drive into a
 //! host image: device open (`0Dh`), read long (`80h`) of the primary volume
 //! descriptor (ISO 9660 or High Sierra) for the volume size, read long of
-//! every sector of the volume through the transfer buffer of the layout and
+//! every sector of the volume through the transfer buffer of the data area and
 //! device close (`0Eh`). The FM Towns `MENU_DRV` volume holds 128 KiB.
 //! `DriveCdrom` serves the image to the ISO 9660 code.
 //!
@@ -408,9 +408,9 @@ impl DosState {
         }
     }
 
-    /// Returns the CD transfer buffer of the layout.
+    /// Returns the CD transfer buffer of the data area.
     fn cdrom_transfer_buffer(&self) -> Option<FarPointer> {
-        self.structures()
+        self.data_area()
             .private_area
             .transfer_buffer
             .map(|offset| FarPointer::new(self.dos_data_segment(), offset))

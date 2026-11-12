@@ -194,7 +194,7 @@ impl NeetanDos {
             };
             self.state.record_extended_error(memory, extended_code);
             cpu.set_ax(extended_error::function_error_code(
-                self.state.platform.layout,
+                self.state.platform.data_area.format(),
                 ah,
                 code,
             ));
@@ -926,7 +926,7 @@ impl NeetanDos {
     /// Returns ES:BX pointing to the InDOS byte.
     fn int21h_34h_get_indos(&self, cpu: &mut dyn CpuAccess) {
         cpu.set_es(self.state.dos_data_segment());
-        cpu.set_bx(self.state.structures().swappable_data_area.indos_offset());
+        cpu.set_bx(self.state.data_area().swappable_data_area.indos_offset());
     }
 
     /// AH=35h: Get interrupt vector.
@@ -1186,14 +1186,14 @@ impl NeetanDos {
     }
 
     /// AH=52h: Get List of Lists (SYSVARS pointer).
-    /// Returns ES:BX pointing to SYSVARS in the form of the structure layout.
-    /// The DOS 6.20 layout returns a pointer one paragraph lower with a
+    /// Returns ES:BX pointing to SYSVARS at the place of the data area.
+    /// The PC-98 6.20 data area returns a pointer one paragraph lower with a
     /// non-zero offset, so that programs can read the first-MCB pointer at
     /// SYSVARS-2 via ES:[BX-2] without underflowing BX.
     fn int21h_52h_get_sysvars(&self, cpu: &mut dyn CpuAccess) {
         let (segment, offset) = self
             .state
-            .structures()
+            .data_area()
             .list_of_lists
             .returned_pointer(self.state.dos_data_segment());
         cpu.set_es(segment);
@@ -1201,7 +1201,7 @@ impl NeetanDos {
     }
 
     /// AH=53h: Translate a BIOS Parameter Block (DS:SI) into a Drive
-    /// Parameter Block (ES:BP) of the structure layout.
+    /// Parameter Block (ES:BP) of the structure format.
     fn int21h_53h_create_dpb_from_bpb(
         &self,
         cpu: &mut dyn CpuAccess,
@@ -1890,7 +1890,7 @@ mod tests {
             &mut memory,
             dos.state.list_of_lists_address() + crate::tables::SYSVARS_OFF_SFT_PTR,
             dos.state.dos_data_segment(),
-            dos.state.structures().system_file_table.first_block_offset,
+            dos.state.data_area().first_sft_block_offset,
         );
         dos.write_sft(&mut memory);
         let sft_addr = dos.state.sft_entry_addr(1, &memory).unwrap();

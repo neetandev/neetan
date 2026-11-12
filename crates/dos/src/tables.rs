@@ -1,13 +1,9 @@
 //! DOS internal data structures (SYSVARS, SFT, CDS, DPB layout).
 //!
 //! Field offsets in this module hold for the DOS 3.10 and the DOS 6.20
-//! layout. The `layout` module holds the values that differ between them.
-//!
-//! Offsets named `*_OFFSET` are offsets in the DOS data segment of the
-//! platform placement. They describe the self boot data area that NeetanDos
-//! builds on the PC-98: device headers, the initial CDS array and DPBs, the
-//! disk buffer and the private stubs. The IO.SYS work area lives at segment
-//! 0060h (linear 0x0600).
+//! format. The `layout` module holds the values that differ between them and
+//! the places of the tables in the DOS data segment. The IO.SYS work area
+//! lives at segment 0060h (linear 0x0600).
 
 use crate::MemoryAccess;
 
@@ -26,16 +22,6 @@ pub const SYSVARS_OFF_PROT_FCBS: u32 = 0x1E;
 pub const SYSVARS_OFF_BLOCK_DEVS: u32 = 0x20;
 pub const SYSVARS_OFF_LASTDRIVE: u32 = 0x21;
 pub const SYSVARS_OFF_NUL_HEADER: u32 = 0x22;
-
-// Device headers of the self boot data area. NUL lives inside the list of lists.
-pub const DEV_CON_OFFSET: u16 = 0x0048;
-pub const DEV_CLOCK_OFFSET: u16 = 0x005A;
-pub const DEV_AID_NEC_OFFSET: u16 = 0x006C;
-pub const DEV_CDROM_OFFSET: u16 = 0x007E;
-// XMSXXXX0 device header (conditionally linked when XMS is enabled)
-pub const DEV_XMS_OFFSET: u16 = 0x0D52;
-// EMMXXXX0 device header (conditionally linked when EMS is enabled)
-pub const DEV_EMS_OFFSET: u16 = 0x0D64;
 
 // Device header structure (18 bytes each)
 pub const DEVHDR_SIZE: usize = 18;
@@ -83,6 +69,7 @@ pub const SFT_ENT_NAME: u32 = 0x20;
 pub const SFT_ENT_PSP_OWNER: u32 = 0x31;
 
 // SFT block counts
+/// Number of SFT entries of the first SFT block.
 pub const SFT_INITIAL_COUNT: u16 = 5;
 pub const SFT_EXTENDED_COUNT: u16 = 15;
 
@@ -108,8 +95,7 @@ pub const SFT_DEVINFO_RAW: u16 = 0x0020;
 pub const SFT_DEVINFO_CHAR_DEVICE_COMMON: u16 =
     SFT_DEVINFO_DRIVER_CHAR | SFT_DEVINFO_CHAR | SFT_DEVINFO_EOF;
 
-// CDS (Current Directory Structure) array of the self boot data area
-pub const CDS_OFFSET: u16 = 0x01C0;
+/// Number of entries of the CDS array that the self boot builds.
 pub const CDS_ENTRIES: u32 = 26;
 
 // CDS entry field offsets
@@ -140,8 +126,8 @@ pub const BUFFER_OFF_DRIVE: u32 = 0x04;
 
 // DOS swappable data area returned by INT 21h AX=5D06h. The critical-error
 // flag is at SDA+0, the InDOS flag at SDA+1, both of which Windows DOSMGR
-// expects to find via the patch table. The layout places the SDA and gives
-// its sizes. These field offsets hold for DOS 3.10 and later.
+// expects to find via the patch table. The data area layout places the SDA
+// and gives its sizes. These field offsets hold for DOS 3.10 and later.
 /// Critical error flag byte.
 pub const SDA_OFF_CRITICAL_ERROR: u16 = 0x00;
 /// InDOS flag byte.
@@ -161,31 +147,6 @@ pub const SDA_OFF_CURRENT_DRIVE: u16 = 0x16;
 /// Extended break flag byte.
 pub const SDA_OFF_BREAK_FLAG: u16 = 0x17;
 
-// FCB-SFT
-pub const FCB_SFT_OFFSET: u16 = 0x0D38;
-
-// XMS driver entry stub (14 bytes: JMP +3 / NOP / NOP / NOP / far trap stub).
-// The JMP / three NOP prologue matches the HIMEM.SYS entry-point shape that
-// Windows enhanced mode validates before talking to the XMS provider.
-pub const XMS_ENTRY_STUB_OFFSET: u16 = 0x0D44;
-
-// XMSXXXX0 strategy/interrupt stub (6 bytes: set DONE bit + RETF)
-pub const XMS_DEV_STUB_OFFSET: u16 = 0x0D9F;
-
-// EMS INT 67h trap stub + device name (18 bytes: 10 code + 8 "EMMXXXX0").
-// Applications using the EMS spec's "get interrupt vector" installation
-// check read the INT 67h vector and compare [ES:BX+000Ah] with "EMMXXXX0".
-// IVT[67h] points here; the first 10 bytes are executable code that fires
-// the BIOS HLE trap via OUT 07F0h, AL.
-pub const EMS_INT67_STUB_OFFSET: u16 = 0x0D76;
-
-pub const EMS_PGMAPRET_STUB_OFFSET: u16 = 0x0D88;
-
-// INT 5Ch default NetBIOS handler (1 byte: IRET). Installed by boot init
-// only if the IVT entry is otherwise zero, so a native NetBIOS driver
-// loaded later keeps priority.
-pub const INT5C_STUB_OFFSET: u16 = 0x0D95;
-
 // Size of the counted message buffer of the AX=122Eh retriever.
 pub const ERROR_MESSAGE_BUFFER_SIZE: usize = 0x78;
 
@@ -196,33 +157,6 @@ pub const ERROR_TABLE_SEGMENT: u16 = 0x0001;
 pub const ERROR_TABLE_STANDARD_TOKEN: u16 = 0x0100;
 pub const ERROR_TABLE_PARAMETER_TOKEN: u16 = 0x0200;
 pub const ERROR_TABLE_CRITICAL_TOKEN: u16 = 0x0300;
-
-// Windows enhanced mode DOSMGR support. DOSMGR scans the DOS data segment
-// for these signature blocks during init; the patch table tells it where the
-// kernel keeps the InDOS flag, the save-DS/save-BX scratch words, the
-// critical-section table, and the UMB MCB chain head.
-pub const WINDOWS_DOSMGR_SIGNATURE_BANK_OFFSET: u16 = 0x0E28;
-pub const WINDOWS_DOSMGR_SIGNATURE_BANK_SIZE: usize = 0x100;
-pub const WINDOWS_DOSMGR_PATCH_TABLE_OFFSET: u16 = 0x0F28;
-pub const WINDOWS_DOSMGR_UMB_HEAD_OFFSET: u16 = 0x0F36;
-pub const WINDOWS_DOSMGR_SAVEDS_OFFSET: u16 = 0x0F38;
-pub const WINDOWS_DOSMGR_SAVEBX_OFFSET: u16 = 0x0F3A;
-pub const WINDOWS_DOSMGR_CRITICAL_SECTION_TABLE_OFFSET: u16 = 0x0F3C;
-
-// Synthetic CD-ROM device strategy/interrupt bridge. These live after the
-// DOS swappable data area and before the first MCB. The mirror header is
-// paragraph-aligned so callers that ignore the device-header offset can still
-// call the strategy and interrupt entries through segment:0000.
-pub const CDROM_MIRROR_HEADER_OFFSET: u16 = 0x16D0;
-pub const CDROM_REQUEST_PTR_OFFSET: u16 = 0x16CC;
-pub const CDROM_STRATEGY_STUB_OFFSET: u16 = 0x16E4;
-pub const CDROM_INTERRUPT_STUB_OFFSET: u16 = 0x16F7;
-pub const CDROM_MIRROR_STRATEGY_OFFSET: u16 =
-    CDROM_STRATEGY_STUB_OFFSET - CDROM_MIRROR_HEADER_OFFSET;
-pub const CDROM_MIRROR_INTERRUPT_OFFSET: u16 =
-    CDROM_INTERRUPT_STUB_OFFSET - CDROM_MIRROR_HEADER_OFFSET;
-/// Paragraphs from the DOS data segment to the CD-ROM mirror header.
-pub const CDROM_MIRROR_HEADER_PARAGRAPHS: u16 = CDROM_MIRROR_HEADER_OFFSET / 16;
 
 // MCB structure field offsets (within the 16-byte MCB header)
 pub const MCB_OFF_TYPE: u32 = 0x00;

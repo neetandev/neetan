@@ -103,7 +103,7 @@ pub const TAG_IOSYS_BLOCK: u8 = 6;
 /// Device tag of the RAM disk.
 pub const TAG_RAMDISK: u8 = 7;
 
-/// Offset of the list of lists in the DOS 3.10 layout.
+/// Offset of the list of lists in the FM Towns data area.
 pub const LIST_OF_LISTS_OFFSET: u16 = 0x0026;
 /// The HLE OS ROM image of `utils/dos_towns`.
 pub const OS_ROM_IMAGE: &[u8] = include_bytes!("../../../../utils/dos_towns/osrom.rom");

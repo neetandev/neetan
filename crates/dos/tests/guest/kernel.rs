@@ -15,7 +15,7 @@ use crate::{
     },
 };
 
-/// Offset of the first disk buffer of the 3.10 layout.
+/// Offset of the first disk buffer of the FM Towns data area.
 const BUFFER_OFFSET: u16 = 0x6AA0;
 /// Offset of the first DPB with a largest sector of 400h.
 const FIRST_DPB_OFFSET: u16 = 0x6EB0;

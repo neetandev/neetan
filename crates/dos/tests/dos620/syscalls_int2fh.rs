@@ -349,7 +349,7 @@ fn dos_internal_error_table_addresses() {
     );
     assert_eq!(
         retriever_offset,
-        harness::pc98_structures().private_area.error_retriever_stub,
+        harness::pc98_data_area().private_area.error_retriever_stub,
         "AX=122Eh DL=08h should return the retriever stub offset"
     );
 
@@ -401,7 +401,7 @@ fn dos_internal_error_table_addresses() {
     assert_eq!(segment, harness::dos_data_segment());
     assert_eq!(
         offset,
-        harness::pc98_structures().private_area.error_message_buffer
+        harness::pc98_data_area().private_area.error_message_buffer
     );
     let message_addr = harness::far_to_linear(segment, offset);
     let message_len = harness::read_byte(&machine.bus, message_addr) as usize;
@@ -514,7 +514,7 @@ fn windows_dosmgr_virtual_device_api_reports_dos5_kernel_support() {
     );
     assert_eq!(
         harness::result_word(&machine.bus, 2),
-        tables::WINDOWS_DOSMGR_PATCH_TABLE_OFFSET
+        harness::pc98_windows_dosmgr().patch_table
     );
 
     let patch_table = harness::far_to_linear(
@@ -524,9 +524,7 @@ fn windows_dosmgr_virtual_device_api_reports_dos5_kernel_support() {
     assert_eq!(harness::read_word(&machine.bus, patch_table), 0x1406);
     assert_eq!(
         harness::read_word(&machine.bus, patch_table + 0x06),
-        harness::pc98_structures()
-            .swappable_data_area
-            .indos_offset()
+        harness::pc98_data_area().swappable_data_area.indos_offset()
     );
     assert_eq!(
         harness::read_word(&machine.bus, patch_table + 0x0C),
@@ -534,18 +532,18 @@ fn windows_dosmgr_virtual_device_api_reports_dos5_kernel_support() {
     );
     assert_eq!(
         harness::read_word(&machine.bus, patch_table + 0x0A),
-        tables::WINDOWS_DOSMGR_UMB_HEAD_OFFSET
+        harness::pc98_windows_dosmgr().umb_head
     );
     assert_eq!(
         harness::read_word(
             &machine.bus,
-            harness::dos_data_address(tables::WINDOWS_DOSMGR_CRITICAL_SECTION_TABLE_OFFSET)
+            harness::dos_data_address(harness::pc98_windows_dosmgr().critical_section_table)
         ),
         0x0D0C
     );
     let umb_head = harness::read_word(
         &machine.bus,
-        harness::dos_data_address(tables::WINDOWS_DOSMGR_UMB_HEAD_OFFSET),
+        harness::dos_data_address(harness::pc98_windows_dosmgr().umb_head),
     );
     let umb_head_addr = harness::far_to_linear(umb_head, 0);
     let umb_head_size = harness::read_word(&machine.bus, umb_head_addr + tables::MCB_OFF_SIZE);
@@ -572,13 +570,14 @@ fn windows_dosmgr_virtual_device_api_reports_dos5_kernel_support() {
 fn windows_dosmgr_virtual_device_api_reports_hle_device_driver_size() {
     let mut machine = harness::boot_hle();
     let dos_data_segment = harness::dos_data_segment();
+    let con_device = harness::pc98_self_boot().con_device;
     #[rustfmt::skip]
     let code: &[u8] = &[
         0xB8, (dos_data_segment & 0x00FF) as u8,
               (dos_data_segment >> 8) as u8,     // MOV AX, DOS data segment
         0x8E, 0xC0,                         // MOV ES, AX
-        0xBF, (tables::DEV_CON_OFFSET & 0x00FF) as u8,
-              (tables::DEV_CON_OFFSET >> 8) as u8,   // MOV DI, DEV_CON_OFFSET
+        0xBF, (con_device & 0x00FF) as u8,
+              (con_device >> 8) as u8,      // MOV DI, CON device header
         0xB8, 0x07, 0x16,                   // MOV AX, 1607h
         0xBB, 0x15, 0x00,                   // MOV BX, 0015h
         0xB9, 0x05, 0x00,                   // MOV CX, 0005h
@@ -1391,7 +1390,10 @@ fn mscdex_get_drive_device_list() {
     );
     assert_eq!(
         header_seg,
-        harness::dos_data_segment() + tables::CDROM_MIRROR_HEADER_PARAGRAPHS,
+        harness::dos_data_segment()
+            + harness::pc98_self_boot()
+                .cdrom_stubs
+                .mirror_header_paragraphs(),
         "Device header segment should point at the mirror header, got {header_seg:#06X}"
     );
 }

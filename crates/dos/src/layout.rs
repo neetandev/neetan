@@ -1,17 +1,22 @@
-//! Structure layouts of the DOS internal tables.
+//! Structure formats and data area layouts of the DOS internal tables.
 //!
-//! A layout places the list of lists, the first SFT block and the swappable
-//! data area in the DOS data segment and gives the entry sizes and the field
-//! offsets of the list of lists, the SFT, the CDS, the DPB, the disk buffer
-//! chain and the swappable data area. Field offsets that both layouts share
+//! A structure format belongs to one DOS version. It gives the entry sizes
+//! and the version specific field offsets of the list of lists, the SFT, the
+//! CDS, the DPB and the disk buffer. Field offsets that both formats share
 //! are constants in `tables`.
+//!
+//! A data area layout belongs to one platform. It places the list of lists,
+//! the first SFT block, the swappable data area, the private stubs and
+//! tables of NeetanDos and the regions of the PC-98 self boot in the DOS data
+//! segment.
 //!
 //! NeetanDos reaches the SFT blocks, the CDS array, the DPB chain and the
 //! buffer chain through the pointers of the list of lists. A foreign `IO.SYS`
 //! may allocate and relink these tables at any time.
 //!
-//! The DOS 6.20 layout is the layout of NeetanDos on the PC-98. The DOS 3.10
-//! layout is the layout of the kernel under the FM Towns `IO.SYS`.
+//! The DOS 6.20 format and the PC-98 6.20 data area belong to the self boot
+//! of NeetanDos on the PC-98. The DOS 3.10 format and the FM Towns data area
+//! belong to the kernel under the FM Towns `IO.SYS`.
 
 use crate::{MemoryAccess, filesystem::fat_bpb::Bpb};
 
@@ -31,9 +36,9 @@ const MAX_SFT_INDEX: u16 = 0xFE;
 pub(crate) const SFT_INDEX_COUNT: usize = MAX_SFT_INDEX as usize + 1;
 
 save_state::runtime_state_enum! {
-    /// DOS version whose internal structure layout NeetanDos writes and reads.
+    /// DOS version whose structure format NeetanDos writes and reads.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub enum DosLayout {
+    pub enum DosFormat {
         /// MS-DOS 3.10 as loaded by the FM Towns `IO.SYS`.
         Dos310 = 0,
         /// MS-DOS 6.20 as NeetanDos builds it on the PC-98.
@@ -41,12 +46,44 @@ save_state::runtime_state_enum! {
     }
 }
 
-impl DosLayout {
-    /// Returns the structure layout of this DOS version.
-    pub const fn structures(self) -> &'static StructureLayout {
+impl DosFormat {
+    /// Returns the structure format of this DOS version.
+    pub const fn structures(self) -> &'static StructureFormat {
         match self {
-            Self::Dos310 => &DOS310_LAYOUT,
-            Self::Dos620 => &DOS620_LAYOUT,
+            Self::Dos310 => &DOS310_FORMAT,
+            Self::Dos620 => &DOS620_FORMAT,
+        }
+    }
+}
+
+save_state::runtime_state_enum! {
+    /// Platform whose data area layout NeetanDos writes and reads.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum DataArea {
+        /// Kernel under the FM Towns `IO.SYS`.
+        FmTowns = 0,
+        /// MS-DOS 6.20 self boot of NeetanDos on the PC-98.
+        Pc98Dos620 = 1,
+    }
+}
+
+impl DataArea {
+    /// Every data area.
+    pub const ALL: [Self; 2] = [Self::FmTowns, Self::Pc98Dos620];
+
+    /// Returns the structure format of the DOS version of this platform.
+    pub const fn format(self) -> DosFormat {
+        match self {
+            Self::FmTowns => DosFormat::Dos310,
+            Self::Pc98Dos620 => DosFormat::Dos620,
+        }
+    }
+
+    /// Returns the data area layout of this platform.
+    pub const fn layout(self) -> &'static DataAreaLayout {
+        match self {
+            Self::FmTowns => &FM_TOWNS_DATA_AREA,
+            Self::Pc98Dos620 => &PC98_DOS620_DATA_AREA,
         }
     }
 }
@@ -98,36 +135,21 @@ impl FieldWidth {
     }
 }
 
-/// Place and offsets of every DOS internal table of one DOS version.
+/// Entry sizes and version specific field offsets of the DOS internal
+/// tables of one DOS version.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct StructureLayout {
-    /// List of lists (`INT 21h AH=52h`).
-    pub list_of_lists: ListOfListsLayout,
-    /// System file table blocks.
-    pub system_file_table: SystemFileTableLayout,
-    /// Current directory structure array.
-    pub current_directory: CurrentDirectoryLayout,
+pub struct StructureFormat {
+    /// Fields of DOS 4.0 and later behind the NUL device header of the list
+    /// of lists (`INT 21h AH=52h`).
+    pub list_of_lists_extension: Option<ListOfListsExtension>,
+    /// System file table entries.
+    pub system_file_table: SystemFileTableFormat,
+    /// Current directory structure entries.
+    pub current_directory: CurrentDirectoryFormat,
     /// Drive parameter blocks.
-    pub drive_parameter_block: DriveParameterBlockLayout,
-    /// Disk buffer chain.
-    pub disk_buffer: DiskBufferLayout,
-    /// Swappable data area (`INT 21h AX=5D06h`).
-    pub swappable_data_area: SwappableDataAreaLayout,
-    /// Private stubs and tables of NeetanDos in the DOS data segment.
-    pub private_area: PrivateAreaLayout,
-}
-
-/// Place of the list of lists and its version specific fields.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ListOfListsLayout {
-    /// Offset of the list of lists in the DOS data segment.
-    pub data_offset: u16,
-    /// Paragraphs that `INT 21h AH=52h` subtracts from the DOS data segment.
-    /// The returned offset grows by the same amount. A bias keeps the first
-    /// MCB word below the list of lists addressable through `ES:[BX-2]`.
-    pub pointer_paragraph_bias: u16,
-    /// Fields of DOS 4.0 and later behind the NUL device header.
-    pub extension: Option<ListOfListsExtension>,
+    pub drive_parameter_block: DriveParameterBlockFormat,
+    /// Disk buffer headers.
+    pub disk_buffer: DiskBufferFormat,
 }
 
 /// Fields of the list of lists that DOS 4.0 and later add behind the NUL
@@ -150,12 +172,9 @@ pub struct ListOfListsExtension {
     pub extended_memory_kb: u32,
 }
 
-/// Place, entry size and version specific entry fields of the system file
-/// table.
+/// Entry size and version specific entry fields of the system file table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SystemFileTableLayout {
-    /// Offset of the first SFT block header in the DOS data segment.
-    pub first_block_offset: u16,
+pub struct SystemFileTableFormat {
     /// Size of one SFT entry in bytes.
     pub entry_size: u32,
     /// Offset of the word absolute cluster of the last access.
@@ -168,14 +187,14 @@ pub struct SystemFileTableLayout {
 
 /// Entry size of the current directory structure.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct CurrentDirectoryLayout {
+pub struct CurrentDirectoryFormat {
     /// Size of one CDS entry in bytes.
     pub entry_size: u32,
 }
 
 /// Size and version specific fields of a drive parameter block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct DriveParameterBlockLayout {
+pub struct DriveParameterBlockFormat {
     /// Size of one DPB in bytes.
     pub size: u32,
     /// Offset of the sectors per FAT field.
@@ -200,9 +219,36 @@ pub struct DriveParameterBlockLayout {
 
 /// Header size of a disk buffer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct DiskBufferLayout {
+pub struct DiskBufferFormat {
     /// Size of the buffer header in front of the sector data.
     pub header_size: u32,
+}
+
+/// Places of the DOS tables of one platform in the DOS data segment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DataAreaLayout {
+    /// List of lists (`INT 21h AH=52h`).
+    pub list_of_lists: ListOfListsLayout,
+    /// Offset of the first SFT block header.
+    pub first_sft_block_offset: u16,
+    /// Swappable data area (`INT 21h AX=5D06h`).
+    pub swappable_data_area: SwappableDataAreaLayout,
+    /// Private stubs and tables of NeetanDos.
+    pub private_area: PrivateAreaLayout,
+    /// Regions that the PC-98 self boot builds. `None` for a platform whose
+    /// `IO.SYS` builds the device chain and the drive tables.
+    pub self_boot: Option<SelfBootLayout>,
+}
+
+/// Place of the list of lists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ListOfListsLayout {
+    /// Offset of the list of lists in the DOS data segment.
+    pub data_offset: u16,
+    /// Paragraphs that `INT 21h AH=52h` subtracts from the DOS data segment.
+    /// The returned offset grows by the same amount. A bias keeps the first
+    /// MCB word below the list of lists addressable through `ES:[BX-2]`.
+    pub pointer_paragraph_bias: u16,
 }
 
 /// Place and sizes of the swappable data area.
@@ -232,16 +278,109 @@ pub struct PrivateAreaLayout {
     pub error_retriever_stub: u16,
     /// Counted message buffer of the error message retriever.
     pub error_message_buffer: u16,
-    /// Interrupt stubs of the kernel entry. `None` for a layout without one.
+    /// Interrupt stubs of the kernel entry. `None` for a data area without one.
     pub kernel_stubs: Option<u16>,
     /// Transfer buffer of one CD sector for the guest CD-ROM drives. `None`
-    /// for a layout without one.
+    /// for a data area without one.
     pub transfer_buffer: Option<u16>,
     /// First disk buffer and the DPBs behind it. The first MCB follows them.
     pub system_data: u16,
     /// Free range in front of the system data that holds the DPBs when all
-    /// of them fit. `None` for a layout without one.
+    /// of them fit. `None` for a data area without one.
     pub parameter_block_window: Option<DataRange>,
+}
+
+/// Places of the device headers, the drive tables and the stubs that the
+/// PC-98 self boot writes into the DOS data segment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SelfBootLayout {
+    /// `CON` device header.
+    pub con_device: u16,
+    /// `CLOCK` device header outside the device chain. The list of lists
+    /// points at it.
+    pub clock_device: u16,
+    /// `$AID#NEC` device header.
+    pub aid_nec_device: u16,
+    /// Device header of the CD-ROM driver.
+    pub cdrom_device: u16,
+    /// `XMSXXXX0` device header.
+    pub xms_device: u16,
+    /// `EMMXXXX0` device header.
+    pub ems_device: u16,
+    /// CDS array with one entry per drive letter.
+    pub current_directory_array: u16,
+    /// Header of the FCB SFT block without entries.
+    pub fcb_system_file_table: u16,
+    /// XMS driver entry: the HIMEM.SYS prologue in front of a far trap stub.
+    pub xms_entry_stub: u16,
+    /// Strategy and interrupt routine of the `XMSXXXX0` and `EMMXXXX0`
+    /// device headers.
+    pub xms_device_stub: u16,
+    /// `INT 67h` trap stub followed by the device name `EMMXXXX0`.
+    pub ems_interrupt_stub: u16,
+    /// Trap stub that the target of the EMS alter page map and call
+    /// function returns through.
+    pub ems_page_map_return_stub: u16,
+    /// Default NetBIOS handler (`IRET`) of `INT 5Ch`.
+    pub netbios_stub: u16,
+    /// Tables of the Windows enhanced mode DOSMGR. `None` for a data area
+    /// whose kernel offers no DOSMGR interface.
+    pub windows_dosmgr: Option<WindowsDosmgrLayout>,
+    /// Stubs and the mirror header of the CD-ROM device.
+    pub cdrom_stubs: CdromStubLayout,
+}
+
+/// Places of the tables of the Windows enhanced mode DOSMGR. DOSMGR scans
+/// the DOS data segment for the signature blocks. The patch table tells it
+/// where the kernel keeps the InDOS flag, the save-DS and save-BX scratch
+/// words, the critical section table and the UMB MCB chain head.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WindowsDosmgrLayout {
+    /// Signature blocks of the MS-DOS 6.20 kernel.
+    pub signature_bank: DataRange,
+    /// Patch table of `INT 2Fh AX=1607h BX=0015h CX=0000h`.
+    pub patch_table: u16,
+    /// Word segment of the UMB MCB chain head.
+    pub umb_head: u16,
+    /// Scratch word of the saved DS.
+    pub saved_data_segment: u16,
+    /// Scratch word of the saved BX.
+    pub saved_bx: u16,
+    /// Critical section table.
+    pub critical_section_table: u16,
+}
+
+/// Places of the strategy and interrupt bridge of the CD-ROM device. The
+/// mirror header is paragraph aligned. Callers that ignore the device header
+/// offset still reach the strategy and interrupt entries through
+/// `segment:0000`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CdromStubLayout {
+    /// Far pointer to the active request header that the strategy stub sets.
+    pub request_pointer: u16,
+    /// Mirror of the CD-ROM device header.
+    pub mirror_header: u16,
+    /// Strategy routine.
+    pub strategy_stub: u16,
+    /// Interrupt routine.
+    pub interrupt_stub: u16,
+}
+
+impl CdromStubLayout {
+    /// Returns the strategy routine offset relative to the mirror header.
+    pub const fn mirror_strategy_offset(&self) -> u16 {
+        self.strategy_stub - self.mirror_header
+    }
+
+    /// Returns the interrupt routine offset relative to the mirror header.
+    pub const fn mirror_interrupt_offset(&self) -> u16 {
+        self.interrupt_stub - self.mirror_header
+    }
+
+    /// Returns the paragraphs from the DOS data segment to the mirror header.
+    pub const fn mirror_header_paragraphs(&self) -> u16 {
+        self.mirror_header / PARAGRAPH_BYTES
+    }
 }
 
 /// Range of bytes in the DOS data segment.
@@ -253,30 +392,25 @@ pub struct DataRange {
     pub size: u16,
 }
 
-/// DOS 6.20 layout of NeetanDos on the PC-98.
-pub const DOS620_LAYOUT: StructureLayout = StructureLayout {
-    list_of_lists: ListOfListsLayout {
-        data_offset: 0x0000,
-        pointer_paragraph_bias: 1,
-        extension: Some(ListOfListsExtension {
-            join_drive_count: 0x34,
-            setver_list: 0x37,
-            buffer_count: 0x3F,
-            lookahead_buffer_count: 0x41,
-            boot_drive: 0x43,
-            dword_move_flag: 0x44,
-            extended_memory_kb: 0x45,
-        }),
-    },
-    system_file_table: SystemFileTableLayout {
-        first_block_offset: 0x0090,
+/// DOS 6.20 structure format of NeetanDos on the PC-98.
+pub const DOS620_FORMAT: StructureFormat = StructureFormat {
+    list_of_lists_extension: Some(ListOfListsExtension {
+        join_drive_count: 0x34,
+        setver_list: 0x37,
+        buffer_count: 0x3F,
+        lookahead_buffer_count: 0x41,
+        boot_drive: 0x43,
+        dword_move_flag: 0x44,
+        extended_memory_kb: 0x45,
+    }),
+    system_file_table: SystemFileTableFormat {
         entry_size: 0x3B,
         last_cluster: 0x35,
         directory_sector: 0x1B,
         directory_sector_width: FieldWidth::DoubleWord,
     },
-    current_directory: CurrentDirectoryLayout { entry_size: 0x58 },
-    drive_parameter_block: DriveParameterBlockLayout {
+    current_directory: CurrentDirectoryFormat { entry_size: 0x58 },
+    drive_parameter_block: DriveParameterBlockFormat {
         size: 0x21,
         sectors_per_fat: 0x0F,
         sectors_per_fat_width: FieldWidth::Word,
@@ -290,7 +424,49 @@ pub const DOS620_LAYOUT: StructureLayout = StructureLayout {
     },
     // DOS 5.0 and later buffer header size. No NeetanDos code reads it on
     // the PC-98.
-    disk_buffer: DiskBufferLayout { header_size: 0x14 },
+    disk_buffer: DiskBufferFormat { header_size: 0x14 },
+};
+
+/// DOS 3.10 structure format of the kernel under the FM Towns `IO.SYS`.
+///
+/// The list of lists has no fields behind the NUL header. A CDS entry holds
+/// the root length at `4Fh`.
+pub const DOS310_FORMAT: StructureFormat = StructureFormat {
+    list_of_lists_extension: None,
+    system_file_table: SystemFileTableFormat {
+        entry_size: 0x35,
+        last_cluster: 0x1B,
+        directory_sector: 0x1D,
+        directory_sector_width: FieldWidth::Word,
+    },
+    current_directory: CurrentDirectoryFormat { entry_size: 0x51 },
+    drive_parameter_block: DriveParameterBlockFormat {
+        size: 0x20,
+        sectors_per_fat: 0x0F,
+        sectors_per_fat_width: FieldWidth::Byte,
+        first_root_sector: 0x10,
+        device: 0x12,
+        media_descriptor: 0x16,
+        access_flag: 0x17,
+        next: 0x18,
+        free_search_cluster: 0x1C,
+        free_cluster_count: 0x1E,
+    },
+    disk_buffer: DiskBufferFormat { header_size: 0x10 },
+};
+
+/// Data area of the MS-DOS 6.20 self boot of NeetanDos on the PC-98.
+///
+/// The list of lists starts the segment. The device headers, the first SFT
+/// block and the CDS array follow it. The DPB window, the FCB SFT, the stubs
+/// and the DOSMGR tables lie in front of the SDA. The CD-ROM stubs follow
+/// the SDA and end at the system data.
+pub const PC98_DOS620_DATA_AREA: DataAreaLayout = DataAreaLayout {
+    list_of_lists: ListOfListsLayout {
+        data_offset: 0x0000,
+        pointer_paragraph_bias: 1,
+    },
+    first_sft_block_offset: 0x0090,
     swappable_data_area: SwappableDataAreaLayout {
         data_offset: 0x0F40,
         size: 0x078C,
@@ -304,7 +480,6 @@ pub const DOS620_LAYOUT: StructureLayout = StructureLayout {
         error_message_buffer: 0x0DA8,
         kernel_stubs: None,
         transfer_buffer: None,
-        // End of the self boot area, the CD-ROM device stubs end at `1700h`.
         system_data: 0x1700,
         // Between the CDS array (`01C0h`, 26 entries of `58h`) and the FCB
         // SFT at `0D38h`. It holds 19 DPBs.
@@ -313,39 +488,54 @@ pub const DOS620_LAYOUT: StructureLayout = StructureLayout {
             size: 0x0288,
         }),
     },
+    self_boot: Some(SelfBootLayout {
+        con_device: 0x0048,
+        clock_device: 0x005A,
+        aid_nec_device: 0x006C,
+        cdrom_device: 0x007E,
+        xms_device: 0x0D52,
+        ems_device: 0x0D64,
+        current_directory_array: 0x01C0,
+        fcb_system_file_table: 0x0D38,
+        xms_entry_stub: 0x0D44,
+        xms_device_stub: 0x0D9F,
+        ems_interrupt_stub: 0x0D76,
+        ems_page_map_return_stub: 0x0D88,
+        netbios_stub: 0x0D95,
+        windows_dosmgr: Some(WindowsDosmgrLayout {
+            signature_bank: DataRange {
+                offset: 0x0E28,
+                size: 0x0100,
+            },
+            patch_table: 0x0F28,
+            umb_head: 0x0F36,
+            saved_data_segment: 0x0F38,
+            saved_bx: 0x0F3A,
+            critical_section_table: 0x0F3C,
+        }),
+        cdrom_stubs: CdromStubLayout {
+            request_pointer: 0x16CC,
+            mirror_header: 0x16D0,
+            strategy_stub: 0x16E4,
+            interrupt_stub: 0x16F7,
+        },
+    }),
 };
 
-/// DOS 3.10 layout of the kernel under the FM Towns `IO.SYS`.
+/// Data area of the kernel under the FM Towns `IO.SYS`.
 ///
-/// The list of lists has no fields behind the NUL header. A CDS entry holds
-/// the root length at `4Fh`.
-pub const DOS310_LAYOUT: StructureLayout = StructureLayout {
+/// The list of lists, the first SFT block and the SDA lie where the real
+/// MS-DOS 3.10 kernel keeps them. `IO.SYS` builds the device chain and the
+/// drive tables. The private window `0A10h`-`0B7Fh` lies behind the SDA and
+/// in front of the CTL.SYS pattern at `11D2h`. The transfer buffer lies
+/// behind the word `425Eh` that MENU_DRV changes. The real kernel keeps its
+/// first disk buffer at `6AA0h`.
+pub const FM_TOWNS_DATA_AREA: DataAreaLayout = DataAreaLayout {
     list_of_lists: ListOfListsLayout {
         data_offset: 0x0026,
         pointer_paragraph_bias: 0,
-        extension: None,
     },
-    system_file_table: SystemFileTableLayout {
-        first_block_offset: 0x0098,
-        entry_size: 0x35,
-        last_cluster: 0x1B,
-        directory_sector: 0x1D,
-        directory_sector_width: FieldWidth::Word,
-    },
-    current_directory: CurrentDirectoryLayout { entry_size: 0x51 },
-    drive_parameter_block: DriveParameterBlockLayout {
-        size: 0x20,
-        sectors_per_fat: 0x0F,
-        sectors_per_fat_width: FieldWidth::Byte,
-        first_root_sector: 0x10,
-        device: 0x12,
-        media_descriptor: 0x16,
-        access_flag: 0x17,
-        next: 0x18,
-        free_search_cluster: 0x1C,
-        free_cluster_count: 0x1E,
-    },
-    disk_buffer: DiskBufferLayout { header_size: 0x10 },
+    first_sft_block_offset: 0x0098,
     swappable_data_area: SwappableDataAreaLayout {
         data_offset: 0x02CE,
         size: 0x0738,
@@ -353,10 +543,6 @@ pub const DOS310_LAYOUT: StructureLayout = StructureLayout {
         // CTL.SYS takes the addresses of the words at `051Eh`-`0585h`.
         private_tail_offset: 0x0586,
     },
-    // The window `0A10h`-`0B7Fh` lies behind the SDA and in front of the
-    // CTL.SYS pattern at `11D2h`. The transfer buffer lies behind the word
-    // `425Eh` that MENU_DRV changes. The real kernel keeps its first disk
-    // buffer at `6AA0h`.
     private_area: PrivateAreaLayout {
         dbcs_table: 0x0A10,
         critical_error_stub: 0x0A18,
@@ -367,6 +553,7 @@ pub const DOS310_LAYOUT: StructureLayout = StructureLayout {
         system_data: 0x6AA0,
         parameter_block_window: None,
     },
+    self_boot: None,
 };
 
 impl ListOfListsLayout {
@@ -380,7 +567,7 @@ impl ListOfListsLayout {
     }
 }
 
-impl SystemFileTableLayout {
+impl SystemFileTableFormat {
     /// Returns the directory sector and the entry index in that sector of the
     /// SFT entry at `entry_address`.
     pub fn read_directory_location(
@@ -507,9 +694,9 @@ impl DpbGeometry {
     }
 
     /// Writes the geometry fields of a DPB at `address`.
-    pub fn write(&self, memory: &mut dyn MemoryAccess, address: u32, layout: &StructureLayout) {
+    pub fn write(&self, memory: &mut dyn MemoryAccess, address: u32, format: &StructureFormat) {
         use crate::tables::*;
-        let dpb = &layout.drive_parameter_block;
+        let dpb = &format.drive_parameter_block;
         memory.write_word(address + DPB_OFF_BYTES_PER_SECTOR, self.bytes_per_sector);
         memory.write_byte(address + DPB_OFF_CLUSTER_MASK, self.cluster_mask);
         memory.write_byte(address + DPB_OFF_CLUSTER_SHIFT, self.cluster_shift);
@@ -528,9 +715,9 @@ impl DpbGeometry {
     }
 
     /// Reads the geometry fields of the DPB at `address`.
-    pub fn read(memory: &dyn MemoryAccess, address: u32, layout: &StructureLayout) -> Self {
+    pub fn read(memory: &dyn MemoryAccess, address: u32, format: &StructureFormat) -> Self {
         use crate::tables::*;
-        let dpb = &layout.drive_parameter_block;
+        let dpb = &format.drive_parameter_block;
         Self {
             bytes_per_sector: memory.read_word(address + DPB_OFF_BYTES_PER_SECTOR),
             cluster_mask: memory.read_byte(address + DPB_OFF_CLUSTER_MASK),
@@ -570,7 +757,7 @@ pub(crate) fn far_pointer_address((segment, offset): (u16, u16)) -> u32 {
 pub(crate) fn system_file_table_entry_address(
     memory: &dyn MemoryAccess,
     list_of_lists_address: u32,
-    layout: &StructureLayout,
+    format: &StructureFormat,
     index: u8,
 ) -> Option<u32> {
     use crate::tables::{
@@ -588,7 +775,7 @@ pub(crate) fn system_file_table_entry_address(
             return Some(
                 block_address
                     + SFT_HEADER_SIZE
-                    + u32::from(remaining) * layout.system_file_table.entry_size,
+                    + u32::from(remaining) * format.system_file_table.entry_size,
             );
         }
         remaining -= count;
@@ -623,14 +810,14 @@ pub(crate) fn system_file_table_entry_count(
 pub(crate) fn current_directory_entry_address(
     memory: &dyn MemoryAccess,
     list_of_lists_address: u32,
-    layout: &StructureLayout,
+    format: &StructureFormat,
     drive_index: u8,
 ) -> u32 {
     let array = read_far_pointer(
         memory,
         list_of_lists_address + crate::tables::SYSVARS_OFF_CDS_PTR,
     );
-    far_pointer_address(array) + u32::from(drive_index) * layout.current_directory.entry_size
+    far_pointer_address(array) + u32::from(drive_index) * format.current_directory.entry_size
 }
 
 #[cfg(test)]
@@ -638,7 +825,40 @@ mod tests {
     use super::*;
     use crate::{tables::*, test_support::MockMemory};
 
-    const LAYOUTS: [DosLayout; 2] = [DosLayout::Dos310, DosLayout::Dos620];
+    /// Highest tag that the completeness test of `DataArea::ALL` decodes.
+    const HIGHEST_TESTED_TAG: u32 = 0xFF;
+
+    /// Size of a word field in bytes.
+    const WORD_SIZE: u32 = size_of::<u16>() as u32;
+
+    /// Size of a far pointer in bytes.
+    const FAR_POINTER_SIZE: u32 = 2 * WORD_SIZE;
+
+    /// Returns the structure formats of every data area.
+    fn formats() -> [DosFormat; DataArea::ALL.len()] {
+        DataArea::ALL.map(DataArea::format)
+    }
+
+    /// Returns the size of `bytes` as a region size.
+    fn byte_count(bytes: &[u8]) -> u32 {
+        bytes.len() as u32
+    }
+
+    #[test]
+    fn all_holds_every_data_area_once() {
+        let mut decoded_count = 0;
+        for tag in 0..=HIGHEST_TESTED_TAG {
+            let mut encoded = Vec::new();
+            save_state::StateEncode::encode_state(&tag, &mut encoded);
+            let mut decoder = save_state::StateDecoder::new(&encoded, encoded.len());
+            if let Ok(data_area) = <DataArea as save_state::StateDecode>::decode_state(&mut decoder)
+            {
+                assert!(DataArea::ALL.contains(&data_area), "{data_area:?}");
+                decoded_count += 1;
+            }
+        }
+        assert_eq!(decoded_count, DataArea::ALL.len());
+    }
 
     /// Size of the conventional memory of the mock.
     const TEST_MEMORY_SIZE: usize = 0x10_0000;
@@ -661,13 +881,13 @@ mod tests {
     }
 
     #[test]
-    fn dpb_geometry_round_trips_in_both_layouts() {
-        for layout in LAYOUTS {
+    fn dpb_geometry_round_trips_in_both_formats() {
+        for format in formats() {
             let mut memory = MockMemory::with_extended_memory(TEST_MEMORY_SIZE, 0);
             let geometry = sample_geometry();
-            geometry.write(&mut memory, 0x1000, layout.structures());
+            geometry.write(&mut memory, 0x1000, format.structures());
             assert_eq!(
-                DpbGeometry::read(&memory, 0x1000, layout.structures()),
+                DpbGeometry::read(&memory, 0x1000, format.structures()),
                 geometry
             );
         }
@@ -675,8 +895,8 @@ mod tests {
 
     #[test]
     fn dpb_geometry_stays_inside_the_block() {
-        for layout in LAYOUTS {
-            let structures = layout.structures();
+        for format in formats() {
+            let structures = format.structures();
             let mut memory = MockMemory::with_extended_memory(TEST_MEMORY_SIZE, 0);
             let geometry = DpbGeometry {
                 bytes_per_sector: 0xFFFF,
@@ -699,7 +919,7 @@ mod tests {
                 assert_eq!(
                     memory.read_byte(0x1000 + offset),
                     0,
-                    "{layout:?} {offset:#x}"
+                    "{format:?} {offset:#x}"
                 );
             }
             assert_eq!(memory.read_byte(0x1000 + dpb.size), 0);
@@ -708,7 +928,7 @@ mod tests {
 
     #[test]
     fn dos310_dpb_stores_a_byte_sectors_per_fat() {
-        let structures = DosLayout::Dos310.structures();
+        let structures = DosFormat::Dos310.structures();
         let mut memory = MockMemory::with_extended_memory(TEST_MEMORY_SIZE, 0);
         sample_geometry().write(&mut memory, 0x1000, structures);
         assert_eq!(memory.read_byte(0x1000 + 0x0F), 0x02);
@@ -718,7 +938,7 @@ mod tests {
 
     #[test]
     fn dos620_dpb_stores_a_word_sectors_per_fat() {
-        let structures = DosLayout::Dos620.structures();
+        let structures = DosFormat::Dos620.structures();
         let mut memory = MockMemory::with_extended_memory(TEST_MEMORY_SIZE, 0);
         sample_geometry().write(&mut memory, 0x1000, structures);
         assert_eq!(memory.read_word(0x1000 + 0x0F), 0x0002);
@@ -728,8 +948,8 @@ mod tests {
 
     #[test]
     fn version_specific_fields_lie_inside_their_structures() {
-        for layout in LAYOUTS {
-            let structures = layout.structures();
+        for format in formats() {
+            let structures = format.structures();
             let dpb = &structures.drive_parameter_block;
             for offset in [
                 dpb.sectors_per_fat,
@@ -741,7 +961,7 @@ mod tests {
                 dpb.free_search_cluster + 1,
                 dpb.free_cluster_count + 1,
             ] {
-                assert!(offset < dpb.size, "{layout:?} DPB {offset:#x}");
+                assert!(offset < dpb.size, "{format:?} DPB {offset:#x}");
             }
             let cds = &structures.current_directory;
             assert!(CDS_OFF_ROOT_LENGTH + 1 < cds.entry_size);
@@ -757,7 +977,9 @@ mod tests {
             assert!(sft.directory_sector + directory_sector_bytes <= SFT_ENT_DIR_INDEX);
             let buffer = &structures.disk_buffer;
             assert!(BUFFER_OFF_DRIVE < buffer.header_size);
-            let sda = &structures.swappable_data_area;
+        }
+        for data_area in DataArea::ALL {
+            let sda = &data_area.layout().swappable_data_area;
             assert!(u32::from(SDA_OFF_BREAK_FLAG) < u32::from(sda.always_swapped_size));
             assert!(sda.always_swapped_size < sda.size);
             assert!(sda.private_tail_offset > sda.data_offset + sda.always_swapped_size);
@@ -766,30 +988,31 @@ mod tests {
     }
 
     #[test]
-    fn dos310_places_the_tables_of_the_contract() {
-        let structures = DosLayout::Dos310.structures();
-        assert_eq!(structures.list_of_lists.data_offset, 0x0026);
+    fn fm_towns_data_area_places_the_tables_of_the_contract() {
+        let structures = DataArea::FmTowns.format().structures();
+        let data_area = DataArea::FmTowns.layout();
+        assert_eq!(data_area.list_of_lists.data_offset, 0x0026);
         assert_eq!(
-            structures.list_of_lists.returned_pointer(0x1076),
+            data_area.list_of_lists.returned_pointer(0x1076),
             (0x1076, 0x0026)
         );
-        assert_eq!(structures.system_file_table.first_block_offset, 0x0098);
+        assert_eq!(data_area.first_sft_block_offset, 0x0098);
         assert_eq!(structures.system_file_table.entry_size, 0x35);
         assert_eq!(structures.current_directory.entry_size, 0x51);
         assert_eq!(structures.drive_parameter_block.size, 0x20);
         assert_eq!(structures.drive_parameter_block.next, 0x18);
         assert_eq!(structures.disk_buffer.header_size, 0x10);
-        assert_eq!(structures.swappable_data_area.data_offset, 0x02CE);
-        assert_eq!(structures.swappable_data_area.indos_offset(), 0x02CF);
-        assert_eq!(structures.swappable_data_area.size, 0x0738);
-        assert_eq!(structures.swappable_data_area.always_swapped_size, 0x0018);
-        let nul_offset = structures.list_of_lists.data_offset as u32 + SYSVARS_OFF_NUL_HEADER;
+        assert_eq!(data_area.swappable_data_area.data_offset, 0x02CE);
+        assert_eq!(data_area.swappable_data_area.indos_offset(), 0x02CF);
+        assert_eq!(data_area.swappable_data_area.size, 0x0738);
+        assert_eq!(data_area.swappable_data_area.always_swapped_size, 0x0018);
+        let nul_offset = data_area.list_of_lists.data_offset as u32 + SYSVARS_OFF_NUL_HEADER;
         assert_eq!(nul_offset, 0x0048);
     }
 
     #[test]
     fn dos310_sft_entry_keeps_the_dos_3_fields() {
-        let sft = &DosLayout::Dos310.structures().system_file_table;
+        let sft = &DosFormat::Dos310.structures().system_file_table;
         let mut memory = MockMemory::with_extended_memory(TEST_MEMORY_SIZE, 0);
         sft.write_cluster_position(&mut memory, 0x1000, 0x0003, 0x0123);
         sft.write_directory_location(&mut memory, 0x1000, 0x0001_2345, 0x07);
@@ -803,7 +1026,7 @@ mod tests {
 
     #[test]
     fn dos620_sft_entry_uses_the_dos_4_fields() {
-        let sft = &DosLayout::Dos620.structures().system_file_table;
+        let sft = &DosFormat::Dos620.structures().system_file_table;
         let mut memory = MockMemory::with_extended_memory(TEST_MEMORY_SIZE, 0);
         sft.write_cluster_position(&mut memory, 0x1000, 0x0003, 0x0123);
         sft.write_directory_location(&mut memory, 0x1000, 0x0001_2345, 0x07);
@@ -831,18 +1054,18 @@ mod tests {
     }
 
     #[test]
-    fn dos620_returns_the_list_of_lists_one_paragraph_lower() {
-        let structures = DosLayout::Dos620.structures();
+    fn pc98_dos620_data_area_returns_the_list_of_lists_one_paragraph_lower() {
+        let data_area = DataArea::Pc98Dos620.layout();
         assert_eq!(
-            structures.list_of_lists.returned_pointer(0x0200),
+            data_area.list_of_lists.returned_pointer(0x0200),
             (0x01FF, 0x0010)
         );
     }
 
     #[test]
     fn sft_walk_follows_the_block_chain() {
-        for layout in LAYOUTS {
-            let structures = layout.structures();
+        for format in formats() {
+            let structures = format.structures();
             let mut memory = MockMemory::with_extended_memory(TEST_MEMORY_SIZE, 0);
             let list_of_lists = 0x2000;
             write_far_ptr(
@@ -891,8 +1114,8 @@ mod tests {
 
     #[test]
     fn cds_entry_follows_the_array_pointer() {
-        for layout in LAYOUTS {
-            let structures = layout.structures();
+        for format in formats() {
+            let structures = format.structures();
             let mut memory = MockMemory::with_extended_memory(TEST_MEMORY_SIZE, 0);
             let list_of_lists = 0x2000;
             write_far_ptr(
@@ -1015,5 +1238,249 @@ mod tests {
         let original = bpb(2048, 4, 512, 0x1E00 - 0x0D, 0xF9, 3);
         let geometry = DpbGeometry::from_bpb(&original);
         assert_eq!(geometry.to_bpb().total_sectors(), original.total_sectors());
+    }
+
+    /// Named byte range of the DOS data segment.
+    struct Region {
+        /// Name of the table or stub.
+        name: &'static str,
+        /// Offset of the first byte.
+        start: u32,
+        /// Offset of the first byte behind the region.
+        end: u32,
+    }
+
+    /// Returns the region `name` of `size` bytes at `offset`.
+    fn region(name: &'static str, offset: u16, size: u32) -> Region {
+        Region {
+            name,
+            start: u32::from(offset),
+            end: u32::from(offset) + size,
+        }
+    }
+
+    /// Returns every region that NeetanDos writes into the DOS data segment
+    /// of `data_area` with the tables of `format` in front of the system data.
+    fn data_area_regions(format: &StructureFormat, data_area: &DataAreaLayout) -> Vec<Region> {
+        let list_of_lists = u32::from(data_area.list_of_lists.data_offset);
+        let nul_header_end = SYSVARS_OFF_NUL_HEADER + DEVHDR_SIZE as u32;
+        let list_end = format
+            .list_of_lists_extension
+            .map_or(nul_header_end, |extension| {
+                nul_header_end.max(extension.extended_memory_kb + WORD_SIZE)
+            });
+        let sda = &data_area.swappable_data_area;
+        let private_area = &data_area.private_area;
+        let mut regions = vec![
+            Region {
+                name: "list of lists with the NUL header",
+                start: list_of_lists.saturating_sub(SYSVARS_FIRST_MCB_DISTANCE),
+                end: list_of_lists + list_end,
+            },
+            region(
+                "first SFT block",
+                data_area.first_sft_block_offset,
+                SFT_HEADER_SIZE
+                    + u32::from(SFT_INITIAL_COUNT) * format.system_file_table.entry_size,
+            ),
+            region("SDA", sda.data_offset, u32::from(sda.size)),
+            region(
+                "DBCS table",
+                private_area.dbcs_table,
+                crate::country::DBCS_LEAD_BYTES.len() as u32,
+            ),
+            region(
+                "critical error stub",
+                private_area.critical_error_stub,
+                crate::CRITICAL_ERROR_FAIL_STUB.len() as u32,
+            ),
+            region(
+                "error retriever stub",
+                private_area.error_retriever_stub,
+                u32::from(crate::trap::FAR_TRAP_STUB_LENGTH),
+            ),
+            region(
+                "error message buffer",
+                private_area.error_message_buffer,
+                ERROR_MESSAGE_BUFFER_SIZE as u32,
+            ),
+        ];
+        if let Some(offset) = private_area.kernel_stubs {
+            regions.push(region(
+                "kernel stubs",
+                offset,
+                u32::from(crate::kernel::KERNEL_STUBS_SIZE),
+            ));
+        }
+        if let Some(offset) = private_area.transfer_buffer {
+            regions.push(region(
+                "transfer buffer",
+                offset,
+                crate::guest_cdrom::CDROM_SECTOR_SIZE as u32,
+            ));
+        }
+        if let Some(window) = private_area.parameter_block_window {
+            regions.push(region("DPB window", window.offset, u32::from(window.size)));
+        }
+        if let Some(self_boot) = &data_area.self_boot {
+            let device_header_size = DEVHDR_SIZE as u32;
+            let cdrom_stubs = &self_boot.cdrom_stubs;
+            regions.extend([
+                region("CON device", self_boot.con_device, device_header_size),
+                region("CLOCK device", self_boot.clock_device, device_header_size),
+                region(
+                    "$AID#NEC device",
+                    self_boot.aid_nec_device,
+                    device_header_size,
+                ),
+                region("CD-ROM device", self_boot.cdrom_device, device_header_size),
+                region("XMS device", self_boot.xms_device, device_header_size),
+                region("EMS device", self_boot.ems_device, device_header_size),
+                region(
+                    "CDS array",
+                    self_boot.current_directory_array,
+                    CDS_ENTRIES * format.current_directory.entry_size,
+                ),
+                region("FCB SFT", self_boot.fcb_system_file_table, SFT_HEADER_SIZE),
+                region(
+                    "XMS entry stub",
+                    self_boot.xms_entry_stub,
+                    crate::XMS_ENTRY_PROLOGUE.len() as u32
+                        + u32::from(crate::trap::FAR_TRAP_STUB_LENGTH),
+                ),
+                region(
+                    "XMS device stub",
+                    self_boot.xms_device_stub,
+                    byte_count(&crate::XMS_DEVICE_STUB),
+                ),
+                region(
+                    "EMS interrupt stub",
+                    self_boot.ems_interrupt_stub,
+                    byte_count(&crate::EMS_INTERRUPT_STUB),
+                ),
+                region(
+                    "EMS page map return stub",
+                    self_boot.ems_page_map_return_stub,
+                    byte_count(&crate::EMS_PAGE_MAP_RETURN_STUB),
+                ),
+                region(
+                    "NetBIOS stub",
+                    self_boot.netbios_stub,
+                    byte_count(&crate::NETBIOS_STUB),
+                ),
+                region(
+                    "CD-ROM request pointer",
+                    cdrom_stubs.request_pointer,
+                    FAR_POINTER_SIZE,
+                ),
+                region(
+                    "CD-ROM mirror header",
+                    cdrom_stubs.mirror_header,
+                    device_header_size,
+                ),
+                region(
+                    "CD-ROM strategy stub",
+                    cdrom_stubs.strategy_stub,
+                    byte_count(&crate::CDROM_STRATEGY_STUB),
+                ),
+                region(
+                    "CD-ROM interrupt stub",
+                    cdrom_stubs.interrupt_stub,
+                    u32::from(crate::trap::FAR_TRAP_STUB_LENGTH),
+                ),
+            ]);
+            if let Some(dosmgr) = &self_boot.windows_dosmgr {
+                regions.extend([
+                    region(
+                        "DOSMGR signature bank",
+                        dosmgr.signature_bank.offset,
+                        u32::from(dosmgr.signature_bank.size),
+                    ),
+                    region(
+                        "DOSMGR patch table",
+                        dosmgr.patch_table,
+                        (crate::WINDOWS_DOSMGR_PATCH_TABLE_WORDS * size_of::<u16>()) as u32,
+                    ),
+                    region("DOSMGR UMB head", dosmgr.umb_head, WORD_SIZE),
+                    region("DOSMGR saved DS", dosmgr.saved_data_segment, WORD_SIZE),
+                    region("DOSMGR saved BX", dosmgr.saved_bx, WORD_SIZE),
+                    region(
+                        "DOSMGR critical section table",
+                        dosmgr.critical_section_table,
+                        size_of_val(&crate::WINDOWS_DOSMGR_CRITICAL_SECTION_TABLE) as u32,
+                    ),
+                ]);
+            }
+        }
+        regions
+    }
+
+    #[test]
+    fn data_area_regions_do_not_overlap() {
+        for data_area in DataArea::ALL {
+            let layout = data_area.layout();
+            let regions = data_area_regions(data_area.format().structures(), layout);
+            for (index, first) in regions.iter().enumerate() {
+                assert!(first.start < first.end, "{data_area:?} {}", first.name);
+                for second in &regions[index + 1..] {
+                    assert!(
+                        first.end <= second.start || second.end <= first.start,
+                        "{data_area:?}: {} {:04X}h-{:04X}h overlaps {} {:04X}h-{:04X}h",
+                        first.name,
+                        first.start,
+                        first.end,
+                        second.name,
+                        second.start,
+                        second.end
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn data_area_regions_lie_in_front_of_the_system_data() {
+        for data_area in DataArea::ALL {
+            let layout = data_area.layout();
+            let system_data = u32::from(layout.private_area.system_data);
+            for region in data_area_regions(data_area.format().structures(), layout) {
+                assert!(
+                    region.end <= system_data,
+                    "{data_area:?}: {} ends at {:04X}h behind the system data",
+                    region.name,
+                    region.end
+                );
+            }
+            if let Some(window) = layout.private_area.parameter_block_window {
+                assert!(u32::from(window.offset) + u32::from(window.size) <= system_data);
+            }
+        }
+    }
+
+    #[test]
+    fn cdrom_mirror_header_starts_a_paragraph() {
+        for data_area in DataArea::ALL {
+            let Some(self_boot) = data_area.layout().self_boot else {
+                continue;
+            };
+            let cdrom_stubs = self_boot.cdrom_stubs;
+            assert_eq!(
+                cdrom_stubs.mirror_header % PARAGRAPH_BYTES,
+                0,
+                "{data_area:?}"
+            );
+            assert_eq!(
+                cdrom_stubs.mirror_header_paragraphs() * PARAGRAPH_BYTES,
+                cdrom_stubs.mirror_header
+            );
+            assert_eq!(
+                cdrom_stubs.mirror_header + cdrom_stubs.mirror_strategy_offset(),
+                cdrom_stubs.strategy_stub
+            );
+            assert_eq!(
+                cdrom_stubs.mirror_header + cdrom_stubs.mirror_interrupt_offset(),
+                cdrom_stubs.interrupt_stub
+            );
+        }
     }
 }

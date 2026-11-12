@@ -33,11 +33,11 @@
 //!    becomes a guest unit at the first DOS call after SYSINIT links the
 //!    driver.
 //! 4. The first disk buffer (largest sector) and the DPBs follow at the
-//!    system data offset of the layout. The first device is CON: SFT entry 0
+//!    system data offset of the data area. The first device is CON: SFT entry 0
 //!    (three references) and `LoL+0Ch`. The CLOCK device (attribute bit 3)
 //!    serves the date and time and fills `LoL+08h`. CON serves the console.
 //! 5. The vectors `00h`, `20h`-`28h` and `2Ah`-`3Fh` point into the private
-//!    area of the layout. `INT 29h` stays with `IO.SYS`.
+//!    area of the data area. `INT 29h` stays with `IO.SYS`.
 //! 6. One free `Z` MCB covers the paragraphs from the end of the DPBs to
 //!    `DX`. A PSP at the MCB + 1 holds handles 0-2 on SFT entry 0 and is the
 //!    current PSP.
@@ -96,9 +96,6 @@ const DEVHDR_OFF_UNIT_COUNT: u32 = 0x0A;
 
 /// Length of the DOS 3 BPB that a driver returns.
 const DOS3_BPB_LENGTH: usize = 13;
-
-/// Number of SFT entries of the first SFT block.
-const FIRST_SFT_BLOCK_ENTRIES: u16 = 5;
 
 /// `AX` that the MS-DOS 3.10 kernel leaves at the DOSINIT return.
 const DOSINIT_RETURN_AX: u16 = 0x0003;
@@ -269,7 +266,8 @@ impl NeetanDos {
     ) {
         let dos_data_segment = cpu.cs();
         let chain = FarPointer::new(cpu.ds(), cpu.si());
-        let provisional_area = SystemDataArea::new(self.state.structures(), 0, 0);
+        let provisional_area =
+            SystemDataArea::new(self.state.structures(), self.state.data_area(), 0, 0);
         self.state.platform.placement = DosPlacement {
             dos_data_segment,
             first_mcb_segment: provisional_area.first_mcb_segment(dos_data_segment),
@@ -298,6 +296,7 @@ impl NeetanDos {
     /// SDA flags and the private stubs and tables of the kernel.
     fn write_kernel_data(&self, memory: &mut dyn MemoryAccess, chain: FarPointer) {
         let structures = self.state.structures();
+        let data_area = self.state.data_area();
         let dos_data_segment = self.state.dos_data_segment();
         let list_of_lists = self.state.list_of_lists_address();
 
@@ -308,7 +307,7 @@ impl NeetanDos {
             memory,
             list_of_lists + tables::SYSVARS_OFF_SFT_PTR,
             dos_data_segment,
-            structures.system_file_table.first_block_offset,
+            data_area.first_sft_block_offset,
         );
         let nul = self.state.dos_data_address(self.state.nul_device_offset());
         tables::write_device_header(
@@ -331,7 +330,7 @@ impl NeetanDos {
 
         let sft_block = self.state.first_sft_block_address();
         let sft_size = tables::SFT_HEADER_SIZE
-            + u32::from(FIRST_SFT_BLOCK_ENTRIES) * structures.system_file_table.entry_size;
+            + u32::from(tables::SFT_INITIAL_COUNT) * structures.system_file_table.entry_size;
         memory.write_block(sft_block, &vec![0u8; sft_size as usize]);
         write_far_ptr(
             memory,
@@ -341,10 +340,10 @@ impl NeetanDos {
         );
         memory.write_word(
             sft_block + tables::SFT_BLOCK_OFF_COUNT,
-            FIRST_SFT_BLOCK_ENTRIES,
+            tables::SFT_INITIAL_COUNT,
         );
 
-        let sda = &structures.swappable_data_area;
+        let sda = &data_area.swappable_data_area;
         memory.write_block(
             self.state.sda_address(),
             &vec![0u8; usize::from(sda.private_tail_offset - sda.data_offset)],
@@ -354,7 +353,7 @@ impl NeetanDos {
             0xFF,
         );
 
-        let private_area = &structures.private_area;
+        let private_area = &data_area.private_area;
         memory.write_block(
             self.state.dos_data_address(private_area.dbcs_table),
             &crate::country::DBCS_LEAD_BYTES,
@@ -373,13 +372,13 @@ impl NeetanDos {
         self.write_kernel_stubs(memory);
     }
 
-    /// Returns the offset of the kernel stubs of the layout.
+    /// Returns the offset of the kernel stubs of the data area.
     fn kernel_stubs_offset(&self) -> u16 {
         self.state
-            .structures()
+            .data_area()
             .private_area
             .kernel_stubs
-            .expect("the layout of the kernel entry has kernel stubs")
+            .expect("the data area of the kernel entry has kernel stubs")
     }
 
     /// Writes the NUL device routine, the `IRET` stub, the CP/M call handler
@@ -542,11 +541,11 @@ impl NeetanDos {
         self.install_kernel_vectors(memory, psp_segment);
         self.state.dbcs_table_addr = self
             .state
-            .dos_data_address(self.state.structures().private_area.dbcs_table);
+            .dos_data_address(self.state.data_area().private_area.dbcs_table);
         self.write_swappable_data_area(memory);
 
         cpu.set_es(dos_data_segment);
-        cpu.set_di(self.state.structures().list_of_lists.data_offset);
+        cpu.set_di(self.state.data_area().list_of_lists.data_offset);
         cpu.set_ds(psp_segment);
         cpu.set_dx(psp_segment);
         cpu.set_ax(DOSINIT_RETURN_AX);
@@ -642,7 +641,7 @@ impl NeetanDos {
         self.install_vector(
             memory,
             CRITICAL_ERROR_VECTOR,
-            self.state.structures().private_area.critical_error_stub,
+            self.state.data_area().private_area.critical_error_stub,
         );
         write_far_ptr(
             memory,
@@ -758,10 +757,9 @@ const fn trap_stub_offset(index: usize) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::DOS310_LAYOUT;
+    use crate::layout::DataArea;
 
-    /// End of the private window `0A10h`-`0B7Fh` of the DOS 3.10 data
-    /// segment.
+    /// End of the private window `0A10h`-`0B7Fh` of the FM Towns data area.
     const PRIVATE_WINDOW_END: u16 = 0x0B80;
 
     #[test]
@@ -781,16 +779,18 @@ mod tests {
     }
 
     #[test]
-    fn dos310_kernel_stubs_fit_into_the_private_window() {
-        let private_area = DOS310_LAYOUT.private_area;
-        let stubs = private_area.kernel_stubs.expect("3.10 has kernel stubs");
+    fn fm_towns_kernel_stubs_fit_into_the_private_window() {
+        let private_area = DataArea::FmTowns.layout().private_area;
+        let stubs = private_area
+            .kernel_stubs
+            .expect("the FM Towns data area has kernel stubs");
         let message_buffer_end =
             private_area.error_message_buffer + tables::ERROR_MESSAGE_BUFFER_SIZE as u16;
         assert!(message_buffer_end <= stubs);
         let stubs_end = stubs + KERNEL_STUBS_SIZE;
         let transfer_buffer = private_area
             .transfer_buffer
-            .expect("3.10 has a transfer buffer");
+            .expect("the FM Towns data area has a transfer buffer");
         assert!(stubs_end <= PRIVATE_WINDOW_END);
         assert!(stubs_end <= transfer_buffer);
         assert!(private_area.system_data > transfer_buffer);

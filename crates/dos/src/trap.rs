@@ -110,6 +110,9 @@ pub const SERVED_INTERRUPT_VECTORS: [u8; 15] = [
     0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2A, 0x2F, 0x33, 0x67, 0xDC,
 ];
 
+/// Length of a far trap stub.
+pub(crate) const FAR_TRAP_STUB_LENGTH: u16 = 9;
+
 /// Writes a far trap stub at `address`: `PUSH AX`, `PUSH DX`,
 /// `MOV AL, code`, `MOV DX, TRAP_PORT`, `OUT DX, AL`, `RETF`. The machine
 /// pops `AX` and `DX` again before NeetanDos handles the trap. Returns the
@@ -120,7 +123,7 @@ pub(crate) fn write_far_trap_stub(
     trap: DosTrapCode,
 ) -> u32 {
     let [port_low, port_high] = TRAP_PORT.to_le_bytes();
-    let stub = [
+    let stub: [u8; FAR_TRAP_STUB_LENGTH as usize] = [
         0x50,
         0x52,
         0xB0,

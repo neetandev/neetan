@@ -3,7 +3,7 @@
 //! DOS keeps the last error in the swappable data area: the locus byte at
 //! `03h`, the error code word at `04h`, the suggested action at `06h`, the
 //! error class at `07h` and a far pointer at `08h`. The DOS 3.10 and the DOS
-//! 6.20 layout share these offsets. A TSR that swaps the area swaps the last
+//! 6.20 format share these offsets. A TSR that swaps the area swaps the last
 //! error with it.
 //!
 //! The class, action and locus of an error code follow the INT 21h and the
@@ -12,7 +12,7 @@
 //! returns the last code of the list, and the extended error keeps the real
 //! code.
 
-use crate::{CpuAccess, DosState, MemoryAccess, NeetanDos, SegmentRegister, layout::DosLayout};
+use crate::{CpuAccess, DosState, MemoryAccess, NeetanDos, SegmentRegister, layout::DosFormat};
 
 /// Offset of the locus of the last error in the swappable data area.
 const SDA_OFF_ERROR_LOCUS: u32 = 0x03;
@@ -473,10 +473,10 @@ const DOS4_FUNCTION_ERRORS: &[FunctionErrors] = &[
 
 /// Returns the error code that the function `function` returns in `AX`
 /// for the error `code`. A function without a list returns every code.
-pub(crate) fn function_error_code(layout: DosLayout, function: u8, code: u16) -> u16 {
-    let table = match layout {
-        DosLayout::Dos310 => DOS310_FUNCTION_ERRORS,
-        DosLayout::Dos620 => DOS4_FUNCTION_ERRORS,
+pub(crate) fn function_error_code(format: DosFormat, function: u8, code: u16) -> u16 {
+    let table = match format {
+        DosFormat::Dos310 => DOS310_FUNCTION_ERRORS,
+        DosFormat::Dos620 => DOS4_FUNCTION_ERRORS,
     };
     let Some(entry) = table.iter().find(|entry| entry.function == function) else {
         return code;
@@ -679,17 +679,17 @@ mod tests {
 
     #[test]
     fn function_returns_the_last_code_of_its_list_for_another_error() {
-        assert_eq!(function_error_code(DosLayout::Dos310, 0x4B, 0x0015), 0x0005);
-        assert_eq!(function_error_code(DosLayout::Dos310, 0x4B, 0x0002), 0x0002);
-        assert_eq!(function_error_code(DosLayout::Dos310, 0x3D, 0x001A), 0x0005);
-        assert_eq!(function_error_code(DosLayout::Dos620, 0x3D, 0x001A), 0x001A);
-        assert_eq!(function_error_code(DosLayout::Dos310, 0x4F, 0x0002), 0x0012);
-        assert_eq!(function_error_code(DosLayout::Dos310, 0x36, 0x0015), 0x0015);
-        assert_eq!(function_error_code(DosLayout::Dos620, 0x6C, 0x0021), 0x0005);
+        assert_eq!(function_error_code(DosFormat::Dos310, 0x4B, 0x0015), 0x0005);
+        assert_eq!(function_error_code(DosFormat::Dos310, 0x4B, 0x0002), 0x0002);
+        assert_eq!(function_error_code(DosFormat::Dos310, 0x3D, 0x001A), 0x0005);
+        assert_eq!(function_error_code(DosFormat::Dos620, 0x3D, 0x001A), 0x001A);
+        assert_eq!(function_error_code(DosFormat::Dos310, 0x4F, 0x0002), 0x0012);
+        assert_eq!(function_error_code(DosFormat::Dos310, 0x36, 0x0015), 0x0015);
+        assert_eq!(function_error_code(DosFormat::Dos620, 0x6C, 0x0021), 0x0005);
     }
 
     #[test]
-    fn get_extended_error_returns_the_recorded_error_on_both_layouts() {
+    fn get_extended_error_returns_the_recorded_error_on_both_platforms() {
         for platform in platforms() {
             let dos = NeetanDos::new(platform);
             let mut memory = MockMemory::with_extended_memory(0x30000, 0);

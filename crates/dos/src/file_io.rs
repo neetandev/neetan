@@ -13,7 +13,7 @@ use crate::{
         virtual_drive::VirtualEntry,
     },
     guest_character::DeviceTransfer,
-    layout::SystemFileTableLayout,
+    layout::SystemFileTableFormat,
     tables,
 };
 
@@ -148,14 +148,9 @@ fn cdrom_sft_name(device_name: &[u8]) -> [u8; 11] {
     name
 }
 
-fn sft_is_cdrom_device(memory: &dyn MemoryAccess, sft_addr: u32, dos_data_segment: u16) -> bool {
-    memory.read_word(sft_addr + tables::SFT_ENT_DEV_PTR) == tables::DEV_CDROM_OFFSET
-        && memory.read_word(sft_addr + tables::SFT_ENT_DEV_PTR + 2) == dos_data_segment
-}
-
 fn read_fat_handle_metadata(
     memory: &mut dyn MemoryAccess,
-    sft: &SystemFileTableLayout,
+    sft: &SystemFileTableFormat,
     sft_addr: u32,
     drive_index: u8,
 ) -> FatHandleMetadata {
@@ -179,7 +174,7 @@ fn read_fat_handle_metadata(
 
 fn write_fat_handle_metadata(
     memory: &mut dyn MemoryAccess,
-    sft: &SystemFileTableLayout,
+    sft: &SystemFileTableFormat,
     sft_addr: u32,
     metadata: &FatHandleMetadata,
 ) {
@@ -509,7 +504,10 @@ impl NeetanDos {
                     memory,
                     sft_index,
                     b"EMMXXXX0   ",
-                    FarPointer::new(self.state.dos_data_segment(), tables::DEV_EMS_OFFSET),
+                    FarPointer::new(
+                        self.state.dos_data_segment(),
+                        self.state.self_boot_layout().ems_device,
+                    ),
                     tables::SFT_DEVINFO_DRIVER_CHAR
                         | tables::SFT_DEVINFO_CHAR
                         | tables::SFT_DEVINFO_EOF
@@ -524,7 +522,10 @@ impl NeetanDos {
                     memory,
                     sft_index,
                     b"XMSXXXX0   ",
-                    FarPointer::new(self.state.dos_data_segment(), tables::DEV_XMS_OFFSET),
+                    FarPointer::new(
+                        self.state.dos_data_segment(),
+                        self.state.self_boot_layout().xms_device,
+                    ),
                     tables::SFT_DEVINFO_DRIVER_CHAR
                         | tables::SFT_DEVINFO_CHAR
                         | tables::SFT_DEVINFO_EOF
@@ -541,7 +542,10 @@ impl NeetanDos {
                     memory,
                     sft_index,
                     &cdrom_sft_name(&self.state.mscdex.device_name),
-                    FarPointer::new(self.state.dos_data_segment(), tables::DEV_CDROM_OFFSET),
+                    FarPointer::new(
+                        self.state.dos_data_segment(),
+                        self.state.self_boot_layout().cdrom_device,
+                    ),
                     tables::SFT_DEVINFO_DRIVER_CHAR
                         | tables::SFT_DEVINFO_CHAR
                         | tables::SFT_DEVINFO_EOF
@@ -1155,9 +1159,11 @@ impl NeetanDos {
         }
         let dos_data_segment = self.state.dos_data_segment();
         let transfer_addr = cpu.linear_address(SegmentRegister::DS, cpu.dx());
-        if sft_is_cdrom_device(memory, sft_addr, dos_data_segment) {
+        if self.state.sft_is_builtin_cdrom_device(memory, sft_addr)
+            && let Some(mirror_header) = self.state.builtin_cdrom_mirror_header()
+        {
             let result = if subfunction == 0x02 {
-                self.read_cdrom_control_channel(memory, drive, transfer_addr)
+                self.read_cdrom_control_channel(memory, drive, transfer_addr, mirror_header)
             } else {
                 self.write_cdrom_control_channel(memory, drive, transfer_addr)
             };
@@ -1470,7 +1476,7 @@ impl NeetanDos {
         match al {
             0x06 => {
                 self.write_swappable_data_area(memory);
-                let sda = &self.state.structures().swappable_data_area;
+                let sda = &self.state.data_area().swappable_data_area;
                 cpu.set_ds(self.state.dos_data_segment());
                 cpu.set_si(sda.data_offset);
                 cpu.set_cx(sda.size);

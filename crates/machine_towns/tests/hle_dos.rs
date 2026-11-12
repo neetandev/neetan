@@ -43,7 +43,7 @@ const IPL_SEGMENT: u16 = 0xB000;
 const IPL_ENTRY_OFFSET: u16 = 0x0004;
 /// Offset in the IPL segment of the registers that the IPL stores.
 const RESULT_OFFSET: u16 = 0x1000;
-/// Offset of the list of lists in the DOS 3.10 layout.
+/// Offset of the list of lists in the FM Towns data area.
 const LIST_OF_LISTS_OFFSET: u16 = 0x0026;
 /// DOS version that NeetanDos reports on the FM Towns (3.10).
 const DOS_VERSION: u16 = 0x0A03;

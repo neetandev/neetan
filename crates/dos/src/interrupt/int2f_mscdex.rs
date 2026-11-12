@@ -8,6 +8,7 @@ use common::warn;
 
 use crate::{
     CdromIo, CpuAccess, MemoryAccess, NeetanDos, SegmentRegister,
+    cdrom::STATUS_UNKNOWN_COMMAND,
     filesystem::{fat_dir, iso9660},
 };
 
@@ -49,10 +50,6 @@ const DRIVE_CHECK_SIGNATURE: u16 = 0xADAD;
 
 /// Disk format of `AX=150Fh`: ISO 9660.
 const DISK_FORMAT_ISO9660: u16 = 0x0001;
-
-/// Status of a device request that a guest CD-ROM drive does not take
-/// through `AX=1510h`: done, error, unknown command.
-const STATUS_UNKNOWN_COMMAND: u16 = 0x8103;
 
 /// Size of one entry of the device list of `AX=1501h`.
 const DEVICE_LIST_ENTRY_SIZE: u32 = 5;
@@ -113,7 +110,7 @@ impl NeetanDos {
                 let drive_index = cpu.cx() as u8;
                 match drives.iter().find(|drive| drive.drive_index == drive_index) {
                     Some(drive) if drive.native => {
-                        self.handle_device_request(memory, cdrom, request);
+                        self.handle_device_request(memory, cdrom, request, drive.device);
                     }
                     Some(_) => {
                         warn!("MSCDEX: device requests to a guest CD-ROM drive are unsupported");

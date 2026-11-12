@@ -53,7 +53,7 @@ fn sft_addr_for_handle(machine: &mut machine_98::Pc9801Ra, handle: u16) -> u32 {
 
     let structures = harness::pc98_structures();
     let first_sft_block =
-        harness::dos_data_address(structures.system_file_table.first_block_offset);
+        harness::dos_data_address(harness::pc98_data_area().first_sft_block_offset);
     let entry_size = structures.system_file_table.entry_size;
     if sft_index < tables::SFT_INITIAL_COUNT {
         first_sft_block + tables::SFT_HEADER_SIZE + u32::from(sft_index) * entry_size
@@ -267,7 +267,7 @@ fn open_emmxxxx0_as_character_device() {
     );
     assert_eq!(
         harness::read_word(&machine.bus, sft_addr + tables::SFT_ENT_DEV_PTR),
-        tables::DEV_EMS_OFFSET
+        harness::pc98_self_boot().ems_device
     );
     assert_eq!(
         harness::read_word(&machine.bus, sft_addr + tables::SFT_ENT_DEV_PTR + 2),
@@ -299,7 +299,7 @@ fn open_xmsxxxx0_as_character_device() {
     );
     assert_eq!(
         harness::read_word(&machine.bus, sft_addr + tables::SFT_ENT_DEV_PTR),
-        tables::DEV_XMS_OFFSET
+        harness::pc98_self_boot().xms_device
     );
     assert_eq!(
         harness::read_word(&machine.bus, sft_addr + tables::SFT_ENT_DEV_PTR + 2),
@@ -444,17 +444,24 @@ fn ioctl_read_cdrom_control_channel_device_header_address() {
     );
     assert_eq!(
         header_seg,
-        harness::dos_data_segment() + tables::CDROM_MIRROR_HEADER_PARAGRAPHS,
+        harness::dos_data_segment()
+            + harness::pc98_self_boot()
+                .cdrom_stubs
+                .mirror_header_paragraphs(),
         "CD-ROM header segment should point at the mirror header, got {header_seg:#06X}"
     );
     let header_addr = (u32::from(header_seg) << 4) + u32::from(header_off);
     assert_eq!(
         harness::read_word(&machine.bus, header_addr + tables::DEVHDR_OFF_STRATEGY),
-        tables::CDROM_MIRROR_STRATEGY_OFFSET
+        harness::pc98_self_boot()
+            .cdrom_stubs
+            .mirror_strategy_offset()
     );
     assert_eq!(
         harness::read_word(&machine.bus, header_addr + tables::DEVHDR_OFF_INTERRUPT),
-        tables::CDROM_MIRROR_INTERRUPT_OFFSET
+        harness::pc98_self_boot()
+            .cdrom_stubs
+            .mirror_interrupt_offset()
     );
 }
 
@@ -487,13 +494,20 @@ fn cdrom_device_strategy_interrupt_processes_request() {
     let seg_hi = (seg >> 8) as u8;
     let req_lo = (req_off & 0xFF) as u8;
     let req_hi = (req_off >> 8) as u8;
-    let strategy = tables::CDROM_MIRROR_STRATEGY_OFFSET;
+    let strategy = harness::pc98_self_boot()
+        .cdrom_stubs
+        .mirror_strategy_offset();
     let strategy_lo = (strategy & 0xFF) as u8;
     let strategy_hi = (strategy >> 8) as u8;
-    let interrupt = tables::CDROM_MIRROR_INTERRUPT_OFFSET;
+    let interrupt = harness::pc98_self_boot()
+        .cdrom_stubs
+        .mirror_interrupt_offset();
     let interrupt_lo = (interrupt & 0xFF) as u8;
     let interrupt_hi = (interrupt >> 8) as u8;
-    let cdrom_seg = harness::dos_data_segment() + tables::CDROM_MIRROR_HEADER_PARAGRAPHS;
+    let cdrom_seg = harness::dos_data_segment()
+        + harness::pc98_self_boot()
+            .cdrom_stubs
+            .mirror_header_paragraphs();
     let cdrom_seg_lo = (cdrom_seg & 0xFF) as u8;
     let cdrom_seg_hi = (cdrom_seg >> 8) as u8;
     #[rustfmt::skip]
@@ -559,7 +573,7 @@ fn open_con_as_character_device() {
     );
     assert_eq!(
         harness::read_word(&machine.bus, sft_addr + tables::SFT_ENT_DEV_PTR),
-        tables::DEV_CON_OFFSET
+        harness::pc98_self_boot().con_device
     );
     assert_eq!(
         harness::read_word(&machine.bus, sft_addr + tables::SFT_ENT_DEV_PTR + 2),
