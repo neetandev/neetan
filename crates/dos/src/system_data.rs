@@ -3,16 +3,16 @@
 //! The DOS data segment ends with the first disk buffer and the DPBs of the
 //! drives. The buffer header comes first, then the buffer data of the
 //! largest sector of all drives (`LoL+10h`), then one DPB per drive with a
-//! DPB in drive order. The first MCB follows the last DPB. The layout names
-//! the offset of the buffer header. The real DOS 3.10 kernel keeps the same
-//! order with the buffer at `6AA0h`.
+//! DPB in drive order. The first MCB follows the last DPB. The data area
+//! layout names the offset of the buffer header. The real DOS 3.10 kernel
+//! keeps the same order with the buffer at `6AA0h`.
 //!
-//! A layout with a DPB window keeps the DPBs in that window when all of them
-//! fit. The first MCB then follows the buffer.
+//! A data area with a DPB window keeps the DPBs in that window when all of
+//! them fit. The first MCB then follows the buffer.
 
 use crate::{
     MemoryAccess,
-    layout::StructureLayout,
+    layout::{DataAreaLayout, StructureFormat},
     tables::{
         BUFFER_OFF_DRIVE, BUFFER_OFF_NEXT, SYSVARS_OFF_BUFFER_PTR, SYSVARS_OFF_DPB_PTR,
         SYSVARS_OFF_MAX_SECTOR, write_far_ptr,
@@ -46,21 +46,22 @@ pub(crate) struct SystemDataArea {
 }
 
 impl SystemDataArea {
-    /// Places the buffer at the system data offset of `layout` and
-    /// `parameter_block_count` DPBs in the DPB window of `layout` or behind
-    /// the buffer. The buffer holds `largest_sector` bytes, at least
-    /// `MINIMUM_SECTOR_SIZE`.
+    /// Places the buffer at the system data offset of `data_area` and
+    /// `parameter_block_count` DPBs of `format` in the DPB window of
+    /// `data_area` or behind the buffer. The buffer holds `largest_sector`
+    /// bytes, at least `MINIMUM_SECTOR_SIZE`.
     pub(crate) fn new(
-        layout: &StructureLayout,
+        format: &StructureFormat,
+        data_area: &DataAreaLayout,
         parameter_block_count: usize,
         largest_sector: u16,
     ) -> Self {
-        let buffer_offset = layout.private_area.system_data;
-        let buffer_header_size = layout.disk_buffer.header_size as u16;
+        let buffer_offset = data_area.private_area.system_data;
+        let buffer_header_size = format.disk_buffer.header_size as u16;
         let sector_size = largest_sector.max(MINIMUM_SECTOR_SIZE);
-        let parameter_block_size = layout.drive_parameter_block.size as u16;
+        let parameter_block_size = format.drive_parameter_block.size as u16;
         let parameter_blocks_size = parameter_block_count * usize::from(parameter_block_size);
-        let parameter_block_base = match layout.private_area.parameter_block_window {
+        let parameter_block_base = match data_area.private_area.parameter_block_window {
             Some(window) if parameter_blocks_size <= usize::from(window.size) => window.offset,
             Some(_) | None => buffer_offset + buffer_header_size + sector_size,
         };
@@ -143,16 +144,16 @@ impl SystemDataArea {
 mod tests {
     use super::*;
     use crate::{
-        layout::{DOS310_LAYOUT, DOS620_LAYOUT},
+        layout::{DOS310_FORMAT, DOS620_FORMAT, FM_TOWNS_DATA_AREA, PC98_DOS620_DATA_AREA},
         test_support::MockMemory,
     };
 
     #[test]
     fn dos310_area_matches_the_real_kernel() {
-        let floppy_boot = SystemDataArea::new(&DOS310_LAYOUT, 3, 0x0400);
+        let floppy_boot = SystemDataArea::new(&DOS310_FORMAT, &FM_TOWNS_DATA_AREA, 3, 0x0400);
         assert_eq!(floppy_boot.buffer_offset, 0x6AA0);
         assert_eq!(floppy_boot.parameter_block_offset(0), 0x6EB0);
-        let hard_disk_boot = SystemDataArea::new(&DOS310_LAYOUT, 4, 0x0800);
+        let hard_disk_boot = SystemDataArea::new(&DOS310_FORMAT, &FM_TOWNS_DATA_AREA, 4, 0x0800);
         assert_eq!(hard_disk_boot.parameter_block_offset(0), 0x72B0);
         assert_eq!(hard_disk_boot.end_offset(), 0x7330);
         assert_eq!(hard_disk_boot.first_mcb_segment(0x1076), 0x1076 + 0x0733);
@@ -160,7 +161,7 @@ mod tests {
 
     #[test]
     fn dos620_parameter_blocks_fill_the_window_and_the_mcb_follows_the_buffer() {
-        let area = SystemDataArea::new(&DOS620_LAYOUT, 19, 0x0400);
+        let area = SystemDataArea::new(&DOS620_FORMAT, &PC98_DOS620_DATA_AREA, 19, 0x0400);
         let buffer_end = u32::from(area.buffer_offset) + 0x14 + 0x0400;
         assert_eq!(area.parameter_block_offset(0), 0x0AB0);
         assert!(u32::from(area.parameter_block_offset(19)) <= 0x0D38);
@@ -170,7 +171,7 @@ mod tests {
 
     #[test]
     fn dos620_parameter_blocks_beyond_the_window_follow_the_buffer() {
-        let area = SystemDataArea::new(&DOS620_LAYOUT, 20, 0x0400);
+        let area = SystemDataArea::new(&DOS620_FORMAT, &PC98_DOS620_DATA_AREA, 20, 0x0400);
         let buffer_end = u32::from(area.buffer_offset) + 0x14 + 0x0400;
         assert_eq!(u32::from(area.parameter_block_offset(0)), buffer_end);
         assert_eq!(area.end_offset(), buffer_end + 20 * 0x21);
@@ -179,14 +180,14 @@ mod tests {
 
     #[test]
     fn buffer_holds_at_least_a_512_byte_sector() {
-        let area = SystemDataArea::new(&DOS620_LAYOUT, 1, 0);
+        let area = SystemDataArea::new(&DOS620_FORMAT, &PC98_DOS620_DATA_AREA, 1, 0);
         assert_eq!(area.sector_size, MINIMUM_SECTOR_SIZE);
     }
 
     #[test]
     fn pointers_name_the_buffer_and_the_first_parameter_block() {
         let mut memory = MockMemory::with_extended_memory(0x10_0000, 0);
-        let area = SystemDataArea::new(&DOS310_LAYOUT, 2, 0x0400);
+        let area = SystemDataArea::new(&DOS310_FORMAT, &FM_TOWNS_DATA_AREA, 2, 0x0400);
         let list_of_lists = 0x1_0000 + 0x26;
         area.write_buffer_and_pointers(&mut memory, 0x1000, list_of_lists);
         let buffer = 0x1_0000 + 0x6AA0;

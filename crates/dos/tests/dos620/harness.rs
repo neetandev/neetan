@@ -1002,7 +1002,7 @@ pub fn dos_data_address(offset: u16) -> u32 {
 pub fn first_mcb_segment(bus: &machine_98::Pc9801Bus) -> u16 {
     read_word(
         bus,
-        dos_data_address(pc98_structures().list_of_lists.data_offset) - 2,
+        dos_data_address(pc98_data_area().list_of_lists.data_offset) - 2,
     )
 }
 
@@ -1011,9 +1011,30 @@ pub fn dos_data_size(bus: &machine_98::Pc9801Bus) -> u32 {
     u32::from(first_mcb_segment(bus) - dos_data_segment()) * 16
 }
 
-/// Returns the DOS 6.20 structure layout of NeetanDos on the PC-98.
-pub fn pc98_structures() -> &'static dos::layout::StructureLayout {
-    dos::DosPlatform::pc98().layout.structures()
+/// Returns the DOS 6.20 structure format of NeetanDos on the PC-98.
+pub fn pc98_structures() -> &'static dos::layout::StructureFormat {
+    dos::DosPlatform::pc98().data_area.format().structures()
+}
+
+/// Returns the PC-98 6.20 data area layout of NeetanDos.
+pub fn pc98_data_area() -> &'static dos::layout::DataAreaLayout {
+    dos::DosPlatform::pc98().data_area.layout()
+}
+
+/// Returns the regions of the PC-98 self boot in the DOS data segment.
+pub fn pc98_self_boot() -> &'static dos::layout::SelfBootLayout {
+    pc98_data_area()
+        .self_boot
+        .as_ref()
+        .expect("the PC-98 6.20 data area has self boot regions")
+}
+
+/// Returns the Windows DOSMGR tables of the PC-98 self boot.
+pub fn pc98_windows_dosmgr() -> &'static dos::layout::WindowsDosmgrLayout {
+    pc98_self_boot()
+        .windows_dosmgr
+        .as_ref()
+        .expect("the PC-98 6.20 self boot has the DOSMGR tables")
 }
 
 pub fn far_to_linear(segment: u16, offset: u16) -> u32 {

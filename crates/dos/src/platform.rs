@@ -1,16 +1,17 @@
 //! Platform description of a NeetanDos instance.
 //!
 //! A `DosPlatform` is plain data. It names the DOS version that NeetanDos
-//! reports, the structure layout of the DOS internal tables, the memory
-//! placement of the DOS kernel, the optional EMS and UMB windows, the default
-//! country and the interrupt vectors that belong to the guest. The machine
-//! crate builds the platform and hands it to `NeetanDos::new`.
+//! reports, the data area of the DOS data segment with the structure format
+//! of the DOS internal tables, the memory placement of the DOS kernel, the
+//! optional EMS and UMB windows, the default country and the interrupt
+//! vectors that belong to the guest. The machine crate builds the platform
+//! and hands it to `NeetanDos::new`.
 //!
 //! The placement can come from the guest at run time. A foreign `IO.SYS`
 //! passes the kernel segment and the memory top to the DOS kernel entry, and
 //! the kernel entry builds the platform from these values.
 
-use crate::layout::DosLayout;
+use crate::layout::DataArea;
 
 /// Size of one paragraph in bytes.
 const PARAGRAPH_BYTES: u32 = 16;
@@ -295,8 +296,9 @@ pub struct DosPlatform {
     pub machine: DosMachine,
     /// DOS version that `INT 21h AH=30h` reports.
     pub version: DosVersion,
-    /// Structure layout of the DOS internal tables.
-    pub layout: DosLayout,
+    /// Places of the DOS tables in the DOS data segment. The data area also
+    /// names the structure format of the DOS internal tables.
+    pub data_area: DataArea,
     /// Memory placement of the DOS kernel.
     pub placement: DosPlacement,
     /// EMS page frame window, if the machine has one.
@@ -313,7 +315,7 @@ pub struct DosPlatform {
 state_struct_codec!(DosPlatform {
     machine,
     version,
-    layout,
+    data_area,
     placement,
     ems_window,
     umb_window,
@@ -322,14 +324,15 @@ state_struct_codec!(DosPlatform {
 });
 
 impl DosPlatform {
-    /// Returns the platform of the PC-98: MS-DOS 6.20, the DOS data segment at
-    /// `0200h`, conventional memory up to `A000h`, the EMS page frame at
-    /// `C000h` and the UMB chain in `C000h`-`DFFFh`.
+    /// Returns the platform of the PC-98: MS-DOS 6.20 with the DOS 6.20
+    /// format and the PC-98 6.20 data area, the DOS data segment at `0200h`,
+    /// conventional memory up to `A000h`, the EMS page frame at `C000h` and
+    /// the UMB chain in `C000h`-`DFFFh`.
     pub fn pc98() -> Self {
         Self {
             machine: DosMachine::Pc98,
             version: PC98_VERSION,
-            layout: DosLayout::Dos620,
+            data_area: DataArea::Pc98Dos620,
             placement: PC98_PLACEMENT,
             ems_window: Some(PC98_EMS_WINDOW),
             umb_window: Some(pc98_umb_window()),
@@ -339,13 +342,14 @@ impl DosPlatform {
     }
 
     /// Returns the platform of the DOS kernel under the FM Towns `IO.SYS`:
-    /// MS-DOS 3.10 with the DOS 3.10 layout, no EMS and no UMB window. The
-    /// kernel entry supplies the placement from the DOSINIT registers.
+    /// MS-DOS 3.10 with the DOS 3.10 format and the FM Towns data area, no
+    /// EMS and no UMB window. The kernel entry supplies the placement from
+    /// the DOSINIT registers.
     pub fn fm_towns(placement: DosPlacement) -> Self {
         Self {
             machine: DosMachine::FmTowns,
             version: FM_TOWNS_VERSION,
-            layout: DosLayout::Dos310,
+            data_area: DataArea::FmTowns,
             placement,
             ems_window: None,
             umb_window: None,
@@ -359,7 +363,7 @@ impl DosPlatform {
     pub fn has_same_configuration(&self, other: &Self) -> bool {
         self.machine == other.machine
             && self.version == other.version
-            && self.layout == other.layout
+            && self.data_area == other.data_area
             && self.ems_window == other.ems_window
             && self.umb_window == other.umb_window
             && self.country_code == other.country_code
@@ -441,7 +445,7 @@ mod tests {
                 oem_number: 0x00,
             }
         );
-        assert_eq!(platform.layout, DosLayout::Dos620);
+        assert_eq!(platform.data_area, DataArea::Pc98Dos620);
         assert_eq!(platform.placement.dos_data_segment, 0x0200);
         assert_eq!(platform.placement.dos_data_base(), 0x2000);
         assert_eq!(platform.placement.first_mcb_segment, 0x0370);
@@ -510,7 +514,7 @@ mod tests {
                 oem_number: 0xFF,
             }
         );
-        assert_eq!(platform.layout, DosLayout::Dos310);
+        assert_eq!(platform.data_area, DataArea::FmTowns);
         assert_eq!(platform.placement, placement);
         assert!(platform.ems_window.is_none());
         assert!(platform.umb_window.is_none());
@@ -596,6 +600,23 @@ mod tests {
         }
         assert!(!set.is_empty());
         assert!(VectorSet::empty().is_empty());
+    }
+
+    #[test]
+    fn only_the_pc98_data_area_has_self_boot_regions() {
+        let fm_towns = DosPlatform::fm_towns(DosPlacement {
+            dos_data_segment: 0x1076,
+            first_mcb_segment: 0x1800,
+            memory_top_segment: 0xC000,
+        });
+        for platform in [DosPlatform::pc98(), fm_towns] {
+            assert_eq!(
+                platform.machine == DosMachine::Pc98,
+                platform.data_area.layout().self_boot.is_some(),
+                "{:?}",
+                platform.machine
+            );
+        }
     }
 
     #[test]

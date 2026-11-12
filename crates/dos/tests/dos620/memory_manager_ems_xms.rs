@@ -1629,7 +1629,8 @@ fn test_xmsxxxx0_device_in_chain_when_enabled() {
     // Attribute must be DEVATTR_CHAR | DEVATTR_IOCTL (0xC000).
     let attr = harness::read_word(
         &machine.bus,
-        harness::dos_data_address(dos::tables::DEV_XMS_OFFSET) + dos::tables::DEVHDR_OFF_ATTRIBUTE,
+        harness::dos_data_address(harness::pc98_self_boot().xms_device)
+            + dos::tables::DEVHDR_OFF_ATTRIBUTE,
     );
     assert_eq!(
         attr, 0xC000,
@@ -1652,11 +1653,14 @@ fn test_xmsxxxx0_absent_when_xms_disabled() {
     // EMMXXXX0 (skipping the absent XMS entry).
     let (seg, off) = harness::read_far_ptr(
         &machine.bus,
-        harness::dos_data_address(dos::tables::DEV_AID_NEC_OFFSET),
+        harness::dos_data_address(harness::pc98_self_boot().aid_nec_device),
     );
     assert_eq!(
         (seg, off),
-        (harness::dos_data_segment(), dos::tables::DEV_EMS_OFFSET),
+        (
+            harness::dos_data_segment(),
+            harness::pc98_self_boot().ems_device
+        ),
         "$AID#NEC next_ptr should point to EMMXXXX0 when XMS disabled but EMS enabled, got {seg:#06X}:{off:#06X}"
     );
 }
@@ -1667,7 +1671,7 @@ fn test_aid_nec_next_ptr_is_end_when_both_xms_and_ems_disabled() {
 
     let (seg, off) = harness::read_far_ptr(
         &machine.bus,
-        harness::dos_data_address(dos::tables::DEV_AID_NEC_OFFSET),
+        harness::dos_data_address(harness::pc98_self_boot().aid_nec_device),
     );
     assert_eq!(
         (seg, off),
@@ -1706,7 +1710,8 @@ fn test_emmxxxx0_device_in_chain_when_enabled() {
 
     let attr = harness::read_word(
         &machine.bus,
-        harness::dos_data_address(dos::tables::DEV_EMS_OFFSET) + dos::tables::DEVHDR_OFF_ATTRIBUTE,
+        harness::dos_data_address(harness::pc98_self_boot().ems_device)
+            + dos::tables::DEVHDR_OFF_ATTRIBUTE,
     );
     assert_eq!(
         attr, 0xC000,
@@ -2345,8 +2350,8 @@ fn test_xms_request_hma_respects_hmamin() {
 fn test_xmsxxxx0_strategy_stub_sets_done_bit() {
     let mut machine = harness::boot_hle();
     // Fake request header at CS:0x0200 (ES = CS = INJECT_CODE_SEGMENT by default).
-    // Call far ptr 0x0200:XMS_DEV_STUB_OFFSET. Verify status word at +3 has 0x0100 set.
-    let stub_off = dos::tables::XMS_DEV_STUB_OFFSET;
+    // Call far ptr 0x0200:xms_device_stub. Verify status word at +3 has 0x0100 set.
+    let stub_off = harness::pc98_self_boot().xms_device_stub;
     let stub_lo = stub_off as u8;
     let stub_hi = (stub_off >> 8) as u8;
     #[rustfmt::skip]

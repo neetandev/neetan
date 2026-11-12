@@ -656,9 +656,9 @@ fn builtin_tail(dos: &NeetanDos, memory: &dyn MemoryAccess) -> (u16, u16) {
     let ext_mem_present = memory.extended_memory_size() > 0;
     let dos_data_segment = dos.state.dos_data_segment();
     if dos.state.xms_enabled && ext_mem_present {
-        (dos_data_segment, tables::DEV_XMS_OFFSET)
+        (dos_data_segment, dos.state.self_boot_layout().xms_device)
     } else if dos.state.active_ems_window().is_some() && ext_mem_present {
-        (dos_data_segment, tables::DEV_EMS_OFFSET)
+        (dos_data_segment, dos.state.self_boot_layout().ems_device)
     } else {
         (0xFFFF, 0xFFFF)
     }

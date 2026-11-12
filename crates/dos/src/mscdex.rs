@@ -106,13 +106,13 @@ impl DosState {
         if !self.mscdex.installed_drives.is_empty() {
             return self.mscdex.installed_drives.clone();
         }
-        if self.platform.machine.has_implicit_mscdex() && cdrom.cdrom_present() {
+        if self.platform.machine.has_implicit_mscdex()
+            && cdrom.cdrom_present()
+            && let Some(device) = self.builtin_cdrom_mirror_header()
+        {
             return vec![MscdexDrive {
                 drive_index: self.mscdex.drive_letter,
-                device: FarPointer::new(
-                    self.dos_data_segment() + tables::CDROM_MIRROR_HEADER_PARAGRAPHS,
-                    0,
-                ),
+                device,
                 native: true,
             }];
         }
