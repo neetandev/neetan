@@ -2300,7 +2300,7 @@ mod tests {
         cpu.set_cx(0x5555);
         dos.int21h_30h_get_version(&mut cpu);
         assert_eq!(cpu.ax(), 0x1406);
-        assert_eq!(cpu.bx(), 0x0000);
+        assert_eq!(cpu.bx(), 0xFF00);
         assert_eq!(cpu.cx(), 0x0000);
 
         let (dos, _) = fm_towns_dos();

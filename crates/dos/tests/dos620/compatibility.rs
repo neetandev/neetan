@@ -260,9 +260,7 @@ fn oem_byte_nec() {
     harness::inject_and_run(&mut machine, code);
 
     let oem = harness::result_byte(&machine.bus, 0);
-    // OEM values: 0x00=IBM, 0xFF=Microsoft, NEC typically uses a specific value.
-    // Just verify the call provides a value and record it.
-    let _ = oem;
+    assert_eq!(oem, 0xFF, "NEC MS-DOS 6.20 reports OEM number FFh");
 }
 
 #[test]
