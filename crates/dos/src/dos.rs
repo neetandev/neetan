@@ -179,7 +179,22 @@ impl NeetanDos {
             // OEM function range without an OEM handler. DOS answers it like
             // an invalid function with AL=00h.
             OEM_FUNCTION_FIRST..=OEM_FUNCTION_LAST => cpu.set_ax(cpu.ax() & 0xFF00),
-            _ => warn!("INT 21h AH={ah:#04X} is unimplemented"),
+            // Functions of MS-DOS 6.20 without an HLE handler.
+            0x03..=0x05
+            | 0x0F..=0x17
+            | 0x1B
+            | 0x21..=0x24
+            | 0x26..=0x28
+            | 0x46
+            | 0x5A..=0x5C
+            | 0x66
+            | 0x6C => warn!("INT 21h AH={ah:#04X} is unimplemented"),
+            // Undefined functions and the CP/M null functions 18h, 1Dh, 1Eh
+            // and 20h. DOS answers them with AL=00h.
+            _ => {
+                warn!("INT 21h AH={ah:#04X} is undefined");
+                cpu.set_ax(cpu.ax() & 0xFF00);
+            }
         }
 
         if ah != EXTENDED_ERROR_FUNCTION
@@ -2290,6 +2305,61 @@ mod tests {
         let dos = NeetanDos::new(DosPlatform::pc98());
         let memory = MockMemory::with_extended_memory(0x100000, 0);
         (dos, memory)
+    }
+
+    #[test]
+    fn unknown_function_clears_al_and_keeps_the_registers_and_the_carry() {
+        for function in [0x6Du8, 0xF0] {
+            for flags in [0x0202u16, 0x0203] {
+                let (mut dos, mut memory) = pc98_dos();
+                let mut cpu = MockCpu::default();
+                memory.write_word(cpu.iret_flags_addr(), flags);
+                cpu.set_ax(u16::from(function) << 8 | 0x34);
+                cpu.set_bx(0x5678);
+                cpu.set_cx(0x9ABC);
+                cpu.set_dx(0xDEF0);
+                dos.int21h(&mut cpu, &mut memory, &mut crate::test_support::NoDrives);
+                assert_eq!(cpu.ax(), u16::from(function) << 8, "AH={function:02X}");
+                assert_eq!(cpu.bx(), 0x5678, "AH={function:02X}");
+                assert_eq!(cpu.cx(), 0x9ABC, "AH={function:02X}");
+                assert_eq!(cpu.dx(), 0xDEF0, "AH={function:02X}");
+                assert_eq!(
+                    memory.read_word(cpu.iret_flags_addr()),
+                    flags,
+                    "AH={function:02X}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unimplemented_function_keeps_ax() {
+        for function in [0x0Fu8, 0x6C] {
+            let (mut dos, mut memory) = pc98_dos();
+            let mut cpu = MockCpu::default();
+            memory.write_word(cpu.iret_flags_addr(), 0x0202);
+            cpu.set_ax(u16::from(function) << 8 | 0x34);
+            dos.int21h(&mut cpu, &mut memory, &mut crate::test_support::NoDrives);
+            assert_eq!(
+                cpu.ax(),
+                u16::from(function) << 8 | 0x34,
+                "AH={function:02X}"
+            );
+            assert_eq!(memory.read_word(cpu.iret_flags_addr()), 0x0202);
+        }
+    }
+
+    #[test]
+    fn cpm_null_function_clears_al() {
+        for function in [0x18u8, 0x1D, 0x1E, 0x20] {
+            let (mut dos, mut memory) = pc98_dos();
+            let mut cpu = MockCpu::default();
+            memory.write_word(cpu.iret_flags_addr(), 0x0203);
+            cpu.set_ax(u16::from(function) << 8 | 0x34);
+            dos.int21h(&mut cpu, &mut memory, &mut crate::test_support::NoDrives);
+            assert_eq!(cpu.ax(), u16::from(function) << 8, "AH={function:02X}");
+            assert_eq!(memory.read_word(cpu.iret_flags_addr()), 0x0203);
+        }
     }
 
     #[test]

@@ -2389,6 +2389,51 @@ fn oem_function_ffh_clears_al_and_keeps_the_other_registers() {
     );
 }
 
+#[test]
+fn unknown_function_clears_al_and_keeps_the_registers_and_the_carry() {
+    const CLEAR_CARRY: u8 = 0xF8;
+    const SET_CARRY: u8 = 0xF9;
+    for function in [0x6Du8, 0xF0] {
+        for carry_instruction in [CLEAR_CARRY, SET_CARRY] {
+            let mut machine = harness::boot_hle();
+            #[rustfmt::skip]
+            let code: &[u8] = &[
+                0xB8, 0x34, function,               // MOV AX, function:34h
+                0xBB, 0x78, 0x56,                   // MOV BX, 5678h
+                0xB9, 0xBC, 0x9A,                   // MOV CX, 9ABCh
+                0xBA, 0xF0, 0xDE,                   // MOV DX, DEF0h
+                carry_instruction,                  // CLC or STC
+                0xCD, 0x21,                         // INT 21h
+                0x9C,                               // PUSHF
+                0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
+                0x89, 0x1E, 0x02, 0x01,             // MOV [0x0102], BX
+                0x89, 0x0E, 0x04, 0x01,             // MOV [0x0104], CX
+                0x89, 0x16, 0x06, 0x01,             // MOV [0x0106], DX
+                0x58,                               // POP AX
+                0xA3, 0x08, 0x01,                   // MOV [0x0108], AX
+                0xFA,                               // CLI
+                0xF4,                               // HLT
+            ];
+            harness::inject_and_run(&mut machine, code);
+
+            let carry = u16::from(carry_instruction == SET_CARRY);
+            assert_eq!(
+                harness::result_word(&machine.bus, 0),
+                u16::from(function) << 8,
+                "AH={function:02X}"
+            );
+            assert_eq!(harness::result_word(&machine.bus, 2), 0x5678);
+            assert_eq!(harness::result_word(&machine.bus, 4), 0x9ABC);
+            assert_eq!(harness::result_word(&machine.bus, 6), 0xDEF0);
+            assert_eq!(
+                harness::result_word(&machine.bus, 8) & 0x0001,
+                carry,
+                "AH={function:02X} carry"
+            );
+        }
+    }
+}
+
 /// Segment that the overlay tests load to.
 const OVERLAY_LOAD_SEGMENT: u16 = 0x3000;
 
