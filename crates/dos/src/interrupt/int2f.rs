@@ -5,7 +5,7 @@
 
 use common::warn;
 
-use crate::{CdromIo, CpuAccess, MemoryAccess, NeetanDos, SegmentRegister, tables};
+use crate::{CdromIo, CpuAccess, MemoryAccess, NeetanDos, SegmentRegister, tables, version_gate};
 
 impl NeetanDos {
     /// Dispatches an INT 2Fh call based on the AH register.
@@ -15,6 +15,10 @@ impl NeetanDos {
         memory: &mut dyn MemoryAccess,
         cdrom: &mut dyn CdromIo,
     ) {
+        if let Some(answer) = version_gate::int2fh_answer(self.state.platform.version, cpu.ax()) {
+            self.state.answer_predated_function(cpu, memory, answer);
+            return;
+        }
         let ah = (cpu.ax() >> 8) as u8;
         match ah {
             0x10 => self.int2fh_10h_share(cpu),
@@ -405,7 +409,7 @@ fn critical_error_message(error_number: u16) -> &'static [u8] {
 mod tests {
     use crate::{
         CpuAccess, DosPlacement, DosPlatform, MemoryAccess, NeetanDos,
-        test_support::{MockCpu, MockMemory},
+        test_support::{FLAGS_CARRY_CLEAR, MockCpu, MockMemory},
     };
 
     /// Placement of an FM Towns kernel in the tests.
@@ -472,5 +476,90 @@ mod tests {
         assert_eq!(cpu.cx(), 0x0001);
         assert_eq!(cpu.es(), dos_data_segment);
         assert_eq!(cpu.bx(), patch_table);
+    }
+
+    /// `BX`, `CX`, `DX`, `ES` and `DI` in front of a gated call.
+    const GATE_PRESETS: [u16; 5] = [0x1234, 0x5678, 0x0000, 0x4321, 0x8765];
+
+    /// Calls INT 2Fh with `ax`, the presets and a clear carry flag on a
+    /// PC-98 NeetanDos of `version`. Returns `[AX, BX, CX, DX, ES, DI]` and
+    /// the flags word of the IRET frame after the call.
+    fn call_int2fh(version: common::HleDosVersion, ax: u16) -> ([u16; 6], u16) {
+        let mut dos = NeetanDos::new(DosPlatform::pc98(version));
+        let mut memory = MockMemory::with_extended_memory(TEST_MEMORY_SIZE, 0);
+        let mut cpu = MockCpu::default();
+        cpu.set_ax(ax);
+        cpu.set_bx(GATE_PRESETS[0]);
+        cpu.set_cx(GATE_PRESETS[1]);
+        cpu.set_dx(GATE_PRESETS[2]);
+        cpu.set_es(GATE_PRESETS[3]);
+        cpu.set_di(GATE_PRESETS[4]);
+        memory.write_word(cpu.iret_flags_addr(), FLAGS_CARRY_CLEAR);
+        dos.int2fh(&mut cpu, &mut memory, &mut crate::test_support::NoDrives);
+        let registers = [cpu.ax(), cpu.bx(), cpu.cx(), cpu.dx(), cpu.es(), cpu.di()];
+        (registers, memory.read_word(cpu.iret_flags_addr()))
+    }
+
+    #[test]
+    fn dos310_leaves_the_hma_and_doskey_functions_unanswered() {
+        for ax in [0x4A01, 0x4A02, 0x4A33, 0x4800, 0x4810] {
+            let (registers, flags) = call_int2fh(common::HleDosVersion::Dos310, ax);
+            assert_eq!(
+                registers,
+                [
+                    ax,
+                    GATE_PRESETS[0],
+                    GATE_PRESETS[1],
+                    GATE_PRESETS[2],
+                    GATE_PRESETS[3],
+                    GATE_PRESETS[4]
+                ],
+                "AX={ax:04X}h"
+            );
+            assert_eq!(flags, FLAGS_CARRY_CLEAR, "AX={ax:04X}h");
+        }
+    }
+
+    #[test]
+    fn dos620_answers_the_hma_and_doskey_functions() {
+        let (registers, _) = call_int2fh(common::HleDosVersion::Dos620, 0x4A01);
+        assert_eq!(registers[1], 0x0000, "no HMA without XMS");
+        let (registers, _) = call_int2fh(common::HleDosVersion::Dos620, 0x4800);
+        assert_eq!(registers[0], 0x4800);
+        let (registers, _) = call_int2fh(common::HleDosVersion::Dos620, 0x4810);
+        assert_eq!(registers[0], 0x4800);
+    }
+
+    #[test]
+    fn dos310_has_no_error_tables() {
+        let (registers, flags) = call_int2fh(common::HleDosVersion::Dos310, 0x122E);
+        assert_eq!(
+            registers,
+            [
+                0x0001,
+                GATE_PRESETS[0],
+                GATE_PRESETS[1],
+                GATE_PRESETS[2],
+                GATE_PRESETS[3],
+                GATE_PRESETS[4]
+            ]
+        );
+        assert_eq!(flags & 0x0001, 0x0001);
+    }
+
+    #[test]
+    fn dos620_returns_the_error_tables() {
+        let (registers, flags) = call_int2fh(common::HleDosVersion::Dos620, 0x122E);
+        assert_eq!(registers[0], 0x122E);
+        assert_eq!(registers[4], crate::tables::ERROR_TABLE_SEGMENT);
+        assert_eq!(flags, FLAGS_CARRY_CLEAR);
+    }
+
+    #[test]
+    fn xms_check_follows_the_xms_state_on_both_versions() {
+        for version in [common::HleDosVersion::Dos310, common::HleDosVersion::Dos620] {
+            let (registers, _) = call_int2fh(version, 0x4300);
+            assert_eq!(registers[0], 0x4300, "{version:?}: no XMS driver");
+        }
     }
 }

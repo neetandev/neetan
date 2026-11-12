@@ -200,10 +200,33 @@ pub const IOSYS_BASE: u32 = (IOSYS_SEGMENT as u32) << 4;
 
 pub const IOSYS_OFF_PRODUCT_NUMBER: u32 = 0x0020;
 pub const IOSYS_OFF_INTERNAL_REVISION: u32 = 0x0022;
-/// Product number of NEC MS-DOS 6.20 at 0060:0020h.
-pub const NEC_DOS620_PRODUCT_NUMBER: u16 = 0x0200;
-/// Internal revision of NEC MS-DOS 6.20 at 0060:0022h.
-pub const NEC_DOS620_INTERNAL_REVISION: u8 = 0x01;
+
+/// Identification values of a NEC `IO.SYS` release.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NecIosysIdentity {
+    /// Product number that `INT DCh CL=12h` returns in `AX`.
+    pub intdch_product_number: u16,
+    /// Product number at 0060:0020h.
+    pub work_area_product_number: u16,
+    /// Internal revision at 0060:0022h.
+    pub internal_revision: u8,
+}
+
+/// Identification of NEC MS-DOS 3.1 (PS98-011). Its work area has no
+/// product number and no revision.
+pub const NEC_DOS310_IOSYS_IDENTITY: NecIosysIdentity = NecIosysIdentity {
+    intdch_product_number: 0x0001,
+    work_area_product_number: 0x0000,
+    internal_revision: 0x00,
+};
+
+/// Identification of NEC MS-DOS 6.20.
+pub const NEC_DOS620_IOSYS_IDENTITY: NecIosysIdentity = NecIosysIdentity {
+    intdch_product_number: 0x0200,
+    work_area_product_number: 0x0200,
+    internal_revision: 0x01,
+};
+
 pub const IOSYS_OFF_EMM_BANK_FLAG: u32 = 0x0030;
 pub const IOSYS_OFF_EXT_MEM_128K: u32 = 0x0031;
 pub const IOSYS_OFF_FD_DUPLICATE: u32 = 0x0038;
@@ -241,7 +264,9 @@ pub const IOSYS_OFF_EXT_ATTR_DISPLAY: u32 = 0x013C;
 pub const IOSYS_OFF_EXT_ATTR_CLEAR: u32 = 0x013E;
 pub const IOSYS_OFF_EXT_ATTR_MODE: u32 = 0x05D6;
 pub const IOSYS_OFF_TEXT_MODE: u32 = 0x05D8;
+/// Far pointer to the attribute and DA/UA table of the drives A: to Z:.
 pub const IOSYS_OFF_DAUA_PTR: u32 = 0x2820;
+/// Attribute and DA/UA table of the drives A: to Z:.
 pub const IOSYS_OFF_EXT_DAUA_TABLE: u32 = 0x2C86;
 pub const IOSYS_EXT_DAUA_TABLE_SIZE: u32 = 52;
 

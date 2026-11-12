@@ -21,3 +21,9 @@ mod memory_managers;
 
 #[path = "dos310/cdrom.rs"]
 mod cdrom;
+
+#[path = "dos310/config.rs"]
+mod config;
+
+#[path = "dos310/iosys.rs"]
+mod iosys;

@@ -73,10 +73,16 @@ built-in DOS with EMS, XMS and MSCDEX drivers. `fdd1`, `fdd2`, `hdd1` and `hdd2`
 from that drive only. `dos` skips all disks and starts NEETAN DOS directly. `--ems` and
 `--xms` configure the memory drivers of NEETAN DOS.
 
-NEETAN DOS emulates NEC MS-DOS 6.20 or NEC MS-DOS 3.1. `--dos-version` selects the
-version. The default `6.20` suits most software. `3.10` reports version 3.10 and uses
-the table layout of a DOS 3.1 kernel. Choose it for old software that refuses a newer
-DOS.
+NEETAN DOS emulates the behavior of two DOS versions: NEC MS-DOS 3.1 and NEC MS-DOS
+6.20. `--dos-version` selects the version. The default `6.20` suits most software.
+Choose `3.10` for old software that requires DOS 3.1.
+
+With `3.10` the kernel has no UMB and no HMA functions. The XMS driver still serves the
+HMA. `CONFIG.SYS` matches a directive by the start of its keyword, so `DEVICEHIGH=` loads
+a driver like `DEVICE=`.
+
+With `6.20` the kernel provides UMBs with `--ems` or `--xms` and the HMA with `--xms`.
+`CONFIG.SYS` matches the full keyword of a directive.
 
 ## Graphic acceleration board
 

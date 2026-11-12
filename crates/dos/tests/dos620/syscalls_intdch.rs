@@ -7,7 +7,7 @@ const IOSYS_CURSOR_X: u32 = 0x0600 + 0x011C;
 fn system_identification() {
     let mut machine = harness::boot_hle();
     // INT DCh CL=12h: System identification.
-    // AX returns product number from 0060:0020h.
+    // AX returns the product number of NEC MS-DOS 6.20.
     // DX returns machine type (0003h = normal-mode PC-98).
     #[rustfmt::skip]
     let code: &[u8] = &[

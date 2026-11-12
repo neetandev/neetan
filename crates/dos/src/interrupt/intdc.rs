@@ -6,7 +6,7 @@
 
 use common::warn;
 
-use crate::{CpuAccess, MemoryAccess, NeetanDos, SegmentRegister, drive_map, tables};
+use crate::{CpuAccess, MemoryAccess, NeetanDos, SegmentRegister, drive_map, tables, version_gate};
 
 /// Machine type of CL=12h for a PC-98 in normal mode.
 const MACHINE_TYPE_NORMAL_MODE: u16 = 0x0003;
@@ -15,13 +15,18 @@ impl NeetanDos {
     /// Dispatches an INT DCh call based on the CL register.
     pub(crate) fn intdch(&mut self, cpu: &mut dyn CpuAccess, memory: &mut dyn MemoryAccess) {
         let cl = (cpu.cx() & 0xFF) as u8;
+        if let Some(answer) = version_gate::intdch_answer(self.state.platform.version, cl, cpu.ax())
+        {
+            self.state.answer_predated_function(cpu, memory, answer);
+            return;
+        }
         match cl {
             0x00..=0x08 => {}
             0x0C => self.intdch_0ch_read_fnkey_map(cpu, memory),
             0x0D => self.intdch_0dh_write_fnkey_map(cpu, memory),
             0x0F => self.intdch_0fh_softkey_control(cpu, memory),
             0x10 => self.intdch_10h_console(cpu, memory),
-            0x12 => self.intdch_12h_system_identification(cpu, memory),
+            0x12 => self.intdch_12h_system_identification(cpu),
             0x13 => self.intdch_13h_daua_mapping_buffer(cpu, memory),
             0x15 => self.intdch_15h_internal_revision(cpu, memory),
             0x80 => self.intdch_80h_disk_partition_info(cpu),
@@ -134,10 +139,9 @@ impl NeetanDos {
     }
 
     /// CL=12h: System identification.
-    /// Returns AX = product number from 0060:0020h, DX = machine type.
-    fn intdch_12h_system_identification(&self, cpu: &mut dyn CpuAccess, memory: &dyn MemoryAccess) {
-        let product = memory.read_word(tables::IOSYS_BASE + tables::IOSYS_OFF_PRODUCT_NUMBER);
-        cpu.set_ax(product);
+    /// Returns AX = product number of the DOS version, DX = machine type.
+    fn intdch_12h_system_identification(&self, cpu: &mut dyn CpuAccess) {
+        cpu.set_ax(self.state.iosys_identity().intdch_product_number);
         cpu.set_dx(MACHINE_TYPE_NORMAL_MODE);
     }
 
@@ -386,6 +390,8 @@ impl NeetanDos {
 
 #[cfg(test)]
 mod tests {
+    use common::HleDosVersion;
+
     use super::*;
     use crate::{
         DosPlatform,
@@ -394,10 +400,112 @@ mod tests {
 
     /// Returns a PC-98 NeetanDos with the IO.SYS work area in 1 MiB of memory.
     fn pc98_dos_with_work_area() -> (NeetanDos, MockMemory) {
-        let dos = NeetanDos::new(DosPlatform::pc98(common::HleDosVersion::Dos620));
+        pc98_dos_of_version(HleDosVersion::Dos620)
+    }
+
+    /// Returns a PC-98 NeetanDos of `version` with the IO.SYS work area in
+    /// 1 MiB of memory and the CTRL+function key flags set.
+    fn pc98_dos_of_version(version: HleDosVersion) -> (NeetanDos, MockMemory) {
+        let dos = NeetanDos::new(DosPlatform::pc98(version));
         let mut memory = MockMemory::with_extended_memory(0x10_0000, 0);
         dos.write_iosys_work_area(&mut memory);
+        memory.write_byte(
+            tables::IOSYS_BASE + tables::IOSYS_OFF_SOFTKEY_FLAGS,
+            SOFTKEY_FLAGS_SET,
+        );
         (dos, memory)
+    }
+
+    /// CTRL+function key and CTRL+XFER/NFER flags both set.
+    const SOFTKEY_FLAGS_SET: u8 = 0x03;
+
+    /// `AX`, `BX` and `DX` in front of a gated call.
+    const GATE_PRESETS: [u16; 3] = [0xAB00, 0x1234, 0x5678];
+
+    /// Calls INT DCh with `cl` and `ax` and the presets in `BX` and `DX`.
+    /// Returns `[AX, BX, CX, DX]` after the call.
+    fn call_intdch(version: HleDosVersion, cl: u8, ax: u16) -> [u16; 4] {
+        let (mut dos, mut memory) = pc98_dos_of_version(version);
+        let mut cpu = MockCpu::default();
+        cpu.set_ax(ax);
+        cpu.set_bx(GATE_PRESETS[1]);
+        cpu.set_cx(u16::from(cl));
+        cpu.set_dx(GATE_PRESETS[2]);
+        dos.intdch(&mut cpu, &mut memory);
+        [cpu.ax(), cpu.bx(), cpu.cx(), cpu.dx()]
+    }
+
+    #[test]
+    fn dos310_cl_12h_returns_the_ps98_011_product_number() {
+        assert_eq!(
+            call_intdch(HleDosVersion::Dos310, 0x12, 0x0000),
+            [0x0001, GATE_PRESETS[1], 0x0012, 0x0003]
+        );
+    }
+
+    #[test]
+    fn dos310_leaves_the_younger_functions_unanswered() {
+        for (cl, ax) in [
+            (0x0F, 0x8000),
+            (0x0F, 0x8002),
+            (0x15, GATE_PRESETS[0]),
+            (0x81, GATE_PRESETS[0]),
+        ] {
+            assert_eq!(
+                call_intdch(HleDosVersion::Dos310, cl, ax),
+                [ax, GATE_PRESETS[1], u16::from(cl), GATE_PRESETS[2]],
+                "CL={cl:02X}h AX={ax:04X}h"
+            );
+        }
+    }
+
+    #[test]
+    fn dos620_answers_the_functions_that_dos310_leaves_unanswered() {
+        assert_eq!(call_intdch(HleDosVersion::Dos620, 0x0F, 0x8000)[0], 0x0000);
+        assert_eq!(call_intdch(HleDosVersion::Dos620, 0x0F, 0x8002)[0], 0x0000);
+        assert_eq!(
+            call_intdch(HleDosVersion::Dos620, 0x15, GATE_PRESETS[0])[0],
+            0xAB01
+        );
+        assert_eq!(
+            call_intdch(HleDosVersion::Dos620, 0x81, GATE_PRESETS[0])[0],
+            0xAB00
+        );
+    }
+
+    #[test]
+    fn dos310_keeps_the_ctrl_function_key_settings() {
+        let (mut dos, mut memory) = pc98_dos_of_version(HleDosVersion::Dos310);
+        let mut cpu = MockCpu::default();
+        cpu.set_ax(0x0001);
+        cpu.set_cx(0x000F);
+        dos.intdch(&mut cpu, &mut memory);
+        assert_eq!(
+            memory.read_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_SOFTKEY_FLAGS),
+            SOFTKEY_FLAGS_SET & !0x01
+        );
+    }
+
+    #[test]
+    fn work_area_holds_the_product_number_of_the_version() {
+        let (_, memory) = pc98_dos_of_version(HleDosVersion::Dos310);
+        let product = tables::IOSYS_BASE + tables::IOSYS_OFF_PRODUCT_NUMBER;
+        let revision = tables::IOSYS_BASE + tables::IOSYS_OFF_INTERNAL_REVISION;
+        assert_eq!(memory.read_word(product), 0x0000);
+        assert_eq!(memory.read_byte(revision), 0x00);
+        let (_, memory) = pc98_dos_of_version(HleDosVersion::Dos620);
+        assert_eq!(memory.read_word(product), 0x0200);
+        assert_eq!(memory.read_byte(revision), 0x01);
+    }
+
+    #[test]
+    fn drive_table_pointer_points_to_the_table_of_all_drives() {
+        for version in [HleDosVersion::Dos310, HleDosVersion::Dos620] {
+            let (_, memory) = pc98_dos_of_version(version);
+            let pointer = tables::IOSYS_BASE + tables::IOSYS_OFF_DAUA_PTR;
+            assert_eq!(memory.read_word(pointer), 0x2C86, "{version:?}");
+            assert_eq!(memory.read_word(pointer + 2), 0x0060, "{version:?}");
+        }
     }
 
     #[test]
