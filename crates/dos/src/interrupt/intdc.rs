@@ -394,7 +394,7 @@ mod tests {
 
     /// Returns a PC-98 NeetanDos with the IO.SYS work area in 1 MiB of memory.
     fn pc98_dos_with_work_area() -> (NeetanDos, MockMemory) {
-        let dos = NeetanDos::new(DosPlatform::pc98());
+        let dos = NeetanDos::new(DosPlatform::pc98(common::HleDosVersion::Dos620));
         let mut memory = MockMemory::with_extended_memory(0x10_0000, 0);
         dos.write_iosys_work_area(&mut memory);
         (dos, memory)

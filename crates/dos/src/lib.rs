@@ -3412,12 +3412,14 @@ pub(crate) fn adjust_iret_ip(cpu: &dyn CpuAccess, mem: &mut dyn MemoryAccess, de
 
 #[cfg(test)]
 mod tests {
+    use common::HleDosVersion;
+
     use super::*;
     use crate::test_support::{MockMemory, device_chain_names};
 
     #[test]
     fn iosys_work_area_holds_the_nec_dos620_product_number_and_revision() {
-        let dos = NeetanDos::new(DosPlatform::pc98());
+        let dos = NeetanDos::new(DosPlatform::pc98(HleDosVersion::Dos620));
         let mut memory = MockMemory::with_extended_memory(0x10_0000, 0);
         dos.write_iosys_work_area(&mut memory);
         assert_eq!(memory.read_word(0x0620), 0x0200);
@@ -3426,7 +3428,7 @@ mod tests {
 
     #[test]
     fn cdrom_media_change_drops_the_open_files_and_the_search_of_the_disc() {
-        let mut dos = NeetanDos::new(DosPlatform::pc98());
+        let mut dos = NeetanDos::new(DosPlatform::pc98(HleDosVersion::Dos620));
         let directory = filesystem::iso9660::IsoDirectory {
             start_lba: 20,
             data_length: 2048,
@@ -3452,7 +3454,7 @@ mod tests {
     #[test]
     fn device_chain_without_a_cdrom_drive_has_no_cdrom_device() {
         let mut memory = MockMemory::with_extended_memory(0x10_0000, 0);
-        let dos = NeetanDos::new(DosPlatform::pc98());
+        let dos = NeetanDos::new(DosPlatform::pc98(HleDosVersion::Dos620));
         dos.write_device_chain(&mut memory, false);
         assert_eq!(
             device_chain_names(&dos, &memory),
@@ -3463,7 +3465,7 @@ mod tests {
     #[test]
     fn device_chain_with_a_cdrom_drive_links_the_cdrom_device_after_aid_nec() {
         let mut memory = MockMemory::with_extended_memory(0x10_0000, 0);
-        let dos = NeetanDos::new(DosPlatform::pc98());
+        let dos = NeetanDos::new(DosPlatform::pc98(HleDosVersion::Dos620));
         dos.write_device_chain(&mut memory, true);
         assert_eq!(
             device_chain_names(&dos, &memory),
@@ -3474,7 +3476,7 @@ mod tests {
     #[test]
     fn install_int5ch_stub_points_empty_vector_to_iret() {
         let mut memory = MockMemory::with_extended_memory(0x10000, 0);
-        let dos = NeetanDos::new(DosPlatform::pc98());
+        let dos = NeetanDos::new(DosPlatform::pc98(HleDosVersion::Dos620));
         dos.install_int5ch_stub(&mut memory);
         let ivt_5ch_addr: u32 = 0x5C * 4;
         let netbios_stub = dos.state.self_boot_layout().netbios_stub;
@@ -3492,7 +3494,7 @@ mod tests {
     #[test]
     fn install_int5ch_stub_preserves_existing_vector() {
         let mut memory = MockMemory::with_extended_memory(0x10000, 0);
-        let dos = NeetanDos::new(DosPlatform::pc98());
+        let dos = NeetanDos::new(DosPlatform::pc98(HleDosVersion::Dos620));
         let ivt_5ch_addr: u32 = 0x5C * 4;
         memory.write_word(ivt_5ch_addr, 0x1234);
         memory.write_word(ivt_5ch_addr + 2, 0x5678);
@@ -3520,13 +3522,13 @@ mod tests {
 
     #[test]
     fn validate_state_accepts_the_configured_version_and_layout() {
-        let pc98 = NeetanDos::new(DosPlatform::pc98());
-        assert!(validate(&pc98, &DosPlatform::pc98()));
+        let pc98 = NeetanDos::new(DosPlatform::pc98(HleDosVersion::Dos620));
+        assert!(validate(&pc98, &DosPlatform::pc98(HleDosVersion::Dos620)));
         assert!(!validate(&pc98, &DosPlatform::fm_towns(TOWNS_PLACEMENT)));
 
         let towns = NeetanDos::new(DosPlatform::fm_towns(TOWNS_PLACEMENT));
         assert!(validate(&towns, &DosPlatform::fm_towns(TOWNS_PLACEMENT)));
-        assert!(!validate(&towns, &DosPlatform::pc98()));
+        assert!(!validate(&towns, &DosPlatform::pc98(HleDosVersion::Dos620)));
     }
 
     #[test]
@@ -3542,13 +3544,19 @@ mod tests {
 
     #[test]
     fn validate_state_rejects_another_version_or_layout() {
-        let mut other_version = NeetanDos::new(DosPlatform::pc98());
+        let mut other_version = NeetanDos::new(DosPlatform::pc98(HleDosVersion::Dos620));
         other_version.state.platform.version.minor = 0;
-        assert!(!validate(&other_version, &DosPlatform::pc98()));
+        assert!(!validate(
+            &other_version,
+            &DosPlatform::pc98(HleDosVersion::Dos620)
+        ));
 
-        let mut other_data_area = NeetanDos::new(DosPlatform::pc98());
+        let mut other_data_area = NeetanDos::new(DosPlatform::pc98(HleDosVersion::Dos620));
         other_data_area.state.platform.data_area = DataArea::FmTowns;
-        assert!(!validate(&other_data_area, &DosPlatform::pc98()));
+        assert!(!validate(
+            &other_data_area,
+            &DosPlatform::pc98(HleDosVersion::Dos620)
+        ));
 
         let mut unordered = NeetanDos::new(DosPlatform::fm_towns(TOWNS_PLACEMENT));
         unordered.state.platform.placement.first_mcb_segment = 0x1000;
@@ -3560,20 +3568,23 @@ mod tests {
 
     #[test]
     fn validate_state_rejects_a_moved_pc98_placement() {
-        let mut moved = NeetanDos::new(DosPlatform::pc98());
+        let mut moved = NeetanDos::new(DosPlatform::pc98(HleDosVersion::Dos620));
         moved.state.platform.placement.dos_data_segment = 0x0100;
-        assert!(!validate(&moved, &DosPlatform::pc98()));
+        assert!(!validate(&moved, &DosPlatform::pc98(HleDosVersion::Dos620)));
 
-        let mut booted = NeetanDos::new(DosPlatform::pc98());
+        let mut booted = NeetanDos::new(DosPlatform::pc98(HleDosVersion::Dos620));
         booted.state.platform.placement.first_mcb_segment += 0x10;
-        assert!(validate(&booted, &DosPlatform::pc98()));
+        assert!(validate(&booted, &DosPlatform::pc98(HleDosVersion::Dos620)));
     }
 
     #[test]
     fn save_state_round_trips_the_platform() {
         use save_state::{StateDecode, StateEncode};
 
-        for platform in [DosPlatform::pc98(), DosPlatform::fm_towns(TOWNS_PLACEMENT)] {
+        for platform in [
+            DosPlatform::pc98(HleDosVersion::Dos620),
+            DosPlatform::fm_towns(TOWNS_PLACEMENT),
+        ] {
             let dos = NeetanDos::new(platform.clone());
             let mut encoded = Vec::new();
             dos.encode_state(&mut encoded);
@@ -3612,7 +3623,7 @@ mod tests {
     #[test]
     fn private_stubs_install_no_vectors() {
         let mut memory = MockMemory::with_extended_memory(0x10_0000, 0x10_0000);
-        let dos = NeetanDos::new(DosPlatform::pc98());
+        let dos = NeetanDos::new(DosPlatform::pc98(HleDosVersion::Dos620));
         dos.install_error_retriever_stub(&mut memory);
         dos.install_cdrom_device_stubs(&mut memory);
         dos.install_xms_stubs(&mut memory);
@@ -3627,7 +3638,7 @@ mod tests {
     #[test]
     fn xms_entry_stub_traps_after_the_himem_prologue() {
         let mut memory = MockMemory::with_extended_memory(0x10_0000, 0x10_0000);
-        let dos = NeetanDos::new(DosPlatform::pc98());
+        let dos = NeetanDos::new(DosPlatform::pc98(HleDosVersion::Dos620));
         dos.install_xms_stubs(&mut memory);
         let self_boot = dos.state.self_boot_layout();
         let entry = dos.state.dos_data_address(self_boot.xms_entry_stub);
@@ -3648,7 +3659,7 @@ mod tests {
     #[test]
     fn four_parameter_blocks_keep_the_buffer_header_and_a_full_sector_buffer() {
         let mut memory = MockMemory::with_extended_memory(0x10_0000, 0);
-        let mut dos = NeetanDos::new(DosPlatform::pc98());
+        let mut dos = NeetanDos::new(DosPlatform::pc98(HleDosVersion::Dos620));
         for (drive_index, device_id) in [(0u8, 0x90u8), (1, 0x91), (2, 0x92), (3, 0x93)] {
             dos.state.drive_map.set(
                 drive_index,

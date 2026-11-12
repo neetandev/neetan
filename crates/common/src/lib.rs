@@ -345,6 +345,37 @@ impl core::str::FromStr for BootDevice {
     }
 }
 
+/// DOS version that the HLE DOS of the PC-98 emulates.
+#[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
+pub enum HleDosVersion {
+    /// NEC MS-DOS 3.1 (PS98-011).
+    Dos310,
+    /// NEC MS-DOS 6.20.
+    #[default]
+    Dos620,
+}
+
+impl core::fmt::Display for HleDosVersion {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Dos310 => f.write_str("3.10"),
+            Self::Dos620 => f.write_str("6.20"),
+        }
+    }
+}
+
+impl core::str::FromStr for HleDosVersion {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "3.10" => Ok(Self::Dos310),
+            "6.20" => Ok(Self::Dos620),
+            _ => Err(format!("unknown DOS version '{s}', expected 3.10 or 6.20")),
+        }
+    }
+}
+
 /// PC-8801 memory wait compatibility switch. `Compatible` inserts the
 /// additional real-hardware memory wait states; `Fast` omits them where the
 /// hardware switch would.
@@ -2336,8 +2367,8 @@ pub const fn unlikely(b: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        Bus, CpuMode, FlushError, HostDateTime, M68000AccessSize, M68000BusAccess, M68000CycleKind,
-        M68000FunctionCode, Machine, MachineModel, SaveStateError,
+        Bus, CpuMode, FlushError, HleDosVersion, HostDateTime, M68000AccessSize, M68000BusAccess,
+        M68000CycleKind, M68000FunctionCode, Machine, MachineModel, SaveStateError,
     };
     #[cfg(feature = "std")]
     use super::{MediaBacking, MediaImage};
@@ -2644,6 +2675,24 @@ mod tests {
         for (model, low_clock_hz, high_clock_hz) in cases {
             assert_eq!(model.cpu_clock_hz(CpuMode::Low), low_clock_hz);
             assert_eq!(model.cpu_clock_hz(CpuMode::High), high_clock_hz);
+        }
+    }
+
+    #[test]
+    fn hle_dos_version_round_trips_both_values() {
+        for version in [HleDosVersion::Dos310, HleDosVersion::Dos620] {
+            let text = version.to_string();
+            assert_eq!(text.parse::<HleDosVersion>(), Ok(version));
+        }
+        assert_eq!(HleDosVersion::Dos310.to_string(), "3.10");
+        assert_eq!(HleDosVersion::Dos620.to_string(), "6.20");
+        assert_eq!(HleDosVersion::default(), HleDosVersion::Dos620);
+    }
+
+    #[test]
+    fn hle_dos_version_rejects_an_unknown_value() {
+        for text in ["5.00", "3.1", "6", "", "dos"] {
+            assert!(text.parse::<HleDosVersion>().is_err(), "{text}");
         }
     }
 }

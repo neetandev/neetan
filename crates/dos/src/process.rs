@@ -1695,6 +1695,8 @@ impl NeetanDos {
 
 #[cfg(test)]
 mod tests {
+    use common::HleDosVersion;
+
     use super::*;
     use crate::test_support::{MockCpu, MockMemory};
 
@@ -1793,7 +1795,7 @@ mod tests {
 
     #[test]
     fn terminate_restores_exec_frame_when_child_owns_stack() {
-        let mut dos = NeetanDos::new(crate::DosPlatform::pc98());
+        let mut dos = NeetanDos::new(crate::DosPlatform::pc98(HleDosVersion::Dos620));
         let mut mem = MockMemory::with_extended_memory(0x100000, 0);
         let parent_psp = 0x1001;
         let child_psp = 0x1101;
@@ -1839,7 +1841,7 @@ mod tests {
     fn terminate_discards_the_guest_operations_of_the_program_and_lowers_indos() {
         use crate::guest_call::{GuestCompletion, GuestOperation};
 
-        let mut dos = NeetanDos::new(crate::DosPlatform::pc98());
+        let mut dos = NeetanDos::new(crate::DosPlatform::pc98(HleDosVersion::Dos620));
         let mut mem = MockMemory::with_extended_memory(0x100000, 0);
         let parent_psp = 0x1001;
         let child_psp = 0x1101;
@@ -1890,7 +1892,7 @@ mod tests {
             guest_call::{FarPointer, GuestCompletion, GuestOperation, GuestStep},
         };
 
-        let mut dos = NeetanDos::new(crate::DosPlatform::pc98());
+        let mut dos = NeetanDos::new(crate::DosPlatform::pc98(HleDosVersion::Dos620));
         let mut mem = MockMemory::with_extended_memory(0x100000, 0);
         let parent_psp = 0x1001;
         let child_psp = 0x1101;
@@ -1945,7 +1947,7 @@ mod tests {
 
     #[test]
     fn terminate_restores_exec_frame_when_child_stack_is_psp_after_mcb_owner_changed() {
-        let mut dos = NeetanDos::new(crate::DosPlatform::pc98());
+        let mut dos = NeetanDos::new(crate::DosPlatform::pc98(HleDosVersion::Dos620));
         let mut mem = MockMemory::with_extended_memory(0x100000, 0);
         let parent_psp = 0x1001;
         let child_psp = 0x1101;
@@ -1985,7 +1987,7 @@ mod tests {
 
     #[test]
     fn terminate_preserves_parent_stack_return_when_child_borrowed_parent_stack() {
-        let mut dos = NeetanDos::new(crate::DosPlatform::pc98());
+        let mut dos = NeetanDos::new(crate::DosPlatform::pc98(HleDosVersion::Dos620));
         let mut mem = MockMemory::with_extended_memory(0x100000, 0);
         let parent_psp = 0x1001;
         let child_psp = 0x1101;
@@ -2044,7 +2046,7 @@ mod tests {
 
     #[test]
     fn terminate_without_matching_exec_context_does_not_pop_or_free_root_process() {
-        let mut dos = NeetanDos::new(crate::DosPlatform::pc98());
+        let mut dos = NeetanDos::new(crate::DosPlatform::pc98(HleDosVersion::Dos620));
         let mut mem = MockMemory::with_extended_memory(0x100000, 0);
         let root_psp = 0x1001;
         mem.write_word(
@@ -2082,7 +2084,7 @@ mod tests {
 
     #[test]
     fn terminate_discards_abandoned_child_exec_when_parent_process_exits() {
-        let mut dos = NeetanDos::new(crate::DosPlatform::pc98());
+        let mut dos = NeetanDos::new(crate::DosPlatform::pc98(HleDosVersion::Dos620));
         let mut mem = MockMemory::with_extended_memory(0x100000, 0);
         let grandparent_psp = 0x1001;
         let parent_psp = 0x1101;

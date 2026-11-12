@@ -14,9 +14,10 @@
 //! buffer chain through the pointers of the list of lists. A foreign `IO.SYS`
 //! may allocate and relink these tables at any time.
 //!
-//! The DOS 6.20 format and the PC-98 6.20 data area belong to the self boot
-//! of NeetanDos on the PC-98. The DOS 3.10 format and the FM Towns data area
-//! belong to the kernel under the FM Towns `IO.SYS`.
+//! The DOS 6.20 format and the PC-98 6.20 data area belong to the MS-DOS
+//! 6.20 self boot of NeetanDos on the PC-98. The DOS 3.10 format serves the
+//! kernel under the FM Towns `IO.SYS` with the FM Towns data area and the
+//! MS-DOS 3.10 self boot on the PC-98 with the PC-98 3.10 data area.
 
 use crate::{MemoryAccess, filesystem::fat_bpb::Bpb};
 
@@ -39,7 +40,8 @@ save_state::runtime_state_enum! {
     /// DOS version whose structure format NeetanDos writes and reads.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum DosFormat {
-        /// MS-DOS 3.10 as loaded by the FM Towns `IO.SYS`.
+        /// MS-DOS 3.10 as loaded by the FM Towns `IO.SYS` and as NeetanDos
+        /// builds it on the PC-98.
         Dos310 = 0,
         /// MS-DOS 6.20 as NeetanDos builds it on the PC-98.
         Dos620 = 1,
@@ -64,18 +66,21 @@ save_state::runtime_state_enum! {
         FmTowns = 0,
         /// MS-DOS 6.20 self boot of NeetanDos on the PC-98.
         Pc98Dos620 = 1,
+        /// MS-DOS 3.10 self boot of NeetanDos on the PC-98.
+        Pc98Dos310 = 2,
     }
 }
 
 impl DataArea {
     /// Every data area.
-    pub const ALL: [Self; 2] = [Self::FmTowns, Self::Pc98Dos620];
+    pub const ALL: [Self; 3] = [Self::FmTowns, Self::Pc98Dos620, Self::Pc98Dos310];
 
     /// Returns the structure format of the DOS version of this platform.
     pub const fn format(self) -> DosFormat {
         match self {
             Self::FmTowns => DosFormat::Dos310,
             Self::Pc98Dos620 => DosFormat::Dos620,
+            Self::Pc98Dos310 => DosFormat::Dos310,
         }
     }
 
@@ -84,6 +89,7 @@ impl DataArea {
         match self {
             Self::FmTowns => &FM_TOWNS_DATA_AREA,
             Self::Pc98Dos620 => &PC98_DOS620_DATA_AREA,
+            Self::Pc98Dos310 => &PC98_DOS310_DATA_AREA,
         }
     }
 }
@@ -427,7 +433,9 @@ pub const DOS620_FORMAT: StructureFormat = StructureFormat {
     disk_buffer: DiskBufferFormat { header_size: 0x14 },
 };
 
-/// DOS 3.10 structure format of the kernel under the FM Towns `IO.SYS`.
+/// DOS 3.10 structure format of the kernel under the FM Towns `IO.SYS` and
+/// of the MS-DOS 3.10 self boot on the PC-98. NEC MS-DOS 3.30D uses the same
+/// entry sizes.
 ///
 /// The list of lists has no fields behind the NUL header. A CDS entry holds
 /// the root length at `4Fh`.
@@ -518,6 +526,66 @@ pub const PC98_DOS620_DATA_AREA: DataAreaLayout = DataAreaLayout {
             mirror_header: 0x16D0,
             strategy_stub: 0x16E4,
             interrupt_stub: 0x16F7,
+        },
+    }),
+};
+
+/// Data area of the MS-DOS 3.10 self boot of NeetanDos on the PC-98.
+///
+/// The list of lists, the NUL header at `0048h`, the first SFT block and the
+/// SDA lie where NEC MS-DOS 3.30D keeps them. The device headers, the FCB
+/// SFT, the private stubs, the CD-ROM stubs, the DPB window and the CDS
+/// array lie between the SDA and the system data. The DPB window ends at
+/// `0E20h` and the CDS array starts behind `12B9h`. The bytes `0E20h`-`0E23h`
+/// and `1286h`-`12B9h` alias the far pointer at `0060:2820` and the drive
+/// table at `0060:2C86` of the `IO.SYS` work area. The kernel offers no
+/// DOSMGR interface.
+pub const PC98_DOS310_DATA_AREA: DataAreaLayout = DataAreaLayout {
+    list_of_lists: ListOfListsLayout {
+        data_offset: 0x0026,
+        pointer_paragraph_bias: 0,
+    },
+    first_sft_block_offset: 0x0098,
+    swappable_data_area: SwappableDataAreaLayout {
+        data_offset: 0x02CE,
+        size: 0x0738,
+        always_swapped_size: 0x0018,
+        private_tail_offset: 0x0586,
+    },
+    private_area: PrivateAreaLayout {
+        dbcs_table: 0x0A82,
+        critical_error_stub: 0x0AB2,
+        error_retriever_stub: 0x0AB6,
+        error_message_buffer: 0x0AC6,
+        kernel_stubs: None,
+        transfer_buffer: None,
+        system_data: 0x1B00,
+        // It holds 21 DPBs.
+        parameter_block_window: Some(DataRange {
+            offset: 0x0B80,
+            size: 0x02A0,
+        }),
+    },
+    self_boot: Some(SelfBootLayout {
+        con_device: 0x0A10,
+        clock_device: 0x0A22,
+        aid_nec_device: 0x0A34,
+        cdrom_device: 0x0A46,
+        xms_device: 0x0A58,
+        ems_device: 0x0A6A,
+        current_directory_array: 0x12C0,
+        fcb_system_file_table: 0x0A7C,
+        xms_entry_stub: 0x0A88,
+        xms_device_stub: 0x0ABF,
+        ems_interrupt_stub: 0x0A96,
+        ems_page_map_return_stub: 0x0AA8,
+        netbios_stub: 0x0AB5,
+        windows_dosmgr: None,
+        cdrom_stubs: CdromStubLayout {
+            request_pointer: 0x0B3E,
+            mirror_header: 0x0B50,
+            strategy_stub: 0x0B62,
+            interrupt_stub: 0x0B75,
         },
     }),
 };
@@ -1011,6 +1079,27 @@ mod tests {
     }
 
     #[test]
+    fn pc98_dos310_data_area_keeps_the_dos_3_places_of_nec_ms_dos() {
+        let structures = DataArea::Pc98Dos310.format().structures();
+        let data_area = DataArea::Pc98Dos310.layout();
+        assert_eq!(
+            data_area.list_of_lists.returned_pointer(0x0200),
+            (0x0200, 0x0026)
+        );
+        assert_eq!(data_area.first_sft_block_offset, 0x0098);
+        assert_eq!(data_area.swappable_data_area.data_offset, 0x02CE);
+        assert_eq!(structures.current_directory.entry_size, 0x51);
+        assert_eq!(structures.drive_parameter_block.next, 0x18);
+        let nul_offset = u32::from(data_area.list_of_lists.data_offset) + SYSVARS_OFF_NUL_HEADER;
+        assert_eq!(nul_offset, 0x0048);
+        let self_boot = data_area.self_boot.expect("self boot regions");
+        let sda_end =
+            data_area.swappable_data_area.data_offset + data_area.swappable_data_area.size;
+        assert!(self_boot.con_device >= sda_end);
+        assert!(self_boot.windows_dosmgr.is_none());
+    }
+
+    #[test]
     fn dos310_sft_entry_keeps_the_dos_3_fields() {
         let sft = &DosFormat::Dos310.structures().system_file_table;
         let mut memory = MockMemory::with_extended_memory(TEST_MEMORY_SIZE, 0);
@@ -1415,11 +1504,66 @@ mod tests {
         regions
     }
 
+    /// Returns the region `name` of the `IO.SYS` work area field at
+    /// `iosys_offset` that aliases the DOS data segment at linear
+    /// `dos_data_base`.
+    fn iosys_alias_region(
+        name: &'static str,
+        dos_data_base: u32,
+        iosys_offset: u32,
+        size: u32,
+    ) -> Region {
+        let start = IOSYS_BASE + iosys_offset - dos_data_base;
+        Region {
+            name,
+            start,
+            end: start + size,
+        }
+    }
+
+    /// Returns the bytes of the DOS data segment of `data_area` that alias
+    /// the fields of the `IO.SYS` work area that NeetanDos writes.
+    fn iosys_alias_regions(data_area: DataArea) -> Vec<Region> {
+        match data_area {
+            DataArea::Pc98Dos310 => {
+                let dos_data_base = crate::DosPlatform::pc98(common::HleDosVersion::Dos310)
+                    .placement
+                    .dos_data_base();
+                vec![
+                    iosys_alias_region(
+                        "IO.SYS drive table pointer",
+                        dos_data_base,
+                        IOSYS_OFF_DAUA_PTR,
+                        FAR_POINTER_SIZE,
+                    ),
+                    iosys_alias_region(
+                        "IO.SYS extended drive table",
+                        dos_data_base,
+                        IOSYS_OFF_EXT_DAUA_TABLE,
+                        IOSYS_EXT_DAUA_TABLE_SIZE,
+                    ),
+                ]
+            }
+            DataArea::FmTowns | DataArea::Pc98Dos620 => Vec::new(),
+        }
+    }
+
+    #[test]
+    fn pc98_dos310_alias_regions_lie_in_the_dos_data_segment() {
+        let regions = iosys_alias_regions(DataArea::Pc98Dos310);
+        let bounds: Vec<(u32, u32)> = regions
+            .iter()
+            .map(|region| (region.start, region.end))
+            .collect();
+        assert_eq!(bounds, [(0x0E20, 0x0E24), (0x1286, 0x12BA)]);
+    }
+
     #[test]
     fn data_area_regions_do_not_overlap() {
         for data_area in DataArea::ALL {
             let layout = data_area.layout();
-            let regions = data_area_regions(data_area.format().structures(), layout);
+            let mut regions = data_area_regions(data_area.format().structures(), layout);
+            regions.extend(iosys_alias_regions(data_area));
             for (index, first) in regions.iter().enumerate() {
                 assert!(first.start < first.end, "{data_area:?} {}", first.name);
                 for second in &regions[index + 1..] {

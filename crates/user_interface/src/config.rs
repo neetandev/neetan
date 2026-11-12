@@ -794,9 +794,9 @@ mod tests {
 
     #[cfg(feature = "pc98")]
     use common::MachineModel;
-    use common::MonitorTiming;
     #[cfg(feature = "pc88")]
     use common::{CpuMode, MemoryWaitSwitch};
+    use common::{HleDosVersion, MonitorTiming};
     #[cfg(feature = "pc60")]
     use machine_60::Pc6000Model;
     use machine_factory::config::settings::{MACHINE_KEY, NumberRange};
@@ -1361,6 +1361,17 @@ mod tests {
         );
         assert_eq!(config.cpu_mode, CpuMode::High);
         assert_eq!(config.pc88_memory_wait, MemoryWaitSwitch::Fast);
+    }
+
+    /// Verifies that the DOS version flag takes a version and rejects an unknown one.
+    #[test]
+    fn dos_version_flag_parses_a_version_and_rejects_an_unknown_one() {
+        assert_eq!(parse_run_config(&[]).0.dos_version, HleDosVersion::Dos620);
+        assert_eq!(
+            parse_run_config(&["--dos-version", "3.10"]).0.dos_version,
+            HleDosVersion::Dos310
+        );
+        assert!(parse_error(&["--dos-version", "7"]).starts_with("--dos-version: "));
     }
 
     #[test]

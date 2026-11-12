@@ -853,7 +853,7 @@ mod tests {
     };
 
     fn prepare_dos_with_ems() -> (NeetanDos, MockMemory) {
-        let mut dos = NeetanDos::new(crate::DosPlatform::pc98());
+        let mut dos = NeetanDos::new(crate::DosPlatform::pc98(common::HleDosVersion::Dos620));
         let mut memory = MockMemory::with_extended_memory(0x200000, 0x200000);
         dos.state.memory_manager = Some(MemoryManager::new_for_platform(
             &dos.state.platform,

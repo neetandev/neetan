@@ -16,10 +16,10 @@ mod io_write;
 use std::path::PathBuf;
 
 use common::{
-    BootDevice, CpuType, MachineModel, SharedHostDateTimeSource, TraceAccessKind, TraceAccessWidth,
-    TraceAddressSpace, TraceCall, TraceCallInterface, TraceCallPhase, TraceContext, TraceEvent,
-    TraceEventKey, TraceField, TraceInterruptAction, TraceInterruptKind, TracePresentation,
-    TraceValue, trace_id,
+    BootDevice, CpuType, HleDosVersion, MachineModel, SharedHostDateTimeSource, TraceAccessKind,
+    TraceAccessWidth, TraceAddressSpace, TraceCall, TraceCallInterface, TraceCallPhase,
+    TraceContext, TraceEvent, TraceEventKey, TraceField, TraceInterruptAction, TraceInterruptKind,
+    TracePresentation, TraceValue, trace_id,
 };
 use device::{
     beeper::Beeper,
@@ -195,6 +195,30 @@ fn update_pic_irq<T: TraceSink>(
                 None,
             ),
         );
+    }
+}
+
+/// Save state tag of the HLE DOS version 3.10.
+const DOS310_STATE_TAG: u8 = 0;
+
+/// Save state tag of the HLE DOS version 6.20.
+const DOS620_STATE_TAG: u8 = 1;
+
+/// Returns the save state tag of the HLE DOS `version`.
+fn hle_dos_version_state_tag(version: HleDosVersion) -> u8 {
+    match version {
+        HleDosVersion::Dos310 => DOS310_STATE_TAG,
+        HleDosVersion::Dos620 => DOS620_STATE_TAG,
+    }
+}
+
+/// Returns the HLE DOS version of the save state tag `tag`, or `None` for an
+/// unknown tag.
+fn hle_dos_version_from_state(tag: u8) -> Option<HleDosVersion> {
+    match tag {
+        DOS310_STATE_TAG => Some(HleDosVersion::Dos310),
+        DOS620_STATE_TAG => Some(HleDosVersion::Dos620),
+        _ => None,
     }
 }
 
@@ -374,6 +398,7 @@ pub(crate) struct Pc9801BusState {
     xms_enabled: bool,
     xms_32_enabled: bool,
     xms_hmamin_kb: u16,
+    dos_version: u8,
 }}
 
 /// PC-9801 system bus.
@@ -540,6 +565,8 @@ pub struct Pc9801Bus<T: TraceSink = NoTrace> {
     xms_32_enabled: bool,
     /// /HMAMIN= threshold in KB for XMS Request HMA (XMS.txt priority).
     xms_hmamin_kb: u16,
+    /// DOS version that the HLE DOS emulates.
+    dos_version: HleDosVersion,
     /// Optional sink that receives JIS codes observed at the CGROM glyph
     /// fetch port (0xA9). Host-side runtime configuration; intentionally
     /// excluded from save/load.
@@ -550,6 +577,11 @@ impl<T: TraceSink> Pc9801Bus<T> {
     /// Sets the boot device for the HLE bootstrap.
     pub fn set_boot_device(&mut self, device: BootDevice) {
         self.boot_device = device;
+    }
+
+    /// Sets the DOS version that the HLE DOS emulates.
+    pub fn set_dos_version(&mut self, version: HleDosVersion) {
+        self.dos_version = version;
     }
 
     /// Enables or disables EMS expanded memory for the HLE DOS.
@@ -578,7 +610,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
     /// and the NeetanDos trap codes go to the built-in Rust implementation.
     /// A real DOS loaded from disk receives none of them.
     pub fn enable_neetan_dos(&mut self) {
-        let mut dos = dos::NeetanDos::new(dos::DosPlatform::pc98());
+        let mut dos = dos::NeetanDos::new(dos::DosPlatform::pc98(self.dos_version));
         dos.set_host_date_time_source(self.host_date_time_source.clone());
         self.dos = Some(dos);
     }
@@ -2023,6 +2055,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
             xms_enabled: self.xms_enabled,
             xms_32_enabled: self.xms_32_enabled,
             xms_hmamin_kb: self.xms_hmamin_kb,
+            dos_version: hle_dos_version_state_tag(self.dos_version),
         })
     }
 
@@ -2059,9 +2092,15 @@ impl<T: TraceSink> Pc9801Bus<T> {
                 save_state::StateValidationError::new("PC-98 state configuration differs").into(),
             );
         }
+        let Some(dos_version) = hle_dos_version_from_state(state.dos_version) else {
+            return Err(save_state::StateValidationError::new(
+                "PC-98 state has an unknown DOS version",
+            )
+            .into());
+        };
         if let Some(dos) = &state.dos {
             dos.validate_state(
-                &dos::DosPlatform::pc98(),
+                &dos::DosPlatform::pc98(dos_version),
                 state.ems_enabled,
                 state.xms_enabled,
                 state.xms_32_enabled,
@@ -2198,6 +2237,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
             self.xms_enabled = state.xms_enabled;
             self.xms_32_enabled = state.xms_32_enabled;
             self.xms_hmamin_kb = state.xms_hmamin_kb;
+            self.dos_version = dos_version;
             self.dos = restored_dos;
 
             self.pic.invalidate_irq_cache();
@@ -3718,12 +3758,31 @@ mod tests {
     };
     use device::disk::{HddFormat, HddGeometry, HddImage};
 
-    use super::{NoTrace, Pc9801Bus};
+    use super::{
+        DOS310_STATE_TAG, DOS620_STATE_TAG, HleDosVersion, NoTrace, Pc9801Bus,
+        hle_dos_version_from_state, hle_dos_version_state_tag,
+    };
     use crate::scheduler::Event98;
 
     const GAINIT_WINDOW_BASE: u32 = 0xC0000;
     const GAINIT_WINDOW_BLOCK_SIZE: u32 = 0x1000;
     const GAINIT_WINDOW_BLOCK_COUNT: usize = 32;
+
+    #[test]
+    fn save_state_tag_names_each_dos_version_and_nothing_else() {
+        for version in [HleDosVersion::Dos310, HleDosVersion::Dos620] {
+            let tag = hle_dos_version_state_tag(version);
+            assert_eq!(hle_dos_version_from_state(tag), Some(version));
+        }
+        assert_ne!(
+            hle_dos_version_state_tag(HleDosVersion::Dos310),
+            hle_dos_version_state_tag(HleDosVersion::Dos620)
+        );
+        let known_tags = [DOS310_STATE_TAG, DOS620_STATE_TAG];
+        for tag in (0..=u8::MAX).filter(|tag| !known_tags.contains(tag)) {
+            assert_eq!(hle_dos_version_from_state(tag), None, "{tag}");
+        }
+    }
 
     #[derive(Default)]
     struct AccessTrace {

@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use common::{
-    Bus, CpuMode, JisChar, Machine as _, MachineModel, SharedHostDateTimeSource, TraceSink,
-    temporary::TemporaryFolder,
+    Bus, CpuMode, HleDosVersion, JisChar, Machine as _, MachineModel, SharedHostDateTimeSource,
+    TraceSink, temporary::TemporaryFolder,
 };
 use device::{
     disk::{HddFormat, HddGeometry, HddImage},
@@ -984,7 +984,7 @@ pub fn inject_and_run_via_int28(machine: &mut machine_98::Pc9801Ra, code: &[u8],
 
 /// Returns the kernel placement of NeetanDos on the PC-98.
 pub fn pc98_placement() -> dos::DosPlacement {
-    dos::DosPlatform::pc98().placement
+    dos::DosPlatform::pc98(HleDosVersion::Dos620).placement
 }
 
 /// Returns the DOS data segment of NeetanDos on the PC-98.
@@ -1013,12 +1013,17 @@ pub fn dos_data_size(bus: &machine_98::Pc9801Bus) -> u32 {
 
 /// Returns the DOS 6.20 structure format of NeetanDos on the PC-98.
 pub fn pc98_structures() -> &'static dos::layout::StructureFormat {
-    dos::DosPlatform::pc98().data_area.format().structures()
+    dos::DosPlatform::pc98(HleDosVersion::Dos620)
+        .data_area
+        .format()
+        .structures()
 }
 
 /// Returns the PC-98 6.20 data area layout of NeetanDos.
 pub fn pc98_data_area() -> &'static dos::layout::DataAreaLayout {
-    dos::DosPlatform::pc98().data_area.layout()
+    dos::DosPlatform::pc98(HleDosVersion::Dos620)
+        .data_area
+        .layout()
 }
 
 /// Returns the regions of the PC-98 self boot in the DOS data segment.

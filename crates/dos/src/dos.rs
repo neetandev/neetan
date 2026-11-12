@@ -1784,6 +1784,8 @@ fn read_dword(memory: &dyn MemoryAccess, address: u32) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    use common::HleDosVersion;
+
     use super::int29_handler_is_iret;
     use crate::{
         CpuAccess, DosPlatform, MemoryAccess, NeetanDos,
@@ -1821,7 +1823,7 @@ mod tests {
     }
 
     fn prepare_dos_with_umb() -> (NeetanDos, MockMemory) {
-        let mut dos = NeetanDos::new(DosPlatform::pc98());
+        let mut dos = NeetanDos::new(DosPlatform::pc98(HleDosVersion::Dos620));
         let mut memory = MockMemory::with_extended_memory(0x200000, 0x200000);
         let placement = dos.state.platform.placement;
         let layout = memory::initial_mcb_layout(placement.first_mcb_segment, ENV_BLOCK_PARAGRAPHS);
@@ -1896,7 +1898,7 @@ mod tests {
     const TEST_PSP: u16 = 0x2000;
 
     fn dos_with_stdout_handle(dev_info: u16) -> (NeetanDos, MockMemory) {
-        let mut dos = NeetanDos::new(DosPlatform::pc98());
+        let mut dos = NeetanDos::new(DosPlatform::pc98(HleDosVersion::Dos620));
         let mut memory = MockMemory::with_extended_memory(0x200000, 0);
         dos.state.current_psp = TEST_PSP;
         let psp_base = (TEST_PSP as u32) << 4;
@@ -1946,7 +1948,7 @@ mod tests {
 
     #[test]
     fn int21h_25h_records_vector_event() {
-        let dos = NeetanDos::new(DosPlatform::pc98());
+        let dos = NeetanDos::new(DosPlatform::pc98(HleDosVersion::Dos620));
         let mut memory = MockMemory::with_extended_memory(0x200000, 0);
         dos.console
             .dos_trace
@@ -2093,7 +2095,7 @@ mod tests {
 
     #[test]
     fn int21h_dch_reports_netware_absent() {
-        let dos = NeetanDos::new(DosPlatform::pc98());
+        let dos = NeetanDos::new(DosPlatform::pc98(HleDosVersion::Dos620));
         let mut memory = MockMemory::with_extended_memory(0x200000, 0);
         let mut cpu = MockCpu::default();
 
@@ -2302,7 +2304,7 @@ mod tests {
 
     /// Returns a PC-98 NeetanDos with 1 MiB of memory.
     fn pc98_dos() -> (NeetanDos, MockMemory) {
-        let dos = NeetanDos::new(DosPlatform::pc98());
+        let dos = NeetanDos::new(DosPlatform::pc98(HleDosVersion::Dos620));
         let memory = MockMemory::with_extended_memory(0x100000, 0);
         (dos, memory)
     }

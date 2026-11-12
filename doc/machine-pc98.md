@@ -56,6 +56,7 @@ The MT-32 and SC-55 modules are configured separately via `--midi`; see
 | `--pc98-roms <PATH>`         | Directory with the PC-98 ROM set (BIOS, font, sound), by content hash | -        |
 | `--bios [on\|off]`           | Boot the real BIOS from `--pc98-roms` instead of the HLE BIOS         | HLE BIOS |
 | `--boot-device <DEVICE>`     | Boot device: `auto`, `fdd1`, `fdd2`, `hdd1`, `hdd2`, `dos`            | `auto`   |
+| `--dos-version <3.10\|6.20>` | DOS version of NEETAN DOS                                             | `6.20`   |
 | `--printer <PATH>`           | Output file of the printer. The file must exist                       | -        |
 
 The floppy drives (`--fdd1`, `--fdd2`) read every format in
@@ -68,9 +69,14 @@ reads every format in [CD-ROM disc image formats](disk-images.md#cd-rom-disc-ima
 
 With `--boot-device auto` the machine tries the floppy drives, the CD-ROM drive and
 the hard disks in this order. Without a bootable disk it starts NEETAN DOS, a
-built-in MS-DOS 6.20 compatible DOS with EMS, XMS and MSCDEX drivers. `fdd1`, `fdd2`,
-`hdd1` and `hdd2` boot from that drive only. `dos` skips all disks and starts NEETAN
-DOS directly. `--ems` and `--xms` configure the memory drivers of NEETAN DOS.
+built-in DOS with EMS, XMS and MSCDEX drivers. `fdd1`, `fdd2`, `hdd1` and `hdd2` boot
+from that drive only. `dos` skips all disks and starts NEETAN DOS directly. `--ems` and
+`--xms` configure the memory drivers of NEETAN DOS.
+
+NEETAN DOS emulates NEC MS-DOS 6.20 or NEC MS-DOS 3.1. `--dos-version` selects the
+version. The default `6.20` suits most software. `3.10` reports version 3.10 and uses
+the table layout of a DOS 3.1 kernel. Choose it for old software that refuses a newer
+DOS.
 
 ## Graphic acceleration board
 
