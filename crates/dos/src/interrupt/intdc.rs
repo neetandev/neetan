@@ -8,6 +8,9 @@ use common::warn;
 
 use crate::{CpuAccess, MemoryAccess, NeetanDos, SegmentRegister, drive_map, tables};
 
+/// Machine type of CL=12h for a PC-98 in normal mode.
+const MACHINE_TYPE_NORMAL_MODE: u16 = 0x0003;
+
 impl NeetanDos {
     /// Dispatches an INT DCh call based on the CL register.
     pub(crate) fn intdch(&mut self, cpu: &mut dyn CpuAccess, memory: &mut dyn MemoryAccess) {
@@ -135,7 +138,7 @@ impl NeetanDos {
     fn intdch_12h_system_identification(&self, cpu: &mut dyn CpuAccess, memory: &dyn MemoryAccess) {
         let product = memory.read_word(tables::IOSYS_BASE + tables::IOSYS_OFF_PRODUCT_NUMBER);
         cpu.set_ax(product);
-        cpu.set_dx(0x0003); // normal-mode PC-98
+        cpu.set_dx(MACHINE_TYPE_NORMAL_MODE);
     }
 
     /// CL=13h: Fill 96-byte DA/UA mapping buffer at DS:DX.
@@ -378,5 +381,46 @@ impl NeetanDos {
                 *dest = byte;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        DosPlatform,
+        test_support::{MockCpu, MockMemory},
+    };
+
+    /// Returns a PC-98 NeetanDos with the IO.SYS work area in 1 MiB of memory.
+    fn pc98_dos_with_work_area() -> (NeetanDos, MockMemory) {
+        let dos = NeetanDos::new(DosPlatform::pc98());
+        let mut memory = MockMemory::with_extended_memory(0x10_0000, 0);
+        dos.write_iosys_work_area(&mut memory);
+        (dos, memory)
+    }
+
+    #[test]
+    fn cl_12h_returns_the_product_number_and_the_machine_type() {
+        let (mut dos, mut memory) = pc98_dos_with_work_area();
+        let mut cpu = MockCpu::default();
+        cpu.set_ax(0x0000);
+        cpu.set_bx(0x0000);
+        cpu.set_cx(0x0012);
+        dos.intdch(&mut cpu, &mut memory);
+        assert_eq!(cpu.ax(), 0x0200);
+        assert_eq!(cpu.bx(), 0x0000);
+        assert_eq!(cpu.cx(), 0x0012);
+        assert_eq!(cpu.dx(), 0x0003);
+    }
+
+    #[test]
+    fn cl_15h_returns_the_internal_revision_in_al() {
+        let (mut dos, mut memory) = pc98_dos_with_work_area();
+        let mut cpu = MockCpu::default();
+        cpu.set_ax(0xAB00);
+        cpu.set_cx(0x0015);
+        dos.intdch(&mut cpu, &mut memory);
+        assert_eq!(cpu.ax(), 0xAB01);
     }
 }

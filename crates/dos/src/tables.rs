@@ -200,6 +200,10 @@ pub const IOSYS_BASE: u32 = (IOSYS_SEGMENT as u32) << 4;
 
 pub const IOSYS_OFF_PRODUCT_NUMBER: u32 = 0x0020;
 pub const IOSYS_OFF_INTERNAL_REVISION: u32 = 0x0022;
+/// Product number of NEC MS-DOS 6.20 at 0060:0020h.
+pub const NEC_DOS620_PRODUCT_NUMBER: u16 = 0x0200;
+/// Internal revision of NEC MS-DOS 6.20 at 0060:0022h.
+pub const NEC_DOS620_INTERNAL_REVISION: u8 = 0x01;
 pub const IOSYS_OFF_EMM_BANK_FLAG: u32 = 0x0030;
 pub const IOSYS_OFF_EXT_MEM_128K: u32 = 0x0031;
 pub const IOSYS_OFF_FD_DUPLICATE: u32 = 0x0038;
