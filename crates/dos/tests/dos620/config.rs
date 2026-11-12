@@ -250,3 +250,40 @@ fn shell_program_runs_in_place_of_autoexec() {
         "AUTOEXEC.BAT should not run with a SHELL= program"
     );
 }
+
+#[test]
+fn unknown_directive_prints_the_dos_620_message_with_its_line() {
+    let floppy = harness::create_test_floppy_with_files(&[(
+        *b"CONFIG  SYS",
+        b"FILES=30\r\n\r\nFOOBAR=1\r\nDOS=HIGH\r\nREM remark\r\n; comment\r\n[COMMON]\r\nFILESXYZ=20\r\n",
+    )]);
+    let machine = harness::boot_hle_with_forced_os(Some(floppy), None);
+    let bus = &machine.bus;
+    let contains =
+        |text: &str| harness::find_jis_string_in_text_vram(bus, &common::str_to_jis(text));
+    assert!(contains("CONFIG.SYS に不明なコマンドがあります."));
+    assert!(contains("CONFIG.SYS のエラーです: 行3"));
+    assert!(contains("CONFIG.SYS のエラーです: 行8"));
+    for line in [1, 2, 4, 5, 6, 7] {
+        assert!(
+            !contains(&format!("CONFIG.SYS のエラーです: 行{line}")),
+            "line {line}"
+        );
+    }
+    assert!(!contains(
+        "CONFIG.SYSに無効なコマンドかパラメータがあります."
+    ));
+}
+
+#[test]
+fn known_directives_print_no_message() {
+    let floppy = harness::create_test_floppy_with_files(&[(
+        *b"CONFIG  SYS",
+        b"FILES=30\r\nBUFFERS=20\r\nDEVICEHIGH=A:\\NONE.SYS\r\nSTACKS=9,256\r\n",
+    )]);
+    let machine = harness::boot_hle_with_forced_os(Some(floppy), None);
+    assert!(!harness::find_jis_string_in_text_vram(
+        &machine.bus,
+        &common::str_to_jis("CONFIG.SYS のエラーです")
+    ));
+}

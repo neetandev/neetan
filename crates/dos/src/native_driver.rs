@@ -961,6 +961,7 @@ mod tests {
     fn ignored_config_drivers_are_skipped_before_file_access() {
         let cfg = config::parse_config_sys(
             b"DEVICE=C:\\DOS\\HIMEM.SYS\nDEVICEHIGH=C:\\DOS\\EMM386.EXE RAM\nDEVICE=A:\\VEM486.EXE /X\n",
+            config::ConfigDialect::ExactKeyword,
         );
         let mut dos = NeetanDos::new(crate::DosPlatform::pc98(HleDosVersion::Dos620));
         let memory = MockMemory::with_extended_memory(0x100000, 4 << 20);

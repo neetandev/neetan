@@ -31,6 +31,16 @@ save_state::runtime_state! {
     }
 }
 
+/// Major version of the DOS 3 kernels.
+const DOS3_MAJOR_VERSION: u8 = 3;
+
+impl DosVersion {
+    /// Returns true for a DOS 3 kernel.
+    pub const fn is_dos3(self) -> bool {
+        self.major == DOS3_MAJOR_VERSION
+    }
+}
+
 save_state::runtime_state! {
     /// Memory placement of the DOS kernel.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -208,14 +218,14 @@ impl VectorSet {
 }
 
 /// DOS version of NEC MS-DOS 6.20 on the PC-98.
-const PC98_DOS620_VERSION: DosVersion = DosVersion {
+pub(crate) const PC98_DOS620_VERSION: DosVersion = DosVersion {
     major: 6,
     minor: 20,
     oem_number: 0xFF,
 };
 
 /// DOS version of NEC MS-DOS 3.1 on the PC-98.
-const PC98_DOS310_VERSION: DosVersion = DosVersion {
+pub(crate) const PC98_DOS310_VERSION: DosVersion = DosVersion {
     major: 3,
     minor: 10,
     oem_number: 0xFF,

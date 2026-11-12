@@ -8,6 +8,7 @@ use crate::{
     filesystem::{self, fat_bpb::Bpb},
     layout, memory, process, set_iret_zf, tables,
     trace::{DosStdoutEvent, DosVectorEvent, route, source, suppression},
+    version_gate,
 };
 
 /// First function of the OEM range of INT 21h.
@@ -57,6 +58,41 @@ impl NeetanDos {
             self.state
                 .set_error_locus(memory, extended_error::LOCUS_UNKNOWN);
         }
+        match version_gate::int21h_answer(self.state.platform.version, cpu.ax()) {
+            Some(answer) => self.state.answer_predated_function(cpu, memory, answer),
+            None => self.dispatch_int21h_function(ah, cpu, memory, disk),
+        }
+
+        if ah != EXTENDED_ERROR_FUNCTION
+            && !self.state.guest_requests.redispatch
+            && self.state.handler_carry.get() == Some(true)
+        {
+            let code = cpu.ax() & 0x00FF;
+            let extended_code = if self.state.critical_error_failed {
+                crate::critical_error::ERROR_FAIL_ON_CRITICAL_ERROR
+            } else {
+                code
+            };
+            self.state.record_extended_error(memory, extended_code);
+            cpu.set_ax(extended_error::function_error_code(
+                self.state.platform.data_area.format(),
+                ah,
+                code,
+            ));
+        }
+
+        let indos = memory.read_byte(indos_addr);
+        memory.write_byte(indos_addr, indos.wrapping_sub(1));
+    }
+
+    /// Calls the handler of the INT 21h function `ah`.
+    fn dispatch_int21h_function(
+        &mut self,
+        ah: u8,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+        disk: &mut dyn DriveIo,
+    ) {
         match ah {
             0x00 => {
                 self.terminate_process(cpu, memory, 0, 0);
@@ -196,27 +232,6 @@ impl NeetanDos {
                 cpu.set_ax(cpu.ax() & 0xFF00);
             }
         }
-
-        if ah != EXTENDED_ERROR_FUNCTION
-            && !self.state.guest_requests.redispatch
-            && self.state.handler_carry.get() == Some(true)
-        {
-            let code = cpu.ax() & 0x00FF;
-            let extended_code = if self.state.critical_error_failed {
-                crate::critical_error::ERROR_FAIL_ON_CRITICAL_ERROR
-            } else {
-                code
-            };
-            self.state.record_extended_error(memory, extended_code);
-            cpu.set_ax(extended_error::function_error_code(
-                self.state.platform.data_area.format(),
-                ah,
-                code,
-            ));
-        }
-
-        let indos = memory.read_byte(indos_addr);
-        memory.write_byte(indos_addr, indos.wrapping_sub(1));
     }
 
     /// AH=02h: Display character.
@@ -910,6 +925,7 @@ impl NeetanDos {
     /// AL=01h: Set Ctrl-Break check state <- DL.
     /// AL=02h: Swap Ctrl-Break flag: get old into DL, set new from DL.
     /// AL=03h/04h: Code page switching (reserved, returns AL=FFh).
+    /// AL=05h: Get boot drive -> DL (1 = A:).
     /// AL=06h: Get true DOS version -> BL=major, BH=minor.
     fn int21h_33h_extended(&mut self, cpu: &mut dyn CpuAccess) {
         let al = (cpu.ax() & 0xFF) as u8;
@@ -927,6 +943,9 @@ impl NeetanDos {
             }
             0x03 | 0x04 => {
                 cpu.set_ax((cpu.ax() & 0xFF00) | 0xFF);
+            }
+            0x05 => {
+                cpu.set_dx((cpu.dx() & 0xFF00) | u16::from(self.state.boot_drive));
             }
             0x06 => {
                 let version = self.state.platform.version;
@@ -1794,8 +1813,9 @@ mod tests {
             ENV_BLOCK_PARAGRAPHS, MCB_OFF_NAME, MCB_OFF_OWNER, MCB_OFF_SIZE, MCB_OFF_TYPE,
             MCB_OWNER_DOS, SYSVARS_FIRST_MCB_DISTANCE,
         },
-        test_support::{MockCpu, MockMemory},
+        test_support::{FLAGS_CARRY_CLEAR, FLAGS_CARRY_SET, MockCpu, MockMemory},
         trace::{DosTraceEvent, route, source},
+        version_gate::PredatedAnswer,
     };
 
     /// First MCB of the PC-98 UMB chain with EMS.
@@ -2697,5 +2717,122 @@ mod tests {
             restored.int21h(&mut cpu, &mut memory, &mut crate::test_support::NoDrives);
             assert_eq!(cpu.ax(), error);
         }
+    }
+
+    /// `BX`, `CX` and `DX` in front of a gated call.
+    const GATE_PRESETS: [u16; 3] = [0x0001, 0x5678, 0x9ABC];
+
+    /// INT 21h functions that a DOS 3.10 kernel holds back, with the answer
+    /// of the kernel.
+    const DOS310_GATED_FUNCTIONS: &[(u16, PredatedAnswer)] = &[
+        (0x3305, PredatedAnswer::ReservedSubfunction),
+        (0x3306, PredatedAnswer::ReservedSubfunction),
+        (0x5702, PredatedAnswer::InvalidFunction),
+        (0x5703, PredatedAnswer::InvalidFunction),
+        (0x5704, PredatedAnswer::InvalidFunction),
+        (0x5802, PredatedAnswer::InvalidFunction),
+        (0x5803, PredatedAnswer::InvalidFunction),
+        (0x440C, PredatedAnswer::InvalidFunction),
+        (0x440D, PredatedAnswer::InvalidFunction),
+        (0x440E, PredatedAnswer::InvalidFunction),
+        (0x440F, PredatedAnswer::InvalidFunction),
+        (0x4410, PredatedAnswer::InvalidFunction),
+        (0x4411, PredatedAnswer::InvalidFunction),
+        (0x6401, PredatedAnswer::UndefinedFunction),
+        (0x6520, PredatedAnswer::UndefinedFunction),
+        (0x6601, PredatedAnswer::UndefinedFunction),
+        (0x6701, PredatedAnswer::UndefinedFunction),
+        (0x6801, PredatedAnswer::UndefinedFunction),
+        (0x6901, PredatedAnswer::UndefinedFunction),
+        (0x6A01, PredatedAnswer::UndefinedFunction),
+        (0x6B01, PredatedAnswer::UndefinedFunction),
+        (0x6C01, PredatedAnswer::UndefinedFunction),
+    ];
+
+    /// Results `[AX, BX, CX, DX, flags]` of the 6.20 handlers of the functions
+    /// that a DOS 3.10 kernel holds back, called with the presets and a clear
+    /// carry flag. A fresh NeetanDos has the boot drive Z: and no UMB.
+    const DOS620_GATED_FUNCTION_RESULTS: &[(u16, [u16; 5])] = &[
+        (0x3305, [0x3305, 0x0001, 0x5678, 0x9A1A, FLAGS_CARRY_CLEAR]),
+        (0x3306, [0x3306, 0x1406, 0x5678, 0x0000, FLAGS_CARRY_CLEAR]),
+        (0x5702, [0x5702, 0x0001, 0x5678, 0x9ABC, FLAGS_CARRY_CLEAR]),
+        (0x5703, [0x5703, 0x0001, 0x5678, 0x9ABC, FLAGS_CARRY_CLEAR]),
+        (0x5704, [0x5704, 0x0001, 0x5678, 0x9ABC, FLAGS_CARRY_CLEAR]),
+        (0x5802, [0x5800, 0x0001, 0x5678, 0x9ABC, FLAGS_CARRY_CLEAR]),
+        (0x5803, [0x5803, 0x0001, 0x5678, 0x9ABC, FLAGS_CARRY_CLEAR]),
+        (0x6401, [0x6401, 0x0001, 0x5678, 0x9ABC, FLAGS_CARRY_CLEAR]),
+        (0x6520, [0x6520, 0x0001, 0x5678, 0x9ABC, FLAGS_CARRY_CLEAR]),
+        (0x6701, [0x6701, 0x0001, 0x5678, 0x9ABC, FLAGS_CARRY_CLEAR]),
+        (0x6801, [0x6801, 0x0001, 0x5678, 0x9ABC, FLAGS_CARRY_CLEAR]),
+        (0x6901, [0x6901, 0x0001, 0x5678, 0x9ABC, FLAGS_CARRY_CLEAR]),
+        (0x6A01, [0x6A01, 0x0001, 0x5678, 0x9ABC, FLAGS_CARRY_CLEAR]),
+        (0x6B01, [0x0001, 0x0001, 0x5678, 0x9ABC, FLAGS_CARRY_SET]),
+    ];
+
+    /// Calls INT 21h with `ax`, the presets and the flags word `flags` on a
+    /// PC-98 NeetanDos of `version`. Returns the CPU and the flags word of
+    /// the IRET frame after the call.
+    fn call_pc98_int21h(version: HleDosVersion, ax: u16, flags: u16) -> (MockCpu, u16) {
+        let mut dos = NeetanDos::new(DosPlatform::pc98(version));
+        let mut memory = MockMemory::with_extended_memory(0x100000, 0);
+        let mut cpu = MockCpu::default();
+        memory.write_word(cpu.iret_flags_addr(), flags);
+        cpu.set_ax(ax);
+        cpu.set_bx(GATE_PRESETS[0]);
+        cpu.set_cx(GATE_PRESETS[1]);
+        cpu.set_dx(GATE_PRESETS[2]);
+        dos.int21h(&mut cpu, &mut memory, &mut crate::test_support::NoDrives);
+        let flags = memory.read_word(cpu.iret_flags_addr());
+        (cpu, flags)
+    }
+
+    #[test]
+    fn dos310_answers_the_younger_functions_like_dos_330() {
+        for &(ax, answer) in DOS310_GATED_FUNCTIONS {
+            for flags in [FLAGS_CARRY_CLEAR, FLAGS_CARRY_SET] {
+                let (cpu, flags_after) = call_pc98_int21h(HleDosVersion::Dos310, ax, flags);
+                let (expected_ax, expected_flags) = match answer {
+                    PredatedAnswer::UndefinedFunction => (ax & 0xFF00, flags),
+                    PredatedAnswer::ReservedSubfunction => ((ax & 0xFF00) | 0x00FF, flags),
+                    PredatedAnswer::InvalidFunction => (0x0001, FLAGS_CARRY_SET),
+                    PredatedAnswer::Ignored => (ax, flags),
+                };
+                assert_eq!(cpu.ax(), expected_ax, "AX={ax:04X}h");
+                assert_eq!([cpu.bx(), cpu.cx(), cpu.dx()], GATE_PRESETS, "AX={ax:04X}h");
+                assert_eq!(flags_after, expected_flags, "AX={ax:04X}h");
+            }
+        }
+    }
+
+    #[test]
+    fn dos620_serves_the_functions_that_dos310_holds_back() {
+        for &(ax, expected) in DOS620_GATED_FUNCTION_RESULTS {
+            let (cpu, flags) = call_pc98_int21h(HleDosVersion::Dos620, ax, FLAGS_CARRY_CLEAR);
+            assert_eq!(
+                [cpu.ax(), cpu.bx(), cpu.cx(), cpu.dx(), flags],
+                expected,
+                "AX={ax:04X}h"
+            );
+        }
+    }
+
+    #[test]
+    fn dos620_reports_the_true_version_and_dos310_reserves_it() {
+        let (cpu, _) = call_pc98_int21h(HleDosVersion::Dos620, 0x3306, FLAGS_CARRY_CLEAR);
+        assert_eq!(cpu.bx(), 0x1406);
+        let (cpu, _) = call_pc98_int21h(HleDosVersion::Dos310, 0x3306, FLAGS_CARRY_CLEAR);
+        assert_eq!(cpu.ax(), 0x33FF);
+        assert_eq!(cpu.bx(), GATE_PRESETS[0]);
+    }
+
+    #[test]
+    fn dos310_serves_the_dos_310_functions() {
+        let (cpu, _) = call_pc98_int21h(HleDosVersion::Dos310, 0x3000, FLAGS_CARRY_CLEAR);
+        assert_eq!(cpu.ax(), 0x0A03);
+        let (cpu, _) = call_pc98_int21h(HleDosVersion::Dos310, 0x5800, FLAGS_CARRY_CLEAR);
+        assert_eq!(cpu.ax(), 0x0000);
+        let (cpu, _) = call_pc98_int21h(HleDosVersion::Dos310, 0x6302, FLAGS_CARRY_CLEAR);
+        assert_eq!(cpu.ax(), 0x6302, "AH=63h stays a DOS 3.10 function");
+        assert_eq!(cpu.dx(), 0x9A00, "AH=63h stays a DOS 3.10 function");
     }
 }

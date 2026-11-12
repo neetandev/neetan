@@ -486,6 +486,29 @@ fn text_vram_codes(bus: &machine_98::Pc9801Bus) -> Vec<u16> {
         .collect()
 }
 
+/// Returns true when text VRAM holds `text`. A full-width character takes
+/// two cells: the character and an empty right half.
+pub fn screen_contains(bus: &machine_98::Pc9801Bus, text: &str) -> bool {
+    let cells: Vec<common::JisChar> = bus
+        .text_vram()
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .take(TEXT_VRAM_CELL_COUNT)
+        .map(|cell| common::JisChar::from_vram_bytes(cell[0], cell[1]))
+        .collect();
+    let mut expected = Vec::new();
+    for character in common::str_to_jis(text) {
+        expected.push(character);
+        if !character.is_ank() {
+            expected.push(common::JisChar::from_u16(0x0000));
+        }
+    }
+    cells
+        .windows(expected.len())
+        .any(|window| window == expected)
+}
+
 /// Returns the ASCII text of every row of text VRAM.
 pub fn screen_rows(bus: &machine_98::Pc9801Bus) -> Vec<String> {
     text_vram_codes(bus)

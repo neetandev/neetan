@@ -322,6 +322,13 @@ mod tests {
     }
 
     #[test]
+    fn scsi_and_unknown_device_classes_get_no_drive() {
+        for device_id in [0xA0, 0xA1, 0x00, 0x30] {
+            assert!(drive_entry(device_id).is_none(), "DA/UA {device_id:02X}h");
+        }
+    }
+
+    #[test]
     fn equipment_word_lists_2hd_before_2dd() {
         let equipment = FLOPPY_2HD_UNIT_0 | FLOPPY_2HD_UNIT_1 | FLOPPY_2DD_UNIT_0;
         assert_eq!(floppy_devices(equipment), vec![0x90, 0x91, 0x70]);

@@ -105,6 +105,7 @@ mod test_support;
 pub mod trace;
 pub mod trace_bridge;
 pub mod trap;
+mod version_gate;
 
 use std::collections::BTreeMap;
 
@@ -221,9 +222,6 @@ pub(crate) const DEVICE_ATTRIBUTE_REMOTE: u16 = 0x1000;
 /// First major DOS version whose IOCTL `AX=4409h` returns the device
 /// attribute word of a local drive.
 const LOCAL_DRIVE_ATTRIBUTES_MAJOR_VERSION: u8 = 4;
-
-/// Major version of the DOS 3 kernel.
-const DOS3_MAJOR_VERSION: u8 = 3;
 
 /// DOS error code of a missing file.
 const ERROR_FILE_NOT_FOUND: u16 = 0x0002;
@@ -1084,6 +1082,7 @@ impl NeetanDos {
         }
 
         let cfg = self.try_parse_config_sys(device);
+        self.print_config_sys_errors(memory, &cfg);
         self.apply_config(&cfg, memory);
         self.write_device_chain(memory, cdrom_device);
 
@@ -1311,10 +1310,24 @@ impl NeetanDos {
                 continue;
             }
             if let Ok(data) = process::read_file_data(vol, &entry, disk) {
-                return config::parse_config_sys(&data);
+                return config::parse_config_sys(
+                    &data,
+                    config::ConfigDialect::of(self.state.platform.version),
+                );
             }
         }
         config::ConfigSys::default()
+    }
+
+    /// Prints the message of each CONFIG.SYS line without a known keyword to
+    /// the console.
+    fn print_config_sys_errors(&mut self, memory: &mut dyn MemoryAccess, cfg: &config::ConfigSys) {
+        let dialect = config::ConfigDialect::of(self.state.platform.version);
+        for &line_number in &cfg.unknown_directive_lines {
+            for byte in dialect.unknown_directive_message(line_number) {
+                self.console.process_byte(memory, byte);
+            }
+        }
     }
 
     /// Applies parsed CONFIG.SYS values to DosState and SYSVARS in memory.
@@ -2677,10 +2690,14 @@ impl NeetanDos {
 
         let base = IOSYS_BASE;
 
-        mem.write_word(base + IOSYS_OFF_PRODUCT_NUMBER, NEC_DOS620_PRODUCT_NUMBER);
+        let identity = self.state.iosys_identity();
+        mem.write_word(
+            base + IOSYS_OFF_PRODUCT_NUMBER,
+            identity.work_area_product_number,
+        );
         mem.write_byte(
             base + IOSYS_OFF_INTERNAL_REVISION,
-            NEC_DOS620_INTERNAL_REVISION,
+            identity.internal_revision,
         );
 
         mem.write_byte(base + IOSYS_OFF_EMM_BANK_FLAG, 0x00);
@@ -2734,12 +2751,11 @@ impl NeetanDos {
         mem.write_word(base + IOSYS_OFF_EXT_ATTR_MODE, 0x0000); // PC mode
         mem.write_word(base + IOSYS_OFF_TEXT_MODE, 0x0000); // 25-line gapped
 
-        // DA/UA pointer -> points to the DA/UA table itself
         write_far_ptr(
             mem,
             base + IOSYS_OFF_DAUA_PTR,
             IOSYS_SEGMENT,
-            IOSYS_OFF_DAUA_TABLE as u16,
+            IOSYS_OFF_EXT_DAUA_TABLE as u16,
         );
     }
 }
@@ -2748,7 +2764,17 @@ impl DosState {
     /// Returns true when the platform reports a DOS 3 kernel. The AX values
     /// that `AH=0Dh` and `AH=3Bh` leave are traced on DOS 3.10 only.
     pub(crate) fn is_dos3_kernel(&self) -> bool {
-        self.platform.version.major == DOS3_MAJOR_VERSION
+        self.platform.version.is_dos3()
+    }
+
+    /// Returns the identification of the NEC `IO.SYS` that matches the
+    /// kernel version.
+    pub(crate) fn iosys_identity(&self) -> tables::NecIosysIdentity {
+        if self.is_dos3_kernel() {
+            tables::NEC_DOS310_IOSYS_IDENTITY
+        } else {
+            tables::NEC_DOS620_IOSYS_IDENTITY
+        }
     }
 
     /// Returns the structure format of the platform.

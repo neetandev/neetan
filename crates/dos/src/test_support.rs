@@ -1,5 +1,11 @@
 use crate::{CpuAccess, MemoryAccess};
 
+/// Flags word of an IRET frame with the carry flag clear.
+pub(crate) const FLAGS_CARRY_CLEAR: u16 = 0x0202;
+
+/// Flags word of an IRET frame with the carry flag set.
+pub(crate) const FLAGS_CARRY_SET: u16 = 0x0203;
+
 pub(crate) struct MockCpu {
     pub(crate) eax: u32,
     pub(crate) ebx: u32,

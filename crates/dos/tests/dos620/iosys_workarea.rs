@@ -188,3 +188,15 @@ fn text_mode_flag() {
         mode
     );
 }
+
+#[test]
+fn drive_table_pointer_points_to_the_table_of_all_drives() {
+    let machine = harness::boot_hle();
+    let offset = harness::read_word(&machine.bus, IOSYS_BASE + 0x2820);
+    let segment = harness::read_word(&machine.bus, IOSYS_BASE + 0x2822);
+    assert_eq!(
+        (segment, offset),
+        (0x0060, 0x2C86),
+        "0060:2820h points to the attribute and DA/UA table at 0060:2C86h"
+    );
+}
