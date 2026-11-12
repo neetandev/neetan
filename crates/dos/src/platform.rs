@@ -209,7 +209,7 @@ impl VectorSet {
 const PC98_VERSION: DosVersion = DosVersion {
     major: 6,
     minor: 20,
-    oem_number: 0x00,
+    oem_number: 0xFF,
 };
 
 /// Kernel placement of NeetanDos on the PC-98. The boot places the first MCB
@@ -442,7 +442,7 @@ mod tests {
             DosVersion {
                 major: 6,
                 minor: 20,
-                oem_number: 0x00,
+                oem_number: 0xFF,
             }
         );
         assert_eq!(platform.data_area, DataArea::Pc98Dos620);
