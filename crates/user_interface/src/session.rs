@@ -1,10 +1,11 @@
-//! One running game: the machine, its media, its input state and its media
-//! dialog.
+//! One running game: the machine, its media, its input state and its
+//! overlay.
 
 mod display;
 mod emulation;
 mod input_events;
 mod media;
+mod overlay;
 mod panic_guard;
 mod removable_media;
 mod snapshot;
@@ -17,6 +18,7 @@ use common::{Error, FlushError, JoystickState, Machine, StringError, error, info
 use save_state::MachineStateBlob;
 use sdl3_backend::DisplayAspectMode;
 
+use self::overlay::SessionOverlay;
 pub(crate) use self::panic_guard::catch_panic;
 use crate::{
     Result,
@@ -25,7 +27,7 @@ use crate::{
     host::{Host, graphics_display_aspect_mode, wants_large_native_target},
     input::{KeyOverrides, KeyboardForwardingState},
     machines::{initialize_machine, sdl_host_date_time_source},
-    media_dialog::{ImageEntry, MediaDialog},
+    media_dialog::ImageEntry,
 };
 
 /// Analog-stick magnitude past which a left-stick axis counts as a held direction.
@@ -93,9 +95,9 @@ pub(crate) struct Session {
     cdrom_entries: Vec<ImageEntry>,
     /// Current index into cdrom_entries, or `None` if no disc is loaded.
     cdrom_index: Option<usize>,
-    /// The open media dialog. It is the only dialog of the session and the
-    /// root of its pass, run with `run`.
-    media_dialog: Option<MediaDialog>,
+    /// The open overlay over the paused game. It is the root of the pass of
+    /// the session, run with `run`.
+    overlay: Option<SessionOverlay>,
     /// Whether the CRT effect is enabled.
     crt_enabled: bool,
     /// Composite subcarrier phase select (0..3), cycled with Right Ctrl + P. It
@@ -237,7 +239,7 @@ impl Session {
             fdd2_index,
             cdrom_entries,
             cdrom_index,
-            media_dialog: None,
+            overlay: None,
             crt_enabled: config.crt && backend == Backend::Modern,
             composite_phase: config.pc60_composite_phase,
             scaling: config.scaling,
@@ -312,9 +314,9 @@ impl Session {
         self.scaling
     }
 
-    /// Whether the media dialog is open.
-    pub(crate) fn media_dialog_open(&self) -> bool {
-        self.media_dialog.is_some()
+    /// Whether an overlay is open.
+    pub(crate) fn overlay_open(&self) -> bool {
+        self.overlay.is_some()
     }
 
     /// The reason the session ends, once one is known.
@@ -357,11 +359,11 @@ impl Session {
         }
     }
 
-    /// Runs the pending passes of the open media dialog, the gamepad key repeat
+    /// Runs the pending passes of the open overlay, the gamepad key repeat
     /// and the edge repeat of a text drag of the GUI. The passes run until the
-    /// GUI settles, so the next frame shows the settled dialog.
-    pub(crate) fn update_dialog(&mut self, host: &mut Host) {
-        if self.media_dialog.is_none() {
+    /// GUI settles, so the next frame shows the settled overlay.
+    pub(crate) fn update_overlay(&mut self, host: &mut Host) {
+        if self.overlay.is_none() {
             return;
         }
         let repeat = host
@@ -375,10 +377,9 @@ impl Session {
             gui.poll_edge_repeat(Instant::now());
         }
         run_pending_passes(|| {
-            let due =
-                self.media_dialog.is_some() && host.gui.as_ref().is_some_and(|gui| gui.pending());
+            let due = self.overlay.is_some() && host.gui.as_ref().is_some_and(|gui| gui.pending());
             if due {
-                self.media_pass(host);
+                self.overlay_pass(host);
             }
             due
         });

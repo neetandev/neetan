@@ -579,6 +579,7 @@ impl<const CPU_MODEL: u8, T: TraceSink> Machine for TownsMachine<CPU_MODEL, T> {
             sc55: true,
             floppy_drives: 2,
             cdrom: true,
+            mouse: true,
             ..Default::default()
         }
     }

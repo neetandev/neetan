@@ -324,6 +324,7 @@ impl<T: TraceSink> common::Machine for MsxMachine<T> {
             cartridge: true,
             cassette: true,
             floppy_drives: self.bus.model().drive_count(),
+            mouse: true,
             ..common::StartupCapabilities::default()
         }
     }

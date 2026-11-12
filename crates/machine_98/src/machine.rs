@@ -892,6 +892,7 @@ impl<C: Pc98RuntimeCpu, T: TraceSink> common::Machine for Pc98Machine<C, T> {
             sc55: true,
             floppy_drives: 2,
             cdrom: self.bus.machine_model().has_ide(),
+            mouse: true,
             ..Default::default()
         }
     }

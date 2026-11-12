@@ -7,9 +7,10 @@ Left Ctrl.
 
 | Key                | Action                                                 |
 | ------------------ | ------------------------------------------------------ |
-| Right Ctrl + M     | Toggle mouse capture                                   |
+| Right Ctrl + H     | Show the shortcut list                                 |
 | Right Ctrl + Esc   | Quit the emulator. A game of the manager returns to it |
 | Right Ctrl + Enter | Toggle fullscreen                                      |
+| Right Ctrl + M     | Toggle mouse capture                                   |
 | Right Ctrl + R     | Hard reset                                             |
 | Right Ctrl + F     | Fast forward 8x (hold)                                 |
 | Right Ctrl + C     | Toggle CRT effect                                      |
@@ -18,8 +19,8 @@ Left Ctrl.
 | Right Ctrl + 1     | Open floppy selector for drive 1                       |
 | Right Ctrl + 2     | Open floppy selector for drive 2                       |
 | Right Ctrl + 3     | Open CD-ROM selector                                   |
-| Right Ctrl + 5     | Capture quick save                                     |
-| Right Ctrl + 9     | Restore quick save                                     |
+| Right Ctrl + 5     | Quick save                                             |
+| Right Ctrl + 9     | Quick load                                             |
 
 ## Mouse
 

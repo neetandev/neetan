@@ -90,9 +90,9 @@ roms/<system>/   ROM set of each system
 3. Start `neetan`. The game manager opens. Add games to the library of a system and
    launch them.
 
-Right Ctrl is the shortcut key of the emulator. `Right Ctrl + Esc` returns to the
-manager and `Right Ctrl + M` captured the mouse when inside a game.
-See [Controls](doc/controls.md) lists all shortcuts.
+Right Ctrl is the shortcut key of the emulator. Inside a game, `Right Ctrl + H` shows
+the shortcuts of the machine, `Right Ctrl + Esc` returns to the manager and
+`Right Ctrl + M` captures the mouse. [Controls](doc/controls.md) lists all shortcuts.
 
 Neetan can also start a machine and game directly from the command line:
 

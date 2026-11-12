@@ -114,7 +114,7 @@ impl Session {
     /// Runs the machine until the audio engine holds its target buffer, or
     /// at the fast forward rate while fast forward is held.
     fn run_emulation(&mut self, host: &mut Host) {
-        if self.media_dialog.is_some() {
+        if self.overlay.is_some() {
             return;
         }
 

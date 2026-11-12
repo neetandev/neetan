@@ -340,7 +340,7 @@ impl Shell {
             session.guarded(|session| session.run_frame(host));
             self.busy_duration += busy_start.elapsed();
 
-            session.guarded(|session| session.update_dialog(host));
+            session.guarded(|session| session.update_overlay(host));
             if session.exit().is_some() {
                 break;
             }
@@ -432,7 +432,7 @@ impl Shell {
                 if self
                     .session
                     .as_ref()
-                    .is_some_and(|session| !session.media_dialog_open())
+                    .is_some_and(|session| !session.overlay_open())
                 {
                     host.audio_engine.resume();
                 }
@@ -492,10 +492,11 @@ impl Shell {
     }
 }
 
-/// Renders the frame of `session` with the GUI overlay of an open media
-/// dialog. A panic while reading the frame ends the session.
+/// Renders the frame of `session`, and the GUI scene over it while an
+/// overlay of the session is open. A panic while reading the frame ends the
+/// session.
 fn render_session_frame(session: &mut Session, host: &mut Host) {
-    let overlay_shown = session.media_dialog_open();
+    let overlay_shown = session.overlay_open();
     let result = match session.render_instructions() {
         Ok(instructions) => {
             let overlay = if overlay_shown {

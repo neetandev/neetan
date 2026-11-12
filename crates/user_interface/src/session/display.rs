@@ -5,7 +5,7 @@ use sdl3_backend::RenderInstructions;
 
 use super::{Session, catch_panic};
 use crate::{
-    config::{Backend, ScalingMode},
+    config::ScalingMode,
     host::{Host, graphics_scaling},
     on_off,
 };
@@ -30,21 +30,14 @@ impl Session {
         })
     }
 
-    /// Switches the CRT effect on or off. The legacy backend has no CRT effect.
-    pub(super) fn toggle_crt(&mut self, host: &Host) {
-        if host.backend == Backend::Legacy {
-            return;
-        }
+    /// Switches the CRT effect on or off.
+    pub(super) fn toggle_crt(&mut self) {
         self.crt_enabled = !self.crt_enabled;
         info!("CRT effect set to {}", on_off(self.crt_enabled));
     }
 
-    /// Selects the next composite artifact phase on a machine with composite
-    /// video.
+    /// Selects the next composite artifact phase.
     pub(super) fn cycle_composite_phase(&mut self) {
-        if !self.config.target.has_composite_video() {
-            return;
-        }
         self.composite_phase = (self.composite_phase + 1) % COMPOSITE_PHASE_COUNT;
         info!("Composite artifact phase set to {}", self.composite_phase);
     }

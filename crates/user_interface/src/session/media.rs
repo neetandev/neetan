@@ -2,16 +2,15 @@
 
 use std::convert::Infallible;
 
-use common::{JoystickState, error, info, warn};
+use common::{error, info};
 use gui::component::{Status, run};
 use stack_vec::StackVec;
 
-use super::Session;
+use super::{Session, overlay::SessionOverlay};
 use crate::{
-    gui_host::GuiEvent,
     host::Host,
     media_dialog::{
-        Drive, DriveMedia, HotkeyAction, MAXIMUM_DRIVES, MediaChoice, MediaDialog,
+        Drive, DriveMedia, Drives, HotkeyAction, MAXIMUM_DRIVES, MediaChoice, MediaDialog,
         available_drives, hotkey_action,
     },
 };
@@ -119,7 +118,7 @@ impl Session {
 
     /// The removable media drives of the machine, in the tab order of the
     /// media dialog.
-    fn media_drives(&self) -> Vec<Drive> {
+    pub(super) fn media_drives(&self) -> Drives {
         let capabilities = self.machine.startup_capabilities();
         available_drives(capabilities.floppy_drives, capabilities.cdrom)
     }
@@ -134,86 +133,46 @@ impl Session {
     }
 
     /// Opens the media dialog on the tab of `drive`, switches to that tab or
-    /// closes the dialog when it shows that tab already.
+    /// closes the dialog when it shows that tab already. An open help overlay
+    /// gives way to the media dialog.
     pub(super) fn media_hotkey(&mut self, drive: Drive, host: &mut Host) {
         if !host.gui_available() {
             return;
         }
         let drives = self.media_drives();
-        let open_tab = self.media_dialog.as_ref().map(MediaDialog::tab);
+        let open_tab = match &self.overlay {
+            Some(SessionOverlay::Media(dialog)) => Some(dialog.tab()),
+            Some(SessionOverlay::Help(_)) | None => None,
+        };
         match hotkey_action(&drives, open_tab, drive) {
             HotkeyAction::Open(tab) => self.open_media_dialog(drives, tab, host),
             HotkeyAction::Switch(tab) => {
                 let loaded = self.loaded_image(drive);
-                if let Some(dialog) = self.media_dialog.as_mut() {
+                if let Some(SessionOverlay::Media(dialog)) = self.overlay.as_mut() {
                     dialog.switch_tab(tab, loaded);
                 }
                 self.media_pass(host);
             }
-            HotkeyAction::Close => self.close_media_dialog(host),
+            HotkeyAction::Close => self.close_overlay(host),
             HotkeyAction::Unavailable => {
                 info!("This machine has no {} drive", drive.log_name());
             }
         }
     }
 
-    /// Opens the media dialog over `drives` on the tab `tab`. Pauses the
-    /// emulation and the audio, releases the relative mouse mode and the held
-    /// joystick and mouse buttons of the machine.
-    fn open_media_dialog(&mut self, drives: Vec<Drive>, tab: usize, host: &mut Host) {
+    /// Opens the media dialog over `drives` on the tab `tab`.
+    fn open_media_dialog(&mut self, drives: Drives, tab: usize, host: &mut Host) {
         let loaded = self.loaded_image(drives[tab]);
-        self.set_fast_forward(false, host);
-        host.audio_engine.pause();
-        if self.mouse_captured
-            && let Err(error) = host.window.set_relative_mouse_mode(false)
-        {
-            warn!("Failed to release the relative mouse mode: {error}");
-        }
-        self.release_mouse_buttons();
-        self.gamepad_buttons = JoystickState::default();
-        self.gamepad_axis_x = 0;
-        self.gamepad_axis_y = 0;
-        self.keyboard_joystick = JoystickState::default();
-        self.update_joystick(host);
-        if let Some(gui) = host.gui.as_mut() {
-            gui.reset();
-        }
-        self.media_dialog = Some(MediaDialog::new(drives, tab, loaded));
-        host.update_gui_window();
-        self.media_pass(host);
-    }
-
-    /// Closes the media dialog. Restores the relative mouse mode and resumes
-    /// the audio.
-    fn close_media_dialog(&mut self, host: &mut Host) {
-        self.media_dialog = None;
-        if let Some(gui) = host.gui.as_mut() {
-            gui.stop_text_input(Some(&host.window));
-            gui.gamepad.clear();
-        }
-        if self.mouse_captured
-            && let Err(error) = host.window.set_relative_mouse_mode(true)
-        {
-            warn!("Failed to restore the relative mouse mode: {error}");
-        }
-        host.audio_engine.resume();
-    }
-
-    /// Adds `gui_event` to the input of the media dialog and runs a pass when
-    /// the event is discrete.
-    pub(super) fn handle_gui_event(&mut self, gui_event: GuiEvent, host: &mut Host) {
-        let Some(gui) = host.gui.as_mut() else {
-            return;
-        };
-        if gui.apply(gui_event) {
-            self.media_pass(host);
-        }
+        let dialog = MediaDialog::new(drives, tab, loaded);
+        self.open_overlay(SessionOverlay::Media(Box::new(dialog)), host);
     }
 
     /// Runs one pass of the media dialog and applies the change that it closes
     /// with.
     pub(super) fn media_pass(&mut self, host: &mut Host) {
-        let (Some(gui), Some(dialog)) = (host.gui.as_mut(), self.media_dialog.as_mut()) else {
+        let (Some(gui), Some(SessionOverlay::Media(dialog))) =
+            (host.gui.as_mut(), self.overlay.as_mut())
+        else {
             return;
         };
         let media: StackVec<DriveMedia, MAXIMUM_DRIVES> = dialog
@@ -237,7 +196,7 @@ impl Session {
         let status = gui.pass(|context| {
             let area = context.bounds();
             run(
-                dialog,
+                dialog.as_mut(),
                 context,
                 area,
                 &media,
@@ -247,7 +206,7 @@ impl Session {
         drop(media);
         gui.sync_text_input(&host.window);
         if self.apply_media_status(status) {
-            self.close_media_dialog(host);
+            self.close_overlay(host);
         }
     }
 

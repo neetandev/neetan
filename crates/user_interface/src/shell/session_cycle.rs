@@ -82,7 +82,7 @@ impl Shell {
         key_overrides: KeyOverrides,
     ) -> Result<()> {
         if let Some(message) = self.host.gui_error.as_ref() {
-            warn!("The media dialog is unavailable: {message}");
+            warn!("The in-game overlays are unavailable: {message}");
         }
         let session = self
             .create_session(config, key_overrides)
