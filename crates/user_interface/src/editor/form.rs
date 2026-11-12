@@ -419,7 +419,15 @@ pub(crate) mod tests {
         let target = Target::Pc98;
         assert_eq!(
             keys(target, EditorSection::Machine),
-            ["machine", "cpu-mode", "boot-device", "bios", "ems", "xms"]
+            [
+                "machine",
+                "cpu-mode",
+                "boot-device",
+                "dos-version",
+                "bios",
+                "ems",
+                "xms"
+            ]
         );
         assert_eq!(
             keys(target, EditorSection::Media),

@@ -173,10 +173,10 @@ A specification holds `target`, `model` or both. A specification without either
 raises `neetan/argument`.
 
 Every other key is a machine setting of the configuration file, with the same
-name and the same values: `cpu-mode`, `boot-mode`, `boot-device`, `bios`, `ems`,
-`xms`, `monitor`, `pc88-memory-wait`, `pc88-8mhz-wait`, `x1-keyboard`,
-`towns-pad`, `cdrom-compat`, `soundboard`, `adpcm-ram`, `midi`,
-`force-gdc-clock` and `graphicboard`. See
+name and the same values: `cpu-mode`, `boot-mode`, `boot-device`,
+`dos-version`, `bios`, `ems`, `xms`, `monitor`, `pc88-memory-wait`,
+`pc88-8mhz-wait`, `x1-keyboard`, `towns-pad`, `cdrom-compat`, `soundboard`,
+`adpcm-ram`, `midi`, `force-gdc-clock` and `graphicboard`. See
 [`configuration/default.conf`](../configuration/default.conf) for their values.
 A value is a symbol, for example `(soundboard . |86+26k|)` or `(bios . on)`.
 

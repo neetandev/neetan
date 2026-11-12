@@ -329,6 +329,7 @@ where
 
     let mut bus = build_bus(model, config.cpu_mode, sample_rate, tracer);
     bus.set_boot_device(config.boot_device);
+    bus.set_dos_version(config.dos_version);
 
     // EMS / XMS configuration gated by machine capability
     if model.ems_compatible() {

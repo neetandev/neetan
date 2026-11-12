@@ -1762,7 +1762,7 @@ mod tests {
         mem: &mut dyn MemoryAccess,
     ) -> MemoryManager {
         MemoryManager::new_for_platform(
-            &crate::DosPlatform::pc98(),
+            &crate::DosPlatform::pc98(common::HleDosVersion::Dos620),
             extended_memory_size,
             ems,
             xms,

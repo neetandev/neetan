@@ -748,6 +748,8 @@ fn display_bytes(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use common::HleDosVersion;
+
     use super::*;
     use crate::{
         AudioChannelInfo, CdAudioStatus, CdromIo, CdromTrackInfo, DiskIo, MemoryAccess,
@@ -765,7 +767,7 @@ mod tests {
     /// `TESTDRV` into it.
     fn chain_with_one_native_driver(cdrom_device: bool) -> (NeetanDos, MockMemory) {
         let mut memory = MockMemory::with_extended_memory(0x100000, 0);
-        let dos = NeetanDos::new(crate::DosPlatform::pc98());
+        let dos = NeetanDos::new(crate::DosPlatform::pc98(HleDosVersion::Dos620));
         dos.write_device_chain(&mut memory, cdrom_device);
         memory.write_block(
             (u32::from(TEST_DRIVER_SEGMENT) << 4) + tables::DEVHDR_OFF_NAME,
@@ -801,7 +803,9 @@ mod tests {
 
     /// Returns the first MCB segment of the PC-98 placement.
     fn pc98_first_mcb_segment() -> u16 {
-        crate::DosPlatform::pc98().placement.first_mcb_segment
+        crate::DosPlatform::pc98(HleDosVersion::Dos620)
+            .placement
+            .first_mcb_segment
     }
 
     fn mock_memory_with_conventional_chain(free_paragraphs: u16) -> MockMemory {
@@ -818,7 +822,7 @@ mod tests {
     }
 
     fn dos_with_umb(memory: &mut dyn MemoryAccess) -> NeetanDos {
-        let mut dos = NeetanDos::new(crate::DosPlatform::pc98());
+        let mut dos = NeetanDos::new(crate::DosPlatform::pc98(HleDosVersion::Dos620));
         dos.state.memory_manager = Some(MemoryManager::new_for_platform(
             &dos.state.platform,
             4 << 20,
@@ -958,7 +962,7 @@ mod tests {
         let cfg = config::parse_config_sys(
             b"DEVICE=C:\\DOS\\HIMEM.SYS\nDEVICEHIGH=C:\\DOS\\EMM386.EXE RAM\nDEVICE=A:\\VEM486.EXE /X\n",
         );
-        let mut dos = NeetanDos::new(crate::DosPlatform::pc98());
+        let mut dos = NeetanDos::new(crate::DosPlatform::pc98(HleDosVersion::Dos620));
         let memory = MockMemory::with_extended_memory(0x100000, 4 << 20);
         let mut disk = PanickingDriveIo;
 
@@ -1033,7 +1037,7 @@ mod tests {
     #[test]
     fn native_driver_image_falls_back_to_conventional_without_umb() {
         let mut memory = mock_memory_with_conventional_chain(0x1000);
-        let dos = NeetanDos::new(crate::DosPlatform::pc98());
+        let dos = NeetanDos::new(crate::DosPlatform::pc98(HleDosVersion::Dos620));
 
         let (segment, _) = dos
             .allocate_native_driver_block(&mut memory, b"A:\\GENERIC.SYS", 0x20, true)
@@ -1093,7 +1097,7 @@ mod tests {
     /// its INIT step.
     fn loaded_test_driver() -> (NeetanDos, MockMemory, NativeDriverInit) {
         let mut memory = mock_memory_with_conventional_chain(LOAD_TEST_FREE_PARAGRAPHS);
-        let mut dos = NeetanDos::new(crate::DosPlatform::pc98());
+        let mut dos = NeetanDos::new(crate::DosPlatform::pc98(HleDosVersion::Dos620));
         dos.write_device_chain(&mut memory, false);
         let init = load_test_driver(&mut dos, &mut memory, b"TESTDRV ", false);
         (dos, memory, init)
@@ -1213,7 +1217,7 @@ mod tests {
     #[test]
     fn init_step_writes_the_request_and_the_command_tail() {
         let mut memory = MockMemory::with_extended_memory(0x100000, 0);
-        let dos = NeetanDos::new(crate::DosPlatform::pc98());
+        let dos = NeetanDos::new(crate::DosPlatform::pc98(HleDosVersion::Dos620));
         let area = dos.guest_call_area();
 
         let call = test_driver_init().prepare(&area, &mut memory);

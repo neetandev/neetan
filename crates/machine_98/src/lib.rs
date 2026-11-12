@@ -15,7 +15,7 @@ mod memory;
 mod rom;
 mod scheduler;
 
-pub use common::BootDevice;
+pub use common::{BootDevice, HleDosVersion};
 use common::{MachineModel, NoTrace, TraceSink};
 use device::{
     beeper::BeeperState, cgrom::CgromState, display_control::DisplayControlState, egc::EgcState,

@@ -28,7 +28,7 @@ use software_renderer::SoftwareRenderer;
 use crate::{
     ClockConfig, Pc9801Bus, TraceSink,
     bus::{
-        BootDevice, DMA_ACCESS_CTRL_20BIT, GRCG_WAIT_CYCLES, KEYBOARD_ROM_OFFSET_F,
+        BootDevice, DMA_ACCESS_CTRL_20BIT, GRCG_WAIT_CYCLES, HleDosVersion, KEYBOARD_ROM_OFFSET_F,
         KEYBOARD_ROM_OFFSET_VM, MOUSE_TIMER_DEFAULT_SETTING, MOUSE_TIMER_IRQ_LINE,
         TRAM_WAIT_CYCLES, VRAM_WAIT_CYCLES, bios::PORT_WRITE_CAPACITY,
     },
@@ -287,6 +287,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
             xms_enabled: true,
             xms_32_enabled: false,
             xms_hmamin_kb: 0,
+            dos_version: HleDosVersion::default(),
             text_extractor: None,
         };
 

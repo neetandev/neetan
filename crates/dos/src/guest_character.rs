@@ -721,6 +721,8 @@ impl NeetanDos {
 
 #[cfg(test)]
 mod tests {
+    use common::HleDosVersion;
+
     use super::*;
     use crate::test_support::MockMemory;
 
@@ -887,7 +889,7 @@ mod tests {
 
     #[test]
     fn device_transfer_passes_the_buffer_of_the_caller_to_the_driver() {
-        let mut dos = NeetanDos::new(crate::DosPlatform::pc98());
+        let mut dos = NeetanDos::new(crate::DosPlatform::pc98(HleDosVersion::Dos620));
         let mut memory = MockMemory::with_extended_memory(0x10_0000, 0);
         let area = dos.guest_call_area();
         let step = GuestCharacterStep::DeviceTransfer(transfer());
@@ -923,7 +925,7 @@ mod tests {
 
     #[test]
     fn device_transfer_asks_for_the_request_and_maps_driver_errors() {
-        let mut dos = NeetanDos::new(crate::DosPlatform::pc98());
+        let mut dos = NeetanDos::new(crate::DosPlatform::pc98(HleDosVersion::Dos620));
         assert_eq!(dos.state.guest_device_transfer(transfer()), None);
         assert!(dos.state.guest_requests.redispatch);
         assert_eq!(

@@ -459,7 +459,7 @@ mod tests {
 
     #[test]
     fn pc98_returns_the_dosmgr_patch_table() {
-        let platform = DosPlatform::pc98();
+        let platform = DosPlatform::pc98(common::HleDosVersion::Dos620);
         let dos_data_segment = platform.placement.dos_data_segment;
         let patch_table = platform
             .data_area

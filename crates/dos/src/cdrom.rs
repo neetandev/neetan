@@ -528,6 +528,8 @@ impl crate::NeetanDos {
 
 #[cfg(test)]
 mod tests {
+    use common::HleDosVersion;
+
     use super::*;
 
     #[test]
@@ -657,7 +659,7 @@ mod tests {
     ) -> (u16, Vec<u8>) {
         let mut cdrom = marked_cooked_disc();
         let mut memory = crate::test_support::MockMemory::with_extended_memory(0x10000, 0);
-        let mut dos = crate::NeetanDos::new(crate::DosPlatform::pc98());
+        let mut dos = crate::NeetanDos::new(crate::DosPlatform::pc98(HleDosVersion::Dos620));
 
         memory.write_byte(REQUEST_ADDRESS + 2, 128);
         memory.write_byte(REQUEST_ADDRESS + 13, addressing_mode);
@@ -802,7 +804,10 @@ mod tests {
         let sft_address = 0x0100;
         for (dos, expected) in [
             (towns_dos(), false),
-            (crate::NeetanDos::new(crate::DosPlatform::pc98()), true),
+            (
+                crate::NeetanDos::new(crate::DosPlatform::pc98(HleDosVersion::Dos620)),
+                true,
+            ),
         ] {
             let mut memory =
                 crate::test_support::MockMemory::with_extended_memory(TOWNS_MEMORY_SIZE, 0);

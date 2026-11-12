@@ -7,7 +7,7 @@ pub mod systems;
 
 use std::{fmt, path::PathBuf, str::FromStr};
 
-use common::{BootDevice, CpuMode, MachineModel, MonitorTiming};
+use common::{BootDevice, CpuMode, HleDosVersion, MachineModel, MonitorTiming};
 #[cfg(feature = "pc88")]
 use common::{EightMhzWaitMode, MemoryWaitSwitch};
 use device::{gameport_towns::TownsPadType, subcontroller_x1::X1KeyboardMode};
@@ -295,6 +295,7 @@ pub struct EmulatorConfig {
     pub sc55_roms: Option<PathBuf>,
     pub midi: MidiDevice,
     pub boot_device: BootDevice,
+    pub dos_version: HleDosVersion,
     pub ems: bool,
     pub xms: bool,
     pub backend: Backend,
@@ -382,6 +383,7 @@ impl EmulatorConfig {
             sc55_roms: None,
             midi: MidiDevice::default(),
             boot_device: BootDevice::Auto,
+            dos_version: HleDosVersion::Dos620,
             ems: true,
             xms: true,
             backend: DEFAULT_BACKEND,

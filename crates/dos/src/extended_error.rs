@@ -578,6 +578,8 @@ impl NeetanDos {
 
 #[cfg(test)]
 mod tests {
+    use common::HleDosVersion;
+
     use super::*;
     use crate::{
         DosPlacement, DosPlatform,
@@ -586,7 +588,7 @@ mod tests {
 
     fn platforms() -> [DosPlatform; 2] {
         [
-            DosPlatform::pc98(),
+            DosPlatform::pc98(HleDosVersion::Dos620),
             DosPlatform::fm_towns(DosPlacement {
                 dos_data_segment: 0x1000,
                 first_mcb_segment: 0x2000,
@@ -652,7 +654,7 @@ mod tests {
 
     #[test]
     fn unlisted_error_keeps_the_stored_class_action_and_locus() {
-        let dos = NeetanDos::new(DosPlatform::pc98());
+        let dos = NeetanDos::new(DosPlatform::pc98(HleDosVersion::Dos620));
         let mut memory = MockMemory::with_extended_memory(0x30000, 0);
         dos.state.record_extended_error(&mut memory, 0x0002);
         dos.state.record_extended_error(&mut memory, 0x000E);
@@ -668,7 +670,7 @@ mod tests {
 
     #[test]
     fn operation_locus_stays_for_access_denied() {
-        let dos = NeetanDos::new(DosPlatform::pc98());
+        let dos = NeetanDos::new(DosPlatform::pc98(HleDosVersion::Dos620));
         let mut memory = MockMemory::with_extended_memory(0x30000, 0);
         dos.state.set_error_locus(&mut memory, LOCUS_SERIAL_DEVICE);
         dos.state.record_extended_error(&mut memory, 0x0005);

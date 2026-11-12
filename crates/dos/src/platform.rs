@@ -11,6 +11,8 @@
 //! passes the kernel segment and the memory top to the DOS kernel entry, and
 //! the kernel entry builds the platform from these values.
 
+use common::HleDosVersion;
+
 use crate::layout::DataArea;
 
 /// Size of one paragraph in bytes.
@@ -206,17 +208,35 @@ impl VectorSet {
 }
 
 /// DOS version of NEC MS-DOS 6.20 on the PC-98.
-const PC98_VERSION: DosVersion = DosVersion {
+const PC98_DOS620_VERSION: DosVersion = DosVersion {
     major: 6,
     minor: 20,
     oem_number: 0xFF,
 };
 
-/// Kernel placement of NeetanDos on the PC-98. The boot places the first MCB
-/// behind the disk buffer and the DPBs, at this segment or above.
-const PC98_PLACEMENT: DosPlacement = DosPlacement {
+/// DOS version of NEC MS-DOS 3.1 on the PC-98.
+const PC98_DOS310_VERSION: DosVersion = DosVersion {
+    major: 3,
+    minor: 10,
+    oem_number: 0xFF,
+};
+
+/// Kernel placement of the MS-DOS 6.20 self boot on the PC-98. The boot
+/// places the first MCB behind the disk buffer and the DPBs, at this segment
+/// or above.
+const PC98_DOS620_PLACEMENT: DosPlacement = DosPlacement {
     dos_data_segment: 0x0200,
     first_mcb_segment: 0x0370,
+    memory_top_segment: 0xA000,
+};
+
+/// Kernel placement of the MS-DOS 3.10 self boot on the PC-98. The first MCB
+/// segment starts at the system data of the PC-98 3.10 data area. The boot
+/// places the first MCB behind the disk buffer and the DPBs, at this segment
+/// or above.
+const PC98_DOS310_PLACEMENT: DosPlacement = DosPlacement {
+    dos_data_segment: 0x0200,
+    first_mcb_segment: 0x03B0,
     memory_top_segment: 0xA000,
 };
 
@@ -324,18 +344,35 @@ state_struct_codec!(DosPlatform {
 });
 
 impl DosPlatform {
-    /// Returns the platform of the PC-98: MS-DOS 6.20 with the DOS 6.20
-    /// format and the PC-98 6.20 data area, the DOS data segment at `0200h`,
-    /// conventional memory up to `A000h`, the EMS page frame at `C000h` and
-    /// the UMB chain in `C000h`-`DFFFh`.
-    pub fn pc98() -> Self {
+    /// Returns the platform of the PC-98 for the DOS `version`. Both
+    /// versions keep the DOS data segment at `0200h`, conventional memory up
+    /// to `A000h` and the EMS page frame at `C000h`.
+    ///
+    /// MS-DOS 6.20 uses the DOS 6.20 format, the PC-98 6.20 data area and the
+    /// UMB chain in `C000h`-`DFFFh`. MS-DOS 3.10 uses the DOS 3.10 format and
+    /// the PC-98 3.10 data area and has no UMB window.
+    pub fn pc98(version: HleDosVersion) -> Self {
+        let (dos_version, data_area, placement, umb_window) = match version {
+            HleDosVersion::Dos310 => (
+                PC98_DOS310_VERSION,
+                DataArea::Pc98Dos310,
+                PC98_DOS310_PLACEMENT,
+                None,
+            ),
+            HleDosVersion::Dos620 => (
+                PC98_DOS620_VERSION,
+                DataArea::Pc98Dos620,
+                PC98_DOS620_PLACEMENT,
+                Some(pc98_umb_window()),
+            ),
+        };
         Self {
             machine: DosMachine::Pc98,
-            version: PC98_VERSION,
-            data_area: DataArea::Pc98Dos620,
-            placement: PC98_PLACEMENT,
+            version: dos_version,
+            data_area,
+            placement,
             ems_window: Some(PC98_EMS_WINDOW),
-            umb_window: Some(pc98_umb_window()),
+            umb_window,
             country_code: COUNTRY_CODE_JAPAN,
             guest_vectors: VectorSet::empty(),
         }
@@ -433,10 +470,11 @@ fn pc98_umb_window() -> UmbWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layout::DosFormat;
 
     #[test]
     fn pc98_platform_keeps_the_pc98_values() {
-        let platform = DosPlatform::pc98();
+        let platform = DosPlatform::pc98(HleDosVersion::Dos620);
         assert_eq!(
             platform.version,
             DosVersion {
@@ -462,8 +500,54 @@ mod tests {
     }
 
     #[test]
+    fn pc98_dos310_platform_reports_dos_310_without_umbs() {
+        let platform = DosPlatform::pc98(HleDosVersion::Dos310);
+        assert_eq!(platform.machine, DosMachine::Pc98);
+        assert_eq!(
+            platform.version,
+            DosVersion {
+                major: 3,
+                minor: 10,
+                oem_number: 0xFF,
+            }
+        );
+        assert_eq!(platform.data_area, DataArea::Pc98Dos310);
+        assert_eq!(platform.data_area.format(), DosFormat::Dos310);
+        assert_eq!(platform.placement.dos_data_segment, 0x0200);
+        assert_eq!(platform.placement.memory_top_segment, 0xA000);
+        assert_eq!(
+            platform.placement.dos_data_size(),
+            u32::from(platform.data_area.layout().private_area.system_data)
+        );
+        assert_eq!(
+            platform.ems_window,
+            Some(EmsWindow {
+                page_frame_segment: 0xC000,
+            })
+        );
+        assert!(platform.umb_window.is_none());
+        assert_eq!(platform.country_code, 81);
+        assert!(platform.guest_vectors.is_empty());
+        assert!(!platform.has_same_configuration(&DosPlatform::pc98(HleDosVersion::Dos620)));
+    }
+
+    #[test]
+    fn pc98_placement_starts_the_first_mcb_at_the_system_data() {
+        for version in [HleDosVersion::Dos310, HleDosVersion::Dos620] {
+            let platform = DosPlatform::pc98(version);
+            assert_eq!(
+                platform.placement.dos_data_size(),
+                u32::from(platform.data_area.layout().private_area.system_data),
+                "{version:?}"
+            );
+        }
+    }
+
+    #[test]
     fn pc98_umb_window_keeps_the_pc98_chain() {
-        let window = DosPlatform::pc98().umb_window.expect("PC-98 has UMBs");
+        let window = DosPlatform::pc98(HleDosVersion::Dos620)
+            .umb_window
+            .expect("PC-98 has UMBs");
         let free = UmbBlockKind::Free;
         let reserved = UmbBlockKind::Reserved;
         let block = |mcb_segment, paragraphs, kind| UmbBlock {
@@ -538,7 +622,7 @@ mod tests {
 
     #[test]
     fn pc98_placement_keeps_the_data_segment_and_the_memory_top() {
-        let platform = DosPlatform::pc98();
+        let platform = DosPlatform::pc98(HleDosVersion::Dos620);
         let placement = platform.placement;
         assert!(platform.accepts_placement(&placement));
         let booted = DosPlacement {
@@ -609,7 +693,11 @@ mod tests {
             first_mcb_segment: 0x1800,
             memory_top_segment: 0xC000,
         });
-        for platform in [DosPlatform::pc98(), fm_towns] {
+        for platform in [
+            DosPlatform::pc98(HleDosVersion::Dos620),
+            DosPlatform::pc98(HleDosVersion::Dos310),
+            fm_towns,
+        ] {
             assert_eq!(
                 platform.machine == DosMachine::Pc98,
                 platform.data_area.layout().self_boot.is_some(),
@@ -632,6 +720,6 @@ mod tests {
             memory_top_segment: 0xC000,
         });
         assert!(first.has_same_configuration(&second));
-        assert!(!first.has_same_configuration(&DosPlatform::pc98()));
+        assert!(!first.has_same_configuration(&DosPlatform::pc98(HleDosVersion::Dos620)));
     }
 }

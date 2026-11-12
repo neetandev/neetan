@@ -911,6 +911,18 @@ const BOOT_DEVICE_CHOICES: &[Choice] = &[
     },
 ];
 
+/// DOS versions of the PC-98 HLE DOS.
+const DOS_VERSION_CHOICES: &[Choice] = &[
+    Choice {
+        value: "3.10",
+        families: Families::PC98,
+    },
+    Choice {
+        value: "6.20",
+        families: Families::PC98,
+    },
+];
+
 /// Monitor timings.
 const MONITOR_CHOICES: &[Choice] = &[
     Choice {
@@ -1194,6 +1206,25 @@ pub static SETTINGS: &[Setting] = &[
             Ok(())
         },
         format: |config| format_value(config.boot_device),
+    },
+    Setting {
+        key: "dos-version",
+        scope: Scope::System,
+        kind: ValueKind::Choice(DOS_VERSION_CHOICES),
+        families: Families::PC98,
+        model_limits: &[],
+        section: Some(Section::Machine),
+        explicit: None,
+        file_types: &[],
+        unset_values: &[],
+        fact: ChoiceFact::Choices,
+        frontend_only: false,
+        clear: None,
+        apply: |config, value| {
+            config.dos_version = parse_choice(value, DOS_VERSION_CHOICES)?;
+            Ok(())
+        },
+        format: |config| format_value(config.dos_version),
     },
     Setting {
         key: "bios",
@@ -2170,6 +2201,8 @@ pub static SETTINGS: &[Setting] = &[
 mod tests {
     use std::collections::BTreeSet;
 
+    use common::HleDosVersion;
+
     use super::{
         super::{first_system_config, systems::compiled_systems},
         *,
@@ -2493,6 +2526,48 @@ mod tests {
         assert!(soundboard.is_read_by(Target::Pc98, "PC9821AP"));
         let boot_device = find_setting("boot-device").expect("boot-device is a table key");
         assert_eq!(boot_device.choices_for(Target::Pc98).count(), 6);
+    }
+
+    /// Verifies that the DOS version parses and formats both values and rejects other versions.
+    #[test]
+    fn dos_version_parses_and_formats_both_values() {
+        let dos_version = find_setting("dos-version").expect("dos-version is a table key");
+        for (value, expected) in [
+            ("3.10", HleDosVersion::Dos310),
+            ("6.20", HleDosVersion::Dos620),
+        ] {
+            let mut config = first_system_config();
+            (dos_version.apply)(&mut config, value).expect("version applies");
+            assert_eq!(config.dos_version, expected);
+            assert_eq!((dos_version.format)(&config), [value]);
+        }
+        let mut config = first_system_config();
+        assert_eq!(
+            (dos_version.apply)(&mut config, "5.00"),
+            Err(ValueError::unknown_choice("5.00", DOS_VERSION_CHOICES))
+        );
+        assert_eq!((dos_version.format)(&first_system_config()), ["6.20"]);
+    }
+
+    /// Verifies that only the PC-98 family reads the DOS version.
+    #[test]
+    fn dos_version_belongs_to_the_pc98_family() {
+        let dos_version = find_setting("dos-version").expect("dos-version is a table key");
+        assert_eq!(dos_version.families, Families::PC98);
+        assert_eq!(dos_version.choices_for_families(Families::TOWNS).count(), 0);
+        assert_eq!(dos_version.choices_for_families(Families::AT).count(), 0);
+    }
+
+    #[cfg(feature = "pc98")]
+    /// Verifies that the PC-98 family offers both DOS versions.
+    #[test]
+    fn dos_version_offers_both_versions_on_the_pc98() {
+        let dos_version = find_setting("dos-version").expect("dos-version is a table key");
+        let values: Vec<&str> = dos_version
+            .choices_for(Target::Pc98)
+            .map(|choice| choice.value)
+            .collect();
+        assert_eq!(values, ["3.10", "6.20"]);
     }
 
     /// Verifies that the choices of a set of families hold the choices of each family of the set.

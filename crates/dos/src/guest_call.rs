@@ -968,12 +968,14 @@ impl NeetanDos {
 
 #[cfg(test)]
 mod tests {
+    use common::HleDosVersion;
+
     use super::*;
     use crate::{DosPlatform, test_support::MockMemory};
 
     #[test]
     fn area_lies_at_the_end_of_the_swappable_data_area() {
-        let dos = NeetanDos::new(DosPlatform::pc98());
+        let dos = NeetanDos::new(DosPlatform::pc98(HleDosVersion::Dos620));
         let area = dos.guest_call_area();
         assert_eq!(area.segment, 0x0200);
         assert_eq!(area.base_offset, 0x10CC);
@@ -994,7 +996,7 @@ mod tests {
     #[test]
     fn stub_calls_both_routines_and_traps_back() {
         let mut memory = MockMemory::with_extended_memory(0x30000, 0);
-        let dos = NeetanDos::new(DosPlatform::pc98());
+        let dos = NeetanDos::new(DosPlatform::pc98(HleDosVersion::Dos620));
         let area = dos.guest_call_area();
         area.write_stub(&mut memory);
 
@@ -1035,7 +1037,7 @@ mod tests {
     #[test]
     fn device_call_points_es_bx_at_the_request_and_enters_the_device_stub() {
         let mut memory = MockMemory::with_extended_memory(0x30000, 0);
-        let dos = NeetanDos::new(DosPlatform::pc98());
+        let dos = NeetanDos::new(DosPlatform::pc98(HleDosVersion::Dos620));
         let area = dos.guest_call_area();
         memory.write_word(0x5000 + tables::DEVHDR_OFF_STRATEGY, 0x0012);
         memory.write_word(0x5000 + tables::DEVHDR_OFF_INTERRUPT, 0x0034);
@@ -1075,7 +1077,7 @@ mod tests {
     #[test]
     fn software_interrupt_call_patches_the_vector_and_loads_the_registers() {
         let mut memory = MockMemory::with_extended_memory(0x40000, 0);
-        let dos = NeetanDos::new(DosPlatform::pc98());
+        let dos = NeetanDos::new(DosPlatform::pc98(HleDosVersion::Dos620));
         let area = dos.guest_call_area();
         area.write_stub(&mut memory);
         let mut cpu = crate::test_support::MockCpu::default();
@@ -1132,7 +1134,7 @@ mod tests {
 
     #[test]
     fn operation_round_trips_through_the_save_state() {
-        let dos = NeetanDos::new(DosPlatform::pc98());
+        let dos = NeetanDos::new(DosPlatform::pc98(HleDosVersion::Dos620));
         let area = dos.guest_call_area();
         let mut steps = VecDeque::new();
         steps.push_back(GuestStep::Character(GuestCharacterStep::FastConsoleOutput(
@@ -1174,7 +1176,7 @@ mod tests {
     #[test]
     fn nested_operation_restores_the_buffers_of_the_outer_call() {
         let mut memory = MockMemory::with_extended_memory(0x100000, 0);
-        let mut dos = NeetanDos::new(DosPlatform::pc98());
+        let mut dos = NeetanDos::new(DosPlatform::pc98(HleDosVersion::Dos620));
         let area = dos.guest_call_area();
         area.write_stub(&mut memory);
         memory.write_word(0x5000 + tables::DEVHDR_OFF_ATTRIBUTE, 0x8003);
@@ -1208,7 +1210,7 @@ mod tests {
     #[test]
     fn return_below_an_abandoned_operation_discards_it() {
         let mut memory = MockMemory::with_extended_memory(0x100000, 0);
-        let mut dos = NeetanDos::new(DosPlatform::pc98());
+        let mut dos = NeetanDos::new(DosPlatform::pc98(HleDosVersion::Dos620));
         let area = dos.guest_call_area();
         area.write_stub(&mut memory);
         let outer_buffers: Vec<u8> = (0..CODE_OFFSET).map(|index| index as u8).collect();

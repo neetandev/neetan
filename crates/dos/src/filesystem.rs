@@ -1312,7 +1312,7 @@ mod tests {
 
     /// Mounts a 2HD floppy as drive A of a PC-98 HLE DOS.
     fn dos_with_volume(disk: &mut MockDisk) -> NeetanDos {
-        let mut dos = NeetanDos::new(DosPlatform::pc98());
+        let mut dos = NeetanDos::new(DosPlatform::pc98(common::HleDosVersion::Dos620));
         let volume =
             FatVolume::mount(FLOPPY_2HD_DEVICE_ID, 0, &pc98::floppy_2hd_geometry(), disk).unwrap();
         dos.state.fat_volumes[usize::from(DRIVE_INDEX)] = Some(volume);
