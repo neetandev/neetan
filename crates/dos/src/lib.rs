@@ -2677,9 +2677,11 @@ impl NeetanDos {
 
         let base = IOSYS_BASE;
 
-        // MS-DOS product number (0x0100+ range for MS-DOS 5.0+, 0x0102 = NEC MS DOS 6.20)
-        mem.write_word(base + IOSYS_OFF_PRODUCT_NUMBER, 0x0102);
-        mem.write_byte(base + IOSYS_OFF_INTERNAL_REVISION, 0x00);
+        mem.write_word(base + IOSYS_OFF_PRODUCT_NUMBER, NEC_DOS620_PRODUCT_NUMBER);
+        mem.write_byte(
+            base + IOSYS_OFF_INTERNAL_REVISION,
+            NEC_DOS620_INTERNAL_REVISION,
+        );
 
         mem.write_byte(base + IOSYS_OFF_EMM_BANK_FLAG, 0x00);
         mem.write_byte(base + IOSYS_OFF_EXT_MEM_128K, 0x00);
@@ -3412,6 +3414,15 @@ pub(crate) fn adjust_iret_ip(cpu: &dyn CpuAccess, mem: &mut dyn MemoryAccess, de
 mod tests {
     use super::*;
     use crate::test_support::{MockMemory, device_chain_names};
+
+    #[test]
+    fn iosys_work_area_holds_the_nec_dos620_product_number_and_revision() {
+        let dos = NeetanDos::new(DosPlatform::pc98());
+        let mut memory = MockMemory::with_extended_memory(0x10_0000, 0);
+        dos.write_iosys_work_area(&mut memory);
+        assert_eq!(memory.read_word(0x0620), 0x0200);
+        assert_eq!(memory.read_byte(0x0622), 0x01);
+    }
 
     #[test]
     fn cdrom_media_change_drops_the_open_files_and_the_search_of_the_disc() {

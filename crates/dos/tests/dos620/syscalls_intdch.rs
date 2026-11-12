@@ -21,13 +21,12 @@ fn system_identification() {
     ];
     harness::inject_and_run(&mut machine, code);
 
-    let expected_product = harness::read_word(&machine.bus, 0x0600 + 0x0020);
     let ax = harness::result_word(&machine.bus, 0);
     let dx = harness::result_word(&machine.bus, 2);
     assert_eq!(
-        ax, expected_product,
-        "INT DCh CL=12h: AX should be product number {:#06X}, got {:#06X}",
-        expected_product, ax
+        ax, 0x0200,
+        "INT DCh CL=12h: AX should be product number 0x0200, got {:#06X}",
+        ax
     );
     assert_eq!(
         dx, 0x0003,
@@ -80,12 +79,11 @@ fn internal_revision() {
     ];
     harness::inject_and_run(&mut machine, code);
 
-    let expected = harness::read_byte(&machine.bus, 0x0600 + 0x0022);
     let al = harness::result_byte(&machine.bus, 0);
     assert_eq!(
-        al, expected,
-        "INT DCh CL=15h: AL should be revision {:#04X}, got {:#04X}",
-        expected, al
+        al, 0x01,
+        "INT DCh CL=15h: AL should be revision 0x01, got {:#04X}",
+        al
     );
 }
 

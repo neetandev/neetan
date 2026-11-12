@@ -122,9 +122,16 @@ fn cursor_x_position() {
 fn product_number() {
     let machine = harness::boot_hle();
     let product = harness::read_word(&machine.bus, IOSYS_BASE + 0x0020);
-    assert_ne!(
-        product, 0x0000,
-        "MS-DOS product number at 0060:0020h should be non-zero"
+    assert_eq!(
+        product, 0x0200,
+        "MS-DOS product number at 0060:0020h should be 0x0200, got {:#06X}",
+        product
+    );
+    let revision = harness::read_byte(&machine.bus, IOSYS_BASE + 0x0022);
+    assert_eq!(
+        revision, 0x01,
+        "Internal revision at 0060:0022h should be 0x01, got {:#04X}",
+        revision
     );
 }
 
