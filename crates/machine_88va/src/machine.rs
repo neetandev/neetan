@@ -465,6 +465,7 @@ impl<T: TraceSink> common::Machine for Pc88VaMachine<T> {
     fn startup_capabilities(&self) -> common::StartupCapabilities {
         common::StartupCapabilities {
             floppy_drives: 2,
+            mouse: true,
             ..common::StartupCapabilities::default()
         }
     }

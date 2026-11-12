@@ -49,7 +49,7 @@ pub(crate) struct Host {
     /// The audio engine. Its consumption rate paces the emulation.
     pub(crate) audio_engine: AudioEngine,
     /// The host of the graphical user interface. `None` when the font did
-    /// not load, which disables the media dialog and the game manager.
+    /// not load, which disables the in-game overlays and the game manager.
     pub(crate) gui: Option<GuiHost>,
     /// The reason the font did not load.
     pub(crate) gui_error: Option<String>,
@@ -301,7 +301,7 @@ impl Host {
             return true;
         }
         if !self.gui_disabled_reported {
-            warn!("The media dialog is unavailable because the GUI font did not load");
+            warn!("The in-game overlays are unavailable because the GUI font did not load");
             self.gui_disabled_reported = true;
         }
         false

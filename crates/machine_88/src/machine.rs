@@ -419,6 +419,7 @@ impl<T: TraceSink> common::Machine for Pc8801Machine<T> {
         common::StartupCapabilities {
             floppy_drives: 2,
             cdrom: true,
+            mouse: true,
             ..common::StartupCapabilities::default()
         }
     }

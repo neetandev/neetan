@@ -2,7 +2,7 @@
 
 use std::time::Instant;
 
-use common::KeyModifiers;
+use common::{KeyModifiers, info};
 use sdl3::{
     event::Event,
     gamepad::{GamepadAxis, GamepadButton},
@@ -12,10 +12,11 @@ use sdl3::{
 
 use super::{Session, SessionExit};
 use crate::{
+    config::Backend,
     gui_host::keys::pointer_or_text_event,
     host::Host,
+    hotkeys::{Hotkey, HotkeyFeatures},
     input::{JoystickKey, host_key_from_scancode},
-    media_dialog::Drive,
 };
 
 impl Session {
@@ -38,7 +39,7 @@ impl Session {
             | Event::MouseButtonDown { .. }
             | Event::MouseButtonUp { .. }
             | Event::MouseWheel { .. }
-                if self.media_dialog.is_some() =>
+                if self.overlay.is_some() =>
             {
                 if let Some(gui_event) = pointer_or_text_event(event, host.shift_held) {
                     self.handle_gui_event(gui_event, host);
@@ -67,7 +68,7 @@ impl Session {
         }
     }
 
-    /// Handles a key press: the dialog keys while the media dialog is open,
+    /// Handles a key press: the overlay keys while an overlay is open,
     /// otherwise the machine keyboard, the keyboard joystick and the hotkeys.
     fn handle_key_down(
         &mut self,
@@ -76,8 +77,8 @@ impl Session {
         repeat: bool,
         host: &mut Host,
     ) {
-        if self.media_dialog.is_some() {
-            self.handle_dialog_key(scancode, keymod, repeat, host);
+        if self.overlay.is_some() {
+            self.handle_overlay_key(scancode, keymod, repeat, host);
             return;
         }
         let modifiers = KeyModifiers {
@@ -106,37 +107,64 @@ impl Session {
             return;
         }
         if repeat {
-            if scancode == Some(Scancode::F) {
+            if scancode == Some(Hotkey::FastForward.scancode()) {
                 self.set_fast_forward(true, host);
             }
             return;
         }
-        match scancode {
-            Some(Scancode::Escape) => self.request_exit(SessionExit::UserExit),
-            Some(Scancode::M) => self.toggle_mouse_capture(host),
-            Some(Scancode::Return) => host.set_fullscreen(!host.fullscreen),
-            Some(Scancode::C) => self.toggle_crt(host),
-            Some(Scancode::S) => self.toggle_scaling(host),
-            Some(Scancode::P) => self.cycle_composite_phase(),
-            Some(Scancode::_5) => self.quick_save(),
-            Some(Scancode::_9) => self.quick_load(host),
-            Some(Scancode::R) => self.hard_reset(host),
-            Some(Scancode::F) => self.set_fast_forward(true, host),
-            _ => {
-                if let Some(drive) = media_hotkey_drive(scancode) {
-                    self.media_hotkey(drive, host);
-                }
-            }
+        if let Some(hotkey) = scancode.and_then(Hotkey::from_scancode) {
+            self.run_hotkey(hotkey, host);
+        }
+    }
+
+    /// Runs `hotkey` when it works on the machine. While an overlay is open,
+    /// only the hotkeys that work over an overlay run. A media hotkey always
+    /// reaches the media dialog, which reports a missing drive itself.
+    fn run_hotkey(&mut self, hotkey: Hotkey, host: &mut Host) {
+        if self.overlay.is_some() && !hotkey.works_over_overlay() {
+            return;
+        }
+        let media = matches!(hotkey, Hotkey::Media(_));
+        if !media && !hotkey.available(&self.hotkey_features(host)) {
+            info!("The hotkey {hotkey:?} does nothing on this machine");
+            return;
+        }
+        match hotkey {
+            Hotkey::Help => self.help_hotkey(host),
+            Hotkey::Exit => self.request_exit(SessionExit::UserExit),
+            Hotkey::Fullscreen => host.set_fullscreen(!host.fullscreen),
+            Hotkey::MouseCapture => self.toggle_mouse_capture(host),
+            Hotkey::HardReset => self.hard_reset(host),
+            Hotkey::FastForward => self.set_fast_forward(true, host),
+            Hotkey::Crt => self.toggle_crt(),
+            Hotkey::Scaling => self.toggle_scaling(host),
+            Hotkey::CompositePhase => self.cycle_composite_phase(),
+            Hotkey::Media(drive) => self.media_hotkey(drive, host),
+            Hotkey::QuickSave => self.quick_save(),
+            Hotkey::QuickLoad => self.quick_load(host),
+        }
+    }
+
+    /// The features of the machine and the backend that decide which
+    /// hotkeys work.
+    pub(super) fn hotkey_features(&self, host: &Host) -> HotkeyFeatures {
+        HotkeyFeatures {
+            drives: self.media_drives(),
+            mouse: self.machine.startup_capabilities().mouse,
+            crt_effect: host.backend == Backend::Modern,
+            composite_video: self.config.target.has_composite_video(),
         }
     }
 
     /// Handles a key release: stops fast forward and releases the key on the
     /// machine keyboard and the keyboard joystick.
     fn handle_key_up(&mut self, scancode: Option<Scancode>, repeat: bool, host: &mut Host) {
-        if self.fast_forward && matches!(scancode, Some(Scancode::F) | Some(Scancode::RCtrl)) {
+        let fast_forward_released =
+            scancode == Some(Hotkey::FastForward.scancode()) || scancode == Some(Scancode::RCtrl);
+        if self.fast_forward && fast_forward_released {
             self.set_fast_forward(false, host);
         }
-        if self.media_dialog.is_some() {
+        if self.overlay.is_some() {
             return;
         }
         self.keyboard_forwarding_state
@@ -162,9 +190,9 @@ impl Session {
             .set_mouse_buttons(self.mouse_left, self.mouse_right, self.mouse_middle);
     }
 
-    /// Handles a key press while the media dialog is open: the media hotkeys
-    /// and the keys of the dialog.
-    fn handle_dialog_key(
+    /// Handles a key press while an overlay is open: the hotkeys that work
+    /// over an overlay and the keys of the open overlay.
+    fn handle_overlay_key(
         &mut self,
         scancode: Option<Scancode>,
         keymod: &Mod,
@@ -175,8 +203,8 @@ impl Session {
             return;
         };
         if keymod.rctrl() {
-            if !repeat && let Some(drive) = media_hotkey_drive(Some(scancode)) {
-                self.media_hotkey(drive, host);
+            if !repeat && let Some(hotkey) = Hotkey::from_scancode(scancode) {
+                self.run_hotkey(hotkey, host);
             }
             return;
         }
@@ -190,7 +218,7 @@ impl Session {
     }
 
     /// Records a gamepad button change and updates the joystick port. While
-    /// the media dialog is open, the button goes to the dialog.
+    /// an overlay is open, the button goes to the overlay.
     fn handle_gamepad_button(
         &mut self,
         which: u32,
@@ -201,7 +229,7 @@ impl Session {
         if !host.is_active_gamepad(which) {
             return;
         }
-        if self.media_dialog.is_some() {
+        if self.overlay.is_some() {
             let gui_event = host
                 .gui
                 .as_mut()
@@ -232,12 +260,12 @@ impl Session {
     }
 
     /// Records a left-stick axis change and updates the joystick port. While
-    /// the media dialog is open, the stick goes to the dialog.
+    /// an overlay is open, the stick goes to the overlay.
     fn handle_gamepad_axis(&mut self, which: u32, axis: GamepadAxis, value: i16, host: &mut Host) {
         if !host.is_active_gamepad(which) {
             return;
         }
-        if self.media_dialog.is_some() {
+        if self.overlay.is_some() {
             let gui_event = host
                 .gui
                 .as_mut()
@@ -253,15 +281,5 @@ impl Session {
             _ => return,
         }
         self.update_joystick(host);
-    }
-}
-
-/// The drive of the media hotkey on `scancode`: right Ctrl with 1, 2 or 3.
-fn media_hotkey_drive(scancode: Option<Scancode>) -> Option<Drive> {
-    match scancode {
-        Some(Scancode::_1) => Some(Drive::Floppy(0)),
-        Some(Scancode::_2) => Some(Drive::Floppy(1)),
-        Some(Scancode::_3) => Some(Drive::CdRom),
-        _ => None,
     }
 }

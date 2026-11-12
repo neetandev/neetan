@@ -30,7 +30,9 @@ mod file_browser;
 mod gui_host;
 #[cfg(test)]
 mod gui_test_support;
+mod help_overlay;
 mod host;
+mod hotkeys;
 mod input;
 mod language;
 mod machines;

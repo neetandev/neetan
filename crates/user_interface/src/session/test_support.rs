@@ -147,7 +147,7 @@ pub(super) fn session_with(machine: FakeMachine) -> Session {
         fdd2_index: None,
         cdrom_entries: Vec::new(),
         cdrom_index: None,
-        media_dialog: None,
+        overlay: None,
         crt_enabled: false,
         composite_phase: 0,
         scaling: ScalingMode::Nearest,

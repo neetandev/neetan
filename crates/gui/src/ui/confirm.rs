@@ -7,9 +7,10 @@ use super::{
     button::{Button, ButtonKind},
     context::{UiContext, UiId},
     icons::Icon,
+    keycap::HintKey,
     label::{Align, WrappedText},
     modal::{HEADER_HEIGHT, modal_in},
-    status_line::{Hint, HintKey},
+    status_line::Hint,
 };
 use crate::Rect;
 

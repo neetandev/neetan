@@ -560,6 +560,7 @@ impl<T: TraceSink> Machine for AtMachine<T> {
             sc55: true,
             floppy_drives: 2,
             cdrom: true,
+            mouse: true,
             ..StartupCapabilities::default()
         }
     }

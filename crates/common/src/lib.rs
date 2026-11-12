@@ -1943,6 +1943,8 @@ pub struct StartupCapabilities {
     pub floppy_drives: u8,
     /// Whether the machine has a CD-ROM drive.
     pub cdrom: bool,
+    /// Whether the machine has a mouse.
+    pub mouse: bool,
 }
 
 /// The failed write back of one or more media to their host files.

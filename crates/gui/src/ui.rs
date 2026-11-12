@@ -40,6 +40,7 @@ mod field_value;
 mod focus;
 mod icons;
 mod input;
+mod keycap;
 mod label;
 mod layer;
 mod list;
@@ -72,6 +73,7 @@ pub use icons::{Icon, Icons};
 pub use input::{
     ActionButton, EditCommand, EditModifiers, Input, NavigationSource, Shortcut, Viewport,
 };
+pub use keycap::{HintKey, KEYCAP_HEIGHT, keycap, keycap_width};
 #[cfg(any(test, feature = "fill-counter"))]
 pub use label::count_wraps;
 pub use label::{Align, Truncation, WRAP_LINE_HEIGHT, WrappedText, label, wrapped_line_height};
@@ -83,9 +85,7 @@ pub use modal::{CLOSE_SIZE, HEADER_HEIGHT, ModalResponse, modal, modal_in};
 pub use number_field::{NUMBER_FIELD_WIDTH, NumberError, NumberField};
 pub use scroll::{ScrollState, scroll_area};
 pub use state::UiState;
-pub use status_line::{
-    Hint, HintKey, KEYCAP_HEIGHT, STATUS_LINE_HEIGHT, StatusEnd, distinct_hints, status_line,
-};
+pub use status_line::{Hint, STATUS_LINE_HEIGHT, StatusEnd, distinct_hints, status_line};
 pub use table::{
     CellTone, Column, ColumnWidth, EmptyHint, MAXIMUM_COLUMNS, Sort, SortDirection, Table,
     TableCell, TableResponse, TableRow, TableState,

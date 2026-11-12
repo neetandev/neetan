@@ -393,6 +393,7 @@ impl<T: TraceSink> Machine for X68kMachine<T> {
             sc55: true,
             floppy_drives: 2,
             cdrom: self.bus.model().has_internal_scsi(),
+            mouse: true,
             ..Default::default()
         }
     }

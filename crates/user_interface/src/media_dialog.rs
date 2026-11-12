@@ -13,6 +13,7 @@ use gui::{
     },
 };
 use i18n::Key;
+use stack_vec::StackVec;
 
 use crate::texts::{common, media};
 
@@ -30,6 +31,9 @@ const MEDIA_LAYER_ID: &str = "media";
 
 /// The most drives of the dialog: two floppy drives and the CD-ROM drive.
 pub(crate) const MAXIMUM_DRIVES: usize = 3;
+
+/// The removable media drives of a machine in tab order.
+pub(crate) type Drives = StackVec<Drive, MAXIMUM_DRIVES>;
 
 /// A removable media drive that the dialog changes the medium of.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -94,8 +98,8 @@ impl Drive {
 
 /// The drives of a machine with removable media, in tab order: the floppy
 /// drives up to the two the configuration can fill, then the CD-ROM drive.
-pub(crate) fn available_drives(floppy_drives: u8, cdrom: bool) -> Vec<Drive> {
-    let mut drives: Vec<Drive> = (0..usize::from(floppy_drives.min(2)))
+pub(crate) fn available_drives(floppy_drives: u8, cdrom: bool) -> Drives {
+    let mut drives: Drives = (0..usize::from(floppy_drives.min(2)))
         .map(Drive::Floppy)
         .collect();
     if cdrom {
@@ -283,7 +287,7 @@ fn row_of(selection: Option<usize>, rows: &[usize]) -> usize {
 /// The state of the open media dialog.
 pub(crate) struct MediaDialog {
     /// The drives of the machine, one tab each.
-    drives: Vec<Drive>,
+    drives: Drives,
     /// The selected tab.
     tab: usize,
     /// The filter text.
@@ -319,7 +323,7 @@ pub(crate) struct MediaDialog {
 impl MediaDialog {
     /// A dialog over `drives` on the tab `tab`, with the image `loaded` of
     /// that drive selected.
-    pub(crate) fn new(drives: Vec<Drive>, tab: usize, loaded: Option<usize>) -> Self {
+    pub(crate) fn new(drives: Drives, tab: usize, loaded: Option<usize>) -> Self {
         Self {
             drives,
             tab,
@@ -768,13 +772,13 @@ mod tests {
 
     #[test]
     fn drives_follow_the_machine() {
-        assert_eq!(available_drives(0, false), Vec::new());
-        assert_eq!(available_drives(1, false), vec![Drive::Floppy(0)]);
+        assert!(available_drives(0, false).is_empty());
+        assert_eq!(*available_drives(1, false), [Drive::Floppy(0)]);
         assert_eq!(
-            available_drives(4, true),
-            vec![Drive::Floppy(0), Drive::Floppy(1), Drive::CdRom]
+            *available_drives(4, true),
+            [Drive::Floppy(0), Drive::Floppy(1), Drive::CdRom]
         );
-        assert_eq!(available_drives(0, true), vec![Drive::CdRom]);
+        assert_eq!(*available_drives(0, true), [Drive::CdRom]);
     }
 
     #[test]
@@ -985,7 +989,7 @@ mod tests {
 
     #[test]
     fn choose_without_drives_closes() {
-        let mut dialog = MediaDialog::new(Vec::new(), 0, None);
+        let mut dialog = MediaDialog::new(Drives::new(), 0, None);
         assert_eq!(
             apply(&mut dialog, MediaMessage::Choose),
             (Status::Closed, Vec::new())
