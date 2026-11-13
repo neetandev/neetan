@@ -1,3 +1,5 @@
+use dos::tables;
+
 use crate::harness;
 
 // IO.SYS work area is at segment 0060h. Linear address = 0x600 + offset.
@@ -199,4 +201,25 @@ fn drive_table_pointer_points_to_the_table_of_all_drives() {
         (0x0060, 0x2C86),
         "0060:2820h points to the attribute and DA/UA table at 0060:2C86h"
     );
+}
+
+/// AUX protocol of RS-232C channel 0 at 0060:0068h.
+const AUX_PROTOCOL: u32 = IOSYS_BASE + tables::IOSYS_OFF_AUX_PROTOCOL;
+/// AUX protocol of the NEC MS-DOS captures: memory switch 2 = 05h, memory
+/// switch 1 = 48h.
+const CAPTURED_AUX_PROTOCOL: u16 = 0x0548;
+
+#[test]
+fn aux_protocol_holds_memory_switches_1_and_2() {
+    let machine = harness::boot_hle();
+    assert_eq!(
+        harness::read_word(&machine.bus, AUX_PROTOCOL),
+        CAPTURED_AUX_PROTOCOL
+    );
+}
+
+#[test]
+fn aux_protocol_copies_every_bit_of_the_memory_switches() {
+    let machine = harness::boot_hle_with_memory_switches(0x4D, 0xF7);
+    assert_eq!(harness::read_word(&machine.bus, AUX_PROTOCOL), 0xF74D);
 }

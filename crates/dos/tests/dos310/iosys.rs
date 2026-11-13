@@ -1,6 +1,6 @@
 use dos::tables::{
-    IOSYS_BASE, IOSYS_OFF_DAUA_PTR, IOSYS_OFF_EXT_DAUA_TABLE, IOSYS_OFF_INTERNAL_REVISION,
-    IOSYS_OFF_PRODUCT_NUMBER, IOSYS_OFF_SPECIAL_INPUT,
+    IOSYS_BASE, IOSYS_OFF_AUX_PROTOCOL, IOSYS_OFF_DAUA_PTR, IOSYS_OFF_EXT_DAUA_TABLE,
+    IOSYS_OFF_INTERNAL_REVISION, IOSYS_OFF_PRODUCT_NUMBER, IOSYS_OFF_SPECIAL_INPUT,
 };
 
 use crate::harness::*;
@@ -183,4 +183,17 @@ fn disk_information_copies_the_console_state() {
     );
     assert_eq!(buffer[..CONSOLE_STATE_SIZE], state[..]);
     assert!(buffer[CONSOLE_STATE_SIZE..].iter().all(|&byte| byte == 0));
+}
+
+/// AUX protocol of the NEC MS-DOS 3.1 captures: memory switch 2 = 05h, memory
+/// switch 1 = 48h.
+const CAPTURED_AUX_PROTOCOL: u16 = 0x0548;
+
+#[test]
+fn aux_protocol_holds_memory_switches_1_and_2() {
+    let machine = boot();
+    assert_eq!(
+        read_word(&machine.bus, IOSYS_BASE + IOSYS_OFF_AUX_PROTOCOL),
+        CAPTURED_AUX_PROTOCOL
+    );
 }

@@ -195,6 +195,11 @@ pub const PSP_OFF_FCB2: u32 = 0x6C;
 pub const PSP_OFF_CMD_TAIL_LEN: u32 = 0x80;
 pub const PSP_OFF_CMD_TAIL: u32 = 0x81;
 
+/// Linear address of memory switch 1 in the text VRAM attribute plane.
+pub const MEMORY_SWITCH_1_ADDRESS: u32 = 0xA3FE2;
+/// Linear address of memory switch 2 in the text VRAM attribute plane.
+pub const MEMORY_SWITCH_2_ADDRESS: u32 = 0xA3FE6;
+
 pub const IOSYS_SEGMENT: u16 = 0x0060;
 pub const IOSYS_BASE: u32 = (IOSYS_SEGMENT as u32) << 4;
 /// Size of the NEC `IO.SYS` work area at `0060:0000` in bytes.
@@ -232,6 +237,8 @@ pub const NEC_DOS620_IOSYS_IDENTITY: NecIosysIdentity = NecIosysIdentity {
 pub const IOSYS_OFF_EMM_BANK_FLAG: u32 = 0x0030;
 pub const IOSYS_OFF_EXT_MEM_128K: u32 = 0x0031;
 pub const IOSYS_OFF_FD_DUPLICATE: u32 = 0x0038;
+/// AUX protocol of RS-232C channel 0 (WORD). The boot copies memory switch 1
+/// into the low byte and memory switch 2 into the high byte.
 pub const IOSYS_OFF_AUX_PROTOCOL: u32 = 0x0068;
 pub const IOSYS_OFF_DAUA_TABLE: u32 = 0x006C;
 pub const IOSYS_OFF_KANJI_MODE: u32 = 0x008A;

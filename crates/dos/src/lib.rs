@@ -2704,9 +2704,11 @@ impl NeetanDos {
         mem.write_byte(base + IOSYS_OFF_EXT_MEM_128K, 0x00);
         mem.write_byte(base + IOSYS_OFF_FD_DUPLICATE, 0x00);
 
-        // RS-232C default: 9600 baud (1001), 8N1 (11=8bit, 0=no parity, 01=1stop)
-        // Bits: 0000_1001_0100_1100 = 0x094C
-        mem.write_word(base + IOSYS_OFF_AUX_PROTOCOL, 0x094C);
+        let aux_protocol = u16::from_le_bytes([
+            mem.read_byte(MEMORY_SWITCH_1_ADDRESS),
+            mem.read_byte(MEMORY_SWITCH_2_ADDRESS),
+        ]);
+        mem.write_word(base + IOSYS_OFF_AUX_PROTOCOL, aux_protocol);
 
         // DA/UA mapping table: populated by write_drive_structures().
 
