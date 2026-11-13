@@ -1,6 +1,7 @@
 use dos::tables::{
-    IOSYS_BASE, IOSYS_OFF_AUX_PROTOCOL, IOSYS_OFF_DAUA_PTR, IOSYS_OFF_EXT_DAUA_TABLE,
-    IOSYS_OFF_INTERNAL_REVISION, IOSYS_OFF_PRODUCT_NUMBER, IOSYS_OFF_SPECIAL_INPUT,
+    IOSYS_BASE, IOSYS_OFF_AUX_PROTOCOL, IOSYS_OFF_AUX1_PROTOCOL, IOSYS_OFF_AUX2_PROTOCOL,
+    IOSYS_OFF_DAUA_PTR, IOSYS_OFF_EXT_DAUA_TABLE, IOSYS_OFF_INTERNAL_REVISION,
+    IOSYS_OFF_PRODUCT_NUMBER, IOSYS_OFF_SPECIAL_INPUT,
 };
 
 use crate::harness::*;
@@ -196,4 +197,73 @@ fn aux_protocol_holds_memory_switches_1_and_2() {
         read_word(&machine.bus, IOSYS_BASE + IOSYS_OFF_AUX_PROTOCOL),
         CAPTURED_AUX_PROTOCOL
     );
+}
+
+#[test]
+fn extension_aux_protocols_stay_zero() {
+    for (machine, aux_protocol) in [
+        (boot(), CAPTURED_AUX_PROTOCOL),
+        (boot_with_memory_switches(0x4D, 0xF7), 0xF74D),
+    ] {
+        assert_eq!(
+            read_word(&machine.bus, IOSYS_BASE + IOSYS_OFF_AUX_PROTOCOL),
+            aux_protocol
+        );
+        for offset in [IOSYS_OFF_AUX1_PROTOCOL, IOSYS_OFF_AUX2_PROTOCOL] {
+            assert_eq!(read_word(&machine.bus, IOSYS_BASE + offset), 0x0000);
+        }
+    }
+}
+
+/// `AX` in front of an INT DCh CL=0Ah or CL=0Eh call.
+const RS232C_AX_PRESET: u16 = 0x1234;
+
+/// Calls INT DCh with `cl`, `bx`, `dx` and the `AX` preset. Returns
+/// `[AX, BX, CX, DX]` after the call.
+fn call_rs232c(machine: &mut Machine, cl: u8, bx: u16, dx: u16) -> [u16; 4] {
+    let [ax_low, ax_high] = RS232C_AX_PRESET.to_le_bytes();
+    let [bx_low, bx_high] = bx.to_le_bytes();
+    let [dx_low, dx_high] = dx.to_le_bytes();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB8, ax_low, ax_high,  // MOV AX, RS232C_AX_PRESET
+        0xBB, bx_low, bx_high,  // MOV BX, bx
+        0xB9, cl, 0x00,         // MOV CX, cl
+        0xBA, dx_low, dx_high,  // MOV DX, dx
+        0xCD, 0xDC,             // INT DCh
+        0xA3, 0x00, 0x01,       // MOV [0100h], AX
+        0x89, 0x1E, 0x02, 0x01, // MOV [0102h], BX
+        0x89, 0x0E, 0x04, 0x01, // MOV [0104h], CX
+        0x89, 0x16, 0x06, 0x01, // MOV [0106h], DX
+        0xFA,                   // CLI
+        0xF4,                   // HLT
+    ];
+    inject_and_run(machine, code);
+    [0, 2, 4, 6].map(|offset| result_word(&machine.bus, offset))
+}
+
+#[test]
+fn rs232c_functions_change_no_register_and_keep_the_aux_protocol() {
+    let mut machine = boot();
+    for (cl, bx, dx) in [
+        (0x0E, 0x5678, 0x0006),
+        (0x0E, 0x5678, 0x0000),
+        (0x0E, 0xF807, 0x0001),
+        (0x0E, 0x5678, 0x0007),
+        (0x0E, 0x5678, 0x0016),
+        (0x0E, 0xF807, 0x0021),
+        (0x0A, 0x5678, 0x0000),
+        (0x0A, 0x5678, 0x4E26),
+    ] {
+        assert_eq!(
+            call_rs232c(&mut machine, cl, bx, dx),
+            [RS232C_AX_PRESET, bx, u16::from(cl), dx],
+            "CL={cl:02X}h DX={dx:04X}h"
+        );
+        assert_eq!(
+            read_word(&machine.bus, IOSYS_BASE + IOSYS_OFF_AUX_PROTOCOL),
+            CAPTURED_AUX_PROTOCOL,
+            "CL={cl:02X}h DX={dx:04X}h"
+        );
+    }
 }

@@ -224,8 +224,14 @@ const INT2FH_GATES: &[FunctionGate] = &[
     FunctionGate::function(0x4A, DosRelease::DOS_500, PredatedAnswer::Ignored),
 ];
 
-/// `INT DCh` functions of NeetanDos beyond NEC MS-DOS 3.1 (PS98-011).
+/// `INT DCh` functions of NeetanDos beyond NEC MS-DOS 3.1 (PS98-011) without
+/// RSDRV.SYS.
 const INTDCH_GATES: &[FunctionGate] = &[
+    // CL=0Eh: RS-232C functions. NEC MS-DOS 3.1 serves DL=00h and DL=01h
+    // through RSDRV.SYS only. Its capture without the driver changes no
+    // register for any value of DL. NEC MS-DOS 3.3 serves channel 0 without
+    // the driver.
+    FunctionGate::intdch_function(0x0E, DosRelease::DOS_330),
     // CL=0Fh AX=8000h/8002h: read the CTRL+function key state.
     FunctionGate::intdch_subfunction(0x0F, 0x8000, DosRelease::DOS_330),
     FunctionGate::intdch_subfunction(0x0F, 0x8002, DosRelease::DOS_330),
@@ -472,7 +478,11 @@ mod tests {
             intdch_answer(&pc98_dos310(), 0x81, 0x0000),
             Some(PredatedAnswer::Ignored)
         );
-        for cl in [0x0C, 0x0D, 0x10, 0x12, 0x13, 0x80] {
+        assert_eq!(
+            intdch_answer(&pc98_dos310(), 0x0E, 0x1234),
+            Some(PredatedAnswer::Ignored)
+        );
+        for cl in [0x0A, 0x0C, 0x0D, 0x10, 0x12, 0x13, 0x80] {
             assert_eq!(
                 intdch_answer(&pc98_dos310(), cl, 0x0000),
                 None,

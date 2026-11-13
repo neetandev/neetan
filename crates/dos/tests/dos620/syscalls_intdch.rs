@@ -1,4 +1,9 @@
-use crate::harness::{self, *};
+use dos::tables::{IOSYS_BASE, IOSYS_OFF_AUX_PROTOCOL};
+
+use crate::{
+    harness::{self, *},
+    iosys_workarea::CAPTURED_AUX_PROTOCOL,
+};
 
 const IOSYS_CURSOR_Y: u32 = 0x0600 + 0x0110;
 const IOSYS_CURSOR_X: u32 = 0x0600 + 0x011C;
@@ -552,4 +557,126 @@ fn intdch_0dh_write_extended_read_basic_extracts_correctly() {
         let actual = machine.bus.read_byte_direct(dst_base + 320 + i);
         assert_eq!(actual, expected, "Editing key byte {i}");
     }
+}
+
+/// `AX` in front of an INT DCh CL=0Ah or CL=0Eh call.
+const RS232C_AX_PRESET: u16 = 0x1234;
+/// `BX` in front of an INT DCh CL=0Ah or CL=0Eh call that takes no `BX`.
+const RS232C_BX_PRESET: u16 = 0x5678;
+/// AUX protocol of RS-232C channel 0 at 0060:0068h.
+const AUX_PROTOCOL: u32 = IOSYS_BASE + IOSYS_OFF_AUX_PROTOCOL;
+
+/// Calls INT DCh with `cl`, `bx`, `dx` and the `AX` preset. Returns
+/// `[AX, BX, CX, DX]` after the call.
+fn call_rs232c(machine: &mut machine_98::Pc9801Ra, cl: u8, bx: u16, dx: u16) -> [u16; 4] {
+    let [ax_low, ax_high] = RS232C_AX_PRESET.to_le_bytes();
+    let [bx_low, bx_high] = bx.to_le_bytes();
+    let [dx_low, dx_high] = dx.to_le_bytes();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB8, ax_low, ax_high,  // MOV AX, RS232C_AX_PRESET
+        0xBB, bx_low, bx_high,  // MOV BX, bx
+        0xB9, cl, 0x00,         // MOV CX, cl
+        0xBA, dx_low, dx_high,  // MOV DX, dx
+        0xCD, 0xDC,             // INT DCh
+        0xA3, 0x00, 0x01,       // MOV [0100h], AX
+        0x89, 0x1E, 0x02, 0x01, // MOV [0102h], BX
+        0x89, 0x0E, 0x04, 0x01, // MOV [0104h], CX
+        0x89, 0x16, 0x06, 0x01, // MOV [0106h], DX
+        0xFA,                   // CLI
+        0xF4,                   // HLT
+    ];
+    harness::inject_and_run(machine, code);
+    [0, 2, 4, 6].map(|offset| harness::result_word(&machine.bus, offset))
+}
+
+#[test]
+fn rs232c_read_protocol_returns_the_aux_protocol() {
+    let mut machine = harness::boot_hle();
+    assert_eq!(
+        call_rs232c(&mut machine, 0x0E, RS232C_BX_PRESET, 0x0006),
+        [RS232C_AX_PRESET, 0x4805, 0x000E, 0x0006]
+    );
+    let mut machine = harness::boot_hle_with_memory_switches(0x4D, 0xF7);
+    assert_eq!(
+        call_rs232c(&mut machine, 0x0E, RS232C_BX_PRESET, 0x1206),
+        [RS232C_AX_PRESET, 0x4D07, 0x000E, 0x1206]
+    );
+}
+
+#[test]
+fn rs232c_initialize_stores_the_protocol_and_keeps_the_memory_switches() {
+    let mut machine = harness::boot_hle_with_memory_switches(0x4D, 0xF7);
+    assert_eq!(
+        call_rs232c(&mut machine, 0x0E, 0x4E35, 0x0001),
+        [0x0000, 0x4E35, 0x000E, 0x0001]
+    );
+    assert_eq!(harness::read_word(&machine.bus, AUX_PROTOCOL), 0xF54E);
+    assert_eq!(
+        call_rs232c(&mut machine, 0x0E, RS232C_BX_PRESET, 0x0006),
+        [RS232C_AX_PRESET, 0x4E05, 0x000E, 0x0006]
+    );
+    assert_eq!(
+        harness::read_byte(&machine.bus, dos::tables::MEMORY_SWITCH_1_ADDRESS),
+        0x4D
+    );
+    assert_eq!(
+        harness::read_byte(&machine.bus, dos::tables::MEMORY_SWITCH_2_ADDRESS),
+        0xF7
+    );
+}
+
+#[test]
+fn rs232c_receive_length_is_zero_and_the_extension_board_is_absent() {
+    let mut machine = harness::boot_hle();
+    for (dx, ax) in [
+        (0x0000, 0x0000),
+        (0x0007, 0xFFFF),
+        (0x0010, 0xFFFF),
+        (0x0011, 0xFFFF),
+        (0x0016, 0xFFFF),
+        (0x0017, 0xFFFF),
+        (0x001F, 0xFFFF),
+        (0x0020, 0xFFFF),
+        (0x0021, 0xFFFF),
+        (0x0026, 0xFFFF),
+    ] {
+        assert_eq!(
+            call_rs232c(&mut machine, 0x0E, RS232C_BX_PRESET, dx),
+            [ax, RS232C_BX_PRESET, 0x000E, dx],
+            "DX={dx:04X}h"
+        );
+    }
+    assert_eq!(
+        harness::read_word(&machine.bus, AUX_PROTOCOL),
+        CAPTURED_AUX_PROTOCOL
+    );
+}
+
+#[test]
+fn rs232c_other_subfunctions_and_cl_0ah_change_no_register() {
+    let mut machine = harness::boot_hle();
+    for (cl, bx, dx) in [
+        (0x0E, 0xF807, 0x0002),
+        (0x0E, 0xF807, 0x0005),
+        (0x0E, 0xF807, 0x0008),
+        (0x0E, 0xF807, 0x000F),
+        (0x0E, 0xF807, 0x0031),
+        (0x0E, 0xF807, 0x0036),
+        (0x0E, 0xF807, 0x0037),
+        (0x0E, 0xF807, 0x00F1),
+        (0x0E, 0xF807, 0x00FF),
+        (0x0A, RS232C_BX_PRESET, 0x0000),
+        (0x0A, RS232C_BX_PRESET, 0x4E26),
+    ] {
+        assert_eq!(
+            call_rs232c(&mut machine, cl, bx, dx),
+            [RS232C_AX_PRESET, bx, u16::from(cl), dx],
+            "CL={cl:02X}h DX={dx:04X}h"
+        );
+    }
+    assert_eq!(
+        harness::read_word(&machine.bus, AUX_PROTOCOL),
+        CAPTURED_AUX_PROTOCOL
+    );
 }

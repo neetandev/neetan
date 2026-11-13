@@ -217,6 +217,10 @@ pub struct NecIosysIdentity {
     pub work_area_product_number: u16,
     /// Internal revision at 0060:0022h.
     pub internal_revision: u8,
+    /// True when the boot writes the AUX protocol of channel 0 masked with
+    /// `AUX_PROTOCOL_EXTENSION_MASK` into the AUX protocol words of the
+    /// channels 1 and 2.
+    pub extension_aux_protocols: bool,
 }
 
 /// Identification of NEC MS-DOS 3.1 (PS98-011). Its work area has no
@@ -225,6 +229,7 @@ pub const NEC_DOS310_IOSYS_IDENTITY: NecIosysIdentity = NecIosysIdentity {
     intdch_product_number: 0x0001,
     work_area_product_number: 0x0000,
     internal_revision: 0x00,
+    extension_aux_protocols: false,
 };
 
 /// Identification of NEC MS-DOS 6.20.
@@ -232,6 +237,7 @@ pub const NEC_DOS620_IOSYS_IDENTITY: NecIosysIdentity = NecIosysIdentity {
     intdch_product_number: 0x0200,
     work_area_product_number: 0x0200,
     internal_revision: 0x01,
+    extension_aux_protocols: true,
 };
 
 pub const IOSYS_OFF_EMM_BANK_FLAG: u32 = 0x0030;
@@ -240,6 +246,15 @@ pub const IOSYS_OFF_FD_DUPLICATE: u32 = 0x0038;
 /// AUX protocol of RS-232C channel 0 (WORD). The boot copies memory switch 1
 /// into the low byte and memory switch 2 into the high byte.
 pub const IOSYS_OFF_AUX_PROTOCOL: u32 = 0x0068;
+/// AUX protocol of RS-232C channel 1 (WORD). It has the layout of the channel
+/// 0 word.
+pub const IOSYS_OFF_AUX1_PROTOCOL: u32 = 0x17EE;
+/// AUX protocol of RS-232C channel 2 (WORD). It has the layout of the channel
+/// 0 word.
+pub const IOSYS_OFF_AUX2_PROTOCOL: u32 = 0x17F0;
+/// Bits of the channel 0 AUX protocol that the boot copies into the AUX
+/// protocol words of the channels 1 and 2.
+pub const AUX_PROTOCOL_EXTENSION_MASK: u16 = 0x0FFF;
 pub const IOSYS_OFF_DAUA_TABLE: u32 = 0x006C;
 pub const IOSYS_OFF_KANJI_MODE: u32 = 0x008A;
 pub const IOSYS_OFF_GRAPH_CHAR: u32 = 0x008B;
