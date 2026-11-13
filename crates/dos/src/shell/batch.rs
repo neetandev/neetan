@@ -98,6 +98,11 @@ impl BatchState {
             .map(crate::commands::running_command_name)
     }
 
+    /// Returns the echo state of the batch file.
+    pub(crate) fn echo_on(&self) -> bool {
+        self.echo_on
+    }
+
     pub(crate) fn new(
         lines: Vec<Vec<u8>>,
         params: [Vec<u8>; 10],
@@ -230,6 +235,7 @@ impl BatchState {
 
         shell.echo_on = self.echo_on;
         let phase = shell.dispatch_single(state, io, disk, command, super::LineSource::Batch);
+        self.echo_on = shell.echo_on;
         match phase {
             super::ShellPhase::ExecutingCommand(cmd) => {
                 self.running_command = Some(cmd);
@@ -303,6 +309,9 @@ impl BatchState {
 
         // No running command: dispatch next batch line
         if self.current_line >= self.lines.len() {
+            if self.echo_on && super::writes_batch_echo_prompts(&state.platform) {
+                write_echo_prompt(state, io);
+            }
             // Batch finished - check call stack
             if let Some(frame) = self.call_stack.pop() {
                 self.lines = frame.lines;
@@ -329,7 +338,8 @@ impl BatchState {
         }
 
         // Check for @ prefix (suppress echo for this line)
-        let (suppress_echo, effective_line) = if trimmed.starts_with(b"@") {
+        let reads_at_prefix = super::reads_batch_at_prefix(&state.platform);
+        let (suppress_echo, effective_line) = if reads_at_prefix && trimmed.starts_with(b"@") {
             (true, trimmed[1..].trim_ascii().to_vec())
         } else {
             (false, trimmed)
@@ -342,7 +352,11 @@ impl BatchState {
 
         // Echo the line if echo is on and not suppressed
         if self.echo_on && !suppress_echo {
-            super::render_prompt(state, io);
+            if super::writes_batch_echo_prompts(&state.platform) {
+                write_echo_prompt(state, io);
+            } else {
+                super::render_prompt(state, io);
+            }
             io.print(&effective_line);
             io.write_console(b'\r');
             io.write_console(b'\n');
@@ -413,6 +427,7 @@ impl BatchState {
         shell.echo_on = self.echo_on;
         let phase =
             shell.dispatch_single(state, io, disk, &effective_line, super::LineSource::Batch);
+        self.echo_on = shell.echo_on;
         match phase {
             super::ShellPhase::ExecutingCommand(cmd) => {
                 self.running_command = Some(cmd);
@@ -430,7 +445,10 @@ impl BatchState {
                 BatchStepResult::Continue
             }
             super::ShellPhase::ExecutingBatch(new_batch) => {
-                if self.echo_on && !suppress_echo {
+                if self.echo_on
+                    && !suppress_echo
+                    && !super::writes_batch_echo_prompts(&state.platform)
+                {
                     io.write_console(b'\r');
                     io.write_console(b'\n');
                 }
@@ -586,6 +604,13 @@ impl BatchState {
         self.params = super::parse_bat_params(bat_args);
         self.bat_path = full_name;
     }
+}
+
+/// Writes CR LF and the prompt.
+fn write_echo_prompt(state: &DosState, io: &mut IoAccess) {
+    io.write_console(b'\r');
+    io.write_console(b'\n');
+    super::render_prompt(state, io);
 }
 
 pub(crate) enum BatchStepResult {

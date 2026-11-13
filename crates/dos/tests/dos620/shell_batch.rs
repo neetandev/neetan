@@ -873,7 +873,7 @@ fn batch_command_c_preserves_external_program_errorlevel() {
 
 #[test]
 fn batch_command_c_bomb_reports_oom_and_returns_to_root_shell() {
-    let mut machine = boot_with_batch_file(b"COMMAND /C TEST\r\n");
+    let mut machine = boot_with_batch_file(b"@ECHO OFF\r\nCOMMAND /C TEST\r\n");
     let root_program_segment_prefix = current_shell_program_segment_prefix(&mut machine);
 
     prepare_test_batch(&mut machine);

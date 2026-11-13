@@ -30,3 +30,6 @@ mod iosys;
 
 #[path = "dos310/functions.rs"]
 mod functions;
+
+#[path = "dos310/batch.rs"]
+mod batch;

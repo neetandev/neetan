@@ -12,8 +12,44 @@ use crate::{
     commands::{self, Command, RunningCommand, StepResult},
     drive_map, environment, filesystem,
     filesystem::{fat, fat_dir, fat_file},
+    platform::{DosMachine, DosPlatform},
     process, tables,
+    version_gate::DosRelease,
 };
+
+/// First NEC MS-DOS release whose COMMAND.COM reads the `@` prefix of a batch
+/// line and shows the prompt right below the output of a batch file that ends
+/// with echo off. The COMMAND.COM of NEC MS-DOS 3.10 and 3.30D runs `@ECHO`
+/// as a command name and writes an empty line after every batch file.
+const PC98_COMMAND_COM_500_RELEASE: DosRelease = DosRelease::DOS_500;
+
+/// Returns true when the shell of `platform` writes CR LF and the prompt
+/// before each echoed batch line and at the end of a batch file with echo on,
+/// and turns echo on after a batch file.
+fn writes_batch_echo_prompts(platform: &DosPlatform) -> bool {
+    match platform.machine {
+        DosMachine::Pc98 => true,
+        DosMachine::FmTowns => false,
+    }
+}
+
+/// Returns true when the shell of `platform` reads the `@` prefix of a batch
+/// line.
+fn reads_batch_at_prefix(platform: &DosPlatform) -> bool {
+    match platform.machine {
+        DosMachine::Pc98 => DosRelease::of(platform.version) >= PC98_COMMAND_COM_500_RELEASE,
+        DosMachine::FmTowns => true,
+    }
+}
+
+/// Returns true when the shell of `platform` writes an empty line before the
+/// prompt after a batch file that ends with echo off.
+fn blank_line_after_quiet_batch(platform: &DosPlatform) -> bool {
+    match platform.machine {
+        DosMachine::Pc98 => DosRelease::of(platform.version) < PC98_COMMAND_COM_500_RELEASE,
+        DosMachine::FmTowns => true,
+    }
+}
 
 #[derive(Clone)]
 pub(crate) enum RedirectSpec {
@@ -714,7 +750,11 @@ impl Shell {
                 match batch.step_batch(self, state, io, disk) {
                     batch::BatchStepResult::Continue => ShellPhase::ExecutingBatch(batch),
                     batch::BatchStepResult::Finished => {
-                        self.blank_line_pending = true;
+                        self.blank_line_pending =
+                            batch.echo_on() || blank_line_after_quiet_batch(&state.platform);
+                        if writes_batch_echo_prompts(&state.platform) {
+                            self.echo_on = true;
+                        }
                         if self.terminate_after_command {
                             self.pending_terminate = Some(self.last_exit_code);
                         }
