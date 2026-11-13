@@ -750,14 +750,12 @@ impl<T: TraceSink> Pc9801Bus<T> {
             im: false,
             wd: false,
         };
-        for i in 1..4 {
-            self.gdc_master.state.scroll[i] = GdcScrollPartition {
-                start_address: 0x0000,
-                line_count: 0x010,
-                im: false,
-                wd: false,
-            };
-        }
+        self.gdc_master.state.scroll[1..4].fill(GdcScrollPartition {
+            start_address: 0x0000,
+            line_count: 0x010,
+            im: false,
+            wd: false,
+        });
         self.gdc_master.state.pitch = 80;
         self.gdc_master.state.mask = 0;
         self.gdc_master.state.cursor_bottom = 15;
@@ -794,14 +792,12 @@ impl<T: TraceSink> Pc9801Bus<T> {
             im: false,
             wd: false,
         };
-        for i in 1..4 {
-            self.gdc_slave.state.scroll[i] = GdcScrollPartition {
-                start_address: 0x0000,
-                line_count: 0x010,
-                im: false,
-                wd: false,
-            };
-        }
+        self.gdc_slave.state.scroll[1..4].fill(GdcScrollPartition {
+            start_address: 0x0000,
+            line_count: 0x010,
+            im: false,
+            wd: false,
+        });
         self.gdc_slave.state.mask = match self.machine_model {
             MachineModel::PC9801F | MachineModel::PC9801VM => 0,
             MachineModel::PC9801VX

@@ -249,9 +249,7 @@ impl FmRegisters for OpqRegisters {
     fn reset(&mut self) {
         self.regdata.fill(0);
         // enable output on both channels by default
-        for offset in 0x10..=0x17 {
-            self.regdata[offset] = 0xC0;
-        }
+        self.regdata[0x10..=0x17].fill(0xC0);
     }
 
     // The operators keep their register order.

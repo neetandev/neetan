@@ -259,9 +259,8 @@ impl Z80Sio {
     /// the affect code is channel A base 4 plus the condition rank
     /// (special-rx 3, rx-available 2, ext/status 1, tx-empty 0).
     fn pending_condition(&self) -> Option<(usize, u8)> {
-        for channel in 0..CHANNEL_COUNT {
+        for (channel, state) in self.channels.iter().enumerate() {
             let base = if channel == 0 { 4 } else { 0 };
-            let state = &self.channels[channel];
             if state.error_interrupt {
                 return Some((channel, base | 3));
             }

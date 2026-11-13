@@ -169,12 +169,12 @@ impl Vga {
         let compare = self.gc[2];
         let care = self.gc[7];
         let mut result = 0xFF;
-        for plane in 0..4 {
+        for (plane, latch) in self.latches.iter().enumerate() {
             if care & (1 << plane) == 0 {
                 continue;
             }
             let expected = plane_fill(compare, plane);
-            result &= !(self.latches[plane] ^ expected);
+            result &= !(latch ^ expected);
         }
         result
     }

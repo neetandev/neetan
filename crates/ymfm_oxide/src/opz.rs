@@ -414,9 +414,7 @@ impl FmRegisters for OpzRegisters {
         self.regdata.fill(0);
         self.phase_substep.fill(0);
         // enable output on both channels by default
-        for offset in 0x30..=0x37 {
-            self.regdata[offset] = 0x01;
-        }
+        self.regdata[0x30..=0x37].fill(0x01);
     }
 
     // Note that the channel index order is 0,2,1,3, so we bitswap the index.

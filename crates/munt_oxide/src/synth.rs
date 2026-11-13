@@ -139,13 +139,8 @@ fn load_pcm_rom(state: &mut MuntState, pcm_rom_data: &[u8]) -> bool {
     }
 
     let order: [usize; 16] = [0, 9, 1, 2, 3, 4, 5, 6, 7, 10, 11, 12, 13, 14, 15, 8];
-    let mut file_pos = 0;
-    for i in 0..pcm_rom_size {
-        let s = pcm_rom_data[file_pos];
-        file_pos += 1;
-        let c = pcm_rom_data[file_pos];
-        file_pos += 1;
-
+    let (byte_pairs, _) = pcm_rom_data.as_chunks::<2>();
+    for (sample, &[s, c]) in state.rom.pcm_rom_data.iter_mut().zip(byte_pairs) {
         let mut log: i16 = 0;
         for (u, &order_val) in order.iter().enumerate() {
             let bit = if order_val < 8 {
@@ -155,7 +150,7 @@ fn load_pcm_rom(state: &mut MuntState, pcm_rom_data: &[u8]) -> bool {
             };
             log |= bit << (15 - u);
         }
-        state.rom.pcm_rom_data[i] = log;
+        *sample = log;
     }
     true
 }
@@ -282,14 +277,14 @@ fn init_timbres(
 }
 
 fn init_reverb_models(state: &mut MuntState, mt32_compatible_mode: bool) {
-    for mode in 0..4 {
+    for (mode, reverb_model) in state.reverb_models.iter_mut().enumerate() {
         let reverb_mode = match mode {
             0 => ReverbMode::Room,
             1 => ReverbMode::Hall,
             2 => ReverbMode::Plate,
             _ => ReverbMode::TapDelay,
         };
-        state.reverb_models[mode] = BReverbModelState::new(reverb_mode, mt32_compatible_mode);
+        *reverb_model = BReverbModelState::new(reverb_mode, mt32_compatible_mode);
     }
 }
 

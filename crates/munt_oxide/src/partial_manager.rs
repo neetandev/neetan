@@ -35,15 +35,20 @@ pub(crate) fn init(state: &mut MuntState) {
     // C++ stores pointers in freePolys[]; we store indices.
     // The order matches C++: freePolys[0] = &polys[0], freePolys[1] = &polys[1], ...
     state.partial_manager.free_polys = (0..partial_count).collect();
-    for i in 0..partial_count {
-        state.partial_manager.inactive_partials[i] = (partial_count - i - 1) as i32;
+    for (i, inactive_partial) in state
+        .partial_manager
+        .inactive_partials
+        .iter_mut()
+        .enumerate()
+    {
+        *inactive_partial = (partial_count - i - 1) as i32;
     }
 }
 
 pub(crate) fn clear_already_outputed(state: &mut MuntState) {
     let partial_count = state.partial_count as usize;
-    for i in 0..partial_count {
-        state.partials[i].already_outputed = false;
+    for partial in &mut state.partials[..partial_count] {
+        partial.already_outputed = false;
     }
 }
 

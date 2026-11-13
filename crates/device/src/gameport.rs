@@ -95,8 +95,8 @@ impl GamePort {
     pub fn read(&self, now: u64) -> u8 {
         let elapsed = now.saturating_sub(self.fire_cycle);
         let mut state = 0u8;
-        for axis in 0..4 {
-            if let Some(duration) = self.axis_discharge[axis]
+        for (axis, discharge) in self.axis_discharge.iter().enumerate() {
+            if let Some(duration) = *discharge
                 && elapsed < duration
             {
                 state |= 1 << axis;

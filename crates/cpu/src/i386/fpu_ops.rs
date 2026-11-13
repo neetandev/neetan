@@ -1389,12 +1389,12 @@ impl<const CPU_MODEL: u8, const ADDRESS_WIDTH: u8> I386<CPU_MODEL, ADDRESS_WIDTH
     /// contents, as FSTENV and FSAVE store it (80486 PRM 15.1.4).
     fn fpu_tag_word_image(&self) -> u16 {
         let mut tag_word = self.state.fpu.tag_word;
-        for physical in 0..8 {
+        for (physical, register) in self.state.fpu.registers.iter().enumerate() {
             let shift = physical * 2;
             if (tag_word >> shift) & 3 == 0b11 {
                 continue;
             }
-            let tag = match self.state.fpu.registers[physical].classify() {
+            let tag = match register.classify() {
                 FpClass::Zero => 0b01,
                 FpClass::Normal => 0b00,
                 _ => 0b10,

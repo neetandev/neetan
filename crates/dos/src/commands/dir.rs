@@ -814,9 +814,9 @@ fn format_standard(entry: &ReadDirEntry, io: &mut IoAccess) {
         .iter()
         .rposition(|&b| b != b' ')
         .map_or(0, |p| p + 1);
-    for i in 0..8 {
+    for (i, &byte) in entry.name[..8].iter().enumerate() {
         if i < base_end {
-            io.output_byte(entry.name[i]);
+            io.output_byte(byte);
         } else {
             io.output_byte(b' ');
         }

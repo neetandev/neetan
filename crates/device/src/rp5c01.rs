@@ -178,9 +178,7 @@ impl Rp5c01 {
             RESET_REGISTER => {
                 self.reset = value;
                 if value & RESET_ALARM != 0 {
-                    for register in 2..=8 {
-                        self.registers[ALARM_BLOCK][register] = 0;
-                    }
+                    self.registers[ALARM_BLOCK][2..=8].fill(0);
                 }
                 if value & RESET_FRACTION != 0 {
                     self.subsecond_ticks = 0;
