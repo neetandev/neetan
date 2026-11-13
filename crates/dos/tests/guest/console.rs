@@ -1,6 +1,6 @@
 //! Guest console backend: CON output, input and status through the synthetic CON driver.
 
-use common::Cpu as _;
+use common::{Cpu as _, HleDosVersion};
 
 use crate::harness::{
     BUSY_POLLS, CON_HEADER, DRIVER_SEGMENT, FLUSH_COUNT, GuestMachine, IDLE_COUNT, INT28_ENTRY,
@@ -12,7 +12,7 @@ const DATA_OFFSET: u32 = 0x0200;
 
 /// Returns a booted machine with the guest console attached.
 fn machine() -> GuestMachine {
-    let mut machine = GuestMachine::new(platform_with_guest_console());
+    let mut machine = GuestMachine::new(platform_with_guest_console(HleDosVersion::Dos620));
     machine.attach_console();
     machine
 }
@@ -35,7 +35,7 @@ fn display_string_goes_through_int29() {
 
 #[test]
 fn handle_write_without_fast_console_uses_write_requests() {
-    let mut machine = GuestMachine::new(platform_with_guest_console());
+    let mut machine = GuestMachine::new(platform_with_guest_console(HleDosVersion::Dos620));
     machine.write_word(GuestMachine::driver_address(CON_HEADER + 4), 0x8003);
     machine.attach_console();
     write_data(&mut machine, b"abc");

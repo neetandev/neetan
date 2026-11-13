@@ -197,6 +197,8 @@ pub const PSP_OFF_CMD_TAIL: u32 = 0x81;
 
 pub const IOSYS_SEGMENT: u16 = 0x0060;
 pub const IOSYS_BASE: u32 = (IOSYS_SEGMENT as u32) << 4;
+/// Size of the NEC `IO.SYS` work area at `0060:0000` in bytes.
+pub const IOSYS_WORK_AREA_SIZE: u32 = 0x2D00;
 
 pub const IOSYS_OFF_PRODUCT_NUMBER: u32 = 0x0020;
 pub const IOSYS_OFF_INTERNAL_REVISION: u32 = 0x0022;

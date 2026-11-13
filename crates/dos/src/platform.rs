@@ -231,22 +231,26 @@ pub(crate) const PC98_DOS310_VERSION: DosVersion = DosVersion {
     oem_number: 0xFF,
 };
 
-/// Kernel placement of the MS-DOS 6.20 self boot on the PC-98. The boot
-/// places the first MCB behind the disk buffer and the DPBs, at this segment
-/// or above.
+/// Kernel placement of the MS-DOS 6.20 self boot on the PC-98. The DOS data
+/// segment lies behind the `IO.SYS` work area `0060:0000`-`0060:2CFF`. The
+/// list of lists starts the segment. The word of the first MCB segment
+/// occupies the two bytes in front of it, at `0330:000E`. The boot places
+/// the first MCB behind the disk buffer and the DPBs, at this segment or
+/// above.
 const PC98_DOS620_PLACEMENT: DosPlacement = DosPlacement {
-    dos_data_segment: 0x0200,
-    first_mcb_segment: 0x0370,
+    dos_data_segment: 0x0331,
+    first_mcb_segment: 0x04A1,
     memory_top_segment: 0xA000,
 };
 
-/// Kernel placement of the MS-DOS 3.10 self boot on the PC-98. The first MCB
-/// segment starts at the system data of the PC-98 3.10 data area. The boot
-/// places the first MCB behind the disk buffer and the DPBs, at this segment
-/// or above.
+/// Kernel placement of the MS-DOS 3.10 self boot on the PC-98. The DOS data
+/// segment starts right behind the `IO.SYS` work area `0060:0000`-`0060:2CFF`.
+/// The first MCB segment starts at the system data of the PC-98 3.10 data
+/// area. The boot places the first MCB behind the disk buffer and the DPBs,
+/// at this segment or above.
 const PC98_DOS310_PLACEMENT: DosPlacement = DosPlacement {
-    dos_data_segment: 0x0200,
-    first_mcb_segment: 0x03B0,
+    dos_data_segment: 0x0330,
+    first_mcb_segment: 0x0496,
     memory_top_segment: 0xA000,
 };
 
@@ -355,8 +359,8 @@ state_struct_codec!(DosPlatform {
 
 impl DosPlatform {
     /// Returns the platform of the PC-98 for the DOS `version`. Both
-    /// versions keep the DOS data segment at `0200h`, conventional memory up
-    /// to `A000h` and the EMS page frame at `C000h`.
+    /// versions keep the DOS data segment behind the `IO.SYS` work area,
+    /// conventional memory up to `A000h` and the EMS page frame at `C000h`.
     ///
     /// MS-DOS 6.20 uses the DOS 6.20 format, the PC-98 6.20 data area and the
     /// UMB chain in `C000h`-`DFFFh`. MS-DOS 3.10 uses the DOS 3.10 format and
@@ -494,9 +498,9 @@ mod tests {
             }
         );
         assert_eq!(platform.data_area, DataArea::Pc98Dos620);
-        assert_eq!(platform.placement.dos_data_segment, 0x0200);
-        assert_eq!(platform.placement.dos_data_base(), 0x2000);
-        assert_eq!(platform.placement.first_mcb_segment, 0x0370);
+        assert_eq!(platform.placement.dos_data_segment, 0x0331);
+        assert_eq!(platform.placement.dos_data_base(), 0x3310);
+        assert_eq!(platform.placement.first_mcb_segment, 0x04A1);
         assert_eq!(platform.placement.dos_data_size(), 0x1700);
         assert_eq!(platform.placement.memory_top_segment, 0xA000);
         assert_eq!(
@@ -523,7 +527,9 @@ mod tests {
         );
         assert_eq!(platform.data_area, DataArea::Pc98Dos310);
         assert_eq!(platform.data_area.format(), DosFormat::Dos310);
-        assert_eq!(platform.placement.dos_data_segment, 0x0200);
+        assert_eq!(platform.placement.dos_data_segment, 0x0330);
+        assert_eq!(platform.placement.dos_data_base(), 0x3300);
+        assert_eq!(platform.placement.first_mcb_segment, 0x0496);
         assert_eq!(platform.placement.memory_top_segment, 0xA000);
         assert_eq!(
             platform.placement.dos_data_size(),
@@ -636,13 +642,13 @@ mod tests {
         let placement = platform.placement;
         assert!(platform.accepts_placement(&placement));
         let booted = DosPlacement {
-            first_mcb_segment: 0x0400,
+            first_mcb_segment: 0x0500,
             ..placement
         };
         assert!(platform.accepts_placement(&booted));
         for restored in [
             DosPlacement {
-                dos_data_segment: 0x0100,
+                dos_data_segment: 0x0200,
                 ..booted
             },
             DosPlacement {
@@ -650,7 +656,7 @@ mod tests {
                 ..booted
             },
             DosPlacement {
-                first_mcb_segment: 0x0300,
+                first_mcb_segment: 0x0400,
                 ..placement
             },
             DosPlacement {

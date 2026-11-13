@@ -166,7 +166,7 @@ mod tests {
         assert_eq!(area.parameter_block_offset(0), 0x0AB0);
         assert!(u32::from(area.parameter_block_offset(19)) <= 0x0D38);
         assert_eq!(area.end_offset(), buffer_end);
-        assert_eq!(area.first_mcb_segment(0x0200), 0x0200 + 0x01B2);
+        assert_eq!(area.first_mcb_segment(0x0331), 0x0331 + 0x01B2);
     }
 
     #[test]
@@ -175,7 +175,7 @@ mod tests {
         let buffer_end = u32::from(area.buffer_offset) + 0x14 + 0x0400;
         assert_eq!(u32::from(area.parameter_block_offset(0)), buffer_end);
         assert_eq!(area.end_offset(), buffer_end + 20 * 0x21);
-        assert!(u32::from(area.first_mcb_segment(0x0200) - 0x0200) * 16 >= area.end_offset());
+        assert!(u32::from(area.first_mcb_segment(0x0331) - 0x0331) * 16 >= area.end_offset());
     }
 
     #[test]

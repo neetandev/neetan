@@ -530,11 +530,12 @@ fn test_ems_allocate_raw_pages() {
 
 #[test]
 fn test_xms_version() {
+    let [entry_low, entry_high, segment_low, segment_high] = harness::xms_entry_operand();
     let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
         0xB4, 0x00,                         // MOV AH, 00h (get version)
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (version)
         0x89, 0x1E, 0x02, 0x01,             // MOV [0x0102], BX (revision)
         0x89, 0x16, 0x04, 0x01,             // MOV [0x0104], DX (hma_exists)
@@ -574,24 +575,27 @@ fn test_xms_entry_point_via_int2f() {
     let seg = harness::result_word(&machine.bus, 0);
     let off = harness::result_word(&machine.bus, 2);
     assert_eq!(
-        seg, 0x0200,
-        "Entry segment should be 0x0200, got {:#06X}",
+        seg,
+        harness::dos_data_segment(),
+        "Entry segment should be the DOS data segment, got {:#06X}",
         seg
     );
     assert_eq!(
-        off, 0x0D44,
-        "Entry offset should be 0x0D44, got {:#06X}",
+        off,
+        harness::pc98_self_boot().xms_entry_stub,
+        "Entry offset should be the XMS entry stub, got {:#06X}",
         off
     );
 }
 
 #[test]
 fn test_xms_query_free() {
+    let [entry_low, entry_high, segment_low, segment_high] = harness::xms_entry_operand();
     let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
         0xB4, 0x08,                         // MOV AH, 08h (query free)
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (largest)
         0x89, 0x16, 0x02, 0x01,             // MOV [0x0102], DX (total)
         0xFA,                               // CLI
@@ -616,19 +620,20 @@ fn test_xms_query_free() {
 
 #[test]
 fn test_xms_allocate_and_free() {
+    let [entry_low, entry_high, segment_low, segment_high] = harness::xms_entry_operand();
     let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
         // Allocate 64 KB
         0xBA, 0x40, 0x00,                   // MOV DX, 64
         0xB4, 0x09,                         // MOV AH, 09h
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (1=success)
         0x89, 0x16, 0x02, 0x01,             // MOV [0x0102], DX (handle)
         // Free
         0x8B, 0x16, 0x02, 0x01,             // MOV DX, [handle]
         0xB4, 0x0A,                         // MOV AH, 0Ah
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         0xA3, 0x04, 0x01,                   // MOV [0x0104], AX (1=success)
         0xFA,                               // CLI
         0xF4,                               // HLT
@@ -642,26 +647,27 @@ fn test_xms_allocate_and_free() {
 
 #[test]
 fn test_xms_allocate_decreases_free() {
+    let [entry_low, entry_high, segment_low, segment_high] = harness::xms_entry_operand();
     let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
         // Query free before
         0xB4, 0x08,                         // MOV AH, 08h
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         0x89, 0x16, 0x00, 0x01,             // MOV [0x0100], DX (total before)
         // Allocate 100 KB
         0xBA, 0x64, 0x00,                   // MOV DX, 100
         0xB4, 0x09,                         // MOV AH, 09h
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         0x89, 0x16, 0x04, 0x01,             // MOV [0x0104], DX (handle)
         // Query free after
         0xB4, 0x08,                         // MOV AH, 08h
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         0x89, 0x16, 0x02, 0x01,             // MOV [0x0102], DX (total after)
         // Free
         0x8B, 0x16, 0x04, 0x01,             // MOV DX, [handle]
         0xB4, 0x0A,                         // MOV AH, 0Ah
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         0xFA,                               // CLI
         0xF4,                               // HLT
     ];
@@ -684,30 +690,31 @@ fn test_xms_allocate_decreases_free() {
 
 #[test]
 fn test_xms_lock_and_unlock() {
+    let [entry_low, entry_high, segment_low, segment_high] = harness::xms_entry_operand();
     let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
         // Allocate 64 KB
         0xBA, 0x40, 0x00,                   // MOV DX, 64
         0xB4, 0x09,                         // MOV AH, 09h
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         0x89, 0x16, 0x08, 0x01,             // MOV [0x0108], DX (handle)
         // Lock: AH=0Ch, DX=handle
         0x8B, 0x16, 0x08, 0x01,             // MOV DX, [handle]
         0xB4, 0x0C,                         // MOV AH, 0Ch
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (1=success)
         0x89, 0x16, 0x02, 0x01,             // MOV [0x0102], DX (addr high)
         0x89, 0x1E, 0x04, 0x01,             // MOV [0x0104], BX (addr low)
         // Unlock: AH=0Dh, DX=handle
         0x8B, 0x16, 0x08, 0x01,             // MOV DX, [handle]
         0xB4, 0x0D,                         // MOV AH, 0Dh
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         0xA3, 0x06, 0x01,                   // MOV [0x0106], AX (1=success)
         // Free
         0x8B, 0x16, 0x08, 0x01,             // MOV DX, [handle]
         0xB4, 0x0A,                         // MOV AH, 0Ah
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         0xFA,                               // CLI
         0xF4,                               // HLT
     ];
@@ -728,25 +735,26 @@ fn test_xms_lock_and_unlock() {
 
 #[test]
 fn test_xms_handle_info() {
+    let [entry_low, entry_high, segment_low, segment_high] = harness::xms_entry_operand();
     let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
         // Allocate 64 KB
         0xBA, 0x40, 0x00,                   // MOV DX, 64
         0xB4, 0x09,                         // MOV AH, 09h
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         0x89, 0x16, 0x06, 0x01,             // MOV [0x0106], DX (handle)
         // Handle info: AH=0Eh, DX=handle
         0x8B, 0x16, 0x06, 0x01,             // MOV DX, [handle]
         0xB4, 0x0E,                         // MOV AH, 0Eh
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (1=success)
         0x89, 0x1E, 0x02, 0x01,             // MOV [0x0102], BX (BH=lock, BL=free)
         0x89, 0x16, 0x04, 0x01,             // MOV [0x0104], DX (size_kb)
         // Free
         0x8B, 0x16, 0x06, 0x01,             // MOV DX, [handle]
         0xB4, 0x0A,                         // MOV AH, 0Ah
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         0xFA,                               // CLI
         0xF4,                               // HLT
     ];
@@ -762,29 +770,30 @@ fn test_xms_handle_info() {
 
 #[test]
 fn test_xms_reallocate() {
+    let [entry_low, entry_high, segment_low, segment_high] = harness::xms_entry_operand();
     let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
         // Allocate 64 KB
         0xBA, 0x40, 0x00,                   // MOV DX, 64
         0xB4, 0x09,                         // MOV AH, 09h
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         0x89, 0x16, 0x08, 0x01,             // MOV [0x0108], DX (handle)
         // Reallocate to 128 KB: AH=0Fh, BX=new_size, DX=handle
         0xBB, 0x80, 0x00,                   // MOV BX, 128
         0x8B, 0x16, 0x08, 0x01,             // MOV DX, [handle]
         0xB4, 0x0F,                         // MOV AH, 0Fh
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (1=success)
         // Verify with handle info
         0x8B, 0x16, 0x08, 0x01,             // MOV DX, [handle]
         0xB4, 0x0E,                         // MOV AH, 0Eh
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         0x89, 0x16, 0x02, 0x01,             // MOV [0x0102], DX (size_kb)
         // Free
         0x8B, 0x16, 0x08, 0x01,             // MOV DX, [handle]
         0xB4, 0x0A,                         // MOV AH, 0Ah
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         0xFA,                               // CLI
         0xF4,                               // HLT
     ];
@@ -801,16 +810,17 @@ fn test_xms_reallocate() {
 
 #[test]
 fn test_xms_request_hma() {
+    let [entry_low, entry_high, segment_low, segment_high] = harness::xms_entry_operand();
     let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
         0xBA, 0xFF, 0xFF,                   // MOV DX, FFFFh
         0xB4, 0x01,                         // MOV AH, 01h (request HMA)
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
         // Release HMA so other tests are not affected
         0xB4, 0x02,                         // MOV AH, 02h
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         0xFA,                               // CLI
         0xF4,                               // HLT
     ];
@@ -821,16 +831,17 @@ fn test_xms_request_hma() {
 
 #[test]
 fn test_xms_request_hma_zero_size_allowed_when_hmamin_is_zero() {
+    let [entry_low, entry_high, segment_low, segment_high] = harness::xms_entry_operand();
     let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
         0xBA, 0x00, 0x00,                   // MOV DX, 0000h
         0xB4, 0x01,                         // MOV AH, 01h
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
         0x89, 0x1E, 0x02, 0x01,             // MOV [0x0102], BX
         0xB4, 0x02,                         // MOV AH, 02h
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         0xFA,                               // CLI
         0xF4,                               // HLT
     ];
@@ -843,23 +854,24 @@ fn test_xms_request_hma_zero_size_allowed_when_hmamin_is_zero() {
 
 #[test]
 fn test_xms_request_hma_twice_fails() {
+    let [entry_low, entry_high, segment_low, segment_high] = harness::xms_entry_operand();
     let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
         // First request
         0xBA, 0xFF, 0xFF,                   // MOV DX, FFFFh
         0xB4, 0x01,                         // MOV AH, 01h
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
         // Second request (should fail)
         0xBA, 0xFF, 0xFF,                   // MOV DX, FFFFh
         0xB4, 0x01,                         // MOV AH, 01h
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         0xA3, 0x02, 0x01,                   // MOV [0x0102], AX
         0x89, 0x1E, 0x04, 0x01,             // MOV [0x0104], BX (BL=error)
         // Release so we clean up
         0xB4, 0x02,                         // MOV AH, 02h
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         0xFA,                               // CLI
         0xF4,                               // HLT
     ];
@@ -874,16 +886,17 @@ fn test_xms_request_hma_twice_fails() {
 
 #[test]
 fn test_xms_release_hma() {
+    let [entry_low, entry_high, segment_low, segment_high] = harness::xms_entry_operand();
     let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
         // Request HMA
         0xBA, 0xFF, 0xFF,                   // MOV DX, FFFFh
         0xB4, 0x01,                         // MOV AH, 01h
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         // Release HMA
         0xB4, 0x02,                         // MOV AH, 02h
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
         0xFA,                               // CLI
         0xF4,                               // HLT
@@ -895,6 +908,7 @@ fn test_xms_release_hma() {
 
 #[test]
 fn test_hma_query_reflects_allocation() {
+    let [entry_low, entry_high, segment_low, segment_high] = harness::xms_entry_operand();
     let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
@@ -905,14 +919,14 @@ fn test_hma_query_reflects_allocation() {
         // Request HMA
         0xBA, 0xFF, 0xFF,                   // MOV DX, FFFFh
         0xB4, 0x01,                         // MOV AH, 01h
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         // Query HMA after allocation
         0xB8, 0x01, 0x4A,                   // MOV AX, 4A01h
         0xCD, 0x2F,                         // INT 2Fh
         0x89, 0x1E, 0x02, 0x01,             // MOV [0x0102], BX (free after)
         // Release HMA
         0xB4, 0x02,                         // MOV AH, 02h
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         0xFA,                               // CLI
         0xF4,                               // HLT
     ];
@@ -937,12 +951,13 @@ fn test_hma_query_reflects_allocation() {
 // through INT 21h AH=48h instead (see syscalls_int21h.rs).
 #[test]
 fn test_umb_allocate_reports_no_free_umbs() {
+    let [entry_low, entry_high, segment_low, segment_high] = harness::xms_entry_operand();
     let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
         0xBA, 0x10, 0x00,                   // MOV DX, 16
         0xB4, 0x10,                         // MOV AH, 10h
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (0=fail)
         0x89, 0x1E, 0x02, 0x01,             // MOV [0x0102], BX (BL=error)
         0x89, 0x16, 0x04, 0x01,             // MOV [0x0104], DX
@@ -962,12 +977,13 @@ fn test_umb_allocate_reports_no_free_umbs() {
 // (invalid segment) for any segment, matching real MS-DOS 6.20.
 #[test]
 fn test_umb_free_reports_invalid_segment() {
+    let [entry_low, entry_high, segment_low, segment_high] = harness::xms_entry_operand();
     let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
         0xBA, 0x00, 0xD0,                   // MOV DX, D000h
         0xB4, 0x11,                         // MOV AH, 11h
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (0=fail)
         0x89, 0x1E, 0x02, 0x01,             // MOV [0x0102], BX (BL=error)
         0xFA,                               // CLI
@@ -984,13 +1000,14 @@ fn test_umb_free_reports_invalid_segment() {
 // always reports 0x80 (not implemented).
 #[test]
 fn test_umb_reallocate_not_implemented() {
+    let [entry_low, entry_high, segment_low, segment_high] = harness::xms_entry_operand();
     let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
         0xBB, 0x10, 0x00,                   // MOV BX, 16
         0xBA, 0x00, 0xD0,                   // MOV DX, D000h
         0xB4, 0x12,                         // MOV AH, 12h
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (0=fail)
         0x89, 0x1E, 0x02, 0x01,             // MOV [0x0102], BX (BL=error)
         0xFA,                               // CLI
@@ -1005,6 +1022,7 @@ fn test_umb_reallocate_not_implemented() {
 
 #[test]
 fn test_ems_and_xms_coexist() {
+    let [entry_low, entry_high, segment_low, segment_high] = harness::xms_entry_operand();
     let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
@@ -1017,13 +1035,13 @@ fn test_ems_and_xms_coexist() {
         // Allocate XMS: 64 KB
         0xBA, 0x40, 0x00,                   // MOV DX, 64
         0xB4, 0x09,                         // MOV AH, 09h
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         0xA3, 0x02, 0x01,                   // MOV [0x0102], AX (XMS status)
         0x89, 0x16, 0x08, 0x01,             // MOV [0x0108], DX (XMS handle)
         // Free XMS
         0x8B, 0x16, 0x08, 0x01,             // MOV DX, [XMS handle]
         0xB4, 0x0A,                         // MOV AH, 0Ah
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         // Free EMS
         0x8B, 0x16, 0x06, 0x01,             // MOV DX, [EMS handle]
         0xB4, 0x45,                         // MOV AH, 45h
@@ -1051,6 +1069,7 @@ fn test_ems_and_xms_coexist() {
 
 #[test]
 fn test_ems_and_xms_share_pool() {
+    let [entry_low, entry_high, segment_low, segment_high] = harness::xms_entry_operand();
     let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
@@ -1063,7 +1082,7 @@ fn test_ems_and_xms_share_pool() {
         // Try to allocate 4000 KB via XMS (more than the remaining ~1088 KB)
         0xBA, 0xA0, 0x0F,                   // MOV DX, 4000
         0xB4, 0x09,                         // MOV AH, 09h
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         0xA3, 0x02, 0x01,                   // MOV [0x0102], AX (XMS result: 0=fail)
         // Free EMS
         0x8B, 0x16, 0x06, 0x01,             // MOV DX, [EMS handle]
@@ -1438,11 +1457,12 @@ fn test_ems_4e01_invalid_page_map_returns_a3() {
 
 #[test]
 fn test_xms_88_query_any_free_extended_memory() {
+    let [entry_low, entry_high, segment_low, segment_high] = harness::xms_entry_operand();
     let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
         0xB4, 0x88,                         // MOV AH, 88h
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         // Store EAX (largest free KB) as dword at [0x0100]
         0x66, 0xA3, 0x00, 0x01,             // MOV [0x0100], EAX
         // Store EDX (total free KB) as dword at [0x0104]
@@ -1475,19 +1495,20 @@ fn test_xms_88_query_any_free_extended_memory() {
 
 #[test]
 fn test_xms_89_allocate_any_extended_memory() {
+    let [entry_low, entry_high, segment_low, segment_high] = harness::xms_entry_operand();
     let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
         // Set EDX = 64 (allocate 64 KB)
         0x66, 0xBA, 0x40, 0x00, 0x00, 0x00, // MOV EDX, 64
         0xB4, 0x89,                         // MOV AH, 89h
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (1=success)
         0x89, 0x16, 0x02, 0x01,             // MOV [0x0102], DX (handle)
         // Free the handle
         0x8B, 0x16, 0x02, 0x01,             // MOV DX, [handle]
         0xB4, 0x0A,                         // MOV AH, 0Ah
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         0xA3, 0x04, 0x01,                   // MOV [0x0104], AX (1=success)
         0xFA,                               // CLI
         0xF4,                               // HLT
@@ -1503,18 +1524,19 @@ fn test_xms_89_allocate_any_extended_memory() {
 
 #[test]
 fn test_xms_8e_get_extended_handle_info() {
+    let [entry_low, entry_high, segment_low, segment_high] = harness::xms_entry_operand();
     let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
         // Allocate 64 KB via 32-bit function
         0x66, 0xBA, 0x40, 0x00, 0x00, 0x00, // MOV EDX, 64
         0xB4, 0x89,                         // MOV AH, 89h
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         0x89, 0x16, 0x06, 0x01,             // MOV [0x0106], DX (handle)
         // Query handle info via 0x8E
         0x8B, 0x16, 0x06, 0x01,             // MOV DX, [handle]
         0xB4, 0x8E,                         // MOV AH, 8Eh
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (1=success)
         0x89, 0x1E, 0x02, 0x01,             // MOV [0x0102], BX (BH=lock count)
         0x89, 0x0E, 0x04, 0x01,             // MOV [0x0104], CX (free handles)
@@ -1522,7 +1544,7 @@ fn test_xms_8e_get_extended_handle_info() {
         // Clean up
         0x8B, 0x16, 0x06, 0x01,             // MOV DX, [handle]
         0xB4, 0x0A,                         // MOV AH, 0Ah
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         0xFA,                               // CLI
         0xF4,                               // HLT
     ];
@@ -1543,29 +1565,30 @@ fn test_xms_8e_get_extended_handle_info() {
 
 #[test]
 fn test_xms_8f_reallocate_any_extended_memory() {
+    let [entry_low, entry_high, segment_low, segment_high] = harness::xms_entry_operand();
     let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
         // Allocate 64 KB via 32-bit function
         0x66, 0xBA, 0x40, 0x00, 0x00, 0x00, // MOV EDX, 64
         0xB4, 0x89,                         // MOV AH, 89h
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         0x89, 0x16, 0x06, 0x01,             // MOV [0x0106], DX (handle)
         // Reallocate to 128 KB via 0x8F (EBX = new size)
         0x66, 0xBB, 0x80, 0x00, 0x00, 0x00, // MOV EBX, 128
         0x8B, 0x16, 0x06, 0x01,             // MOV DX, [handle]
         0xB4, 0x8F,                         // MOV AH, 8Fh
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         0xA3, 0x00, 0x01,                   // MOV [0x0100], AX (1=success)
         // Verify new size via 0x8E
         0x8B, 0x16, 0x06, 0x01,             // MOV DX, [handle]
         0xB4, 0x8E,                         // MOV AH, 8Eh
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         0x66, 0x89, 0x16, 0x02, 0x01,       // MOV [0x0102], EDX (size KB)
         // Clean up
         0x8B, 0x16, 0x06, 0x01,             // MOV DX, [handle]
         0xB4, 0x0A,                         // MOV AH, 0Ah
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         0xFA,                               // CLI
         0xF4,                               // HLT
     ];
@@ -1588,7 +1611,7 @@ fn walk_device_chain_names(bus: &machine_98::Pc9801Bus) -> Vec<[u8; 8]> {
     const DEVHDR_OFF_NAME: u32 = 0x0A;
 
     let mut names = Vec::new();
-    let mut segment = 0x0200u16;
+    let mut segment = harness::dos_data_segment();
     let mut offset = DEV_NUL_OFFSET;
     for _ in 0..16 {
         let header_addr = ((segment as u32) << 4) + offset as u32;
@@ -1605,8 +1628,9 @@ fn walk_device_chain_names(bus: &machine_98::Pc9801Bus) -> Vec<[u8; 8]> {
         offset = next_off;
         // Stay within the DOS data area to avoid runaway walks.
         assert_eq!(
-            segment, 0x0200,
-            "Device chain left DOS_DATA_SEGMENT; got {segment:#06X}"
+            segment,
+            harness::dos_data_segment(),
+            "Device chain left the DOS data segment; got {segment:#06X}"
         );
     }
     panic!("Device chain did not terminate within 16 hops");
@@ -2057,24 +2081,25 @@ fn test_ems_5600_alter_page_map_and_call_restores_old_map_on_retf() {
 
 #[test]
 fn test_xms_a20_query_tracks_xms_visible_state() {
+    let [entry_low, entry_high, segment_low, segment_high] = harness::xms_entry_operand();
     let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
         // Query before any enable: AX should be 0.
         0xB4, 0x07,
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry stub)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
         // Local enable then query again: AX should be 1.
         0xB4, 0x05,
-        0x9A, 0x44, 0x0D, 0x00, 0x02,
+        0x9A, entry_low, entry_high, segment_low, segment_high,
         0xB4, 0x07,
-        0x9A, 0x44, 0x0D, 0x00, 0x02,
+        0x9A, entry_low, entry_high, segment_low, segment_high,
         0xA3, 0x02, 0x01,                   // MOV [0x0102], AX
         // Local disable then query again: AX should be 0.
         0xB4, 0x06,
-        0x9A, 0x44, 0x0D, 0x00, 0x02,
+        0x9A, entry_low, entry_high, segment_low, segment_high,
         0xB4, 0x07,
-        0x9A, 0x44, 0x0D, 0x00, 0x02,
+        0x9A, entry_low, entry_high, segment_low, segment_high,
         0xA3, 0x04, 0x01,                   // MOV [0x0104], AX
         0xFA,                               // CLI
         0xF4,                               // HLT
@@ -2099,21 +2124,22 @@ fn test_xms_a20_query_tracks_xms_visible_state() {
 
 #[test]
 fn test_xms_a20_local_enable_nesting() {
+    let [entry_low, entry_high, segment_low, segment_high] = harness::xms_entry_operand();
     // Local Enable (05h) twice, Local Disable (06h) twice: both disables
     // should succeed. A third Local Disable must fail with BL=0x94.
     let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
         // Local Enable x2
-        0xB4, 0x05, 0x9A, 0x44, 0x0D, 0x00, 0x02,
-        0xB4, 0x05, 0x9A, 0x44, 0x0D, 0x00, 0x02,
+        0xB4, 0x05, 0x9A, entry_low, entry_high, segment_low, segment_high,
+        0xB4, 0x05, 0x9A, entry_low, entry_high, segment_low, segment_high,
         // Local Disable x2 (both should succeed)
-        0xB4, 0x06, 0x9A, 0x44, 0x0D, 0x00, 0x02,
+        0xB4, 0x06, 0x9A, entry_low, entry_high, segment_low, segment_high,
         0xA3, 0x00, 0x01,                   // store first AX at [0x0100]
-        0xB4, 0x06, 0x9A, 0x44, 0x0D, 0x00, 0x02,
+        0xB4, 0x06, 0x9A, entry_low, entry_high, segment_low, segment_high,
         0xA3, 0x02, 0x01,                   // store second AX at [0x0102]
         // Third Local Disable (should fail AX=0, BL=0x94)
-        0xB4, 0x06, 0x9A, 0x44, 0x0D, 0x00, 0x02,
+        0xB4, 0x06, 0x9A, entry_low, entry_high, segment_low, segment_high,
         0xA3, 0x04, 0x01,                   // store AX at [0x0104]
         0x89, 0x1E, 0x06, 0x01,             // store BX at [0x0106]
         0xFA, 0xF4,
@@ -2142,15 +2168,16 @@ fn test_xms_a20_local_enable_nesting() {
 
 #[test]
 fn test_xms_a20_global_disable_blocked_by_local_enable() {
+    let [entry_low, entry_high, segment_low, segment_high] = harness::xms_entry_operand();
     // After a Local Enable, Global Disable must fail with BL=0x94 because
     // a local enable is still outstanding (XMS 3.0 A20 Management).
     let mut machine = harness::boot_hle();
     #[rustfmt::skip]
     let code: &[u8] = &[
         // Local Enable (05h)
-        0xB4, 0x05, 0x9A, 0x44, 0x0D, 0x00, 0x02,
+        0xB4, 0x05, 0x9A, entry_low, entry_high, segment_low, segment_high,
         // Global Disable (04h) - should fail AX=0, BL=0x94
-        0xB4, 0x04, 0x9A, 0x44, 0x0D, 0x00, 0x02,
+        0xB4, 0x04, 0x9A, entry_low, entry_high, segment_low, segment_high,
         0xA3, 0x00, 0x01,                   // AX -> [0x0100]
         0x89, 0x1E, 0x02, 0x01,             // BX -> [0x0102]
         0xFA, 0xF4,
@@ -2172,6 +2199,7 @@ fn test_xms_a20_global_disable_blocked_by_local_enable() {
 
 #[test]
 fn test_xms_a20_calls_do_not_drive_machine_a20_gate() {
+    let [entry_low, entry_high, segment_low, segment_high] = harness::xms_entry_operand();
     // HLE XMS tracks the DOS-visible A20 state, while the PC-98 machine gate
     // remains controlled by the hardware ports.
     let mut machine = harness::boot_hle();
@@ -2184,7 +2212,7 @@ fn test_xms_a20_calls_do_not_drive_machine_a20_gate() {
     #[rustfmt::skip]
     let enable_code: &[u8] = &[
         0xB4, 0x05,                         // MOV AH, 05h (local enable A20)
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry stub)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
         0xFA,                               // CLI
         0xF4,                               // HLT
@@ -2204,7 +2232,7 @@ fn test_xms_a20_calls_do_not_drive_machine_a20_gate() {
     #[rustfmt::skip]
     let disable_code: &[u8] = &[
         0xB4, 0x06,                         // MOV AH, 06h (local disable A20)
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry stub)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
         0xFA,                               // CLI
         0xF4,                               // HLT
@@ -2224,6 +2252,7 @@ fn test_xms_a20_calls_do_not_drive_machine_a20_gate() {
 
 #[test]
 fn test_xms_move_conventional_to_conventional_decodes_segoff() {
+    let [entry_low, entry_high, segment_low, segment_high] = harness::xms_entry_operand();
     // XMS 3.0 Move EMB: when SourceHandle/DestHandle is 0, the offset
     // DWORD is seg:offset (hi16 = segment, lo16 = offset), not a linear
     // address. Verify by copying "HELLOXMS" from DS:0200 to DS:0300.
@@ -2250,7 +2279,7 @@ fn test_xms_move_conventional_to_conventional_decodes_segoff() {
         // Call XMS Move EMB (AH=0Bh, DS:SI -> params)
         0xBE, 0x10, 0x01,                   // MOV SI, 0x0110
         0xB4, 0x0B,                         // MOV AH, 0Bh
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR 0200:0D44 (XMS entry stub)
+        0x9A, entry_low, entry_high, segment_low, segment_high, // CALL FAR XMS entry
         0xA3, 0x00, 0x04,                   // MOV [0x0400], AX (move status)
         0xFA, 0xF4,
     ];
@@ -2273,6 +2302,7 @@ fn test_xms_move_conventional_to_conventional_decodes_segoff() {
 
 #[test]
 fn test_xms_move_rejects_odd_length() {
+    let [entry_low, entry_high, segment_low, segment_high] = harness::xms_entry_operand();
     // XMS 3.0: odd length returns BL=0xA7 (invalid length). Our move is a
     // no-op on length=0; length=3 should trip the check.
     let mut machine = harness::boot_hle();
@@ -2289,7 +2319,7 @@ fn test_xms_move_rejects_odd_length() {
         0xC7, 0x06, 0x1E, 0x01, 0x00, 0x20, // dst_offset hi
         0xBE, 0x10, 0x01,                   // MOV SI, 0x0110
         0xB4, 0x0B,                         // MOV AH, 0Bh
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // XMS entry
+        0x9A, entry_low, entry_high, segment_low, segment_high,       // XMS entry
         0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
         0x89, 0x1E, 0x02, 0x01,             // MOV [0x0102], BX
         0xFA, 0xF4,
@@ -2308,6 +2338,7 @@ fn test_xms_move_rejects_odd_length() {
 
 #[test]
 fn test_xms_request_hma_respects_hmamin() {
+    let [entry_low, entry_high, segment_low, segment_high] = harness::xms_entry_operand();
     // /HMAMIN=32 means Request HMA with DX < 32*1024 is rejected with
     // BL=0x92. A subsequent request with DX >= 32KB succeeds.
     let mut machine = harness::boot_hle_with_hmamin_kb(32);
@@ -2316,13 +2347,13 @@ fn test_xms_request_hma_respects_hmamin() {
         // First try: DX = 16 (16 bytes, well below 32KB).
         0xB4, 0x01,                         // MOV AH, 01h
         0xBA, 0x10, 0x00,                   // MOV DX, 16
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR XMS entry
+        0x9A, entry_low, entry_high, segment_low, segment_high,       // CALL FAR XMS entry
         0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
         0x89, 0x1E, 0x02, 0x01,             // MOV [0x0102], BX
         // Second try: DX = 0xFFFF (applications ask for the full HMA).
         0xB4, 0x01,                         // MOV AH, 01h
         0xBA, 0xFF, 0xFF,                   // MOV DX, 0xFFFF
-        0x9A, 0x44, 0x0D, 0x00, 0x02,       // CALL FAR XMS entry
+        0x9A, entry_low, entry_high, segment_low, segment_high,       // CALL FAR XMS entry
         0xA3, 0x04, 0x01,                   // MOV [0x0104], AX
         0xFA, 0xF4,
     ];
@@ -2350,16 +2381,17 @@ fn test_xms_request_hma_respects_hmamin() {
 fn test_xmsxxxx0_strategy_stub_sets_done_bit() {
     let mut machine = harness::boot_hle();
     // Fake request header at CS:0x0200 (ES = CS = INJECT_CODE_SEGMENT by default).
-    // Call far ptr 0x0200:xms_device_stub. Verify status word at +3 has 0x0100 set.
+    // Call far ptr DOS data segment:xms_device_stub. Verify status word at +3 has 0x0100 set.
     let stub_off = harness::pc98_self_boot().xms_device_stub;
     let stub_lo = stub_off as u8;
     let stub_hi = (stub_off >> 8) as u8;
+    let [segment_lo, segment_hi] = harness::dos_data_segment().to_le_bytes();
     #[rustfmt::skip]
     let code: &[u8] = &[
         0xBB, 0x00, 0x02,                   // MOV BX, 0x0200 (request header offset)
         0x31, 0xC0,                         // XOR AX, AX
         0x89, 0x47, 0x03,                   // MOV [BX+3], AX (zero status)
-        0x9A, stub_lo, stub_hi, 0x00, 0x02, // CALL FAR 0x0200:XMS_DEV_STUB
+        0x9A, stub_lo, stub_hi, segment_lo, segment_hi, // CALL FAR DOS data segment:XMS_DEV_STUB
         0x8B, 0x47, 0x03,                   // MOV AX, [BX+3]
         0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
         0xFA,                               // CLI
