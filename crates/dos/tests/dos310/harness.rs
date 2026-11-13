@@ -28,7 +28,7 @@ pub const INJECT_BUDGET: u64 = 50_000_000;
 pub const INJECT_BUDGET_DISK_IO: u64 = 500_000_000;
 
 /// DOS data segment of NeetanDos on the PC-98.
-pub const DOS_DATA_SEGMENT: u16 = 0x0200;
+pub const DOS_DATA_SEGMENT: u16 = 0x0330;
 
 /// Tiny .COM program for EXEC: terminates with exit code 42h.
 /// MOV AH, 4Ch ; MOV AL, 42h ; INT 21h

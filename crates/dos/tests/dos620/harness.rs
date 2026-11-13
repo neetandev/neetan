@@ -1069,6 +1069,15 @@ pub fn pc98_self_boot() -> &'static dos::layout::SelfBootLayout {
         .expect("the PC-98 6.20 data area has self boot regions")
 }
 
+/// Returns the far pointer of the XMS driver entry as the operand bytes of
+/// `CALL FAR`: the offset low and high byte, then the segment low and high
+/// byte.
+pub fn xms_entry_operand() -> [u8; 4] {
+    let [offset_low, offset_high] = pc98_self_boot().xms_entry_stub.to_le_bytes();
+    let [segment_low, segment_high] = dos_data_segment().to_le_bytes();
+    [offset_low, offset_high, segment_low, segment_high]
+}
+
 /// Returns the Windows DOSMGR tables of the PC-98 self boot.
 pub fn pc98_windows_dosmgr() -> &'static dos::layout::WindowsDosmgrLayout {
     pc98_self_boot()

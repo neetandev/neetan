@@ -977,9 +977,9 @@ mod tests {
     fn area_lies_at_the_end_of_the_swappable_data_area() {
         let dos = NeetanDos::new(DosPlatform::pc98(HleDosVersion::Dos620));
         let area = dos.guest_call_area();
-        assert_eq!(area.segment, 0x0200);
+        assert_eq!(area.segment, 0x0331);
         assert_eq!(area.base_offset, 0x10CC);
-        assert_eq!(area.stack_top(), FarPointer::new(0x0200, 0x16CC));
+        assert_eq!(area.stack_top(), FarPointer::new(0x0331, 0x16CC));
         assert!(area.size - STACK_BOTTOM_OFFSET >= 0x0400);
 
         let towns = NeetanDos::new(DosPlatform::fm_towns(crate::DosPlacement {
@@ -1030,7 +1030,7 @@ mod tests {
         assert_eq!(jump_target, 10);
         assert_eq!(
             area.return_trap_entry(),
-            FarPointer::new(0x0200, area.base_offset + RETURN_TRAP_OFFSET)
+            FarPointer::new(0x0331, area.base_offset + RETURN_TRAP_OFFSET)
         );
     }
 
@@ -1048,7 +1048,7 @@ mod tests {
             area.stack_top(),
             GuestCall::DeviceRequest {
                 device: FarPointer::new(0x0500, 0x0000),
-                data_segment: 0x0200,
+                data_segment: 0x0331,
             },
             &mut cpu,
             &mut memory,
@@ -1064,13 +1064,13 @@ mod tests {
             FarPointer::read(&memory, area.address(INTERRUPT_SLOT_OFFSET)),
             FarPointer::new(0x0500, 0x0034)
         );
-        assert_eq!((cpu.ss(), cpu.sp()), (0x0200, 0x16CC - IRET_FRAME_SIZE));
+        assert_eq!((cpu.ss(), cpu.sp()), (0x0331, 0x16CC - IRET_FRAME_SIZE));
         let frame = FarPointer::new(cpu.ss(), cpu.sp()).linear();
         assert_eq!(
             memory.read_word(frame),
             area.base_offset + DEVICE_ENTRY_OFFSET
         );
-        assert_eq!(memory.read_word(frame + 2), 0x0200);
+        assert_eq!(memory.read_word(frame + 2), 0x0331);
         assert_eq!(memory.read_word(frame + 4), GUEST_CALL_FLAGS);
     }
 

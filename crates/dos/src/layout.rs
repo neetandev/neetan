@@ -535,11 +535,8 @@ pub const PC98_DOS620_DATA_AREA: DataAreaLayout = DataAreaLayout {
 /// The list of lists, the NUL header at `0048h`, the first SFT block and the
 /// SDA lie where NEC MS-DOS 3.30D keeps them. The device headers, the FCB
 /// SFT, the private stubs, the CD-ROM stubs, the DPB window and the CDS
-/// array lie between the SDA and the system data. The DPB window ends at
-/// `0E20h` and the CDS array starts behind `12B9h`. The bytes `0E20h`-`0E23h`
-/// and `1286h`-`12B9h` alias the far pointer at `0060:2820` and the drive
-/// table at `0060:2C86` of the `IO.SYS` work area. The kernel offers no
-/// DOSMGR interface.
+/// array lie between the SDA and the system data. The CDS array follows the
+/// DPB window. The kernel offers no DOSMGR interface.
 pub const PC98_DOS310_DATA_AREA: DataAreaLayout = DataAreaLayout {
     list_of_lists: ListOfListsLayout {
         data_offset: 0x0026,
@@ -559,7 +556,7 @@ pub const PC98_DOS310_DATA_AREA: DataAreaLayout = DataAreaLayout {
         error_message_buffer: 0x0AC6,
         kernel_stubs: None,
         transfer_buffer: None,
-        system_data: 0x1B00,
+        system_data: 0x1660,
         // It holds 21 DPBs.
         parameter_block_window: Some(DataRange {
             offset: 0x0B80,
@@ -573,7 +570,7 @@ pub const PC98_DOS310_DATA_AREA: DataAreaLayout = DataAreaLayout {
         cdrom_device: 0x0A46,
         xms_device: 0x0A58,
         ems_device: 0x0A6A,
-        current_directory_array: 0x12C0,
+        current_directory_array: 0x0E20,
         fcb_system_file_table: 0x0A7C,
         xms_entry_stub: 0x0A88,
         xms_device_stub: 0x0ABF,
@@ -890,6 +887,8 @@ pub(crate) fn current_directory_entry_address(
 
 #[cfg(test)]
 mod tests {
+    use common::HleDosVersion;
+
     use super::*;
     use crate::{tables::*, test_support::MockMemory};
 
@@ -1083,8 +1082,8 @@ mod tests {
         let structures = DataArea::Pc98Dos310.format().structures();
         let data_area = DataArea::Pc98Dos310.layout();
         assert_eq!(
-            data_area.list_of_lists.returned_pointer(0x0200),
-            (0x0200, 0x0026)
+            data_area.list_of_lists.returned_pointer(0x0330),
+            (0x0330, 0x0026)
         );
         assert_eq!(data_area.first_sft_block_offset, 0x0098);
         assert_eq!(data_area.swappable_data_area.data_offset, 0x02CE);
@@ -1146,8 +1145,8 @@ mod tests {
     fn pc98_dos620_data_area_returns_the_list_of_lists_one_paragraph_lower() {
         let data_area = DataArea::Pc98Dos620.layout();
         assert_eq!(
-            data_area.list_of_lists.returned_pointer(0x0200),
-            (0x01FF, 0x0010)
+            data_area.list_of_lists.returned_pointer(0x0331),
+            (0x0330, 0x0010)
         );
     }
 
@@ -1329,22 +1328,23 @@ mod tests {
         assert_eq!(geometry.to_bpb().total_sectors(), original.total_sectors());
     }
 
-    /// Named byte range of the DOS data segment.
+    /// Named byte range of the DOS data segment. An offset below zero names
+    /// a byte in front of the segment.
     struct Region {
         /// Name of the table or stub.
         name: &'static str,
         /// Offset of the first byte.
-        start: u32,
+        start: i32,
         /// Offset of the first byte behind the region.
-        end: u32,
+        end: i32,
     }
 
     /// Returns the region `name` of `size` bytes at `offset`.
     fn region(name: &'static str, offset: u16, size: u32) -> Region {
         Region {
             name,
-            start: u32::from(offset),
-            end: u32::from(offset) + size,
+            start: i32::from(offset),
+            end: i32::from(offset) + size as i32,
         }
     }
 
@@ -1362,9 +1362,9 @@ mod tests {
         let private_area = &data_area.private_area;
         let mut regions = vec![
             Region {
-                name: "list of lists with the NUL header",
-                start: list_of_lists.saturating_sub(SYSVARS_FIRST_MCB_DISTANCE),
-                end: list_of_lists + list_end,
+                name: "list of lists with the first MCB word and the NUL header",
+                start: list_of_lists as i32 - SYSVARS_FIRST_MCB_DISTANCE as i32,
+                end: (list_of_lists + list_end) as i32,
             },
             region(
                 "first SFT block",
@@ -1504,66 +1504,44 @@ mod tests {
         regions
     }
 
-    /// Returns the region `name` of the `IO.SYS` work area field at
-    /// `iosys_offset` that aliases the DOS data segment at linear
-    /// `dos_data_base`.
-    fn iosys_alias_region(
-        name: &'static str,
-        dos_data_base: u32,
-        iosys_offset: u32,
-        size: u32,
-    ) -> Region {
-        let start = IOSYS_BASE + iosys_offset - dos_data_base;
-        Region {
-            name,
-            start,
-            end: start + size,
-        }
-    }
-
-    /// Returns the bytes of the DOS data segment of `data_area` that alias
-    /// the fields of the `IO.SYS` work area that NeetanDos writes.
-    fn iosys_alias_regions(data_area: DataArea) -> Vec<Region> {
-        match data_area {
-            DataArea::Pc98Dos310 => {
-                let dos_data_base = crate::DosPlatform::pc98(common::HleDosVersion::Dos310)
-                    .placement
-                    .dos_data_base();
-                vec![
-                    iosys_alias_region(
-                        "IO.SYS drive table pointer",
-                        dos_data_base,
-                        IOSYS_OFF_DAUA_PTR,
-                        FAR_POINTER_SIZE,
-                    ),
-                    iosys_alias_region(
-                        "IO.SYS extended drive table",
-                        dos_data_base,
-                        IOSYS_OFF_EXT_DAUA_TABLE,
-                        IOSYS_EXT_DAUA_TABLE_SIZE,
-                    ),
-                ]
-            }
-            DataArea::FmTowns | DataArea::Pc98Dos620 => Vec::new(),
-        }
-    }
-
     #[test]
-    fn pc98_dos310_alias_regions_lie_in_the_dos_data_segment() {
-        let regions = iosys_alias_regions(DataArea::Pc98Dos310);
-        let bounds: Vec<(u32, u32)> = regions
-            .iter()
-            .map(|region| (region.start, region.end))
-            .collect();
-        assert_eq!(bounds, [(0x0E20, 0x0E24), (0x1286, 0x12BA)]);
+    fn pc98_data_area_regions_lie_behind_the_iosys_work_area() {
+        let work_area_end = IOSYS_BASE + IOSYS_WORK_AREA_SIZE;
+        for version in [HleDosVersion::Dos310, HleDosVersion::Dos620] {
+            let platform = crate::DosPlatform::pc98(version);
+            let placement = platform.placement;
+            let data_area = platform.data_area;
+            let mut regions =
+                data_area_regions(data_area.format().structures(), data_area.layout());
+            let largest_system_data = crate::system_data::SystemDataArea::new(
+                data_area.format().structures(),
+                data_area.layout(),
+                CDS_ENTRIES as usize,
+                crate::guest_cdrom::CDROM_SECTOR_SIZE as u16,
+            );
+            regions.push(Region {
+                name: "disk buffer of the largest sector and one DPB per drive letter",
+                start: i32::from(data_area.layout().private_area.system_data),
+                end: largest_system_data.end_offset() as i32,
+            });
+            let dos_data_base = placement.dos_data_base() as i32;
+            for region in regions {
+                let start = dos_data_base + region.start;
+                let end = dos_data_base + region.end;
+                assert!(
+                    end <= IOSYS_BASE as i32 || start >= work_area_end as i32,
+                    "{version:?}: {} {start:05X}h-{end:05X}h lies inside the IO.SYS work area",
+                    region.name
+                );
+            }
+        }
     }
 
     #[test]
     fn data_area_regions_do_not_overlap() {
         for data_area in DataArea::ALL {
             let layout = data_area.layout();
-            let mut regions = data_area_regions(data_area.format().structures(), layout);
-            regions.extend(iosys_alias_regions(data_area));
+            let regions = data_area_regions(data_area.format().structures(), layout);
             for (index, first) in regions.iter().enumerate() {
                 assert!(first.start < first.end, "{data_area:?} {}", first.name);
                 for second in &regions[index + 1..] {
@@ -1586,7 +1564,7 @@ mod tests {
     fn data_area_regions_lie_in_front_of_the_system_data() {
         for data_area in DataArea::ALL {
             let layout = data_area.layout();
-            let system_data = u32::from(layout.private_area.system_data);
+            let system_data = i32::from(layout.private_area.system_data);
             for region in data_area_regions(data_area.format().structures(), layout) {
                 assert!(
                     region.end <= system_data,
@@ -1596,7 +1574,7 @@ mod tests {
                 );
             }
             if let Some(window) = layout.private_area.parameter_block_window {
-                assert!(u32::from(window.offset) + u32::from(window.size) <= system_data);
+                assert!(i32::from(window.offset) + i32::from(window.size) <= system_data);
             }
         }
     }

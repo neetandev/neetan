@@ -330,9 +330,10 @@ pub struct GuestMachine {
     pub trap_count: usize,
 }
 
-/// Returns the PC-98 platform with `INT 29h` owned by the guest.
-pub fn platform_with_guest_console() -> DosPlatform {
-    let mut platform = DosPlatform::pc98(common::HleDosVersion::Dos620);
+/// Returns the PC-98 platform of the DOS `version` with `INT 29h` owned by
+/// the guest.
+pub fn platform_with_guest_console(version: common::HleDosVersion) -> DosPlatform {
+    let mut platform = DosPlatform::pc98(version);
     platform.guest_vectors = platform.guest_vectors.with(0x29);
     platform
 }

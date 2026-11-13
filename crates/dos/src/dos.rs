@@ -2419,7 +2419,7 @@ mod tests {
         let (dos, _) = pc98_dos();
         let mut cpu = MockCpu::default();
         dos.int21h_34h_get_indos(&mut cpu);
-        assert_eq!((cpu.es(), cpu.bx()), (0x0200, 0x0F41));
+        assert_eq!((cpu.es(), cpu.bx()), (0x0331, 0x0F41));
 
         let (dos, _) = fm_towns_dos();
         let mut cpu = MockCpu::default();
@@ -2432,7 +2432,7 @@ mod tests {
         let (dos, _) = pc98_dos();
         let mut cpu = MockCpu::default();
         dos.int21h_52h_get_sysvars(&mut cpu);
-        assert_eq!((cpu.es(), cpu.bx()), (0x01FF, 0x0010));
+        assert_eq!((cpu.es(), cpu.bx()), (0x0330, 0x0010));
         assert_eq!(
             (u32::from(cpu.es()) << 4) + u32::from(cpu.bx()),
             dos.state.list_of_lists_address()
@@ -2529,7 +2529,7 @@ mod tests {
         let mut cpu = MockCpu::default();
         cpu.set_ax(0x5D06);
         dos.int21h_5dh_server_call(&mut cpu, &mut memory);
-        assert_eq!((cpu.ds, cpu.si), (0x0200, 0x0F40));
+        assert_eq!((cpu.ds, cpu.si), (0x0331, 0x0F40));
         assert_eq!((cpu.cx(), cpu.dx()), (0x078C, 0x001A));
 
         let (towns, mut memory) = fm_towns_dos();

@@ -1,12 +1,12 @@
 //! Date and time through the CLOCK$ driver of a guest device chain.
 
-use common::Cpu as _;
+use common::{Cpu as _, HleDosVersion};
 
 use crate::harness::{CLOCK_HEADER, CLOCK_RECORD, GuestMachine, platform_with_guest_console};
 
 #[test]
 fn date_and_time_come_from_the_guest_clock() {
-    let mut machine = GuestMachine::new(platform_with_guest_console());
+    let mut machine = GuestMachine::new(platform_with_guest_console(HleDosVersion::Dos620));
     machine
         .dos
         .attach_guest_clock(GuestMachine::driver(CLOCK_HEADER));
