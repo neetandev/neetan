@@ -28,13 +28,12 @@ BIOS or OS files to run the vast majority of the games for that system.
 Neetan contains no ROM files. The PC-98, FM Towns and the PC/AT run without ROM
 files on a built-in HLE BIOS. All other families need a ROM set dumped from the
 real machine. [ROMs](doc/roms.md) lists the files of each set. The PC-98 even
-does not need an operating system, since it ships with an MS-DOS 6.20 compatible
-DOS.
+does not need an operating system, since it ships with an MS-DOS compatible DOS.
 
 ## Features
 
 * Game manager with one library for each system.
-* Built-in MS-DOS 6.20 compatible DOS with EMS, XMS and MSCDEX drivers for the PC-98.
+* Built-in MS-DOS compatible DOS with EMS, XMS and MSCDEX drivers for the PC-98.
 * Runtime savestates for fast saving and loading.
 * CRT effect, pixel-art scaling and a choice of 4:3 or square pixel aspect.
 * Yamaha FM synthesis (OPN, OPNA, OPM, OPL, SSG).
