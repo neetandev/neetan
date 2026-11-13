@@ -71,6 +71,44 @@ const DISK_INFORMATION_UNIT_STARTS_SIZE: u32 = 0x10;
 /// Bytes of the work area from `0060:0106h` that CL=80h AX=0001h copies.
 const CONSOLE_STATE_SIZE: u32 = 0x1A;
 
+/// CL=0Eh channel in the high nibble of `DL`: the built-in RS-232C port.
+const RS232C_CHANNEL_BUILT_IN: u8 = 0x0;
+
+/// CL=0Eh channel in the high nibble of `DL`: channel 1 of the RS-232C
+/// extension board.
+const RS232C_CHANNEL_EXTENSION_1: u8 = 0x1;
+
+/// CL=0Eh channel in the high nibble of `DL`: channel 2 of the RS-232C
+/// extension board.
+const RS232C_CHANNEL_EXTENSION_2: u8 = 0x2;
+
+/// CL=0Eh function in the low nibble of `DL`: length of the received data.
+const RS232C_RECEIVE_LENGTH: u8 = 0x0;
+
+/// CL=0Eh function in the low nibble of `DL`: initialize the port with the
+/// protocol in `BX`.
+const RS232C_INITIALIZE: u8 = 0x1;
+
+/// CL=0Eh function in the low nibble of `DL`: read the protocol of the port.
+const RS232C_READ_PROTOCOL: u8 = 0x6;
+
+/// CL=0Eh function in the low nibble of `DL`: check for the RS-232C
+/// extension board.
+const RS232C_EXTENSION_BOARD_CHECK: u8 = 0x7;
+
+/// CL=0Eh `AX` answer: the function succeeded, or the receive buffer is
+/// empty.
+const RS232C_SUCCESS: u16 = 0x0000;
+
+/// CL=0Eh `AX` answer: no RS-232C extension board is installed.
+const RS232C_NO_EXTENSION_BOARD: u16 = 0xFFFF;
+
+/// Bits of the AUX protocol word that hold the speed.
+const AUX_PROTOCOL_SPEED_MASK: u16 = 0x0F00;
+
+/// Bits of the AUX protocol word that CL=0Eh DL=01h keeps.
+const AUX_PROTOCOL_KEPT_MASK: u16 = 0xF000;
+
 impl NeetanDos {
     /// Dispatches an INT DCh call based on the CL register.
     pub(crate) fn intdch(
@@ -85,9 +123,12 @@ impl NeetanDos {
             return;
         }
         match cl {
-            0x00..=0x08 => {}
+            // CL=0Ah initializes the RS-232C port through RSDRV.SYS. Without
+            // the driver the call changes nothing.
+            0x00..=0x08 | 0x0A => {}
             0x0C => self.intdch_0ch_read_fnkey_map(cpu, memory),
             0x0D => self.intdch_0dh_write_fnkey_map(cpu, memory),
+            0x0E => self.intdch_0eh_rs232c(cpu, memory),
             0x0F => self.intdch_0fh_softkey_control(cpu, memory),
             0x10 => self.intdch_10h_console(cpu, memory),
             0x12 => self.intdch_12h_system_identification(cpu),
@@ -357,6 +398,47 @@ impl NeetanDos {
             buffer + DISK_INFORMATION_OFF_FIXED_DISK_DRIVES,
             fixed_disk_drives,
         );
+    }
+
+    /// CL=0Eh: RS-232C functions. The high nibble of `DL` selects the
+    /// channel and the low nibble the function. On the built-in port DL=00h
+    /// answers an empty receive buffer and DL=01h stores the parameters in
+    /// `BH` and the speed in the low nibble of `BL` into the AUX protocol
+    /// word at `0060:0068h`. Both return AX=0000h. DL=06h returns the AUX
+    /// protocol in `BH` and its speed in `BL` with `AX` unchanged. DL=07h
+    /// reports no extension board with AX=FFFFh. Every function of the
+    /// channels 1 and 2 of the absent extension board returns AX=FFFFh. Other
+    /// values of `DL` change no register. The RS-232C hardware keeps its
+    /// state.
+    fn intdch_0eh_rs232c(&self, cpu: &mut dyn CpuAccess, memory: &mut dyn MemoryAccess) {
+        let dl = (cpu.dx() & 0xFF) as u8;
+        let protocol_address = tables::IOSYS_BASE + tables::IOSYS_OFF_AUX_PROTOCOL;
+        match dl >> 4 {
+            RS232C_CHANNEL_BUILT_IN => match dl & 0x0F {
+                RS232C_RECEIVE_LENGTH => cpu.set_ax(RS232C_SUCCESS),
+                RS232C_INITIALIZE => {
+                    let protocol = memory.read_word(protocol_address);
+                    let parameters = cpu.bx() >> 8;
+                    let speed = (cpu.bx() << 8) & AUX_PROTOCOL_SPEED_MASK;
+                    memory.write_word(
+                        protocol_address,
+                        (protocol & AUX_PROTOCOL_KEPT_MASK) | speed | parameters,
+                    );
+                    cpu.set_ax(RS232C_SUCCESS);
+                }
+                RS232C_READ_PROTOCOL => {
+                    let protocol = memory.read_word(protocol_address);
+                    let speed = (protocol & AUX_PROTOCOL_SPEED_MASK) >> 8;
+                    cpu.set_bx((protocol << 8) | speed);
+                }
+                RS232C_EXTENSION_BOARD_CHECK => cpu.set_ax(RS232C_NO_EXTENSION_BOARD),
+                _ => {}
+            },
+            RS232C_CHANNEL_EXTENSION_1 | RS232C_CHANNEL_EXTENSION_2 => {
+                cpu.set_ax(RS232C_NO_EXTENSION_BOARD);
+            }
+            _ => {}
+        }
     }
 
     /// CL=81h: Extended memory query.
@@ -686,6 +768,61 @@ mod tests {
         assert_eq!(cpu.bx(), 0x0000);
         assert_eq!(cpu.cx(), 0x0012);
         assert_eq!(cpu.dx(), 0x0003);
+    }
+
+    /// AUX protocol word at `0060:0068h` in front of a CL=0Eh call.
+    const AUX_PROTOCOL_PRESET: u16 = 0xF74D;
+
+    /// Calls INT DCh CL=0Eh with `bx` and `dx`, `AX` from the presets and the
+    /// AUX protocol preset. Returns `[AX, BX, CX, DX]` and the AUX protocol
+    /// after the call.
+    fn call_rs232c(version: HleDosVersion, bx: u16, dx: u16) -> ([u16; 4], u16) {
+        let (mut dos, mut memory) = pc98_dos_of_version(version);
+        let protocol = tables::IOSYS_BASE + tables::IOSYS_OFF_AUX_PROTOCOL;
+        memory.write_word(protocol, AUX_PROTOCOL_PRESET);
+        let mut cpu = MockCpu::default();
+        cpu.set_ax(GATE_PRESETS[0]);
+        cpu.set_bx(bx);
+        cpu.set_cx(0x000E);
+        cpu.set_dx(dx);
+        dos.intdch(&mut cpu, &mut memory, &mut crate::test_support::NoDrives);
+        (
+            [cpu.ax(), cpu.bx(), cpu.cx(), cpu.dx()],
+            memory.read_word(protocol),
+        )
+    }
+
+    #[test]
+    fn cl_0eh_initialize_keeps_the_high_nibble_of_the_aux_protocol() {
+        assert_eq!(
+            call_rs232c(HleDosVersion::Dos620, 0x4EFA, 0x0001),
+            ([0x0000, 0x4EFA, 0x000E, 0x0001], 0xFA4E)
+        );
+    }
+
+    #[test]
+    fn cl_0eh_read_protocol_masks_the_speed() {
+        assert_eq!(
+            call_rs232c(HleDosVersion::Dos620, GATE_PRESETS[1], 0x0006),
+            (
+                [GATE_PRESETS[0], 0x4D07, 0x000E, 0x0006],
+                AUX_PROTOCOL_PRESET
+            )
+        );
+    }
+
+    #[test]
+    fn dos310_cl_0eh_changes_no_register() {
+        for dx in [0x0000, 0x0001, 0x0006, 0x0007, 0x0011] {
+            assert_eq!(
+                call_rs232c(HleDosVersion::Dos310, GATE_PRESETS[1], dx),
+                (
+                    [GATE_PRESETS[0], GATE_PRESETS[1], 0x000E, dx],
+                    AUX_PROTOCOL_PRESET
+                ),
+                "DX={dx:04X}h"
+            );
+        }
     }
 
     #[test]

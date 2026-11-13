@@ -2709,6 +2709,13 @@ impl NeetanDos {
             mem.read_byte(MEMORY_SWITCH_2_ADDRESS),
         ]);
         mem.write_word(base + IOSYS_OFF_AUX_PROTOCOL, aux_protocol);
+        let extension_aux_protocol = if identity.extension_aux_protocols {
+            aux_protocol & AUX_PROTOCOL_EXTENSION_MASK
+        } else {
+            0x0000
+        };
+        mem.write_word(base + IOSYS_OFF_AUX1_PROTOCOL, extension_aux_protocol);
+        mem.write_word(base + IOSYS_OFF_AUX2_PROTOCOL, extension_aux_protocol);
 
         // DA/UA mapping table: populated by write_drive_structures().
 

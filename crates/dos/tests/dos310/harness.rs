@@ -411,6 +411,33 @@ pub fn boot() -> Machine {
     machine
 }
 
+/// Port of the memory switch write protection.
+const MEMORY_SWITCH_PROTECTION_PORT: u16 = 0x68;
+/// Port 68h command that allows writes to the memory switches.
+const MEMORY_SWITCH_WRITE_ENABLE: u8 = 0x0D;
+/// Port 68h command that blocks writes to the memory switches.
+const MEMORY_SWITCH_WRITE_DISABLE: u8 = 0x0C;
+
+/// Boots the HLE DOS 3.10 without media after it sets memory switch 1 to
+/// `memory_switch_1` and memory switch 2 to `memory_switch_2`.
+pub fn boot_with_memory_switches(memory_switch_1: u8, memory_switch_2: u8) -> Machine {
+    let mut machine = create_machine();
+    machine
+        .bus
+        .io_write_byte(MEMORY_SWITCH_PROTECTION_PORT, MEMORY_SWITCH_WRITE_ENABLE);
+    machine
+        .bus
+        .write_byte(dos::tables::MEMORY_SWITCH_1_ADDRESS, memory_switch_1);
+    machine
+        .bus
+        .write_byte(dos::tables::MEMORY_SWITCH_2_ADDRESS, memory_switch_2);
+    machine
+        .bus
+        .io_write_byte(MEMORY_SWITCH_PROTECTION_PORT, MEMORY_SWITCH_WRITE_DISABLE);
+    wait_for_prompt(&mut machine);
+    machine
+}
+
 /// Boots the HLE DOS of `version` without media.
 pub fn boot_with_version(version: HleDosVersion) -> Machine {
     let mut machine = create_machine_with_version(version);

@@ -205,9 +205,13 @@ fn drive_table_pointer_points_to_the_table_of_all_drives() {
 
 /// AUX protocol of RS-232C channel 0 at 0060:0068h.
 const AUX_PROTOCOL: u32 = IOSYS_BASE + tables::IOSYS_OFF_AUX_PROTOCOL;
+/// AUX protocol of RS-232C channel 1 at 0060:17EEh.
+const AUX1_PROTOCOL: u32 = IOSYS_BASE + tables::IOSYS_OFF_AUX1_PROTOCOL;
+/// AUX protocol of RS-232C channel 2 at 0060:17F0h.
+const AUX2_PROTOCOL: u32 = IOSYS_BASE + tables::IOSYS_OFF_AUX2_PROTOCOL;
 /// AUX protocol of the NEC MS-DOS captures: memory switch 2 = 05h, memory
 /// switch 1 = 48h.
-const CAPTURED_AUX_PROTOCOL: u16 = 0x0548;
+pub(crate) const CAPTURED_AUX_PROTOCOL: u16 = 0x0548;
 
 #[test]
 fn aux_protocol_holds_memory_switches_1_and_2() {
@@ -222,4 +226,14 @@ fn aux_protocol_holds_memory_switches_1_and_2() {
 fn aux_protocol_copies_every_bit_of_the_memory_switches() {
     let machine = harness::boot_hle_with_memory_switches(0x4D, 0xF7);
     assert_eq!(harness::read_word(&machine.bus, AUX_PROTOCOL), 0xF74D);
+}
+
+#[test]
+fn extension_aux_protocols_hold_the_channel_0_protocol_without_bits_12_to_15() {
+    let machine = harness::boot_hle();
+    assert_eq!(harness::read_word(&machine.bus, AUX1_PROTOCOL), 0x0548);
+    assert_eq!(harness::read_word(&machine.bus, AUX2_PROTOCOL), 0x0548);
+    let machine = harness::boot_hle_with_memory_switches(0x4D, 0xF7);
+    assert_eq!(harness::read_word(&machine.bus, AUX1_PROTOCOL), 0x074D);
+    assert_eq!(harness::read_word(&machine.bus, AUX2_PROTOCOL), 0x074D);
 }
