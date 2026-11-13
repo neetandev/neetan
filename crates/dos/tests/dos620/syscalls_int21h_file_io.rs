@@ -2038,6 +2038,67 @@ fn find_first_of_volume_labels_skips_the_files_of_a_disk_without_label() {
     assert_eq!(harness::result_word(&machine.bus, 2) & 0x0001, 1);
 }
 
+/// FCB name of a hidden marker file with a space inside its base name.
+const SPACED_MARKER_FCB_NAME: [u8; 11] = *b"ED2-98 DSK5";
+/// Search path of the marker file.
+const SPACED_MARKER_PATH: &[u8] = b"A:\\ED2-98 D.SK5\0";
+/// Name of the marker file in the DTA.
+const SPACED_MARKER_DTA_NAME: &[u8] = b"ED2-98 D.SK5";
+/// Read-only, hidden, system and archive attribute of the marker file.
+const SPACED_MARKER_ATTRIBUTE: u8 = 0x27;
+/// Offset of the search path in the inject segment.
+const SEARCH_PATH_OFFSET: u32 = 0x0200;
+/// Offset of the DTA in the inject segment.
+const SEARCH_DTA_OFFSET: u32 = 0x0300;
+/// Offset of the file name in a find first DTA.
+const DTA_FILE_NAME_OFFSET: u32 = 0x1E;
+/// Length of the file name field in a find first DTA.
+const DTA_FILE_NAME_LENGTH: usize = 13;
+/// Carry flag in the flags word.
+const FLAGS_CARRY: u16 = 0x0001;
+
+#[test]
+fn find_first_finds_a_file_with_a_space_inside_its_name() {
+    let floppy = harness::create_test_floppy_with_attributed_files(&[(
+        SPACED_MARKER_FCB_NAME,
+        SPACED_MARKER_ATTRIBUTE,
+        &[],
+    )]);
+    let mut machine = harness::boot_hle_with_floppy_image(floppy);
+    harness::write_bytes(
+        &mut machine.bus,
+        harness::INJECT_CODE_BASE + SEARCH_PATH_OFFSET,
+        SPACED_MARKER_PATH,
+    );
+
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB4, 0x1A,                         // MOV AH, 1Ah
+        0xBA, 0x00, 0x03,                   // MOV DX, 0300h
+        0xCD, 0x21,                         // INT 21h
+        0xB4, 0x4E,                         // MOV AH, 4Eh
+        0xB9, 0x07, 0x00,                   // MOV CX, 0007h
+        0xBA, 0x00, 0x02,                   // MOV DX, 0200h
+        0xCD, 0x21,                         // INT 21h
+        0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
+        0x9C,                               // PUSHF
+        0x58,                               // POP AX
+        0xA3, 0x02, 0x01,                   // MOV [0x0102], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    harness::inject_and_run_with_budget(&mut machine, code, harness::INJECT_BUDGET_DISK_IO);
+
+    assert_eq!(harness::result_word(&machine.bus, 0), 0x0000);
+    assert_eq!(harness::result_word(&machine.bus, 2) & FLAGS_CARRY, 0);
+    let found_name = harness::read_string(
+        &machine.bus,
+        harness::INJECT_CODE_BASE + SEARCH_DTA_OFFSET + DTA_FILE_NAME_OFFSET,
+        DTA_FILE_NAME_LENGTH,
+    );
+    assert_eq!(found_name, SPACED_MARKER_DTA_NAME);
+}
+
 #[test]
 fn ioctl_reports_local_and_invalid_drives() {
     let mut machine = harness::boot_hle_with_floppy();

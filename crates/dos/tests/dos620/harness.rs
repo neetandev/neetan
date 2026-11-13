@@ -756,12 +756,27 @@ pub fn create_test_floppy_with_config_and_autoexec(
 /// Builds a test floppy with the given root files. Each name is the 11-byte
 /// FCB form of the file name.
 pub fn create_test_floppy_with_files(files: &[([u8; 11], &[u8])]) -> device::floppy::FloppyImage {
+    let files: Vec<([u8; 11], u8, &[u8])> = files
+        .iter()
+        .map(|&(name, data)| (name, ARCHIVE_ATTRIBUTE, data))
+        .collect();
+    create_test_floppy_with_attributed_files(&files)
+}
+
+/// Directory entry attribute of an archived file.
+const ARCHIVE_ATTRIBUTE: u8 = 0x20;
+
+/// Builds a test floppy with the given root files. Each file is the 11-byte
+/// FCB form of its name, its attribute byte and its data.
+pub fn create_test_floppy_with_attributed_files(
+    files: &[([u8; 11], u8, &[u8])],
+) -> device::floppy::FloppyImage {
     let specs: Vec<TestFileSpec<'_>> = files
         .iter()
-        .map(|(name, data)| TestFileSpec {
-            name: *name,
+        .map(|&(name, attributes, data)| TestFileSpec {
+            name,
             data,
-            attributes: 0x20,
+            attributes,
             time: TEST_FILE_TIME,
             date: TEST_FILE_DATE,
         })
