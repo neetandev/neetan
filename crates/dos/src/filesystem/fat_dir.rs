@@ -204,6 +204,10 @@ fn human68k_name_continuation(reserved: &[u8; RESERVED_LENGTH]) -> &[u8] {
     &reserved[..end]
 }
 
+/// Checks one field of an 8.3 name. The field holds ASCII bytes from 20h up
+/// without the reserved name characters, half-width katakana and complete
+/// Shift-JIS characters. Trailing spaces pad the field and a space inside the
+/// field is part of the name.
 fn is_valid_fcb_field(field: &[u8]) -> bool {
     let end = field
         .iter()
@@ -212,7 +216,7 @@ fn is_valid_fcb_field(field: &[u8]) -> bool {
     let mut index = 0;
     while index < end {
         let byte = field[index];
-        if byte <= b' ' || is_invalid_ascii_name_byte(byte) {
+        if byte < b' ' || is_invalid_ascii_name_byte(byte) {
             return false;
         }
         if is_shift_jis_lead_byte(byte) {
@@ -749,6 +753,14 @@ mod tests {
     }
 
     #[test]
+    fn parse_entry_accepts_a_space_inside_the_name() {
+        let entry = parse_entry(&raw_entry(*b"ED2-98 DSK5", 0x27), 0, 0, false).unwrap();
+        assert_eq!(&entry.name, b"ED2-98 DSK5");
+        assert!(parse_entry(&raw_entry(*b"A B     T X", ATTR_ARCHIVE), 0, 0, false).is_some());
+        assert!(parse_entry(&raw_entry(*b"A\x01B     TXT", ATTR_ARCHIVE), 0, 0, false).is_none());
+    }
+
+    #[test]
     fn parse_entry_and_to_bytes_keep_the_reserved_bytes() {
         let raw = directory_entry_bytes(b"LONGNAMEX  ", ATTR_ARCHIVE, b"1Abcdefghi", 0x0123, 4567);
         let mut data = raw;
@@ -877,7 +889,11 @@ mod tests {
 
     #[test]
     fn human68k_volume_accepts_an_8_3_name_with_a_continuation_it_cannot_join() {
-        let raw = directory_entry_bytes(b"AB      X  ", ATTR_ARCHIVE, b"cd", 0, 0);
+        let raw = directory_entry_bytes(b"AB      X  ", ATTR_ARCHIVE, b"c*", 0, 0);
+        let mut reserved = [0u8; RESERVED_LENGTH];
+        reserved[..2].copy_from_slice(b"c*");
+        assert!(!is_valid_human68k_name(b"AB      X  ", &reserved));
+        assert!(is_valid_fcb_name(b"AB      X  "));
         assert!(parse_entry(&raw, 0, 0, true).is_some());
         assert!(parse_entry(&raw, 0, 0, false).is_some());
     }
