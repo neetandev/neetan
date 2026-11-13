@@ -588,8 +588,8 @@ impl FmChannel {
         _chnum: u32,
         operators: &mut [FmOperator],
     ) {
-        for opnum in 0..4 {
-            if let Some(op_idx) = self.op[opnum] {
+        for (opnum, op) in self.op.iter().enumerate() {
+            if let Some(op_idx) = *op {
                 operators[op_idx].keyonoff(bit(states, opnum as i32), keyon_type);
             }
         }
@@ -601,8 +601,8 @@ impl FmChannel {
         operators: &mut [FmOperator],
     ) -> bool {
         let mut active_mask = 0u32;
-        for opnum in 0..4 {
-            if let Some(op_idx) = self.op[opnum]
+        for (opnum, op) in self.op.iter().enumerate() {
+            if let Some(op_idx) = *op
                 && operators[op_idx].prepare::<R>(regs)
             {
                 active_mask |= 1 << opnum;
@@ -621,10 +621,8 @@ impl FmChannel {
         self.feedback[0] = self.feedback[1];
         self.feedback[1] = self.feedback_in;
 
-        for opnum in 0..4 {
-            if let Some(op_idx) = self.op[opnum] {
-                operators[op_idx].clock::<R>(env_counter, lfo_raw_pm, regs);
-            }
+        for op_idx in self.op.iter().flatten() {
+            operators[*op_idx].clock::<R>(env_counter, lfo_raw_pm, regs);
         }
     }
 

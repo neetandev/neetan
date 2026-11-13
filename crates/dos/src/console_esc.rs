@@ -435,11 +435,12 @@ impl TextVramConsole {
         bytes.push(0x1B);
         bytes.push(b'[');
         bytes.extend_from_slice(prefix);
-        for index in 0..self.esc_parser.param_count {
+        let params = &self.esc_parser.params[..self.esc_parser.param_count];
+        for (index, param) in params.iter().enumerate() {
             if index > 0 {
                 bytes.push(b';');
             }
-            bytes.extend_from_slice(self.esc_parser.params[index].to_string().as_bytes());
+            bytes.extend_from_slice(param.to_string().as_bytes());
         }
         bytes.push(final_byte);
         bytes

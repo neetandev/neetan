@@ -356,12 +356,9 @@ impl ReverbRingBuffer {
     }
 
     fn is_empty(&self) -> bool {
-        for i in 0..self.size as usize {
-            if self.buffer[i] < -SAMPLE_VALUE_THRESHOLD || self.buffer[i] > SAMPLE_VALUE_THRESHOLD {
-                return false;
-            }
-        }
-        true
+        !self.buffer[..self.size as usize]
+            .iter()
+            .any(|&sample| sample < -SAMPLE_VALUE_THRESHOLD || sample > SAMPLE_VALUE_THRESHOLD)
     }
 
     fn mute(&mut self) {
@@ -503,8 +500,7 @@ impl BReverbModelState {
                 let settings = get_settings(*mode, *mt32_compatible);
 
                 *allpasses = Vec::with_capacity(settings.number_of_allpasses as usize);
-                for i in 0..settings.number_of_allpasses as usize {
-                    let size = settings.allpass_sizes[i];
+                for &size in &settings.allpass_sizes[..settings.number_of_allpasses as usize] {
                     allpasses.push(ReverbAllpassState {
                         ring: ReverbRingBuffer {
                             buffer: vec![0.0; size as usize],

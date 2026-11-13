@@ -310,9 +310,9 @@ impl Rf5c68 {
         // chip is enabled restarts from its start address.
         if self.enabled {
             let toggled = self.channel_on_off ^ value;
-            for channel_index in 0..CHANNEL_COUNT {
+            for (channel_index, channel) in self.channels.iter_mut().enumerate() {
                 if toggled & (1 << channel_index) != 0 {
-                    self.channels[channel_index].rewind_to_start();
+                    channel.rewind_to_start();
                 }
             }
         }

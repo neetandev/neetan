@@ -135,8 +135,8 @@ impl AtMemory {
 
     /// Recomputes the UMA read/write tables from the chipset registers.
     pub fn refresh_uma(&mut self, chipset: &Cs4031) {
-        for region in 0..2 {
-            self.ab_internal[region] = chipset.ab_region_internal(region);
+        for (region, internal) in self.ab_internal.iter_mut().enumerate() {
+            *internal = chipset.ab_region_internal(region);
         }
         for region in 0..UMA_REGION_COUNT {
             self.uma_read[region] = match chipset.region_read_source(region) {

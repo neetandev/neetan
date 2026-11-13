@@ -405,9 +405,7 @@ impl FmRegisters for OpmRegisters {
     fn reset(&mut self) {
         self.regdata.fill(0);
         // enable output on both channels by default
-        for offset in 0x20..=0x27 {
-            self.regdata[offset] = 0xC0;
-        }
+        self.regdata[0x20..=0x27].fill(0xC0);
     }
 
     // Note that the channel index order is 0,2,1,3, so we bitswap the index.

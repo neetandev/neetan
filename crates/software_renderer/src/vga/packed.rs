@@ -70,14 +70,14 @@ impl VgaRenderer {
             }
 
             let dots = (layout.content_width + pan).min(LINE_BUFFER_DOTS as u32);
-            for dot in 0..dots as usize {
+            for (dot, pixel) in self.line_buffer[..dots as usize].iter_mut().enumerate() {
                 let source = if inputs.packed_half_rate {
                     dot >> 1
                 } else {
                     dot
                 };
                 let value = inputs.vram[(row_bytes + source) & byte_mask];
-                self.line_buffer[dot] = inputs.pens_256[usize::from(value)];
+                *pixel = inputs.pens_256[usize::from(value)];
             }
             self.commit_scanline(y, layout, pan);
         }

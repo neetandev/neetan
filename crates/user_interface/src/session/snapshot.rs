@@ -64,17 +64,17 @@ impl Session {
         rollback: &RemovableMediaRollback,
     ) -> Result<(), String> {
         let selection = rollback.selection;
-        for drive in 0..2 {
+        for (drive, &selected) in selection.floppy.iter().enumerate() {
             let current = match drive {
                 0 => self.fdd1_index,
                 1 => self.fdd2_index,
                 _ => unreachable!(),
             };
             let slot = MediaSlot::new(MediaKind::Floppy, drive as u32);
-            if current == selection.floppy[drive] && !rollback.slots.contains(&slot) {
+            if current == selected && !rollback.slots.contains(&slot) {
                 continue;
             }
-            match selection.floppy[drive] {
+            match selected {
                 Some(index) => self.select_floppy(drive, index)?,
                 None => self.eject_floppy(drive),
             }
