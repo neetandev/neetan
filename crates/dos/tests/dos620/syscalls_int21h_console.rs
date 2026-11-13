@@ -370,6 +370,39 @@ fn flush_and_invoke_0ch_blocks_without_repeated_flush() {
 /// Default values verified against real MS-DOS 6.20 via oracle test
 /// (machine crate `fnkey_oracle::read_dos620_default_fnkey_map`).
 #[test]
+fn extended_key_07h_shift_home_returns_rs() {
+    let mut machine = harness::boot_hle();
+    const PC98_SCAN_SHIFT: u8 = 0x70;
+    const PC98_SCAN_HOME: u8 = 0x3E;
+    for scan in [
+        PC98_SCAN_SHIFT,
+        PC98_SCAN_HOME,
+        PC98_SCAN_HOME | 0x80,
+        PC98_SCAN_SHIFT | 0x80,
+    ] {
+        machine.bus.push_keyboard_scancode(scan);
+    }
+
+    const RES_LO: u8 = (INJECT_RESULT_OFFSET & 0xFF) as u8;
+    const RES_HI: u8 = (INJECT_RESULT_OFFSET >> 8) as u8;
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB4, 0x07,                         // MOV AH, 07h
+        0xCD, 0x21,                         // INT 21h
+        0x89, 0x06, RES_LO, RES_HI,         // MOV [result+0], AX
+        0xFA,                               // CLI
+        0xF4,                               // HLT
+    ];
+    inject_and_run_with_budget(&mut machine, code, INJECT_BUDGET_DISK_IO);
+
+    let al = result_word(&machine.bus, 0) & 0xFF;
+    assert_eq!(
+        al, 0x1E,
+        "SHIFT+HOME should produce 0x1E (RS), got {al:#04X}"
+    );
+}
+
+#[test]
 fn extended_key_07h_arrow_up_returns_vt() {
     let mut machine = harness::boot_hle();
 

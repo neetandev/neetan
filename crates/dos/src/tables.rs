@@ -90,6 +90,8 @@ pub const SFT_DEVINFO_SPECIAL: u16 = 0x0010;
 /// Raw (binary) mode of a character device: reads and writes skip the
 /// line editing, the echo and the control character checks.
 pub const SFT_DEVINFO_RAW: u16 = 0x0020;
+/// End of file mark (Ctrl-Z) of a text file.
+pub const END_OF_FILE_MARK: u8 = 0x1A;
 // Base device-info bits real DOS 6.20 sets on every character-device SFT
 // entry: bit 15 (mirror of DEVATTR_CHAR), bit 7 (CHAR), and bit 6 (no-EOF).
 pub const SFT_DEVINFO_CHAR_DEVICE_COMMON: u16 =

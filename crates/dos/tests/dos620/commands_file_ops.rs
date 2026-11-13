@@ -23,6 +23,46 @@ fn type_file_content() {
     );
 }
 
+/// Text file with an end of file mark (1Ah) in front of its last line.
+const END_OF_FILE_TEXT: &[u8] = b"LINE-1\r\nLINE-2\r\n\x1aAFTER-EOF\r\n";
+
+/// Runs `command` on a floppy with EOF.TXT and checks that the output ends at
+/// the end of file mark and leaves the screen as it is.
+fn assert_output_ends_at_end_of_file_mark(command: &[u8]) {
+    let floppy = create_test_floppy_with_program(b"EOF     TXT", END_OF_FILE_TEXT);
+    let mut machine = boot_hle_with_floppy_image(floppy);
+    type_string(&mut machine.bus, b"A:\r");
+    run_until_prompt(&mut machine);
+
+    type_string(&mut machine.bus, b"CLS\r");
+    run_until_prompt(&mut machine);
+
+    type_string_long(&mut machine, command);
+    run_until_prompt(&mut machine);
+
+    let command_text = std::str::from_utf8(&command[..command.len() - 1]).unwrap();
+    let command_row = find_row_containing(&machine.bus, command_text).expect("command line");
+    assert_eq!(
+        find_row_containing(&machine.bus, "LINE-1"),
+        Some(command_row + 1)
+    );
+    assert_eq!(
+        find_row_containing(&machine.bus, "LINE-2"),
+        Some(command_row + 2)
+    );
+    assert_eq!(find_row_containing(&machine.bus, "AFTER-EOF"), None);
+}
+
+#[test]
+fn type_ends_at_the_end_of_file_mark() {
+    assert_output_ends_at_end_of_file_mark(b"TYPE EOF.TXT\r");
+}
+
+#[test]
+fn more_ends_at_the_end_of_file_mark() {
+    assert_output_ends_at_end_of_file_mark(b"MORE EOF.TXT\r");
+}
+
 #[test]
 fn type_nonexistent() {
     let mut machine = boot_hle_with_floppy();

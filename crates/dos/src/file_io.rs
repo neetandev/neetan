@@ -806,7 +806,9 @@ impl NeetanDos {
         }
     }
 
-    /// AH=40h: Write to file or device.
+    /// AH=40h: Write to file or device. A character device in cooked mode
+    /// takes the bytes in front of the first end of file mark and AX returns
+    /// their count.
     pub(crate) fn int21h_40h_write(
         &mut self,
         cpu: &mut dyn CpuAccess,
@@ -827,25 +829,43 @@ impl NeetanDos {
             let dev_info = memory.read_word(sft_addr + tables::SFT_ENT_DEV_INFO);
             if dev_info & tables::SFT_DEVINFO_CHAR != 0 {
                 let is_nul = dev_info & tables::SFT_DEVINFO_NUL != 0;
+                let cooked = dev_info & tables::SFT_DEVINFO_RAW == 0;
+                let written = if cooked && !is_nul {
+                    (0..count)
+                        .position(|i| memory.read_byte(buf_addr + i) == tables::END_OF_FILE_MARK)
+                        .map_or(count, |position| position as u32)
+                } else {
+                    count
+                };
                 if self.stdout_trace_enabled() {
                     let route = route_for_character_device(memory, is_nul);
-                    self.record_stdout_write(memory, handle, buf_addr, count, route);
+                    self.record_stdout_write(memory, handle, buf_addr, count, written, route);
                 }
                 if is_nul {
                     return Ok(count as u16);
                 }
-                // Device write: send to console
-                for i in 0..count {
+                for i in 0..written {
                     let byte = memory.read_byte(buf_addr + i);
-                    self.write_stdout_byte(memory, byte);
+                    if cooked {
+                        self.write_stdout_kernel_byte(memory, byte);
+                    } else {
+                        self.write_stdout_byte(memory, byte);
+                    }
                 }
-                return Ok(count as u16);
+                return Ok(written as u16);
             }
 
             // A standard output handle pointing at a regular file means the
             // guest redirected console output.
             if (handle == 1 || handle == 2) && self.stdout_trace_enabled() {
-                self.record_stdout_write(memory, handle, buf_addr, count, StdoutRoute::Redirected);
+                self.record_stdout_write(
+                    memory,
+                    handle,
+                    buf_addr,
+                    count,
+                    count,
+                    StdoutRoute::Redirected,
+                );
             }
 
             // File write

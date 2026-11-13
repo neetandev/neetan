@@ -257,21 +257,42 @@ impl TextVramConsole {
         }
     }
 
+    /// Sets the cursor one column left without erasing. From column 0 the
+    /// cursor goes to the last column of the row above. Row 0, column 0 keeps
+    /// the cursor.
     pub(crate) fn backspace(&self, memory: &mut dyn MemoryAccess) {
         let row = self.cursor_row(memory);
         let col = self.cursor_col(memory);
         if col > 0 {
             self.set_cursor(memory, row, col - 1);
+        } else if row > 0 {
+            self.set_cursor(memory, row - 1, COLUMNS - 1);
         }
     }
 
+    /// Advances the cursor one column like a written character, without
+    /// writing a cell. The last column wraps to the next row.
+    pub(crate) fn cursor_forward(&self, memory: &mut dyn MemoryAccess) {
+        self.advance_cursor(memory);
+    }
+
+    /// Sets the cursor to the next tab stop (a multiple of 8) without writing
+    /// cells. A tab stop past the last column wraps to the next row, column 0.
     pub(crate) fn tab(&self, memory: &mut dyn MemoryAccess) {
-        let col = self.cursor_col(memory);
-        let next_tab = (col + 8) & !7;
-        let target = next_tab.min(COLUMNS - 1);
-        for _ in col..target {
-            self.put_char(memory, b' ');
+        let row = self.cursor_row(memory);
+        let next_tab = (self.cursor_col(memory) + 8) & !7;
+        if next_tab < COLUMNS {
+            self.set_cursor(memory, row, next_tab);
+        } else if !self.wrap_to_next_line(memory) {
+            self.set_cursor(memory, row, COLUMNS - 1);
         }
+    }
+
+    /// Returns the count of spaces that a DOS kernel output function writes
+    /// for a tab: up to the next tab stop, at most to the last column.
+    pub(crate) fn kernel_tab_spaces(&self, memory: &dyn MemoryAccess) -> u8 {
+        let col = self.cursor_col(memory);
+        ((col + 8) & !7).min(COLUMNS - 1) - col
     }
 
     /// Scrolls the scroll range up by `count` rows and clears the rows at its bottom.
@@ -1337,12 +1358,44 @@ mod tests {
     }
 
     #[test]
-    fn backspace_at_col_zero_no_op() {
+    fn backspace_at_col_zero_goes_to_last_column_of_row_above() {
         let console = make_console();
         let mut memory = make_memory();
         console.set_cursor(&mut memory, 5, 0);
         console.backspace(&mut memory);
-        assert_cursor(&console, &memory, 5, 0);
+        assert_cursor(&console, &memory, 4, 79);
+    }
+
+    #[test]
+    fn backspace_at_home_keeps_cursor() {
+        let console = make_console();
+        let mut memory = make_memory();
+        console.set_cursor(&mut memory, 0, 0);
+        console.backspace(&mut memory);
+        assert_cursor(&console, &memory, 0, 0);
+    }
+
+    #[test]
+    fn cursor_forward_keeps_the_cell() {
+        let console = make_console();
+        let mut memory = make_memory();
+        write_vram_char(&mut memory, 5, 10, b'A');
+        console.set_cursor(&mut memory, 5, 10);
+        console.cursor_forward(&mut memory);
+        assert_cursor(&console, &memory, 5, 11);
+        assert_vram_char(&memory, 5, 10, b'A', 0x00);
+    }
+
+    #[test]
+    fn cursor_forward_wraps_and_scrolls_at_the_last_cell() {
+        let console = make_console();
+        let mut memory = make_memory();
+        fill_row(&mut memory, 24, b'Z');
+        console.set_cursor(&mut memory, 24, 79);
+        console.cursor_forward(&mut memory);
+        assert_cursor(&console, &memory, 24, 0);
+        assert_vram_char(&memory, 23, 79, b'Z', 0x00);
+        assert_vram_clear(&memory, 24, 0, 79);
     }
 
     #[test]
@@ -1365,6 +1418,19 @@ mod tests {
     }
 
     #[test]
+    fn tab_keeps_the_cells() {
+        let console = make_console();
+        let mut memory = make_memory();
+        fill_row(&mut memory, 0, b'X');
+        console.set_cursor(&mut memory, 0, 2);
+        console.tab(&mut memory);
+        assert_cursor(&console, &memory, 0, 8);
+        for col in 0..COLUMNS {
+            assert_vram_char(&memory, 0, col, b'X', 0x00);
+        }
+    }
+
+    #[test]
     fn tab_from_col_five() {
         let console = make_console();
         let mut memory = make_memory();
@@ -1383,13 +1449,29 @@ mod tests {
     }
 
     #[test]
-    fn tab_near_end_of_row() {
+    fn tab_near_end_of_row_wraps_to_the_next_row() {
         let console = make_console();
         let mut memory = make_memory();
-        console.set_cursor(&mut memory, 0, 75);
+        console.set_cursor(&mut memory, 0, 76);
         console.tab(&mut memory);
-        // (75 + 8) & !7 = 80, clamped to 79.
-        assert_cursor(&console, &memory, 0, 79);
+        assert_cursor(&console, &memory, 1, 0);
+        console.set_cursor(&mut memory, 0, 79);
+        console.tab(&mut memory);
+        assert_cursor(&console, &memory, 1, 0);
+    }
+
+    #[test]
+    fn kernel_tab_spaces_reach_the_next_tab_stop_and_stop_at_the_last_column() {
+        let console = make_console();
+        let mut memory = make_memory();
+        console.set_cursor(&mut memory, 0, 5);
+        assert_eq!(console.kernel_tab_spaces(&memory), 3);
+        console.set_cursor(&mut memory, 0, 8);
+        assert_eq!(console.kernel_tab_spaces(&memory), 8);
+        console.set_cursor(&mut memory, 0, 75);
+        assert_eq!(console.kernel_tab_spaces(&memory), 4);
+        console.set_cursor(&mut memory, 0, 79);
+        assert_eq!(console.kernel_tab_spaces(&memory), 0);
     }
 
     #[test]

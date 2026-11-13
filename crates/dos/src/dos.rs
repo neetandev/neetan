@@ -3,13 +3,20 @@
 use common::warn;
 
 use crate::{
-    BufferedInputState, CpuAccess, DriveIo, MemoryAccess, NeetanDos, SegmentRegister, country,
-    extended_error,
+    BufferedInputState, CpuAccess, DriveIo, MemoryAccess, NeetanDos, SegmentRegister,
+    console_line::LineKey,
+    country, extended_error,
     filesystem::{self, fat_bpb::Bpb},
     layout, memory, process, set_iret_zf, tables,
     trace::{DosStdoutEvent, DosVectorEvent, route, source, suppression},
     version_gate,
 };
+
+/// Tab.
+const TAB: u8 = 0x09;
+
+/// Key code of SHIFT+HOME in the keyboard buffer.
+const SHIFT_HOME_KEY_CODE: u8 = 0xAE;
 
 /// First function of the OEM range of INT 21h.
 const OEM_FUNCTION_FIRST: u8 = 0xF8;
@@ -260,7 +267,7 @@ impl NeetanDos {
                 },
             );
         }
-        self.write_stdout_byte(memory, dl);
+        self.write_stdout_kernel_byte(memory, dl);
         cpu.set_ax((cpu.ax() & 0xFF00) | dl as u16);
     }
 
@@ -279,6 +286,19 @@ impl NeetanDos {
     pub(crate) fn write_stdout_byte(&mut self, memory: &mut dyn MemoryAccess, byte: u8) {
         if self.stdout_route(memory).reaches_console() {
             self.console_output().write_byte(memory, byte);
+        }
+    }
+
+    /// Writes one byte of a DOS kernel output function through the active
+    /// console output path. The text VRAM console gets a tab as spaces up to
+    /// the next tab stop.
+    pub(crate) fn write_stdout_kernel_byte(&mut self, memory: &mut dyn MemoryAccess, byte: u8) {
+        if byte == TAB && self.console_device.is_text_vram() {
+            for _ in 0..self.console.kernel_tab_spaces(memory) {
+                self.write_stdout_byte(memory, b' ');
+            }
+        } else {
+            self.write_stdout_byte(memory, byte);
         }
     }
 
@@ -305,16 +325,18 @@ impl NeetanDos {
         });
     }
 
-    /// Records an INT 21h AH=40h stdout routing event with the buffer bytes.
+    /// Records an INT 21h AH=40h stdout routing event with the requested
+    /// count and the `written` bytes at the start of the buffer.
     pub(crate) fn record_stdout_write(
         &self,
         memory: &dyn MemoryAccess,
         handle: u16,
         buffer_address: u32,
         count: u32,
+        written: u32,
         route: StdoutRoute,
     ) {
-        let mut bytes = vec![0u8; count as usize];
+        let mut bytes = vec![0u8; written as usize];
         memory.read_block(buffer_address, &mut bytes);
         self.record_stdout(
             memory,
@@ -391,7 +413,7 @@ impl NeetanDos {
         //   320+:    editing keys (11 x 6 bytes):
         //     0=ROLL UP(0x36), 1=ROLL DOWN(0x37), 2=INS(0x38), 3=DEL(0x39),
         //     4=UP(0x3A), 5=LEFT(0x3B), 6=RIGHT(0x3C), 7=DOWN(0x3D),
-        //     8=HOME(0x3E), 9=HELP(0x3F), 10=SHIFT+HOME
+        //     8=HOME(0x3E), 9=HELP(0x3F), 10=SHIFT+HOME(0xAE)
         let (offset, max_len) = match scan {
             0x62..=0x6B => {
                 let idx = (scan - 0x62) as usize;
@@ -401,6 +423,7 @@ impl NeetanDos {
                 let idx = (scan - 0x36) as usize;
                 (320 + idx * 6, 5)
             }
+            SHIFT_HOME_KEY_CODE => (320 + 10 * 6, 5),
             _ => return None,
         };
 
@@ -433,7 +456,7 @@ impl NeetanDos {
     ) -> bool {
         match self.read_input_byte(memory) {
             Some(ch) => {
-                self.console_output().write_byte(memory, ch);
+                self.echo_kernel_byte(memory, ch);
                 cpu.set_ax((cpu.ax() & 0xFF00) | ch as u16);
                 true
             }
@@ -591,43 +614,54 @@ impl NeetanDos {
                 return false;
             }
         };
-        let bi = self.state.buffered_input.as_mut().unwrap();
+        let Some(BufferedInputState {
+            buffer_addr,
+            max_chars,
+            current_pos,
+        }) = self.state.buffered_input.clone()
+        else {
+            return true;
+        };
+        let line_addr = buffer_addr + 2;
+        let mut pos = current_pos;
 
-        match ch {
-            0x0D => {
-                let addr = bi.buffer_addr;
-                let pos = bi.current_pos;
-                memory.write_byte(addr + 1, pos);
-                memory.write_byte(addr + 2 + pos as u32, 0x0D);
-                self.console_output().write_byte(memory, b'\r');
-                self.console_output().write_byte(memory, b'\n');
+        match LineKey::of(ch) {
+            LineKey::Enter => {
+                memory.write_byte(buffer_addr + 1, pos);
+                memory.write_byte(line_addr + u32::from(pos), ch);
+                self.console_output().write_byte(memory, ch);
                 self.state.buffered_input = None;
-                true
+                return true;
             }
-            0x08 => {
-                if let Some(bi) = self.state.buffered_input.as_mut()
-                    && bi.current_pos > 0
-                {
-                    bi.current_pos -= 1;
-                    self.console_output().write_byte(memory, 0x08);
-                    self.console_output().write_byte(memory, b' ');
-                    self.console_output().write_byte(memory, 0x08);
+            LineKey::LineFeed => self.echo_new_line(memory),
+            LineKey::Backspace => {
+                if pos > 0 {
+                    pos -= 1;
+                    let erased = memory.read_byte(line_addr + u32::from(pos));
+                    self.erase_line_byte(memory, erased);
                 }
-                self.wait_for_console_input(cpu, memory);
-                false
             }
-            _ => {
-                let bi = self.state.buffered_input.as_mut().unwrap();
-                if bi.current_pos < bi.max_chars.saturating_sub(1) {
-                    let addr = bi.buffer_addr + 2 + bi.current_pos as u32;
-                    memory.write_byte(addr, ch);
-                    bi.current_pos += 1;
-                    self.console_output().write_byte(memory, ch);
+            LineKey::EraseLine => {
+                while pos > 0 {
+                    pos -= 1;
+                    let erased = memory.read_byte(line_addr + u32::from(pos));
+                    self.erase_line_byte(memory, erased);
                 }
-                self.wait_for_console_input(cpu, memory);
-                false
+            }
+            LineKey::Drop => {}
+            LineKey::Store(byte) => {
+                if pos < max_chars.saturating_sub(1) {
+                    memory.write_byte(line_addr + u32::from(pos), byte);
+                    pos += 1;
+                    self.echo_line_byte(memory, byte);
+                }
             }
         }
+        if let Some(state) = self.state.buffered_input.as_mut() {
+            state.current_pos = pos;
+        }
+        self.wait_for_console_input(cpu, memory);
+        false
     }
 
     /// AH=0Bh: Check keyboard status (non-blocking).
@@ -717,7 +751,7 @@ impl NeetanDos {
             if byte == b'$' {
                 break;
             }
-            self.write_stdout_byte(memory, byte);
+            self.write_stdout_kernel_byte(memory, byte);
         }
         cpu.set_ax((cpu.ax() & 0xFF00) | 0x24);
     }
@@ -2016,6 +2050,25 @@ mod tests {
         assert_eq!(event.bytes, b"HELLO");
         assert_eq!(event.route, route::CONSOLE);
         assert_eq!(event.suppression_reason, None);
+    }
+
+    #[test]
+    fn int21h_40h_cooked_write_records_the_bytes_before_the_end_of_file_mark() {
+        let (mut dos, mut memory) =
+            dos_with_stdout_handle(crate::tables::SFT_DEVINFO_CHAR_DEVICE_COMMON);
+
+        write_via_ah40(&mut dos, &mut memory, b"AB\x1AC");
+
+        let events = stdout_events(&dos);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].requested_count, 4);
+        assert_eq!(events[0].bytes, b"AB");
+    }
+
+    #[test]
+    fn shift_home_selects_the_rs_of_the_editing_key_map() {
+        let dos = NeetanDos::new(DosPlatform::pc98(HleDosVersion::Dos620));
+        assert_eq!(dos.lookup_fnkey_sequence(0xAE), Some(vec![0x1E]));
     }
 
     #[test]
