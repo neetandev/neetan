@@ -4,7 +4,7 @@ use super::{RedirectSpec, read_env_var};
 use crate::{
     DosState, DriveIo, IoAccess, MemoryAccess,
     commands::{RunningCommand, StepResult},
-    filesystem,
+    filesystem, tables,
 };
 
 #[derive(Clone)]
@@ -744,12 +744,12 @@ fn ascii_eq_ignore_case(left: &[u8], right: &[u8]) -> bool {
 }
 
 /// Splits raw file data into lines on \r\n or \n.
-/// Stops at Ctrl-Z (0x1A), the DOS end-of-file marker.
+/// Stops at the end of file mark (Ctrl-Z).
 pub(crate) fn split_bat_lines(data: &[u8]) -> Vec<Vec<u8>> {
     let mut lines = Vec::new();
     let mut current = Vec::new();
     for &byte in data {
-        if byte == 0x1A {
+        if byte == tables::END_OF_FILE_MARK {
             break;
         }
         if byte == b'\n' {

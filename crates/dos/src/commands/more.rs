@@ -86,15 +86,18 @@ state_struct_codec!(RunningMore { args, phase });
 impl RunningMore {
     fn do_output(
         &mut self,
-        _state: &mut DosState,
+        state: &mut DosState,
         io: &mut IoAccess,
         _drive: &mut dyn DriveIo,
         mut read: ReadState,
         mut lines_shown: u16,
     ) -> StepResult {
+        let raw = state.handle_is_raw_device(1, io.memory);
         while read.offset < read.data.len() {
             let byte = read.data[read.offset];
-            io.output_byte(byte);
+            if io.output_standard(&[byte], raw) == 0 {
+                break;
+            }
             if byte == b'\n' {
                 lines_shown += 1;
                 if lines_shown >= LINES_PER_PAGE {

@@ -74,17 +74,15 @@ state_struct_codec!(RunningType { args, phase });
 impl RunningType {
     fn do_output(
         &mut self,
-        _state: &mut DosState,
+        state: &mut DosState,
         io: &mut IoAccess,
         _drive: &mut dyn DriveIo,
         read: ReadState,
     ) -> StepResult {
         let chunk_end = (read.offset + 4096).min(read.data.len());
-        for &byte in &read.data[read.offset..chunk_end] {
-            io.output_byte(byte);
-        }
-
-        if chunk_end >= read.data.len() {
+        let chunk = &read.data[read.offset..chunk_end];
+        let raw = state.handle_is_raw_device(1, io.memory);
+        if io.output_standard(chunk, raw) < chunk.len() || chunk_end >= read.data.len() {
             return StepResult::Done(0);
         }
 

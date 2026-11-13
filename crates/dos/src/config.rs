@@ -1,6 +1,6 @@
 //! CONFIG.SYS and AUTOEXEC.BAT parsing.
 
-use crate::platform::DosVersion;
+use crate::{platform::DosVersion, tables};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ShellConfig {
@@ -245,9 +245,6 @@ const COMMENT_PREFIX: u8 = b';';
 
 /// First byte of a configuration block header of the DOS 6 start menu.
 const BLOCK_HEADER_PREFIX: u8 = b'[';
-
-/// End of file mark of a text file.
-const END_OF_FILE_MARK: u8 = 0x1A;
 
 /// Directive of a CONFIG.SYS line.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -522,7 +519,7 @@ fn split_lines(data: &[u8]) -> Vec<Vec<u8>> {
     let mut lines = Vec::new();
     let mut current = Vec::new();
     for &byte in data {
-        if byte == END_OF_FILE_MARK {
+        if byte == tables::END_OF_FILE_MARK {
             break;
         }
         if byte == b'\n' {

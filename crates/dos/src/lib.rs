@@ -642,9 +642,47 @@ impl IoAccess<'_> {
         }
     }
 
-    /// Writes a byte to the console backend, past any redirection.
+    /// Writes `bytes` like `INT 21h AH=40h` on the standard output. The
+    /// redirection buffer and the NUL console take every byte. A console in
+    /// raw mode (`raw`) takes every byte unchanged. A console in cooked mode
+    /// takes the bytes in front of the first end of file mark. Returns the
+    /// count of bytes taken.
+    pub(crate) fn output_standard(&mut self, bytes: &[u8], raw: bool) -> usize {
+        if self.redirect_output.is_some() || self.console_nul {
+            for &byte in bytes {
+                self.output_byte(byte);
+            }
+            return bytes.len();
+        }
+        if raw {
+            for &byte in bytes {
+                self.console_device
+                    .output(self.console)
+                    .write_byte(self.memory, byte);
+            }
+            return bytes.len();
+        }
+        let length = bytes
+            .iter()
+            .position(|&byte| byte == tables::END_OF_FILE_MARK)
+            .unwrap_or(bytes.len());
+        for &byte in &bytes[..length] {
+            self.write_console(byte);
+        }
+        length
+    }
+
+    /// Writes a byte to the console backend, past any redirection, like a
+    /// DOS kernel output function. The text VRAM console gets a tab as spaces
+    /// up to the next tab stop.
     pub(crate) fn write_console(&mut self, byte: u8) {
         if self.console_nul {
+            return;
+        }
+        if byte == b'\t' && self.console_device.is_text_vram() {
+            for _ in 0..self.console.kernel_tab_spaces(self.memory) {
+                self.console.write_byte(self.memory, b' ');
+            }
             return;
         }
         self.console_device
@@ -3091,6 +3129,18 @@ impl DosState {
             self.structures(),
             sft_index,
         )
+    }
+
+    /// Returns true when `handle` of the current process names a character
+    /// device in raw mode (device information bit 5).
+    pub(crate) fn handle_is_raw_device(&self, handle: u16, memory: &dyn MemoryAccess) -> bool {
+        let raw_device = tables::SFT_DEVINFO_CHAR | tables::SFT_DEVINFO_RAW;
+        self.handle_to_sft_index(handle, memory)
+            .ok()
+            .and_then(|sft_index| self.sft_entry_addr(sft_index, memory))
+            .is_some_and(|sft_addr| {
+                memory.read_word(sft_addr + tables::SFT_ENT_DEV_INFO) & raw_device == raw_device
+            })
     }
 
     /// Reads the PSP JFT to find the SFT index for a file handle.

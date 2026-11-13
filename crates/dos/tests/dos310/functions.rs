@@ -52,3 +52,73 @@ fn dbcs_functions_answer_as_an_undefined_function() {
         }
     }
 }
+
+/// Cursor row of the IO.SYS work area.
+const IOSYS_CURSOR_ROW: u32 = 0x0710;
+/// Cursor column of the IO.SYS work area.
+const IOSYS_CURSOR_COLUMN: u32 = 0x071C;
+/// Address of the ASCII text cells of the text VRAM.
+const TEXT_CHAR_BASE: u32 = 0xA0000;
+
+/// Writes `text` at `row`, column 0 of the text VRAM and sets the cursor to
+/// `row`, `column`.
+fn prepare_screen(machine: &mut Machine, row: u32, text: &[u8], column: u8) {
+    for (index, &byte) in text.iter().enumerate() {
+        let address = TEXT_CHAR_BASE + (row * 80 + index as u32) * 2;
+        write_bytes(&mut machine.bus, address, &[byte, 0x00]);
+    }
+    write_bytes(&mut machine.bus, IOSYS_CURSOR_ROW, &[row as u8]);
+    write_bytes(&mut machine.bus, IOSYS_CURSOR_COLUMN, &[column]);
+}
+
+/// Returns the cursor as (row, column).
+fn cursor(machine: &Machine) -> (u8, u8) {
+    (
+        read_byte(&machine.bus, IOSYS_CURSOR_ROW),
+        read_byte(&machine.bus, IOSYS_CURSOR_COLUMN),
+    )
+}
+
+#[test]
+fn ctrl_z_through_direct_console_output_clears_the_screen_and_homes_the_cursor() {
+    let mut machine = boot();
+    prepare_screen(&mut machine, 11, b"INSTALLER BOX", 12);
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB4, 0x06, // MOV AH, 06h
+        0xB2, 0x1A, // MOV DL, 1Ah
+        0xCD, 0x21, // INT 21h
+        0xFA,       // CLI
+        0xF4,       // HLT
+    ];
+    inject_and_run(&mut machine, code);
+
+    for (row, text) in screen_rows(&machine.bus).iter().enumerate() {
+        assert_eq!(text.trim_end(), "", "row {row}");
+    }
+    assert_eq!(cursor(&machine), (0, 0));
+}
+
+#[test]
+fn ctrl_z_ends_a_write_to_con() {
+    let mut machine = boot();
+    prepare_screen(&mut machine, 11, b"INSTALLER BOX", 13);
+    write_bytes(&mut machine.bus, INJECT_DATA_BASE, b"!\x1A?");
+    let [data_low, data_high] = INJECT_DATA_OFFSET.to_le_bytes();
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB4, 0x40,                // MOV AH, 40h
+        0xBB, 0x01, 0x00,          // MOV BX, 1
+        0xB9, 0x03, 0x00,          // MOV CX, 3
+        0xBA, data_low, data_high, // MOV DX, INJECT_DATA_OFFSET
+        0xCD, 0x21,                // INT 21h
+        0x2E, 0xA3, 0x00, 0x01,    // MOV CS:[0100h], AX
+        0xFA,                      // CLI
+        0xF4,                      // HLT
+    ];
+    inject_and_run(&mut machine, code);
+
+    assert_eq!(result_word(&machine.bus, 0), 1);
+    assert_eq!(screen_rows(&machine.bus)[11].trim_end(), "INSTALLER BOX!");
+    assert_eq!(cursor(&machine), (11, 14));
+}

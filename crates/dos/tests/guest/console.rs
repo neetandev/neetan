@@ -115,7 +115,7 @@ fn buffered_input_echoes_and_ends_at_carriage_return() {
     assert_eq!(machine.read_byte(base + 1), 2);
     assert_eq!(machine.read_byte(base + 2), b'h');
     assert_eq!(machine.read_byte(base + 3), b'i');
-    assert_eq!(machine.console_output(), b"hi\r\n");
+    assert_eq!(machine.console_output(), b"hi\r");
 }
 
 #[test]

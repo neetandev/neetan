@@ -249,19 +249,27 @@ impl TextVramConsole {
         }
     }
 
+    /// Handles one byte outside an escape sequence: the NEC control codes
+    /// 07h (bell), 08h (cursor left), 09h (tab), 0Ah (line feed), 0Bh (cursor
+    /// up), 0Ch (cursor right), 0Dh (carriage return), 1Ah (clear screen and
+    /// home), 1Bh (escape) and 1Eh (home). Every other byte is a character.
     fn esc_process_normal(&mut self, memory: &mut dyn MemoryAccess, byte: u8) {
         match byte {
             0x07 => {} // BEL: no-op
             0x08 => self.backspace(memory),
             0x09 => self.tab(memory),
             0x0A => self.linefeed(memory),
+            0x0B => self.cursor_up(memory, 1),
+            0x0C => self.cursor_forward(memory),
             0x0D => self.carriage_return(memory),
+            0x1A => self.clear_screen(memory),
             0x1B => {
                 self.esc_parser.state = EscState::GotEsc;
                 self.esc_parser.param_count = 0;
                 self.esc_parser.current_param = 0;
                 self.esc_parser.has_digit = false;
             }
+            0x1E => self.set_cursor(memory, 0, 0),
             _ => self.put_char(memory, byte),
         }
     }
@@ -649,5 +657,108 @@ fn ansi_foreground_to_pc98_color(code: u8) -> u8 {
         36 => 5,
         37 => 7,
         _ => 7,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::MockMemory;
+
+    /// Address of the ASCII byte of the text VRAM cell at `row`, `column`.
+    fn cell_address(row: u8, column: u8) -> u32 {
+        0xA0000 + (u32::from(row) * 80 + u32::from(column)) * 2
+    }
+
+    /// Memory with the IO.SYS console defaults of 25 rows and a labeled row 0
+    /// and row 10.
+    fn labeled_memory() -> MockMemory {
+        let mut memory = MockMemory::with_extended_memory(0x100000, 0);
+        let base = tables::IOSYS_BASE;
+        memory.write_byte(base + tables::IOSYS_OFF_SCROLL_LOWER, 24);
+        memory.write_byte(base + tables::IOSYS_OFF_SCREEN_LINES, 0x01);
+        memory.write_byte(base + tables::IOSYS_OFF_CLEAR_ATTR, 0xE1);
+        memory.write_byte(base + tables::IOSYS_OFF_CLEAR_CHAR, 0x20);
+        memory.write_byte(base + tables::IOSYS_OFF_DISPLAY_ATTR, 0xE1);
+        for row in [0, 10] {
+            for column in 0..80 {
+                memory.write_byte(cell_address(row, column), b'X');
+            }
+        }
+        memory
+    }
+
+    /// Returns the cursor as (row, column).
+    fn cursor(console: &TextVramConsole, memory: &MockMemory) -> (u8, u8) {
+        (console.cursor_row(memory), console.cursor_col(memory))
+    }
+
+    /// Feeds `byte` with the cursor at row 10, column 20.
+    fn feed_at_row_10(byte: u8) -> (TextVramConsole, MockMemory) {
+        let mut console = TextVramConsole::default();
+        let mut memory = labeled_memory();
+        console.set_cursor(&mut memory, 10, 20);
+        console.process_byte(&mut memory, byte);
+        (console, memory)
+    }
+
+    #[test]
+    fn sub_clears_every_row_and_homes_the_cursor() {
+        let (console, memory) = feed_at_row_10(0x1A);
+        assert_eq!(cursor(&console, &memory), (0, 0));
+        for row in 0..25 {
+            for column in 0..80 {
+                assert_eq!(
+                    memory.read_byte(cell_address(row, column)),
+                    b' ',
+                    "row {row}, column {column}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rs_homes_the_cursor_and_keeps_the_screen() {
+        let (console, memory) = feed_at_row_10(0x1E);
+        assert_eq!(cursor(&console, &memory), (0, 0));
+        assert_eq!(memory.read_byte(cell_address(0, 0)), b'X');
+        assert_eq!(memory.read_byte(cell_address(10, 20)), b'X');
+    }
+
+    #[test]
+    fn vt_moves_the_cursor_up_and_keeps_the_cell() {
+        let (console, memory) = feed_at_row_10(0x0B);
+        assert_eq!(cursor(&console, &memory), (9, 20));
+        assert_eq!(memory.read_byte(cell_address(10, 20)), b'X');
+    }
+
+    #[test]
+    fn vt_on_row_0_keeps_the_cursor() {
+        let mut console = TextVramConsole::default();
+        let mut memory = labeled_memory();
+        console.set_cursor(&mut memory, 0, 20);
+        console.process_byte(&mut memory, 0x0B);
+        assert_eq!(cursor(&console, &memory), (0, 20));
+        assert_eq!(memory.read_byte(cell_address(0, 20)), b'X');
+    }
+
+    #[test]
+    fn ff_moves_the_cursor_right_and_keeps_the_cell() {
+        let (console, memory) = feed_at_row_10(0x0C);
+        assert_eq!(cursor(&console, &memory), (10, 21));
+        assert_eq!(memory.read_byte(cell_address(10, 20)), b'X');
+    }
+
+    #[test]
+    fn other_control_bytes_are_characters() {
+        for byte in [0x00, 0x01, 0x0E, 0x0F, 0x10, 0x19, 0x1C, 0x1D, 0x1F] {
+            let (console, memory) = feed_at_row_10(byte);
+            assert_eq!(cursor(&console, &memory), (10, 21), "byte {byte:02X}h");
+            assert_eq!(
+                memory.read_byte(cell_address(10, 20)),
+                byte,
+                "byte {byte:02X}h"
+            );
+        }
     }
 }
