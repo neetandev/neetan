@@ -132,26 +132,123 @@ fn noop_functions_00h_through_08h() {
     // If we reach here, all 9 calls completed without hanging.
 }
 
-#[test]
-fn disk_partition_info_80h() {
-    let mut machine = harness::boot_hle();
+/// Offset of the CL=80h buffer in the inject segment.
+const DISK_INFO_BUFFER_OFFSET: u16 = 0x0200;
+/// Size of the CL=80h buffer.
+const DISK_INFO_BUFFER_SIZE: usize = 0x100;
+/// `BX` in front of a CL=80h call.
+const DISK_INFO_BX_PRESET: u16 = 0x1234;
+/// First physical sector of the partition of the test hard disk. The
+/// partition starts at cylinder 1 of a disk with 8 heads and 17 sectors per
+/// track.
+const TEST_HDD_PARTITION_START: u32 = 136;
+
+/// Fills the CL=80h buffer with FFh, calls INT DCh CL=80h with `ax` and
+/// DS:DX at the buffer and returns `[AX, BX, CX, DX]` and the buffer.
+fn call_disk_information(machine: &mut machine_98::Pc9801Ra, ax: u16) -> ([u16; 4], Vec<u8>) {
+    let buffer = INJECT_CODE_BASE + u32::from(DISK_INFO_BUFFER_OFFSET);
+    harness::write_bytes(&mut machine.bus, buffer, &[0xFF; DISK_INFO_BUFFER_SIZE]);
+    let [ax_low, ax_high] = ax.to_le_bytes();
+    let [bx_low, bx_high] = DISK_INFO_BX_PRESET.to_le_bytes();
+    let [dx_low, dx_high] = DISK_INFO_BUFFER_OFFSET.to_le_bytes();
     #[rustfmt::skip]
     let code: &[u8] = &[
-        0xB9, 0x80, 0x00,                   // MOV CX, 0080h (CL=80h)
-        0xB0, 0x00,                         // MOV AL, 00h
-        0xB4, 0x00,                         // MOV AH, 00h
+        0xB8, ax_low, ax_high,              // MOV AX, ax
+        0xBB, bx_low, bx_high,              // MOV BX, DISK_INFO_BX_PRESET
+        0xB9, 0x80, 0x00,                   // MOV CX, 0080h
+        0xBA, dx_low, dx_high,              // MOV DX, DISK_INFO_BUFFER_OFFSET
         0xCD, 0xDC,                         // INT DCh
         0xA3, 0x00, 0x01,                   // MOV [0x0100], AX
         0x89, 0x1E, 0x02, 0x01,             // MOV [0x0102], BX
+        0x89, 0x0E, 0x04, 0x01,             // MOV [0x0104], CX
+        0x89, 0x16, 0x06, 0x01,             // MOV [0x0106], DX
         0xFA,                               // CLI
         0xF4,                               // HLT
     ];
-    harness::inject_and_run(&mut machine, code);
+    harness::inject_and_run(machine, code);
+    let registers = [0, 2, 4, 6].map(|offset| harness::result_word(&machine.bus, offset));
+    (
+        registers,
+        harness::read_bytes(&machine.bus, buffer, DISK_INFO_BUFFER_SIZE),
+    )
+}
 
-    // Verify the call completed without hanging. The return values
-    // depend on the drive configuration.
-    let _ax = harness::result_word(&machine.bus, 0);
-    let _bx = harness::result_word(&machine.bus, 2);
+#[test]
+fn disk_information_lists_the_drives_and_the_partition_start() {
+    let mut machine = harness::boot_hle_with_forced_os(None, Some(harness::create_test_hdd(512)));
+    let (registers, buffer) = call_disk_information(&mut machine, 0x0000);
+    assert_eq!(
+        registers,
+        [0x0000, DISK_INFO_BX_PRESET, 0x0080, DISK_INFO_BUFFER_OFFSET]
+    );
+    let mut expected = vec![0u8; DISK_INFO_BUFFER_SIZE];
+    expected[0x00] = 1;
+    expected[0x0E] = 1;
+    expected[0x10..0x14].copy_from_slice(&TEST_HDD_PARTITION_START.to_le_bytes());
+    assert_eq!(buffer, expected);
+}
+
+#[test]
+fn disk_information_lists_the_second_fixed_disk_unit() {
+    let mut machine = harness::boot_hle_with_two_hdds(
+        harness::create_test_hdd(512),
+        harness::create_test_hdd(512),
+    );
+    let (_, buffer) = call_disk_information(&mut machine, 0x0000);
+    let mut expected = vec![0u8; DISK_INFO_BUFFER_SIZE];
+    expected[0x00] = 1;
+    expected[0x01] = 1;
+    expected[0x0E] = 2;
+    expected[0x10..0x14].copy_from_slice(&TEST_HDD_PARTITION_START.to_le_bytes());
+    expected[0x20..0x24].copy_from_slice(&TEST_HDD_PARTITION_START.to_le_bytes());
+    assert_eq!(buffer, expected);
+}
+
+#[test]
+fn disk_information_skips_a_fixed_disk_without_an_active_partition() {
+    let mut machine = harness::boot_hle_with_empty_sasi_hdd();
+    let (_, buffer) = call_disk_information(&mut machine, 0x0000);
+    assert_eq!(buffer, vec![0u8; DISK_INFO_BUFFER_SIZE]);
+}
+
+#[test]
+fn disk_information_counts_the_floppy_drives() {
+    let mut machine = harness::boot_hle_with_two_floppies();
+    let (_, buffer) = call_disk_information(&mut machine, 0x0000);
+    let mut expected = vec![0u8; DISK_INFO_BUFFER_SIZE];
+    expected[0x0C] = 2;
+    assert_eq!(buffer, expected);
+}
+
+#[test]
+fn disk_information_copies_the_console_state() {
+    let mut machine = harness::boot_hle();
+    let (registers, buffer) = call_disk_information(&mut machine, 0x0001);
+    assert_eq!(
+        registers,
+        [0x0001, DISK_INFO_BX_PRESET, 0x0080, DISK_INFO_BUFFER_OFFSET]
+    );
+    let state = harness::read_bytes(
+        &machine.bus,
+        dos::tables::IOSYS_BASE + dos::tables::IOSYS_OFF_SPECIAL_INPUT,
+        0x1A,
+    );
+    assert_eq!(buffer[..0x1A], state[..]);
+    assert!(buffer[0x1A..].iter().all(|&byte| byte == 0));
+}
+
+#[test]
+fn disk_information_reports_no_branch_4670_drive_and_no_fep() {
+    let mut machine = harness::boot_hle();
+    for ax in [0x8000, 0x8001, 0x8002] {
+        let (registers, buffer) = call_disk_information(&mut machine, ax);
+        assert_eq!(
+            registers,
+            [0x0000, DISK_INFO_BX_PRESET, 0x0080, DISK_INFO_BUFFER_OFFSET],
+            "AX={ax:04X}h"
+        );
+        assert!(buffer.iter().all(|&byte| byte == 0xFF), "AX={ax:04X}h");
+    }
 }
 
 #[test]

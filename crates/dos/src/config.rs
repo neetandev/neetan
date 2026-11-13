@@ -107,8 +107,9 @@ pub(crate) struct ConfigSys {
     pub cdrom_device_name: Option<Vec<u8>>,
     /// Ordered DEVICE= and DEVICEHIGH= lines from CONFIG.SYS.
     pub devices: Vec<ConfigDeviceLine>,
-    /// Line numbers (1-based) of the lines without a known keyword.
-    pub unknown_directive_lines: Vec<usize>,
+    /// Line numbers (1-based) of the lines that print the error message of
+    /// the dialect.
+    pub error_lines: Vec<usize>,
 }
 
 impl Default for ConfigSys {
@@ -122,7 +123,7 @@ impl Default for ConfigSys {
             shell: None,
             cdrom_device_name: None,
             devices: Vec::new(),
-            unknown_directive_lines: Vec::new(),
+            error_lines: Vec::new(),
         }
     }
 }
@@ -183,9 +184,29 @@ impl ConfigDialect {
         }
     }
 
-    /// Returns the Shift-JIS message of an unknown directive on the line
-    /// `line_number` (1-based).
-    pub(crate) fn unknown_directive_message(self, line_number: usize) -> Vec<u8> {
+    /// Returns true when a line with a single token continues with the next
+    /// line that holds at least one byte. The kernel appends that line
+    /// without a separator.
+    fn joins_single_token_lines(self) -> bool {
+        match self {
+            Self::KeywordPrefix => true,
+            Self::ExactKeyword => false,
+        }
+    }
+
+    /// Returns the content of `line` without its leading and trailing
+    /// whitespace. The DOS 3 kernel also skips the `;` bytes in front of the
+    /// keyword.
+    fn line_content(self, line: &[u8]) -> &[u8] {
+        match self {
+            Self::KeywordPrefix => skip_leading_delimiters(line).trim_ascii_end(),
+            Self::ExactKeyword => line.trim_ascii(),
+        }
+    }
+
+    /// Returns the Shift-JIS error message of the line `line_number`
+    /// (1-based).
+    pub(crate) fn error_message(self, line_number: usize) -> Vec<u8> {
         let mut message = NEW_LINE.to_vec();
         match self {
             Self::KeywordPrefix => {
@@ -312,8 +333,8 @@ fn shift_jis_bytes(text: &str) -> Vec<u8> {
 pub(crate) fn parse_config_sys(data: &[u8], dialect: ConfigDialect) -> ConfigSys {
     let mut config = ConfigSys::default();
 
-    for (line_index, line) in split_lines(data).iter().enumerate() {
-        let trimmed = line.trim_ascii();
+    for (line_number, line) in logical_lines(&split_lines(data), dialect) {
+        let trimmed = dialect.line_content(&line);
         if trimmed.is_empty() {
             continue;
         }
@@ -329,7 +350,7 @@ pub(crate) fn parse_config_sys(data: &[u8], dialect: ConfigDialect) -> ConfigSys
             .position(|&byte| ends_keyword(byte))
             .unwrap_or(upper.len());
         let Some(directive) = dialect.directive(&upper[..keyword_length]) else {
-            config.unknown_directive_lines.push(line_index + 1);
+            config.error_lines.push(line_number);
             continue;
         };
 
@@ -389,6 +410,51 @@ pub(crate) fn parse_config_sys(data: &[u8], dialect: ConfigDialect) -> ConfigSys
     }
 
     config
+}
+
+/// Returns `line` behind its leading whitespace and `;` bytes.
+fn skip_leading_delimiters(line: &[u8]) -> &[u8] {
+    let start = line
+        .iter()
+        .position(|&byte| !byte.is_ascii_whitespace() && byte != COMMENT_PREFIX)
+        .unwrap_or(line.len());
+    &line[start..]
+}
+
+/// Returns true for a line that holds a single token behind its leading
+/// whitespace and `;` bytes.
+fn is_single_token(line: &[u8]) -> bool {
+    let token = skip_leading_delimiters(line);
+    !token.is_empty() && !token.iter().any(|&byte| ends_keyword(byte))
+}
+
+/// Returns the logical lines of `lines` with the 1-based number of their
+/// first physical line. Under `dialect` with joined single token lines, a
+/// line with a single token continues with the next line that holds at
+/// least one byte. The joining repeats while the appended line holds a
+/// single token.
+fn logical_lines(lines: &[Vec<u8>], dialect: ConfigDialect) -> Vec<(usize, Vec<u8>)> {
+    let mut logical = Vec::with_capacity(lines.len());
+    let mut next_line = 0;
+    while next_line < lines.len() {
+        let line_number = next_line + 1;
+        let mut line = lines[next_line].clone();
+        let mut joins_next = dialect.joins_single_token_lines() && is_single_token(&line);
+        next_line += 1;
+        while joins_next {
+            while lines.get(next_line).is_some_and(|line| line.is_empty()) {
+                next_line += 1;
+            }
+            let Some(appended) = lines.get(next_line) else {
+                break;
+            };
+            line.extend_from_slice(appended);
+            joins_next = is_single_token(appended);
+            next_line += 1;
+        }
+        logical.push((line_number, line));
+    }
+    logical
 }
 
 /// Parses a DEVICE= value for NECCD.SYS / NECCDD.SYS driver recognition.
@@ -699,7 +765,7 @@ mod tests {
         assert_eq!(config.devices.len(), 1);
         assert_eq!(config.devices[0].directive, DeviceDirective::Device);
         assert_eq!(config.devices[0].path, b"A:\\DOS\\RAMDISK.SYS");
-        assert!(config.unknown_directive_lines.is_empty());
+        assert!(config.error_lines.is_empty());
     }
 
     #[test]
@@ -714,7 +780,7 @@ mod tests {
             config.shell.map(|shell| shell.path),
             Some(b"A:\\COMMAND.COM".to_vec())
         );
-        assert!(config.unknown_directive_lines.is_empty());
+        assert!(config.error_lines.is_empty());
     }
 
     #[test]
@@ -733,7 +799,7 @@ mod tests {
         let config = parse_dos310(
             b"FOOBAR=1\nDOS=HIGH\nSTACKS=9,256\nDRIVPARM=/D:0\nINSTALL=A:\\X.EXE\n[MENU]\n",
         );
-        assert_eq!(config.unknown_directive_lines, [1, 2, 3, 4, 5, 6]);
+        assert_eq!(config.error_lines, [1, 2, 3, 4, 5, 6]);
     }
 
     #[test]
@@ -741,13 +807,70 @@ mod tests {
         let config =
             parse_dos310(b"REM a remark\n; a comment\nREM\n\n   \nFILES=30\n;comment\nREMXYZ=1\n");
         assert_eq!(config.files, 30);
-        assert_eq!(config.unknown_directive_lines, [1, 2, 3, 7, 8]);
+        assert_eq!(config.error_lines, [1, 2, 3, 7]);
+    }
+
+    #[test]
+    fn dos310_single_token_line_continues_with_the_next_line() {
+        let config = parse_dos310(
+            b"REM\r\nFILES=11\r\n;comment\r\nBUFFERS=13\r\n[MENU]\r\nLASTDRIVE=K\r\nFILES\r\nFCBS=7,0\r\n",
+        );
+        assert_eq!(config.files, 20);
+        assert_eq!(config.buffers, 15);
+        assert_eq!(config.lastdrive, 26);
+        assert_eq!(config.error_lines, [1, 3, 5]);
+    }
+
+    #[test]
+    fn dos310_delimiter_behind_the_keyword_keeps_the_next_line() {
+        let config = parse_dos310(
+            b"FILES=\r\nLASTDRIVE=K\r\nBUFFERS   \r\nFILES=11\r\n;two words\r\nBUFFERS=13\r\nFILES =\t\r\nBREAK=ON\r\n",
+        );
+        assert_eq!(config.lastdrive, 11);
+        assert_eq!(config.files, 11);
+        assert_eq!(config.buffers, 13);
+        assert!(config.ctrl_break);
+        assert_eq!(config.error_lines, [5]);
+    }
+
+    #[test]
+    fn dos310_joined_line_skips_empty_lines_and_takes_whitespace_lines() {
+        let config = parse_dos310(b"REM\r\n\r\nFILES=11\r\nREM\r\n   \r\nLASTDRIVE=M\r\n");
+        assert_eq!(config.files, 20);
+        assert_eq!(config.lastdrive, 13);
+        assert_eq!(config.error_lines, [1, 4]);
+    }
+
+    #[test]
+    fn dos310_joined_lines_run_as_one_directive() {
+        let config = parse_dos310(b"FILES\r\n30\r\nLASTDRIVE\r\nM\r\nBUFFERS=13\r\n");
+        assert_eq!(config.files, 13);
+        assert_eq!(config.buffers, 15);
+        assert_eq!(config.lastdrive, 26);
+        assert!(config.error_lines.is_empty());
+    }
+
+    #[test]
+    fn dos310_skips_leading_semicolons() {
+        let config = parse_dos310(b";FILES=11\r\nBUFFERS=13\r\n;\r\nLASTDRIVE=K\r\n");
+        assert_eq!(config.files, 11);
+        assert_eq!(config.buffers, 13);
+        assert_eq!(config.lastdrive, 11);
+        assert!(config.error_lines.is_empty());
+    }
+
+    #[test]
+    fn dos620_single_token_line_keeps_the_next_line() {
+        let config = parse_dos620(b"REM\r\nFILES=11\r\nFOOBAR\r\nLASTDRIVE=K\r\n");
+        assert_eq!(config.files, 11);
+        assert_eq!(config.lastdrive, 11);
+        assert_eq!(config.error_lines, [3]);
     }
 
     #[test]
     fn dos620_keeps_remarks_and_comments_silent() {
         let config = parse_dos620(b"; comment\nREM x\nREM\nREM:x\n");
-        assert_eq!(config.unknown_directive_lines, [4]);
+        assert_eq!(config.error_lines, [4]);
     }
 
     #[test]
@@ -755,7 +878,7 @@ mod tests {
         let config = parse_dos620(b"FILESXYZ=20\nBUFFERSX=5\nFILES=30\n");
         assert_eq!(config.files, 30);
         assert_eq!(config.buffers, 15);
-        assert_eq!(config.unknown_directive_lines, [1, 2]);
+        assert_eq!(config.error_lines, [1, 2]);
     }
 
     #[test]
@@ -767,11 +890,7 @@ MENUDEFAULT=COMMON,5\r\nMENUITEM=COMMON\r\nNUMLOCK=OFF\r\nREM remark\r\nSET TEMP
 SHELL=A:\\COMMAND.COM\r\nSTACKS=9,256\r\nSUBMENU=MORE\r\nSWITCHES=/F\r\n[COMMON]\r\n\
 ; comment\r\nDEVICE?=A:\\Z.SYS\r\n\r\n";
         let config = parse_dos620(input);
-        assert!(
-            config.unknown_directive_lines.is_empty(),
-            "{:?}",
-            config.unknown_directive_lines
-        );
+        assert!(config.error_lines.is_empty(), "{:?}", config.error_lines);
         assert_eq!(config.devices.len(), 3);
         assert_eq!(config.devices[1].directive, DeviceDirective::DeviceHigh);
         assert_eq!(config.devices[2].path, b"A:\\Z.SYS");
@@ -780,14 +899,14 @@ SHELL=A:\\COMMAND.COM\r\nSTACKS=9,256\r\nSUBMENU=MORE\r\nSWITCHES=/F\r\n[COMMON]
     #[test]
     fn dos620_counts_every_physical_line() {
         let config = parse_dos620(b"FILES=30\r\n\r\n; comment\r\nFOOBAR=1\r\nGARBAGE LINE\r\n");
-        assert_eq!(config.unknown_directive_lines, [4, 5]);
+        assert_eq!(config.error_lines, [4, 5]);
     }
 
     #[test]
     fn end_of_file_mark_ends_the_directives() {
         let config = parse_dos620(b"FILES=30\r\n\x1A\r\nFOOBAR=1\r\n");
         assert_eq!(config.files, 30);
-        assert!(config.unknown_directive_lines.is_empty());
+        assert!(config.error_lines.is_empty());
     }
 
     #[test]
@@ -816,10 +935,7 @@ SHELL=A:\\COMMAND.COM\r\nSTACKS=9,256\r\nSUBMENU=MORE\r\nSWITCHES=/F\r\n[COMMON]
             0x82, 0xAA, 0x82, 0xA0, 0x82, 0xE8, 0x82, 0xDC, 0x82, 0xB7,
         ]);
         expected.extend_from_slice(b".\r\n");
-        assert_eq!(
-            ConfigDialect::KeywordPrefix.unknown_directive_message(7),
-            expected
-        );
+        assert_eq!(ConfigDialect::KeywordPrefix.error_message(7), expected);
     }
 
     #[test]
@@ -836,9 +952,6 @@ SHELL=A:\\COMMAND.COM\r\nSTACKS=9,256\r\nSUBMENU=MORE\r\nSWITCHES=/F\r\n[COMMON]
         expected.extend_from_slice(b": ");
         expected.extend_from_slice(&[0x8D, 0x73]);
         expected.extend_from_slice(b"12\r\n");
-        assert_eq!(
-            ConfigDialect::ExactKeyword.unknown_directive_message(12),
-            expected
-        );
+        assert_eq!(ConfigDialect::ExactKeyword.error_message(12), expected);
     }
 }

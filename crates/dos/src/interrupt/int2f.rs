@@ -15,7 +15,7 @@ impl NeetanDos {
         memory: &mut dyn MemoryAccess,
         cdrom: &mut dyn CdromIo,
     ) {
-        if let Some(answer) = version_gate::int2fh_answer(self.state.platform.version, cpu.ax()) {
+        if let Some(answer) = version_gate::int2fh_answer(&self.state.platform, cpu.ax()) {
             self.state.answer_predated_function(cpu, memory, answer);
             return;
         }
