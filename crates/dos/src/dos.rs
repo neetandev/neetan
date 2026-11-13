@@ -58,7 +58,7 @@ impl NeetanDos {
             self.state
                 .set_error_locus(memory, extended_error::LOCUS_UNKNOWN);
         }
-        match version_gate::int21h_answer(self.state.platform.version, cpu.ax()) {
+        match version_gate::int21h_answer(&self.state.platform, cpu.ax()) {
             Some(answer) => self.state.answer_predated_function(cpu, memory, answer),
             None => self.dispatch_int21h_function(ah, cpu, memory, disk),
         }
@@ -2722,8 +2722,8 @@ mod tests {
     /// `BX`, `CX` and `DX` in front of a gated call.
     const GATE_PRESETS: [u16; 3] = [0x0001, 0x5678, 0x9ABC];
 
-    /// INT 21h functions that a DOS 3.10 kernel holds back, with the answer
-    /// of the kernel.
+    /// INT 21h functions that a DOS 3.10 kernel answers as predated, with the
+    /// answer of the kernel.
     const DOS310_GATED_FUNCTIONS: &[(u16, PredatedAnswer)] = &[
         (0x3305, PredatedAnswer::ReservedSubfunction),
         (0x3306, PredatedAnswer::ReservedSubfunction),
@@ -2738,6 +2738,10 @@ mod tests {
         (0x440F, PredatedAnswer::InvalidFunction),
         (0x4410, PredatedAnswer::InvalidFunction),
         (0x4411, PredatedAnswer::InvalidFunction),
+        (0x6300, PredatedAnswer::UndefinedFunction),
+        (0x6301, PredatedAnswer::UndefinedFunction),
+        (0x6302, PredatedAnswer::UndefinedFunction),
+        (0x63FF, PredatedAnswer::UndefinedFunction),
         (0x6401, PredatedAnswer::UndefinedFunction),
         (0x6520, PredatedAnswer::UndefinedFunction),
         (0x6601, PredatedAnswer::UndefinedFunction),
@@ -2750,8 +2754,8 @@ mod tests {
     ];
 
     /// Results `[AX, BX, CX, DX, flags]` of the 6.20 handlers of the functions
-    /// that a DOS 3.10 kernel holds back, called with the presets and a clear
-    /// carry flag. A fresh NeetanDos has the boot drive Z: and no UMB.
+    /// that a DOS 3.10 kernel answers as predated, called with the presets and
+    /// a clear carry flag. A fresh NeetanDos has the boot drive Z: and no UMB.
     const DOS620_GATED_FUNCTION_RESULTS: &[(u16, [u16; 5])] = &[
         (0x3305, [0x3305, 0x0001, 0x5678, 0x9A1A, FLAGS_CARRY_CLEAR]),
         (0x3306, [0x3306, 0x1406, 0x5678, 0x0000, FLAGS_CARRY_CLEAR]),
@@ -2760,6 +2764,7 @@ mod tests {
         (0x5704, [0x5704, 0x0001, 0x5678, 0x9ABC, FLAGS_CARRY_CLEAR]),
         (0x5802, [0x5800, 0x0001, 0x5678, 0x9ABC, FLAGS_CARRY_CLEAR]),
         (0x5803, [0x5803, 0x0001, 0x5678, 0x9ABC, FLAGS_CARRY_CLEAR]),
+        (0x6302, [0x6302, 0x0001, 0x5678, 0x9A00, FLAGS_CARRY_CLEAR]),
         (0x6401, [0x6401, 0x0001, 0x5678, 0x9ABC, FLAGS_CARRY_CLEAR]),
         (0x6520, [0x6520, 0x0001, 0x5678, 0x9ABC, FLAGS_CARRY_CLEAR]),
         (0x6701, [0x6701, 0x0001, 0x5678, 0x9ABC, FLAGS_CARRY_CLEAR]),
@@ -2805,7 +2810,7 @@ mod tests {
     }
 
     #[test]
-    fn dos620_serves_the_functions_that_dos310_holds_back() {
+    fn dos620_serves_the_functions_that_dos310_answers_as_predated() {
         for &(ax, expected) in DOS620_GATED_FUNCTION_RESULTS {
             let (cpu, flags) = call_pc98_int21h(HleDosVersion::Dos620, ax, FLAGS_CARRY_CLEAR);
             assert_eq!(
@@ -2831,8 +2836,7 @@ mod tests {
         assert_eq!(cpu.ax(), 0x0A03);
         let (cpu, _) = call_pc98_int21h(HleDosVersion::Dos310, 0x5800, FLAGS_CARRY_CLEAR);
         assert_eq!(cpu.ax(), 0x0000);
-        let (cpu, _) = call_pc98_int21h(HleDosVersion::Dos310, 0x6302, FLAGS_CARRY_CLEAR);
-        assert_eq!(cpu.ax(), 0x6302, "AH=63h stays a DOS 3.10 function");
-        assert_eq!(cpu.dx(), 0x9A00, "AH=63h stays a DOS 3.10 function");
+        let (cpu, _) = call_pc98_int21h(HleDosVersion::Dos310, 0x6200, FLAGS_CARRY_CLEAR);
+        assert_eq!(cpu.ax(), 0x6200);
     }
 }

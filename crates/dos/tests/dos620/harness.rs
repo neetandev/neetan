@@ -596,6 +596,26 @@ pub fn boot_hle_with_forced_os(
     machine
 }
 
+/// Boots a machine with NEETAN DOS HLE DOS and the hard disks `first` and
+/// `second` in the units 0 and 1.
+pub fn boot_hle_with_two_hdds(
+    first: device::disk::HddImage,
+    second: device::disk::HddImage,
+) -> machine_98::Pc9801Ra {
+    let mut machine = create_hle_machine();
+    machine.bus.set_boot_device(machine_98::BootDevice::Dos);
+    machine.bus.insert_hdd(0, first, None);
+    machine.bus.insert_hdd(1, second, None);
+    write_disk_equipment(&mut machine.bus, 0x00, 0x03);
+    wait_for_prompt(
+        &mut machine,
+        HLE_BOOT_MAX_CYCLES,
+        HLE_BOOT_CHECK_INTERVAL,
+        "HLE DOS did not show prompt within 500000000 cycles (two hard disks)",
+    );
+    machine
+}
+
 pub fn hle_prompt_visible(bus: &machine_98::Pc9801Bus) -> bool {
     find_char_in_text_vram(bus, 0x003E)
 }

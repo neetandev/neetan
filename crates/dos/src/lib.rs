@@ -1319,12 +1319,12 @@ impl NeetanDos {
         config::ConfigSys::default()
     }
 
-    /// Prints the message of each CONFIG.SYS line without a known keyword to
-    /// the console.
+    /// Prints the error message of each rejected CONFIG.SYS line to the
+    /// console.
     fn print_config_sys_errors(&mut self, memory: &mut dyn MemoryAccess, cfg: &config::ConfigSys) {
         let dialect = config::ConfigDialect::of(self.state.platform.version);
-        for &line_number in &cfg.unknown_directive_lines {
-            for byte in dialect.unknown_directive_message(line_number) {
+        for &line_number in &cfg.error_lines {
+            for byte in dialect.error_message(line_number) {
                 self.console.process_byte(memory, byte);
             }
         }
@@ -1904,7 +1904,7 @@ impl NeetanDos {
                 true
             }
             0xDC => {
-                self.intdch(cpu, memory);
+                self.intdch(cpu, memory, device);
                 true
             }
             _ => false,

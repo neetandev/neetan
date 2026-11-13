@@ -51,28 +51,31 @@ fn chs_to_lba(cylinder: u16, head: u8, sector: u8, heads: u8, sectors_per_track:
     (cylinder as u32 * heads as u32 + head as u32) * sectors_per_track as u32 + sector as u32
 }
 
-/// Finds the partition offset (LBA) for the first active DOS partition on an HDD.
-pub(crate) fn find_partition_offset(device_id: u8, disk: &mut dyn DiskIo) -> Result<u32, u16> {
-    // Read sector 1 (partition table)
+/// Returns the first physical sector of the first active DOS partition of a
+/// fixed disk, or `None` for a disk without an active DOS partition.
+pub(crate) fn find_active_partition_start(
+    device_id: u8,
+    disk: &mut dyn DiskIo,
+) -> Result<Option<u32>, u16> {
     let sector_data = disk.read_sectors(device_id, 1, 1).map_err(|_| 0x001Fu16)?;
-
     let entries = parse_partition_table(&sector_data);
-
-    // Get drive geometry for CHS conversion
     let (_, heads, spt) = disk.drive_geometry(device_id).ok_or(0x001Fu16)?;
-
-    for entry in &entries {
-        if is_dos_partition(entry) {
-            return Ok(chs_to_lba(
+    Ok(entries
+        .iter()
+        .find(|entry| is_dos_partition(entry))
+        .map(|entry| {
+            chs_to_lba(
                 entry.data_start_cylinder,
                 entry.data_start_head,
                 entry.data_start_sector,
                 heads,
                 spt,
-            ));
-        }
-    }
+            )
+        }))
+}
 
-    // No active DOS partition found; try offset 0 (maybe the entire disk is formatted)
-    Ok(0)
+/// Finds the partition offset (LBA) for the first active DOS partition on an HDD.
+/// A disk without an active DOS partition holds its volume at offset 0.
+pub(crate) fn find_partition_offset(device_id: u8, disk: &mut dyn DiskIo) -> Result<u32, u16> {
+    Ok(find_active_partition_start(device_id, disk)?.unwrap_or(0))
 }

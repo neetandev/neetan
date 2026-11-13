@@ -1,10 +1,16 @@
 //! First DOS releases of the functions that NeetanDos serves beyond DOS 3.10.
 //!
 //! A kernel older than the first release of a function answers the call like
-//! a real kernel of its release. The tables hold the first releases from the
-//! Ralf Brown Interrupt List and the answers of NEC MS-DOS 3.30D.
+//! a real kernel of its release. The first releases come from the Ralf Brown
+//! Interrupt List. The answers come from the captures of the real NEC MS-DOS
+//! 3.30D and 3.10. The DBCS gate of the PC-98 takes its first release from
+//! these captures as well. A gate with a machine applies to the kernel of
+//! that machine.
 
-use crate::{CpuAccess, DosState, MemoryAccess, platform::DosVersion};
+use crate::{
+    CpuAccess, DosState, MemoryAccess,
+    platform::{DosMachine, DosPlatform, DosVersion},
+};
 
 /// `AL` of a reserved subfunction.
 const RESERVED_SUBFUNCTION_AL: u16 = 0x00FF;
@@ -70,6 +76,9 @@ struct FunctionGate {
     first_release: DosRelease,
     /// Answer of an older kernel.
     answer: PredatedAnswer,
+    /// Machine of the kernel that the gate applies to. `None` applies the gate
+    /// to every machine.
+    machine: Option<DosMachine>,
 }
 
 /// Mask of `AH` in `AX`.
@@ -92,6 +101,7 @@ impl FunctionGate {
             mask: AH_MASK,
             first_release,
             answer,
+            machine: None,
         }
     }
 
@@ -102,6 +112,7 @@ impl FunctionGate {
             mask: AX_MASK,
             first_release,
             answer,
+            machine: None,
         }
     }
 
@@ -112,7 +123,20 @@ impl FunctionGate {
             mask: INTDCH_CL_MASK,
             first_release,
             answer: PredatedAnswer::Ignored,
+            machine: None,
         }
+    }
+
+    /// Returns the gate restricted to the kernel of `machine`.
+    const fn on_machine(mut self, machine: DosMachine) -> Self {
+        self.machine = Some(machine);
+        self
+    }
+
+    /// Returns true when the gate applies to the kernel of `machine`.
+    fn applies_to(&self, machine: DosMachine) -> bool {
+        self.machine
+            .is_none_or(|gate_machine| gate_machine == machine)
     }
 
     /// Returns the gate of the `INT DCh` function `cl` with the subfunction
@@ -123,16 +147,23 @@ impl FunctionGate {
             mask: INTDCH_CL_MASK | AX_MASK,
             first_release,
             answer: PredatedAnswer::Ignored,
+            machine: None,
         }
     }
 }
 
 /// `INT 21h` functions and subfunctions of DOS releases after 3.10 with the
-/// answer of NEC MS-DOS 3.30D to a function it predates. The list covers the
-/// functions of later releases that NeetanDos serves and the later functions
-/// without an HLE handler that NeetanDos would leave untouched. `AH=63h`
-/// (DBCS) stays open: the Japanese 3.x kernels serve it.
+/// answer of an older kernel. The first releases come from the Ralf Brown
+/// Interrupt List, the answers from the captures of the real NEC MS-DOS 3.30D
+/// and 3.10. The list covers the functions of later releases that NeetanDos
+/// serves and the later functions without an HLE handler that NeetanDos would
+/// leave untouched.
 const INT21H_GATES: &[FunctionGate] = &[
+    // AH=63h: DBCS functions. The capture of NEC MS-DOS 3.1 answers them as
+    // an undefined function. The capture of NEC MS-DOS 3.30D serves them. No
+    // source covers AH=63h on the FM Towns kernel.
+    FunctionGate::function(0x63, DosRelease::DOS_330, PredatedAnswer::UndefinedFunction)
+        .on_machine(DosMachine::Pc98),
     // AX=3305h: get the boot drive.
     FunctionGate::subfunction(
         0x3305,
@@ -204,38 +235,51 @@ const INTDCH_GATES: &[FunctionGate] = &[
     FunctionGate::intdch_function(0x81, DosRelease::DOS_330),
 ];
 
-/// Returns the answer of the gate that holds `selector` back from a kernel
-/// of `version`, or `None` when the kernel serves the function.
+/// Returns the answer of the gate that matches `selector` on the kernel of
+/// `machine` and `version`. Returns `None` when the kernel serves the
+/// function.
 fn gated_answer(
     gates: &[FunctionGate],
+    machine: DosMachine,
     version: DosVersion,
     selector: u32,
 ) -> Option<PredatedAnswer> {
     let release = DosRelease::of(version);
     gates
         .iter()
+        .filter(|gate| gate.applies_to(machine))
         .find(|gate| selector & gate.mask == gate.value)
         .filter(|gate| release < gate.first_release)
         .map(|gate| gate.answer)
 }
 
-/// Returns the answer of a kernel of `version` to `INT 21h` with `ax` when
-/// the function is younger than the kernel.
-pub(crate) fn int21h_answer(version: DosVersion, ax: u16) -> Option<PredatedAnswer> {
-    gated_answer(INT21H_GATES, version, u32::from(ax))
+/// Returns the answer of the kernel of `platform` to `INT 21h` with `ax`
+/// when the function is younger than the kernel.
+pub(crate) fn int21h_answer(platform: &DosPlatform, ax: u16) -> Option<PredatedAnswer> {
+    gated_answer(
+        INT21H_GATES,
+        platform.machine,
+        platform.version,
+        u32::from(ax),
+    )
 }
 
-/// Returns the answer of a kernel of `version` to `INT 2Fh` with `ax` when
-/// the function is younger than the kernel.
-pub(crate) fn int2fh_answer(version: DosVersion, ax: u16) -> Option<PredatedAnswer> {
-    gated_answer(INT2FH_GATES, version, u32::from(ax))
+/// Returns the answer of the kernel of `platform` to `INT 2Fh` with `ax`
+/// when the function is younger than the kernel.
+pub(crate) fn int2fh_answer(platform: &DosPlatform, ax: u16) -> Option<PredatedAnswer> {
+    gated_answer(
+        INT2FH_GATES,
+        platform.machine,
+        platform.version,
+        u32::from(ax),
+    )
 }
 
-/// Returns the answer of an `IO.SYS` of `version` to `INT DCh` with `cl` and
-/// `ax` when the function is younger than the `IO.SYS`.
-pub(crate) fn intdch_answer(version: DosVersion, cl: u8, ax: u16) -> Option<PredatedAnswer> {
+/// Returns the answer of the `IO.SYS` of `platform` to `INT DCh` with `cl`
+/// and `ax` when the function is younger than the `IO.SYS`.
+pub(crate) fn intdch_answer(platform: &DosPlatform, cl: u8, ax: u16) -> Option<PredatedAnswer> {
     let selector = (u32::from(cl) << INTDCH_CL_SHIFT) | u32::from(ax);
-    gated_answer(INTDCH_GATES, version, selector)
+    gated_answer(INTDCH_GATES, platform.machine, platform.version, selector)
 }
 
 impl DosState {
@@ -262,8 +306,15 @@ impl DosState {
 
 #[cfg(test)]
 mod tests {
+    use common::HleDosVersion;
+
     use super::*;
     use crate::platform::{PC98_DOS310_VERSION as DOS310, PC98_DOS620_VERSION as DOS620};
+
+    /// Returns the PC-98 platform of NEC MS-DOS 3.1.
+    fn pc98_dos310() -> DosPlatform {
+        DosPlatform::pc98(HleDosVersion::Dos310)
+    }
 
     #[test]
     fn releases_compare_by_major_then_minor() {
@@ -274,18 +325,27 @@ mod tests {
         assert!(DosRelease::DOS_500 < DosRelease::of(DOS620));
     }
 
+    /// Returns the machine of the kernel that `gate` applies to.
+    fn gate_machine(gate: &FunctionGate) -> DosMachine {
+        gate.machine.unwrap_or(DosMachine::Pc98)
+    }
+
     #[test]
     fn dos620_serves_every_gated_function() {
         for gate in INT21H_GATES.iter().chain(INT2FH_GATES).chain(INTDCH_GATES) {
-            assert_eq!(gated_answer(&[*gate], DOS620, gate.value), None, "{gate:?}");
+            assert_eq!(
+                gated_answer(&[*gate], gate_machine(gate), DOS620, gate.value),
+                None,
+                "{gate:?}"
+            );
         }
     }
 
     #[test]
-    fn dos310_holds_back_every_gated_function() {
+    fn dos310_answers_every_gated_function_as_predated() {
         for gate in INT21H_GATES.iter().chain(INT2FH_GATES).chain(INTDCH_GATES) {
             assert_eq!(
-                gated_answer(&[*gate], DOS310, gate.value),
+                gated_answer(&[*gate], gate_machine(gate), DOS310, gate.value),
                 Some(gate.answer),
                 "{gate:?}"
             );
@@ -293,25 +353,42 @@ mod tests {
     }
 
     #[test]
+    fn gate_of_another_machine_leaves_the_selector_to_the_next_gate() {
+        let gates = [
+            FunctionGate::function(0x63, DosRelease::DOS_330, PredatedAnswer::UndefinedFunction)
+                .on_machine(DosMachine::Pc98),
+            FunctionGate::function(0x63, DosRelease::DOS_400, PredatedAnswer::InvalidFunction),
+        ];
+        assert_eq!(
+            gated_answer(&gates, DosMachine::FmTowns, DOS310, 0x6300),
+            Some(PredatedAnswer::InvalidFunction)
+        );
+        assert_eq!(
+            gated_answer(&gates, DosMachine::Pc98, DOS310, 0x6300),
+            Some(PredatedAnswer::UndefinedFunction)
+        );
+    }
+
+    #[test]
     fn int21h_gates_answer_like_dos_330() {
         assert_eq!(
-            int21h_answer(DOS310, 0x3306),
+            int21h_answer(&pc98_dos310(), 0x3306),
             Some(PredatedAnswer::ReservedSubfunction)
         );
         assert_eq!(
-            int21h_answer(DOS310, 0x5802),
+            int21h_answer(&pc98_dos310(), 0x5802),
             Some(PredatedAnswer::InvalidFunction)
         );
         for ax in [0x440C, 0x440D, 0x440E, 0x440F, 0x4410, 0x4411] {
             assert_eq!(
-                int21h_answer(DOS310, ax),
+                int21h_answer(&pc98_dos310(), ax),
                 Some(PredatedAnswer::InvalidFunction),
                 "AX={ax:04X}h"
             );
         }
         for ax in [0x6400, 0x6501, 0x6700, 0x6800, 0x6900, 0x6C00, 0x6B12] {
             assert_eq!(
-                int21h_answer(DOS310, ax),
+                int21h_answer(&pc98_dos310(), ax),
                 Some(PredatedAnswer::UndefinedFunction),
                 "AX={ax:04X}h"
             );
@@ -321,48 +398,86 @@ mod tests {
     #[test]
     fn int21h_keeps_the_dos_310_functions() {
         for ax in [
-            0x3300, 0x3302, 0x4400, 0x440A, 0x440B, 0x5700, 0x5701, 0x5800, 0x5801, 0x6300, 0x5D06,
-            0x6200,
+            0x3300, 0x3302, 0x4400, 0x440A, 0x440B, 0x5700, 0x5701, 0x5800, 0x5801, 0x5D06, 0x6200,
         ] {
-            assert_eq!(int21h_answer(DOS310, ax), None, "AX={ax:04X}h");
+            assert_eq!(int21h_answer(&pc98_dos310(), ax), None, "AX={ax:04X}h");
         }
     }
 
     #[test]
-    fn int2fh_gates_hold_back_the_hma_and_doskey_functions() {
-        assert_eq!(int2fh_answer(DOS310, 0x4A01), Some(PredatedAnswer::Ignored));
-        assert_eq!(int2fh_answer(DOS310, 0x4A02), Some(PredatedAnswer::Ignored));
-        assert_eq!(int2fh_answer(DOS310, 0x4800), Some(PredatedAnswer::Ignored));
+    fn pc98_dos310_answers_the_dbcs_functions_as_undefined() {
+        for ax in [0x6300, 0x6301, 0x6302, 0x63FF] {
+            assert_eq!(
+                int21h_answer(&pc98_dos310(), ax),
+                Some(PredatedAnswer::UndefinedFunction),
+                "AX={ax:04X}h"
+            );
+        }
+    }
+
+    #[test]
+    fn fm_towns_dos310_has_no_dbcs_gate() {
+        for ax in [0x6300u16, 0x6301, 0x6302] {
+            assert_eq!(
+                gated_answer(INT21H_GATES, DosMachine::FmTowns, DOS310, u32::from(ax)),
+                None,
+                "AX={ax:04X}h"
+            );
+        }
         assert_eq!(
-            int2fh_answer(DOS310, 0x122E),
+            gated_answer(INT21H_GATES, DosMachine::FmTowns, DOS310, 0x6400),
+            Some(PredatedAnswer::UndefinedFunction)
+        );
+    }
+
+    #[test]
+    fn int2fh_gates_the_hma_and_doskey_functions() {
+        assert_eq!(
+            int2fh_answer(&pc98_dos310(), 0x4A01),
+            Some(PredatedAnswer::Ignored)
+        );
+        assert_eq!(
+            int2fh_answer(&pc98_dos310(), 0x4A02),
+            Some(PredatedAnswer::Ignored)
+        );
+        assert_eq!(
+            int2fh_answer(&pc98_dos310(), 0x4800),
+            Some(PredatedAnswer::Ignored)
+        );
+        assert_eq!(
+            int2fh_answer(&pc98_dos310(), 0x122E),
             Some(PredatedAnswer::InvalidFunction)
         );
         for ax in [0x4300, 0x4310, 0x1203, 0x1213, 0x1100] {
-            assert_eq!(int2fh_answer(DOS310, ax), None, "AX={ax:04X}h");
+            assert_eq!(int2fh_answer(&pc98_dos310(), ax), None, "AX={ax:04X}h");
         }
     }
 
     #[test]
     fn intdch_gates_match_the_function_and_the_subfunction() {
         assert_eq!(
-            intdch_answer(DOS310, 0x0F, 0x8000),
+            intdch_answer(&pc98_dos310(), 0x0F, 0x8000),
             Some(PredatedAnswer::Ignored)
         );
         assert_eq!(
-            intdch_answer(DOS310, 0x0F, 0x8002),
+            intdch_answer(&pc98_dos310(), 0x0F, 0x8002),
             Some(PredatedAnswer::Ignored)
         );
-        assert_eq!(intdch_answer(DOS310, 0x0F, 0x0000), None);
+        assert_eq!(intdch_answer(&pc98_dos310(), 0x0F, 0x0000), None);
         assert_eq!(
-            intdch_answer(DOS310, 0x15, 0x1234),
+            intdch_answer(&pc98_dos310(), 0x15, 0x1234),
             Some(PredatedAnswer::Ignored)
         );
         assert_eq!(
-            intdch_answer(DOS310, 0x81, 0x0000),
+            intdch_answer(&pc98_dos310(), 0x81, 0x0000),
             Some(PredatedAnswer::Ignored)
         );
         for cl in [0x0C, 0x0D, 0x10, 0x12, 0x13, 0x80] {
-            assert_eq!(intdch_answer(DOS310, cl, 0x0000), None, "CL={cl:02X}h");
+            assert_eq!(
+                intdch_answer(&pc98_dos310(), cl, 0x0000),
+                None,
+                "CL={cl:02X}h"
+            );
         }
     }
 }

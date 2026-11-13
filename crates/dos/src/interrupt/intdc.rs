@@ -6,17 +6,81 @@
 
 use common::warn;
 
-use crate::{CpuAccess, MemoryAccess, NeetanDos, SegmentRegister, drive_map, tables, version_gate};
+use crate::{
+    CpuAccess, DiskIo, MemoryAccess, NeetanDos, SegmentRegister,
+    drive_map::{self, pc98 as pc98_drives},
+    filesystem::fat_partition,
+    tables, version_gate,
+};
 
 /// Machine type of CL=12h for a PC-98 in normal mode.
 const MACHINE_TYPE_NORMAL_MODE: u16 = 0x0003;
 
+/// CL=80h subfunction that writes the disk information buffer.
+const DISK_INFORMATION_SUBFUNCTION: u16 = 0x0000;
+
+/// CL=80h subfunction that copies the console state of the work area.
+const CONSOLE_STATE_SUBFUNCTION: u16 = 0x0001;
+
+/// CL=80h subfunction that reports the BRANCH 4670 virtual drives.
+const BRANCH_4670_SUBFUNCTION: u16 = 0x8000;
+
+/// CL=80h subfunction that answers with the work area byte at `0060:27D2h`
+/// of a NEC MS-DOS boot. The meaning of the byte is unknown.
+const WORK_AREA_27D2_SUBFUNCTION: u16 = 0x8001;
+
+/// CL=80h subfunction that reports the Japanese input FEP of MS-DOS.
+const FEP_SUBFUNCTION: u16 = 0x8002;
+
+/// CL=80h AX=8000h answer: no BRANCH 4670 virtual drive.
+const BRANCH_4670_ABSENT: u16 = 0x0000;
+
+/// CL=80h AX=8001h answer: the byte at `0060:27D2h` after a NEC MS-DOS boot.
+const WORK_AREA_27D2_VALUE: u16 = 0x0000;
+
+/// CL=80h AX=8002h answer: the Japanese input FEP of MS-DOS is absent.
+const FEP_ABSENT: u16 = 0x0000;
+
+/// Size of the buffer of CL=80h AX=0000h and AX=0001h.
+const DISK_INFORMATION_BUFFER_SIZE: u32 = 0x100;
+
+/// Fixed disk units with a partition count and partition start slots in the
+/// CL=80h buffer (SASI and IDE #0 to #3).
+const DISK_INFORMATION_FIXED_DISK_UNITS: usize = 4;
+
+/// Buffer offset of the active partition count of fixed disk unit 0. The
+/// counts of the units 1 to 3 follow.
+const DISK_INFORMATION_OFF_PARTITION_COUNTS: u32 = 0x00;
+
+/// Buffer offset of the number of 1 MB floppy drives.
+const DISK_INFORMATION_OFF_FLOPPY_2HD_DRIVES: u32 = 0x0C;
+
+/// Buffer offset of the number of 640 KB floppy drives.
+const DISK_INFORMATION_OFF_FLOPPY_2DD_DRIVES: u32 = 0x0D;
+
+/// Buffer offset of the number of fixed disk drives.
+const DISK_INFORMATION_OFF_FIXED_DISK_DRIVES: u32 = 0x0E;
+
+/// Buffer offset of the first physical sector of partition 1 of fixed disk
+/// unit 0.
+const DISK_INFORMATION_OFF_PARTITION_STARTS: u32 = 0x10;
+
+/// Size of the partition start slots of one fixed disk unit (4 partitions).
+const DISK_INFORMATION_UNIT_STARTS_SIZE: u32 = 0x10;
+
+/// Bytes of the work area from `0060:0106h` that CL=80h AX=0001h copies.
+const CONSOLE_STATE_SIZE: u32 = 0x1A;
+
 impl NeetanDos {
     /// Dispatches an INT DCh call based on the CL register.
-    pub(crate) fn intdch(&mut self, cpu: &mut dyn CpuAccess, memory: &mut dyn MemoryAccess) {
+    pub(crate) fn intdch(
+        &mut self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+        disk: &mut dyn DiskIo,
+    ) {
         let cl = (cpu.cx() & 0xFF) as u8;
-        if let Some(answer) = version_gate::intdch_answer(self.state.platform.version, cl, cpu.ax())
-        {
+        if let Some(answer) = version_gate::intdch_answer(&self.state.platform, cl, cpu.ax()) {
             self.state.answer_predated_function(cpu, memory, answer);
             return;
         }
@@ -29,7 +93,7 @@ impl NeetanDos {
             0x12 => self.intdch_12h_system_identification(cpu),
             0x13 => self.intdch_13h_daua_mapping_buffer(cpu, memory),
             0x15 => self.intdch_15h_internal_revision(cpu, memory),
-            0x80 => self.intdch_80h_disk_partition_info(cpu),
+            0x80 => self.intdch_80h_disk_information(cpu, memory, disk),
             0x81 => self.intdch_81h_extended_memory_query(cpu, memory),
             _ => warn!("INT DCh CL={cl:#04X} is unimplemented"),
         }
@@ -192,31 +256,107 @@ impl NeetanDos {
         cpu.set_ax((cpu.ax() & 0xFF00) | revision as u16);
     }
 
-    /// CL=80h: Disk/partition information.
-    /// AL = drive number (0=A, 1=B, ...). Returns basic partition info.
-    fn intdch_80h_disk_partition_info(&self, cpu: &mut dyn CpuAccess) {
-        let drive = (cpu.ax() & 0xFF) as u8;
-        let device = self.state.drive_map.entry(drive).map(|entry| entry.device);
-        match device {
-            Some(drive_map::DriveDevice::FixedDisk { .. }) => {
-                // One partition per unit in HLE mode.
-                cpu.set_ax(0x0000);
-                cpu.set_bx(0x0001);
+    /// CL=80h: Disk information of the `IO.SYS`. AX=0000h writes the drive
+    /// counts and the partition starts into the 100h byte buffer at DS:DX.
+    /// AX=0001h writes the console state of the work area into the buffer.
+    /// AX=8000h-8002h return the state of the BRANCH 4670 drives, the byte at
+    /// `0060:27D2h` and the state of the FEP in AX. Every other register keeps
+    /// its value.
+    fn intdch_80h_disk_information(
+        &self,
+        cpu: &mut dyn CpuAccess,
+        memory: &mut dyn MemoryAccess,
+        disk: &mut dyn DiskIo,
+    ) {
+        match cpu.ax() {
+            DISK_INFORMATION_SUBFUNCTION => {
+                let buffer = cpu.linear_address(SegmentRegister::DS, cpu.dx());
+                self.write_disk_information(memory, buffer, disk);
             }
-            Some(drive_map::DriveDevice::Floppy { .. })
-            | Some(drive_map::DriveDevice::MemoryImage { .. }) => {
-                cpu.set_ax(0x0000);
-                cpu.set_bx(0x0000);
+            CONSOLE_STATE_SUBFUNCTION => {
+                let buffer = cpu.linear_address(SegmentRegister::DS, cpu.dx());
+                clear_disk_information_buffer(memory, buffer);
+                let state = tables::IOSYS_BASE + tables::IOSYS_OFF_SPECIAL_INPUT;
+                for offset in 0..CONSOLE_STATE_SIZE {
+                    memory.write_byte(buffer + offset, memory.read_byte(state + offset));
+                }
             }
-            Some(drive_map::DriveDevice::Cdrom)
-            | Some(drive_map::DriveDevice::GuestCdrom(_))
-            | Some(drive_map::DriveDevice::GuestDriver(_))
-            | Some(drive_map::DriveDevice::Virtual)
-            | None => {
-                cpu.set_ax(0x0002); // invalid drive
-                cpu.set_bx(0x0000);
+            BRANCH_4670_SUBFUNCTION => cpu.set_ax(BRANCH_4670_ABSENT),
+            WORK_AREA_27D2_SUBFUNCTION => cpu.set_ax(WORK_AREA_27D2_VALUE),
+            FEP_SUBFUNCTION => cpu.set_ax(FEP_ABSENT),
+            _ => {}
+        }
+    }
+
+    /// Writes the CL=80h AX=0000h buffer at `buffer`: the partition count of
+    /// each fixed disk unit, the drive count of each drive class and the
+    /// partition start of each fixed disk unit. The drive map holds one
+    /// volume per fixed disk unit: the first active DOS partition. A unit
+    /// without an active DOS partition counts no partition and no drive.
+    fn write_disk_information(
+        &self,
+        memory: &mut dyn MemoryAccess,
+        buffer: u32,
+        disk: &mut dyn DiskIo,
+    ) {
+        let mut floppy_2hd_drives = 0u8;
+        let mut floppy_2dd_drives = 0u8;
+        let mut partition_starts = [None; DISK_INFORMATION_FIXED_DISK_UNITS];
+        for drive_index in 0..drive_map::DRIVE_LETTER_COUNT as u8 {
+            let Some(entry) = self.state.drive_map.entry(drive_index) else {
+                continue;
+            };
+            match entry.device {
+                drive_map::DriveDevice::Floppy { device_id } => {
+                    match pc98_drives::device_class(device_id) {
+                        pc98_drives::FLOPPY_2HD_CLASS => floppy_2hd_drives += 1,
+                        pc98_drives::FLOPPY_2DD_CLASS => floppy_2dd_drives += 1,
+                        _ => {}
+                    }
+                }
+                drive_map::DriveDevice::FixedDisk { device_id } => {
+                    let unit = usize::from(device_id & pc98_drives::UNIT_MASK);
+                    if let Some(slot) = partition_starts.get_mut(unit) {
+                        *slot = active_partition_start(entry.partition_scheme, device_id, disk);
+                    }
+                }
+                drive_map::DriveDevice::MemoryImage { .. }
+                | drive_map::DriveDevice::Cdrom
+                | drive_map::DriveDevice::GuestDriver(_)
+                | drive_map::DriveDevice::GuestCdrom(_)
+                | drive_map::DriveDevice::Virtual => {}
             }
         }
+
+        clear_disk_information_buffer(memory, buffer);
+        let mut fixed_disk_drives = 0u8;
+        for (unit, start) in partition_starts.iter().enumerate() {
+            let Some(start) = start else {
+                continue;
+            };
+            fixed_disk_drives += 1;
+            memory.write_byte(
+                buffer + DISK_INFORMATION_OFF_PARTITION_COUNTS + unit as u32,
+                1,
+            );
+            let slot = buffer
+                + DISK_INFORMATION_OFF_PARTITION_STARTS
+                + unit as u32 * DISK_INFORMATION_UNIT_STARTS_SIZE;
+            memory.write_word(slot, *start as u16);
+            memory.write_word(slot + 2, (*start >> 16) as u16);
+        }
+        memory.write_byte(
+            buffer + DISK_INFORMATION_OFF_FLOPPY_2HD_DRIVES,
+            floppy_2hd_drives,
+        );
+        memory.write_byte(
+            buffer + DISK_INFORMATION_OFF_FLOPPY_2DD_DRIVES,
+            floppy_2dd_drives,
+        );
+        memory.write_byte(
+            buffer + DISK_INFORMATION_OFF_FIXED_DISK_DRIVES,
+            fixed_disk_drives,
+        );
     }
 
     /// CL=81h: Extended memory query.
@@ -388,6 +528,32 @@ impl NeetanDos {
     }
 }
 
+/// Writes zeros into the 100h byte buffer of CL=80h at `buffer`.
+fn clear_disk_information_buffer(memory: &mut dyn MemoryAccess, buffer: u32) {
+    for offset in 0..DISK_INFORMATION_BUFFER_SIZE {
+        memory.write_byte(buffer + offset, 0);
+    }
+}
+
+/// Returns the first physical sector of the first active DOS partition of
+/// the fixed disk `device_id`, or `None` when the disk has none.
+fn active_partition_start(
+    partition_scheme: drive_map::PartitionScheme,
+    device_id: u8,
+    disk: &mut dyn DiskIo,
+) -> Option<u32> {
+    match partition_scheme {
+        drive_map::PartitionScheme::Pc98 => {
+            fat_partition::find_active_partition_start(device_id, disk)
+                .ok()
+                .flatten()
+        }
+        drive_map::PartitionScheme::Unpartitioned
+        | drive_map::PartitionScheme::MasterBootRecord
+        | drive_map::PartitionScheme::FmTowns { .. } => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use common::HleDosVersion;
@@ -431,7 +597,7 @@ mod tests {
         cpu.set_bx(GATE_PRESETS[1]);
         cpu.set_cx(u16::from(cl));
         cpu.set_dx(GATE_PRESETS[2]);
-        dos.intdch(&mut cpu, &mut memory);
+        dos.intdch(&mut cpu, &mut memory, &mut crate::test_support::NoDrives);
         [cpu.ax(), cpu.bx(), cpu.cx(), cpu.dx()]
     }
 
@@ -479,7 +645,7 @@ mod tests {
         let mut cpu = MockCpu::default();
         cpu.set_ax(0x0001);
         cpu.set_cx(0x000F);
-        dos.intdch(&mut cpu, &mut memory);
+        dos.intdch(&mut cpu, &mut memory, &mut crate::test_support::NoDrives);
         assert_eq!(
             memory.read_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_SOFTKEY_FLAGS),
             SOFTKEY_FLAGS_SET & !0x01
@@ -515,7 +681,7 @@ mod tests {
         cpu.set_ax(0x0000);
         cpu.set_bx(0x0000);
         cpu.set_cx(0x0012);
-        dos.intdch(&mut cpu, &mut memory);
+        dos.intdch(&mut cpu, &mut memory, &mut crate::test_support::NoDrives);
         assert_eq!(cpu.ax(), 0x0200);
         assert_eq!(cpu.bx(), 0x0000);
         assert_eq!(cpu.cx(), 0x0012);
@@ -528,7 +694,7 @@ mod tests {
         let mut cpu = MockCpu::default();
         cpu.set_ax(0xAB00);
         cpu.set_cx(0x0015);
-        dos.intdch(&mut cpu, &mut memory);
+        dos.intdch(&mut cpu, &mut memory, &mut crate::test_support::NoDrives);
         assert_eq!(cpu.ax(), 0xAB01);
     }
 }

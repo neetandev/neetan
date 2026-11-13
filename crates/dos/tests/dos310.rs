@@ -27,3 +27,6 @@ mod config;
 
 #[path = "dos310/iosys.rs"]
 mod iosys;
+
+#[path = "dos310/functions.rs"]
+mod functions;
