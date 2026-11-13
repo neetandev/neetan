@@ -2,7 +2,7 @@
 
 ## Requirements
 
-- [Rust 1.97](https://rustup.rs/)
+- [Rust 1.100](https://rustup.rs/)
 - [SDL3](https://github.com/libsdl-org/SDL) (see the
   [sdl3_sys description](https://docs.rs/sdl3-sys/latest/sdl3_sys/#usage))
 - Linux: the [mold linker](https://github.com/rui314/mold)

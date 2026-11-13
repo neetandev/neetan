@@ -6,7 +6,7 @@ members = ["crates/*", "utils/create_font", "utils/dos_towns"]
 authors = ["Nils Hasenbanck <nils@hasenbanck.de>"]
 edition = "2024"
 license = "BSD-3-Clause"
-rust-version = "1.97"
+rust-version = "1.100"
 version = "2026.11.1"
 
 [workspace.dependencies]
@@ -107,11 +107,12 @@ user_interface = { workspace = true, optional = true }
 [profile.release]
 opt-level = 3
 codegen-units = 4
-lto = "fat"
+lto = "thin"
 strip = true
 
 [profile.dev]
 opt-level = 0
+debug = false
 overflow-checks = true
 
 [profile.dev.package."*"]
@@ -162,10 +163,6 @@ codegen-units = 1
 opt-level = 3
 codegen-units = 1
 
-[profile.dev.package.machine_98]
-opt-level = 3
-codegen-units = 1
-
 [profile.dev.package.machine_60]
 opt-level = 3
 codegen-units = 1
@@ -178,7 +175,15 @@ codegen-units = 1
 opt-level = 3
 codegen-units = 1
 
+[profile.dev.package.machine_98]
+opt-level = 3
+codegen-units = 1
+
 [profile.dev.package.machine_at]
+opt-level = 3
+codegen-units = 1
+
+[profile.dev.package.machine_factory]
 opt-level = 3
 codegen-units = 1
 
@@ -194,11 +199,11 @@ codegen-units = 1
 opt-level = 3
 codegen-units = 1
 
-[profile.dev.package.machine_x68k]
+[profile.dev.package.machine_x1]
 opt-level = 3
 codegen-units = 1
 
-[profile.dev.package.machine_x1]
+[profile.dev.package.machine_x68k]
 opt-level = 3
 codegen-units = 1
 
@@ -230,6 +235,10 @@ codegen-units = 1
 opt-level = 3
 codegen-units = 1
 
+[profile.dev.package.softfloat]
+opt-level = 3
+codegen-units = 1
+
 [profile.dev.package.software_renderer]
 opt-level = 3
 codegen-units = 1
@@ -243,10 +252,6 @@ opt-level = 3
 codegen-units = 1
 
 [profile.dev.package.user_interface]
-opt-level = 3
-codegen-units = 1
-
-[profile.dev.package.softfloat]
 opt-level = 3
 codegen-units = 1
 

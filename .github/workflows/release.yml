@@ -11,6 +11,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_PROFILE_RELEASE_LTO: fat
   # A tag push builds the version of the tag. A manual run builds a test version named after its run number.
   RELEASE_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || format('dev-{0}', github.run_number) }}
 
@@ -21,7 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.100
         with:
           targets: x86_64-pc-windows-msvc
 
@@ -85,7 +86,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.100
         with:
           targets: x86_64-unknown-linux-gnu
 

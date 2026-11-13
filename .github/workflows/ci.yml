@@ -40,10 +40,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.100
         with:
           components: clippy
           targets: ${{ matrix.target }}
+
+      - uses: taiki-e/install-action@nextest
 
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
@@ -60,7 +62,7 @@ jobs:
         run: cargo clippy --workspace --all-targets --features sdl3-build-from-source -- -D warnings
 
       - name: Test
-        run: cargo test --workspace --features sdl3-build-from-source
+        run: cargo nextest run --workspace --features sdl3-build-from-source
 
       - name: Check machine builds
         if: runner.os == 'Linux'

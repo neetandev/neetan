@@ -126,7 +126,7 @@ by the emulator.
 
 ## Building
 
-Neetan needs [Rust 1.97](https://rustup.rs/), [SDL3](https://github.com/libsdl-org/SDL)
+Neetan needs [Rust 1.100](https://rustup.rs/), [SDL3](https://github.com/libsdl-org/SDL)
 and on Linux the [mold linker](https://github.com/rui314/mold).
 
 ```bash
