@@ -106,6 +106,9 @@ mod shell_redirection;
 #[path = "dos620/shell_batch.rs"]
 mod shell_batch;
 
+#[path = "dos620/batch_layout.rs"]
+mod batch_layout;
+
 #[path = "dos620/shell_exec.rs"]
 mod shell_exec;
 
