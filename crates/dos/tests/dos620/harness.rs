@@ -525,6 +525,41 @@ pub fn boot_hle_without_xms() -> machine_98::Pc9801Ra {
     machine
 }
 
+/// Port of the memory switch write protection.
+const MEMORY_SWITCH_PROTECTION_PORT: u16 = 0x68;
+/// Port 68h command that allows writes to the memory switches.
+const MEMORY_SWITCH_WRITE_ENABLE: u8 = 0x0D;
+/// Port 68h command that blocks writes to the memory switches.
+const MEMORY_SWITCH_WRITE_DISABLE: u8 = 0x0C;
+
+/// Boots a machine with NEETAN DOS HLE DOS after it sets memory switch 1 to
+/// `memory_switch_1` and memory switch 2 to `memory_switch_2`.
+pub fn boot_hle_with_memory_switches(
+    memory_switch_1: u8,
+    memory_switch_2: u8,
+) -> machine_98::Pc9801Ra {
+    let mut machine = create_hle_machine();
+    machine
+        .bus
+        .io_write_byte(MEMORY_SWITCH_PROTECTION_PORT, MEMORY_SWITCH_WRITE_ENABLE);
+    machine
+        .bus
+        .write_byte(dos::tables::MEMORY_SWITCH_1_ADDRESS, memory_switch_1);
+    machine
+        .bus
+        .write_byte(dos::tables::MEMORY_SWITCH_2_ADDRESS, memory_switch_2);
+    machine
+        .bus
+        .io_write_byte(MEMORY_SWITCH_PROTECTION_PORT, MEMORY_SWITCH_WRITE_DISABLE);
+    wait_for_prompt(
+        &mut machine,
+        HLE_BOOT_MAX_CYCLES,
+        HLE_BOOT_CHECK_INTERVAL,
+        "HLE DOS did not show prompt within 500000000 cycles",
+    );
+    machine
+}
+
 /// Boots a machine with EMS disabled on the bus (no EMS driver, no EMMXXXX0 device).
 pub fn boot_hle_without_ems() -> machine_98::Pc9801Ra {
     let mut machine = create_hle_machine();
