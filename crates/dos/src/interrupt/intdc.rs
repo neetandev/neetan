@@ -215,14 +215,14 @@ impl NeetanDos {
                 }
             }
             0x0C => {
-                // Insert lines (scroll down).
+                // Insert lines at the cursor row.
                 let dl = (cpu.dx() & 0xFF) as u8;
-                self.console.scroll_down(memory, dl.max(1));
+                self.console.insert_lines(memory, dl.max(1));
             }
             0x0D => {
-                // Delete lines (scroll up).
+                // Delete lines at the cursor row.
                 let dl = (cpu.dx() & 0xFF) as u8;
-                self.console.scroll_up(memory, dl.max(1));
+                self.console.delete_lines(memory, dl.max(1));
             }
             0x0E => {
                 // Kanji/graph mode switching.

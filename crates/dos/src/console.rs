@@ -274,8 +274,41 @@ impl TextVramConsole {
         }
     }
 
+    /// Scrolls the scroll range up by `count` rows and clears the rows at its bottom.
     pub(crate) fn scroll_up(&self, memory: &mut dyn MemoryAccess, count: u8) {
         let upper = self.scroll_upper(memory);
+        self.scroll_rows_up(memory, upper, count);
+    }
+
+    /// Scrolls the scroll range down by `count` rows and clears the rows at its top.
+    pub(crate) fn scroll_down(&self, memory: &mut dyn MemoryAccess, count: u8) {
+        let upper = self.scroll_upper(memory);
+        self.scroll_rows_down(memory, upper, count);
+    }
+
+    /// Inserts `count` blank rows at the cursor row. The rows from the cursor row
+    /// to the lower bound of the scroll range shift down. The cursor goes to column 0.
+    pub(crate) fn insert_lines(&self, memory: &mut dyn MemoryAccess, count: u8) {
+        let row = self.cursor_row(memory);
+        if row <= self.scroll_lower(memory) {
+            self.scroll_rows_down(memory, row, count);
+        }
+        self.set_cursor(memory, row, 0);
+    }
+
+    /// Deletes `count` rows at the cursor row. The rows below shift up and blank
+    /// rows fill the bottom of the scroll range. The cursor goes to column 0.
+    pub(crate) fn delete_lines(&self, memory: &mut dyn MemoryAccess, count: u8) {
+        let row = self.cursor_row(memory);
+        if row <= self.scroll_lower(memory) {
+            self.scroll_rows_up(memory, row, count);
+        }
+        self.set_cursor(memory, row, 0);
+    }
+
+    /// Scrolls the rows from `upper` to the lower bound of the scroll range up by
+    /// `count` rows and clears the rows at the bottom.
+    fn scroll_rows_up(&self, memory: &mut dyn MemoryAccess, upper: u8, count: u8) {
         let lower = self.scroll_lower(memory);
         let count = count.min(lower - upper + 1);
 
@@ -314,8 +347,9 @@ impl TextVramConsole {
         self.record_scroll(upper, lower, count, 1);
     }
 
-    pub(crate) fn scroll_down(&self, memory: &mut dyn MemoryAccess, count: u8) {
-        let upper = self.scroll_upper(memory);
+    /// Scrolls the rows from `upper` to the lower bound of the scroll range down by
+    /// `count` rows and clears the rows at the top.
+    fn scroll_rows_down(&self, memory: &mut dyn MemoryAccess, upper: u8, count: u8) {
         let lower = self.scroll_lower(memory);
         let count = count.min(lower - upper + 1);
 
@@ -1516,6 +1550,75 @@ mod tests {
         assert_vram_clear(&memory, 0, 0, 79);
         assert_vram_clear(&memory, 12, 0, 79);
         assert_vram_clear(&memory, 24, 0, 79);
+    }
+
+    #[test]
+    fn insert_lines_shifts_rows_below_the_cursor_down() {
+        let console = make_console();
+        let mut memory = make_memory();
+        fill_row(&mut memory, 4, b'A');
+        fill_row(&mut memory, 5, b'B');
+        fill_row(&mut memory, 6, b'C');
+        fill_row(&mut memory, 22, b'X');
+        fill_row(&mut memory, 24, b'Z');
+        console.set_cursor(&mut memory, 5, 9);
+        console.insert_lines(&mut memory, 2);
+        assert_vram_char(&memory, 4, 0, b'A', 0x00);
+        assert_vram_clear(&memory, 5, 0, 79);
+        assert_vram_clear(&memory, 6, 0, 79);
+        assert_vram_char(&memory, 7, 0, b'B', 0x00);
+        assert_vram_char(&memory, 8, 0, b'C', 0x00);
+        assert_vram_char(&memory, 24, 0, b'X', 0x00);
+        assert_cursor(&console, &memory, 5, 0);
+    }
+
+    #[test]
+    fn insert_lines_keeps_rows_outside_the_scroll_range() {
+        let console = make_console();
+        let mut memory = make_memory();
+        memory.write_byte(tables::IOSYS_BASE + tables::IOSYS_OFF_SCROLL_LOWER, 10);
+        fill_row(&mut memory, 9, b'I');
+        fill_row(&mut memory, 10, b'J');
+        fill_row(&mut memory, 11, b'K');
+        console.set_cursor(&mut memory, 9, 0);
+        console.insert_lines(&mut memory, 1);
+        assert_vram_clear(&memory, 9, 0, 79);
+        assert_vram_char(&memory, 10, 0, b'I', 0x00);
+        assert_vram_char(&memory, 11, 0, b'K', 0x00);
+    }
+
+    #[test]
+    fn delete_lines_shifts_rows_below_the_cursor_up() {
+        let console = make_console();
+        let mut memory = make_memory();
+        fill_row(&mut memory, 4, b'A');
+        fill_row(&mut memory, 5, b'B');
+        fill_row(&mut memory, 6, b'C');
+        fill_row(&mut memory, 7, b'D');
+        fill_row(&mut memory, 24, b'Z');
+        console.set_cursor(&mut memory, 5, 9);
+        console.delete_lines(&mut memory, 2);
+        assert_vram_char(&memory, 4, 0, b'A', 0x00);
+        assert_vram_char(&memory, 5, 0, b'D', 0x00);
+        assert_vram_char(&memory, 22, 0, b'Z', 0x00);
+        assert_vram_clear(&memory, 23, 0, 79);
+        assert_vram_clear(&memory, 24, 0, 79);
+        assert_cursor(&console, &memory, 5, 0);
+    }
+
+    #[test]
+    fn delete_lines_count_exceeds_the_rows_below_the_cursor() {
+        let console = make_console();
+        let mut memory = make_memory();
+        fill_row(&mut memory, 19, b'S');
+        fill_row(&mut memory, 20, b'T');
+        fill_row(&mut memory, 24, b'Z');
+        console.set_cursor(&mut memory, 20, 3);
+        console.delete_lines(&mut memory, 30);
+        assert_vram_char(&memory, 19, 0, b'S', 0x00);
+        assert_vram_clear(&memory, 20, 0, 79);
+        assert_vram_clear(&memory, 24, 0, 79);
+        assert_cursor(&console, &memory, 20, 0);
     }
 
     #[test]

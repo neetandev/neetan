@@ -680,3 +680,62 @@ fn rs232c_other_subfunctions_and_cl_0ah_change_no_register() {
         CAPTURED_AUX_PROTOCOL
     );
 }
+
+fn label_text_rows(machine: &mut machine_98::Pc9801Ra) {
+    for row in 0..25u32 {
+        for (index, byte) in format!("{:<80}", format!("ROW-{row:02}"))
+            .bytes()
+            .enumerate()
+        {
+            let offset = (row * 80 + index as u32) * 2;
+            write_bytes(&mut machine.bus, 0xA0000 + offset, &[byte, 0x00]);
+        }
+    }
+}
+
+fn run_intdch_10h_with_dl(machine: &mut machine_98::Pc9801Ra, ah: u8, dl: u8) {
+    #[rustfmt::skip]
+    let code: &[u8] = &[
+        0xB9, 0x10, 0x00,       // MOV CX, 0010h (CL=10h)
+        0xB4, ah,               // MOV AH, ah
+        0xB2, dl,               // MOV DL, dl
+        0xCD, 0xDC,             // INT DCh
+        0xFA, 0xF4,             // CLI; HLT
+    ];
+    inject_and_run(machine, code);
+}
+
+fn trimmed_row(machine: &machine_98::Pc9801Ra, row: usize) -> String {
+    text_vram_row_to_string(&machine.bus, row)
+        .trim()
+        .to_string()
+}
+
+#[test]
+fn intdch_10h_0ch_inserts_rows_at_the_cursor_row() {
+    let mut machine = harness::boot_hle();
+    label_text_rows(&mut machine);
+    harness::set_cursor_position(&mut machine.bus, 10, 7);
+    run_intdch_10h_with_dl(&mut machine, 0x0C, 2);
+    assert_eq!(machine.bus.read_byte_direct(IOSYS_CURSOR_Y), 10);
+    assert_eq!(machine.bus.read_byte_direct(IOSYS_CURSOR_X), 0);
+    assert_eq!(trimmed_row(&machine, 9), "ROW-09");
+    assert_eq!(trimmed_row(&machine, 10), "");
+    assert_eq!(trimmed_row(&machine, 11), "");
+    assert_eq!(trimmed_row(&machine, 12), "ROW-10");
+    assert_eq!(trimmed_row(&machine, 24), "ROW-22");
+}
+
+#[test]
+fn intdch_10h_0dh_deletes_rows_at_the_cursor_row() {
+    let mut machine = harness::boot_hle();
+    label_text_rows(&mut machine);
+    harness::set_cursor_position(&mut machine.bus, 10, 7);
+    run_intdch_10h_with_dl(&mut machine, 0x0D, 0);
+    assert_eq!(machine.bus.read_byte_direct(IOSYS_CURSOR_Y), 10);
+    assert_eq!(machine.bus.read_byte_direct(IOSYS_CURSOR_X), 0);
+    assert_eq!(trimmed_row(&machine, 9), "ROW-09");
+    assert_eq!(trimmed_row(&machine, 10), "ROW-11");
+    assert_eq!(trimmed_row(&machine, 23), "ROW-24");
+    assert_eq!(trimmed_row(&machine, 24), "");
+}

@@ -175,3 +175,65 @@ fn each_sgr_sequence_builds_attribute_from_white_via_int29h() {
     assert_eq!(text_cell(&machine, 5, 3), (b'D', 0xE5));
     assert_eq!(text_cell(&machine, 5, 4), (b'E', 0xA1));
 }
+
+fn fill_rows_with_labels(machine: &mut machine_98::Pc9801Ra) {
+    for row in 0..25 {
+        write_ascii_text(machine, row, 0, &format!("{:<80}", format!("ROW-{row:02}")));
+    }
+}
+
+fn row_text(machine: &machine_98::Pc9801Ra, row: usize) -> String {
+    harness::text_vram_row_to_string(&machine.bus, row)
+        .trim()
+        .to_string()
+}
+
+#[test]
+fn esc_l_inserts_blank_rows_at_the_cursor_row_via_int29h() {
+    let mut machine = harness::boot_hle();
+    fill_rows_with_labels(&mut machine);
+    set_cursor(&mut machine, 10, 7);
+
+    emit_int29_bytes(&mut machine, &[0x1B, b'[', b'2', b'L']);
+
+    assert_eq!(cursor(&machine), (10, 0));
+    assert_eq!(row_text(&machine, 0), "ROW-00");
+    assert_eq!(row_text(&machine, 9), "ROW-09");
+    assert_eq!(row_text(&machine, 10), "");
+    assert_eq!(row_text(&machine, 11), "");
+    assert_eq!(row_text(&machine, 12), "ROW-10");
+    assert_eq!(row_text(&machine, 24), "ROW-22");
+}
+
+#[test]
+fn esc_m_deletes_rows_at_the_cursor_row_via_int29h() {
+    let mut machine = harness::boot_hle();
+    fill_rows_with_labels(&mut machine);
+    set_cursor(&mut machine, 10, 7);
+
+    emit_int29_bytes(&mut machine, &[0x1B, b'[', b'2', b'M']);
+
+    assert_eq!(cursor(&machine), (10, 0));
+    assert_eq!(row_text(&machine, 0), "ROW-00");
+    assert_eq!(row_text(&machine, 9), "ROW-09");
+    assert_eq!(row_text(&machine, 10), "ROW-12");
+    assert_eq!(row_text(&machine, 22), "ROW-24");
+    assert_eq!(row_text(&machine, 23), "");
+    assert_eq!(row_text(&machine, 24), "");
+}
+
+#[test]
+fn echo_of_esc_l_leaves_a_blank_row_between_lines_via_int29h() {
+    let mut machine = harness::boot_hle();
+
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"\x1b[2J\x1b[L\r\nLINE-A\r\nLINE-B\r\n\x1b[L\r\nLINE-C\r\n");
+    emit_int29_bytes(&mut machine, &bytes);
+
+    assert_eq!(row_text(&machine, 0), "");
+    assert_eq!(row_text(&machine, 1), "LINE-A");
+    assert_eq!(row_text(&machine, 2), "LINE-B");
+    assert_eq!(row_text(&machine, 3), "");
+    assert_eq!(row_text(&machine, 4), "LINE-C");
+    assert_eq!(cursor(&machine), (5, 0));
+}

@@ -557,11 +557,11 @@ impl TextVramConsole {
             }
             b'L' => {
                 let count = self.esc_parser.param(0, 1).max(1) as u8;
-                self.scroll_down(memory, count);
+                self.insert_lines(memory, count);
             }
             b'M' => {
                 let count = self.esc_parser.param(0, 1).max(1) as u8;
-                self.scroll_up(memory, count);
+                self.delete_lines(memory, count);
             }
             b'm' => {
                 self.set_graphic_rendition(memory);
