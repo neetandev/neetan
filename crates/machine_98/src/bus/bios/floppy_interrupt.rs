@@ -7,24 +7,48 @@ use crate::TraceSink;
 
 impl<T: TraceSink> Pc9801Bus<T> {
     pub(super) fn hle_int12h(&mut self, _cpu: &mut impl Cpu) {
+        if self.drain_fdc_640k_statuses()
+            && self.machine_model != MachineModel::PC9801F
+            && self.memory.state.ram[0x05D7] > 0
+        {
+            self.memory.state.ram[0x05D7] -= 1;
+        }
+    }
+
+    pub(super) fn hle_int13h(&mut self, _cpu: &mut impl Cpu) {
+        self.drain_fdc_1mb_statuses();
+
+        // Motor-off timer: decrement counter, mark drives for motor-off at zero.
+        if self.memory.state.ram[0x0480] & 0x10 != 0 && self.memory.state.ram[0x0485] > 0 {
+            self.memory.state.ram[0x0485] -= 1;
+            if self.memory.state.ram[0x0485] == 0 {
+                self.memory.state.ram[0x05A4] |= 0x0F;
+            }
+        }
+    }
+
+    /// Takes every pending drive status of the 640K FDC with SENSE INTERRUPT
+    /// STATUS and stores it in the disk result area. Returns whether the FDC
+    /// answered that no status is left.
+    pub(super) fn drain_fdc_640k_statuses(&mut self) -> bool {
         if self.machine_model == MachineModel::PC9801F {
             loop {
                 let fdc = self.floppy.fdc_640k_mut();
                 let status = fdc.read_status();
                 if status & 0x10 == 0 {
                     if status & 0xC0 != 0x80 {
-                        return;
+                        return false;
                     }
                     fdc.write_data(0x08);
                 }
 
                 let fdc_status = self.floppy.fdc_640k_mut().read_status();
                 if fdc_status & 0xD0 != 0xD0 {
-                    return;
+                    return false;
                 }
                 let st0 = self.floppy.fdc_640k_mut().read_data();
                 if st0 == 0x80 {
-                    return;
+                    return true;
                 }
 
                 let mut buf = [0u8; 7];
@@ -32,7 +56,6 @@ impl<T: TraceSink> Pc9801Bus<T> {
             }
         }
 
-        // Loop to drain all pending FDC results.
         loop {
             let fdc = self.floppy.fdc_640k_mut();
             let status = fdc.read_status();
@@ -40,7 +63,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
             // If FDC is not busy (CB clear), issue SENSE INTERRUPT STATUS.
             if status & 0x10 == 0 {
                 if status & 0xC0 != 0x80 {
-                    return;
+                    return false;
                 }
                 fdc.write_data(0x08);
             }
@@ -48,15 +71,12 @@ impl<T: TraceSink> Pc9801Bus<T> {
             // Read first result byte (ST0).
             let fdc_status = self.floppy.fdc_640k_mut().read_status();
             if fdc_status & 0xD0 != 0xD0 {
-                return;
+                return false;
             }
             let st0 = self.floppy.fdc_640k_mut().read_data();
 
             if st0 == 0x80 {
-                if self.memory.state.ram[0x05D7] > 0 {
-                    self.memory.state.ram[0x05D7] -= 1;
-                }
-                return;
+                return true;
             }
 
             let drive = (st0 & 0x03) as usize;
@@ -78,8 +98,9 @@ impl<T: TraceSink> Pc9801Bus<T> {
         }
     }
 
-    pub(super) fn hle_int13h(&mut self, _cpu: &mut impl Cpu) {
-        // Loop to drain all pending FDC results.
+    /// Takes every pending drive status of the 1MB FDC with SENSE INTERRUPT
+    /// STATUS and stores it in the disk result area of its drive.
+    pub(super) fn drain_fdc_1mb_statuses(&mut self) {
         loop {
             let fdc = self.floppy.fdc_1mb_mut();
             let status = fdc.read_status();
@@ -113,14 +134,6 @@ impl<T: TraceSink> Pc9801Bus<T> {
                 .copy_from_slice(&buf[..extra]);
 
             self.memory.state.ram[0x055E] |= flag_bit;
-        }
-
-        // Motor-off timer: decrement counter, mark drives for motor-off at zero.
-        if self.memory.state.ram[0x0480] & 0x10 != 0 && self.memory.state.ram[0x0485] > 0 {
-            self.memory.state.ram[0x0485] -= 1;
-            if self.memory.state.ram[0x0485] == 0 {
-                self.memory.state.ram[0x05A4] |= 0x0F;
-            }
         }
     }
 }

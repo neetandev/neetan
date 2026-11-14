@@ -20,7 +20,17 @@ impl<T: TraceSink> Pc9801Bus<T> {
         }
     }
 
+    /// Runs an INT 1Bh floppy command. The HLE commands access the disk image
+    /// without the FDC. The FDC interrupt handler of the real BIOS takes every
+    /// pending drive status of the interface after each command. The HLE path
+    /// takes them before the command, so the ready line polling of the FDC
+    /// reports the next disk swap.
     fn int1bh_fdd(&mut self, cpu: &mut impl Cpu, function: u8) {
+        if matches!(cpu.al() & 0xF0, 0x90 | 0x30 | 0xB0 | 0x10) {
+            self.drain_fdc_1mb_statuses();
+        } else {
+            self.drain_fdc_640k_statuses();
+        }
         let result_ah = self.int1bh_fdd_dispatch(cpu, function);
         self.write_result_ah_cf(cpu, result_ah);
     }

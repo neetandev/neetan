@@ -832,6 +832,35 @@ mod tests {
         assert_eq!(bus.read_byte(0x0002_2220), 0x00);
     }
 
+    #[test]
+    fn int1bh_fdd_command_takes_the_post_boot_statuses_so_a_disk_swap_reports() {
+        let mut bus = test_bus();
+        bus.initialize_post_boot_state();
+        bus.insert_floppy(0, test_hdm_floppy(0xA5), None);
+        bus.set_current_cycle(1000);
+        assert_eq!(
+            bus.floppy.fdc_1mb().state.drive_st0,
+            [0x20, 0x21, 0x22, 0x23]
+        );
+
+        let mut cpu = TestCpu::default();
+        cpu.set_ax(0x0690);
+        cpu.set_bx(0);
+        cpu.set_cx(0x0300);
+        cpu.set_dx(0x0001);
+        cpu.set_bp(0);
+        cpu.set_es(0x2000);
+        cpu.set_segment_base_for_test(SegmentRegister::ES, 0x0002_0000);
+        bus.hle_int1bh(&mut cpu);
+
+        assert_eq!(cpu.ah(), 0x00);
+        assert_eq!(bus.floppy.fdc_1mb().state.drive_st0, [0; 4]);
+        assert_eq!(bus.memory.state.ram[0x0564], 0x20);
+
+        bus.eject_floppy(0);
+        assert_eq!(bus.floppy.fdc_1mb().state.drive_st0[0], 0xC8);
+    }
+
     fn test_ide_bus(first_sector_byte: u8) -> Pc9801Bus<NoTrace> {
         let mut bus = Pc9801Bus::new(MachineModel::PC9821AS, CpuMode::Low, 48000);
         let geometry = HddGeometry {

@@ -436,6 +436,27 @@ fn fdc_disk_swap_reports_not_ready_then_ready_change() {
 }
 
 #[test]
+fn fdc_disk_replacement_reports_not_ready_then_ready_change() {
+    let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9821AP, CpuMode::High, 48000);
+    initialize_pics(&mut bus);
+    bus.insert_floppy(0, test_disk(0x55), None);
+    bus.set_current_cycle(1000);
+    drain_fdc_interrupt_statuses(&mut bus, 0x92);
+
+    bus.insert_floppy(0, test_disk(0xAA), None);
+    bus.set_current_cycle(2000);
+    assert!(bus.has_irq(), "the replaced disk raises the FDC interrupt");
+    assert_eq!(service_fdc_interrupt(&mut bus), (0x13, 0xC8));
+
+    bus.set_current_cycle(3000);
+    assert!(bus.has_irq(), "the new disk raises a second FDC interrupt");
+    assert_eq!(service_fdc_interrupt(&mut bus), (0x13, 0xC0));
+
+    bus.set_current_cycle(4000);
+    assert!(!bus.has_irq());
+}
+
+#[test]
 fn fdc_640k_forced_ready_reports_no_disk_swap() {
     let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::High, 48000);
     initialize_pics(&mut bus);
