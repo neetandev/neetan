@@ -17,9 +17,9 @@ mod sub_io_read;
 mod sub_io_write;
 
 use common::{
-    Bus, NoTrace, SharedHostDateTimeSource, TraceAccessKind, TraceAccessWidth, TraceAddressSpace,
-    TraceContext, TraceEvent, TraceInterruptAction, TraceInterruptKind, TracePresentation,
-    TraceSink, trace_id,
+    Bus, LineDoubling, NoTrace, SharedHostDateTimeSource, TraceAccessKind, TraceAccessWidth,
+    TraceAddressSpace, TraceContext, TraceEvent, TraceInterruptAction, TraceInterruptKind,
+    TracePresentation, TraceSink, trace_id,
 };
 use device::{
     cgrom_pc88va::CgromVa,
@@ -153,6 +153,9 @@ pub struct Pc88VaBus<T: TraceSink = NoTrace> {
     pub(crate) cgrom: CgromVa,
     /// CPU-side display renderer producing the RGBA framebuffer.
     pub(crate) renderer: VaRenderer,
+    /// Treatment of the gap rasters of a 200-line picture on the 400-row
+    /// surface. A presentation option outside the save state.
+    pub(crate) line_doubling: LineDoubling,
     /// Valid framebuffer width from the last rendered frame.
     pub(crate) display_width: u32,
     /// Valid framebuffer height from the last rendered frame.
@@ -375,6 +378,12 @@ impl<T: TraceSink> Pc88VaBus<T> {
     /// Overrides the host local-time source (BCD), used by tests.
     pub(crate) fn set_host_date_time_source(&mut self, source: SharedHostDateTimeSource) {
         self.host_date_time_source = source;
+    }
+
+    /// Sets the treatment of the gap rasters of a 200-line picture on the
+    /// 400-row surface.
+    pub(crate) fn set_line_doubling(&mut self, line_doubling: LineDoubling) {
+        self.line_doubling = line_doubling;
     }
 
     /// Returns the number of frames presented within the current epoch.
@@ -622,6 +631,7 @@ impl<T: TraceSink> Pc88VaBus<T> {
             screen_lines: usize::from(self.tsp.screenlines),
             sync_param0: self.tsp.sync_param0(),
             hsync_mode: self.renderer_hsyncmode(),
+            line_doubling: self.line_doubling,
             sprite_table: usize::from(self.tsp.sprtable),
             sprite_enabled: self.tsp.spron,
             sprite_count_limit: self.tsp.hspn,
@@ -1293,5 +1303,92 @@ pub(crate) mod test_support {
         assert_eq!(bus.tracer().accesses[0].kind, TraceAccessKind::Fetch);
         assert!(!bus.tracer().accesses[1].handled);
         assert!(!bus.tracer().accesses[2].handled);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use common::LineDoubling;
+    use software_renderer::va::va_color_to_rgba;
+
+    use super::test_support::test_bus;
+
+    /// Sprite color of the picture raster (palette entry 1).
+    const SPRITE_COLOR: u16 = 0xFC00;
+    /// Backdrop color shown by a blank gap raster.
+    const BACKDROP_COLOR: u16 = 0x001F;
+    /// Byte offset of the sprite table in text VRAM.
+    const SPRITE_TABLE: usize = 0x100;
+    /// Byte offset of the sprite pattern in text VRAM.
+    const SPRITE_PATTERN: usize = 0x200;
+    /// DIP switch bit that selects the 24 kHz monitor.
+    const DIPSW_24KHZ: u8 = 0x01;
+    /// Text control port 1 bit that turns the text display off.
+    const TEXT_DISPLAY_OFF: u8 = 0x80;
+    /// Display mode bits that enable the video output (XVSP and SYNCEN).
+    const VIDEO_OUTPUT_ENABLED: u16 = 0x3000;
+    /// Palette screen composition with the sprite layer on screen 0.
+    const SPRITE_ON_SCREEN0: u16 = 0x0009;
+    /// Plane mask with the text/sprite boundary at color 15, so every color
+    /// code goes to the sprite layer.
+    const TEXT_SPRITE_BOUNDARY_15: u16 = 0xF000;
+
+    /// Reads the RGBA pixel at `(x, y)` of a 640-dot framebuffer.
+    fn pixel(framebuffer: &[u8], x: usize, y: usize) -> u32 {
+        let base = (y * 640 + x) * 4;
+        u32::from_le_bytes(
+            framebuffer[base..base + 4]
+                .try_into()
+                .expect("four pixel bytes"),
+        )
+    }
+
+    #[test]
+    fn line_doubling_selects_gap_raster_and_survives_state_restore() {
+        let mut bus = test_bus();
+        bus.sysport.dipsw &= !DIPSW_24KHZ;
+        bus.tsp.screenlines = 200;
+        bus.tsp.sprtable = SPRITE_TABLE as u16;
+        bus.tsp.spron = true;
+        bus.video.txtmode = TEXT_DISPLAY_OFF;
+        bus.video.grmode = VIDEO_OUTPUT_ENABLED;
+        bus.video.colcomp = SPRITE_ON_SCREEN0;
+        bus.video.pagemsk = TEXT_SPRITE_BOUNDARY_15;
+        bus.video.dropcol = BACKDROP_COLOR;
+        bus.video.xpar_txtspr = 0x0001;
+        bus.video.palette[1] = SPRITE_COLOR;
+        let text_vram = bus.memory.text_vram_mut();
+        for (index, word) in [0x0200u16, 0x0000, (SPRITE_PATTERN / 2) as u16, 0x0000]
+            .into_iter()
+            .enumerate()
+        {
+            text_vram[SPRITE_TABLE + index * 2..][..2].copy_from_slice(&word.to_le_bytes());
+        }
+        text_vram[SPRITE_PATTERN] = 0x10;
+
+        let sprite = va_color_to_rgba(SPRITE_COLOR);
+        let backdrop = va_color_to_rgba(BACKDROP_COLOR);
+        let gap_raster_pixel = |bus: &mut super::Pc88VaBus| -> u32 {
+            bus.render_frame();
+            assert_eq!(bus.display_dimensions(), (640, 400));
+            let framebuffer = bus.display_framebuffer();
+            assert_eq!(pixel(framebuffer, 0, 0), sprite, "picture raster");
+            pixel(framebuffer, 0, 1)
+        };
+
+        assert_eq!(gap_raster_pixel(&mut bus), backdrop, "auto");
+        bus.set_line_doubling(LineDoubling::On);
+        assert_eq!(gap_raster_pixel(&mut bus), sprite, "on");
+        bus.set_line_doubling(LineDoubling::Off);
+        assert_eq!(gap_raster_pixel(&mut bus), backdrop, "off");
+
+        let state = bus
+            .capture_runtime_state()
+            .expect("capture of the bus state");
+        bus.set_line_doubling(LineDoubling::On);
+        bus.restore_runtime_state(state)
+            .expect("restore of the bus state");
+        assert_eq!(bus.line_doubling, LineDoubling::On);
+        assert_eq!(gap_raster_pixel(&mut bus), sprite, "on after restore");
     }
 }

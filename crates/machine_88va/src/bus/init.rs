@@ -67,6 +67,7 @@ impl<T: common::TraceSink> Pc88VaBus<T> {
             keyboard: KeyboardVa::default(),
             cgrom: CgromVa::default(),
             renderer,
+            line_doubling: common::LineDoubling::default(),
             display_width: 0,
             display_height: 0,
             presented_frames: 0,
