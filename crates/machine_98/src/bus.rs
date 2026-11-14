@@ -290,6 +290,13 @@ const FDC_MEDIA_READ_FIXED_BITS: u8 = 0xF8;
 /// Interrupt delay after data transfer completes.
 const INTERRUPT_DELAY_CYCLES: u64 = 512;
 
+/// Rotation speed of a 2HD floppy disk in revolutions per minute.
+const FLOPPY_REVOLUTIONS_PER_MINUTE: u64 = 360;
+
+/// Revolutions of a newly inserted floppy disk until the drive raises its
+/// ready line. The drive raises the line once the disk spins.
+const FLOPPY_READY_DELAY_REVOLUTIONS: u64 = 3;
+
 /// Mouse interrupt timer register default (port 0xBFDB).
 ///
 /// Lower 2 bits select periodic interrupt rate: 0x00 = 120 Hz (default).
@@ -665,7 +672,9 @@ impl<T: TraceSink> Pc9801Bus<T> {
 
     /// Inserts a floppy disk image with the requested backing (drive 0-3). A
     /// disk that replaces another one drops the ready line first, like the
-    /// removal of a physical disk.
+    /// removal of a physical disk. A disk inserted while the machine runs
+    /// raises the ready line after `FLOPPY_READY_DELAY_REVOLUTIONS` revolutions.
+    /// A disk mounted before power-on is ready at once.
     pub fn insert_floppy_backed(
         &mut self,
         drive: usize,
@@ -678,7 +687,17 @@ impl<T: TraceSink> Pc9801Bus<T> {
             self.signal_floppy_ready_change(interface, drive, false);
         }
         self.floppy.insert_drive_backed(drive, image, backing);
-        self.signal_floppy_ready_change(interface, drive, true);
+        if self.current_cycle == 0 {
+            self.signal_floppy_ready_change(interface, drive, true);
+        } else {
+            self.floppy.set_drive_ready_pending(drive, true);
+            let delay_cycles =
+                u64::from(self.clocks.cpu_clock_hz) * 60 * FLOPPY_READY_DELAY_REVOLUTIONS
+                    / FLOPPY_REVOLUTIONS_PER_MINUTE;
+            self.scheduler
+                .schedule(Event98::FloppyReady, self.current_cycle + delay_cycles);
+            self.update_next_event_cycle();
+        }
         if install_fdd640k_hle {
             self.fdd640k_hle.install_rom();
         }
@@ -707,6 +726,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
     pub fn eject_floppy(&mut self, drive: usize) {
         let interface = self.floppy.port_interface();
         self.floppy.eject_drive(drive);
+        self.floppy.set_drive_ready_pending(drive, false);
         self.signal_floppy_ready_change(interface, drive, false);
         if let Some(dos) = self.dos.as_mut() {
             dos.invalidate_drive_caches(pc98_drives::FLOPPY_2HD_CLASS | drive as u8);
@@ -2853,6 +2873,15 @@ impl<T: TraceSink> Pc9801Bus<T> {
                         let display = ga.display_period_cycles(self.clocks.cpu_clock_hz);
                         self.scheduler
                             .schedule(Event98::GaVsync, self.current_cycle + display);
+                    }
+                }
+                Event98::FloppyReady => {
+                    let interface = self.floppy.port_interface();
+                    let pending = self.floppy.take_drive_ready_pending();
+                    for drive in 0..4 {
+                        if pending & (1 << drive) != 0 && self.floppy.has_drive(drive) {
+                            self.signal_floppy_ready_change(interface, drive, true);
+                        }
                     }
                 }
             }

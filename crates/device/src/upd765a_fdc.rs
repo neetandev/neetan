@@ -1364,6 +1364,9 @@ pub struct FloppyControllerState {
     pub active_interface: u8,
     /// Dual-mode interface control register.
     pub fdc_media: u8,
+    /// Drives with a new disk whose ready line rises when the disk is spun up
+    /// (bit per drive 0-3).
+    pub drive_ready_pending: u8,
     /// Mounted media identities required by this state.
     pub media: save_state::MediaManifest,
 }}
@@ -1382,6 +1385,9 @@ pub struct FloppyController {
     drives: [Option<MountedFloppy>; 4],
     /// Dual-mode FDC interface control register (port 0xBE).
     fdc_media: u8,
+    /// Drives with a new disk whose ready line rises when the disk is spun up
+    /// (bit per drive 0-3).
+    drive_ready_pending: u8,
 }
 
 impl Default for FloppyController {
@@ -1399,6 +1405,7 @@ impl FloppyController {
             active_interface: 0,
             drives: [None, None, None, None],
             fdc_media: FDC_MEDIA_DEFAULT,
+            drive_ready_pending: 0,
         }
     }
 
@@ -1409,6 +1416,7 @@ impl FloppyController {
             fdc_640k: self.fdc_640k.state.clone(),
             active_interface: self.active_interface,
             fdc_media: self.fdc_media,
+            drive_ready_pending: self.drive_ready_pending,
             media: self.media_manifest()?,
         })
     }
@@ -1420,6 +1428,22 @@ impl FloppyController {
     ) -> Result<(), save_state::StateValidationError> {
         let current_media = self.media_manifest()?;
         save_state::restore_root(self, state, &current_media)
+    }
+
+    /// Marks or clears a drive whose ready line rises when its new disk is spun
+    /// up.
+    pub fn set_drive_ready_pending(&mut self, drive: usize, pending: bool) {
+        let mask = 1u8 << drive;
+        if pending {
+            self.drive_ready_pending |= mask;
+        } else {
+            self.drive_ready_pending &= !mask;
+        }
+    }
+
+    /// Returns and clears the drives whose ready line rises now.
+    pub fn take_drive_ready_pending(&mut self) -> u8 {
+        std::mem::take(&mut self.drive_ready_pending)
     }
 
     /// Returns stable identities for all mounted floppy slots.
@@ -1899,6 +1923,7 @@ impl save_state::RestoreTarget for FloppyController {
         self.fdc_640k.state = state.fdc_640k;
         self.active_interface = state.active_interface;
         self.fdc_media = state.fdc_media;
+        self.drive_ready_pending = state.drive_ready_pending;
     }
 }
 

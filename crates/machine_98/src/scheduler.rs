@@ -8,7 +8,7 @@ use device::{
 use stack_vec::StackVec;
 
 /// Number of distinct PC-98 event kinds.
-const EVENT98_KIND_COUNT: usize = 23;
+const EVENT98_KIND_COUNT: usize = 24;
 
 /// Kinds of scheduled PC-98 events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -61,6 +61,8 @@ pub enum Event98 {
     GaVsync,
     /// GA-1280A active display begins.
     GaDisplayStart,
+    /// The ready line of a drive with a new floppy disk rises.
+    FloppyReady,
 }
 
 #[cfg(test)]
@@ -120,6 +122,7 @@ impl Event98 {
         Self::MusicGen14Timer,
         Self::GaVsync,
         Self::GaDisplayStart,
+        Self::FloppyReady,
     ];
 
     const fn from_index(index: usize) -> Self {
@@ -152,6 +155,7 @@ impl Event98 {
             Self::MusicGen14Timer => pc98::MUSIC_GEN14_TIMER,
             Self::GaVsync => pc98::GA_VSYNC,
             Self::GaDisplayStart => pc98::GA_DISPLAY_START,
+            Self::FloppyReady => pc98::FLOPPY_READY,
         }
     }
 }

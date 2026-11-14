@@ -364,6 +364,12 @@ fn initialize_pics(bus: &mut Pc9801Bus<NoTrace>) {
     bus.io_write_byte(0x0A, 0x00);
 }
 
+/// Masks every interrupt line except the cascade and IRQ 11 of the 1MB FDC.
+fn unmask_only_fdc_1mb_irq(bus: &mut Pc9801Bus<NoTrace>) {
+    bus.io_write_byte(0x02, 0x7F);
+    bus.io_write_byte(0x0A, 0xF7);
+}
+
 /// Issues SENSE INTERRUPT STATUS on an FDC data port until no drive status is
 /// left and returns the ST0 values.
 fn drain_fdc_interrupt_statuses(bus: &mut Pc9801Bus<NoTrace>, data_port: u16) -> Vec<u8> {
@@ -417,6 +423,7 @@ fn fdc_power_on_mount_reports_no_ready_line_change() {
 fn fdc_disk_swap_reports_not_ready_then_ready_change() {
     let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9821AP, CpuMode::High, 48000);
     initialize_pics(&mut bus);
+    unmask_only_fdc_1mb_irq(&mut bus);
     bus.insert_floppy(0, test_disk(0x55), None);
     bus.set_current_cycle(1000);
     drain_fdc_interrupt_statuses(&mut bus, 0x92);
@@ -428,10 +435,18 @@ fn fdc_disk_swap_reports_not_ready_then_ready_change() {
     assert_eq!(service_fdc_interrupt(&mut bus), (0x13, 0xC8));
 
     bus.set_current_cycle(3000);
-    assert!(bus.has_irq(), "the insertion raises a second FDC interrupt");
+    assert!(!bus.has_irq(), "the new disk is not spun up yet");
+
+    let spun_up_cycle = 2000 + u64::from(bus.cpu_clock_hz());
+    bus.set_current_cycle(spun_up_cycle);
+    bus.set_current_cycle(spun_up_cycle + 1000);
+    assert!(
+        bus.has_irq(),
+        "the spun up disk raises a second FDC interrupt"
+    );
     assert_eq!(service_fdc_interrupt(&mut bus), (0x13, 0xC0));
 
-    bus.set_current_cycle(4000);
+    bus.set_current_cycle(spun_up_cycle + 2000);
     assert!(!bus.has_irq());
 }
 
@@ -439,6 +454,7 @@ fn fdc_disk_swap_reports_not_ready_then_ready_change() {
 fn fdc_disk_replacement_reports_not_ready_then_ready_change() {
     let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9821AP, CpuMode::High, 48000);
     initialize_pics(&mut bus);
+    unmask_only_fdc_1mb_irq(&mut bus);
     bus.insert_floppy(0, test_disk(0x55), None);
     bus.set_current_cycle(1000);
     drain_fdc_interrupt_statuses(&mut bus, 0x92);
@@ -449,10 +465,18 @@ fn fdc_disk_replacement_reports_not_ready_then_ready_change() {
     assert_eq!(service_fdc_interrupt(&mut bus), (0x13, 0xC8));
 
     bus.set_current_cycle(3000);
-    assert!(bus.has_irq(), "the new disk raises a second FDC interrupt");
+    assert!(!bus.has_irq(), "the new disk is not spun up yet");
+
+    let spun_up_cycle = 2000 + u64::from(bus.cpu_clock_hz());
+    bus.set_current_cycle(spun_up_cycle);
+    bus.set_current_cycle(spun_up_cycle + 1000);
+    assert!(
+        bus.has_irq(),
+        "the spun up disk raises a second FDC interrupt"
+    );
     assert_eq!(service_fdc_interrupt(&mut bus), (0x13, 0xC0));
 
-    bus.set_current_cycle(4000);
+    bus.set_current_cycle(spun_up_cycle + 2000);
     assert!(!bus.has_irq());
 }
 

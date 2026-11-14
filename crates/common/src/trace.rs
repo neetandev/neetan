@@ -367,6 +367,7 @@ pub mod trace_id {
             MUSIC_GEN14_TIMER => "pc98.music_gen14.timer",
             GA_VSYNC => "pc98.ga.vsync",
             GA_DISPLAY_START => "pc98.ga.display_start",
+            FLOPPY_READY => "pc98.floppy.ready",
         ]);
         scheduled_catalog!(at, AT, [
             PIT_CHANNEL0 => "at.pit.channel0",
@@ -1419,7 +1420,7 @@ mod tests {
             ("pc60", trace_id::scheduled::PC60, 11),
             ("pc88", trace_id::scheduled::PC88, 15),
             ("pc88va", trace_id::scheduled::PC88VA, 11),
-            ("pc98", trace_id::scheduled::PC98, 23),
+            ("pc98", trace_id::scheduled::PC98, 24),
             ("at", trace_id::scheduled::AT, 18),
             ("fm7", trace_id::scheduled::FM7, 18),
             ("msx", trace_id::scheduled::MSX, 5),
