@@ -462,6 +462,10 @@ impl<T: TraceSink> common::Machine for Pc88VaMachine<T> {
         self.bus.set_host_date_time_source(source);
     }
 
+    fn set_line_doubling(&mut self, line_doubling: common::LineDoubling) {
+        self.bus.set_line_doubling(line_doubling);
+    }
+
     fn startup_capabilities(&self) -> common::StartupCapabilities {
         common::StartupCapabilities {
             floppy_drives: 2,

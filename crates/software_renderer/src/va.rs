@@ -12,6 +12,7 @@ mod text;
 use alloc::{boxed::Box, vec};
 
 pub use common::FramebufferVa;
+use common::LineDoubling;
 use compose::{ComposeRegs, RasterLayers, compose_raster};
 use graphics::GraphicsWork;
 pub use palette::{adjust_color12, rgb8_to_va_color, va_color_to_rgba};
@@ -66,6 +67,9 @@ pub struct RenderInputsVa<'a> {
     pub sync_param0: u8,
     /// Horizontal sync mode.
     pub hsync_mode: HsyncModeVa,
+    /// Treatment of the gap rasters of a 200-line picture on the 400-row
+    /// surface.
+    pub line_doubling: LineDoubling,
 
     /// Sprite-table base offset within text VRAM.
     pub sprite_table: usize,
@@ -274,6 +278,11 @@ impl VaRenderer {
         let not_24khz = inputs.hsync_mode != HsyncModeVa::Khz24_8;
         let interlace_mode = inputs.graphics_mode & 0x00C0;
         let sprite_two_hundred = inputs.sync_param0 & 0xC0 == 0x40;
+        let hold_gap_raster = match inputs.line_doubling {
+            LineDoubling::Auto => !not_24khz && interlace_mode == 0x40,
+            LineDoubling::On => true,
+            LineDoubling::Off => false,
+        };
         let draw_graphics = |graphics: &mut GraphicsWork| {
             graphics.raster(
                 inputs.graphics_vram,
@@ -332,28 +341,24 @@ impl VaRenderer {
                         }
                     }
                     _ => {
-                        // Non-interlace: the doubled line is blank.
-                        text.blank_raster();
-                        sprite.blank_raster();
-                        graphics.blank_raster();
+                        // Non-interlace: the doubled line is a gap raster that
+                        // either holds all layers or shows the backdrop.
+                        if !hold_gap_raster {
+                            text.blank_raster();
+                            sprite.blank_raster();
+                            graphics.blank_raster();
+                        }
                     }
                 }
             } else {
                 match interlace_mode {
-                    0x00 => {
-                        text.raster(&context);
-                        draw_sprite(sprite);
-                        if grph200 {
-                            graphics.blank_raster();
-                        } else {
-                            draw_graphics(graphics);
-                        }
-                    }
-                    0x40 => {
+                    0x00 | 0x40 => {
                         text.raster(&context);
                         draw_sprite(sprite);
                         if !grph200 {
                             draw_graphics(graphics);
+                        } else if !hold_gap_raster {
+                            graphics.blank_raster();
                         }
                     }
                     _ => {
