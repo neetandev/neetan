@@ -839,14 +839,14 @@ enum FileImage {
 
 impl FileImageDiskIo {
     /// Wraps a hard disk image. A PC-98 image laid out in its image geometry
-    /// is migrated to the PC-98 IDE BIOS geometry. A SASI image that neetan
-    /// formatted with its partition in cylinder 0 is migrated to the NEC
-    /// layout.
+    /// is migrated to the PC-98 IDE BIOS geometry. The volume of a SASI image
+    /// that neetan formatted with its partition in cylinder 0 is migrated to a
+    /// partition on cylinder 1.
     fn new_hdd(mut image: HddImage) -> Self {
         if pc98_ide::is_ide_image_format(image.format) {
             pc98_ide::migrate_to_bios_geometry(&mut image);
         }
-        pc98_sasi::migrate_to_nec_layout(&mut image);
+        pc98_sasi::relocate_volume_to_cylinder_1(&mut image);
         Self {
             image: FileImage::Hdd(image),
             drive_da: 0x80,

@@ -6,13 +6,15 @@
 //! of its image.
 //!
 //! The migration relocates the FAT partitions of an image laid out in its
-//! image geometry into the NEC layout of the BIOS geometry: the first
-//! partition starts on cylinder 1, every partition starts on a cylinder
-//! boundary and ends on a whole cylinder. The volumes keep their size. When
+//! image geometry into the BIOS geometry: the first partition starts on
+//! cylinder 1, every partition starts on a cylinder boundary and ends on a
+//! whole cylinder. In the BPB of each volume the migration rewrites the
+//! sectors per track, the heads and the hidden sectors to the BIOS geometry
+//! and the new partition start. Every other BPB field keeps its value. When
 //! the relocated partitions need more room, the migration appends cylinders
-//! to the image and updates its header. It rewrites the partition table and
-//! the geometry and partition start of each boot record. An image with a
-//! partition it cannot relocate safely stays unchanged.
+//! to the image and updates its header. It also rewrites the partition table
+//! and the partition start of a NEC boot record. An image with a partition
+//! it cannot relocate safely stays unchanged.
 
 use super::{HddFormat, HddGeometry, HddImage};
 

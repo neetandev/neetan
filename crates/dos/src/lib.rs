@@ -1076,7 +1076,7 @@ impl NeetanDos {
     /// mounts drives, parses CONFIG.SYS, and creates the COMMAND.COM process.
     pub fn boot(&mut self, memory: &mut dyn MemoryAccess, device: &mut (impl DiskIo + CdromIo)) {
         self.build_pc98_drive_map(memory, device);
-        let system_data = self.state.system_data_area();
+        let system_data = self.state.system_data_area(&*device);
         self.state.platform.placement.first_mcb_segment =
             system_data.first_mcb_segment(self.state.dos_data_segment());
 
@@ -2998,17 +2998,31 @@ impl DosState {
     }
 
     /// Returns the placement of the first disk buffer and the DPBs for the
-    /// drives of the drive map.
-    pub(crate) fn system_data_area(&self) -> system_data::SystemDataArea {
+    /// drives of the drive map. The buffer holds the largest sector of the
+    /// BPBs of the drive map and of the volume FORMAT writes on each fixed
+    /// disk of `disk`.
+    pub(crate) fn system_data_area(&self, disk: &dyn DiskIo) -> system_data::SystemDataArea {
         let drives: Vec<&drive_map::DriveEntry> = self
             .drive_map
             .drives_with_parameter_block()
             .map(|(_, entry)| entry)
             .collect();
-        let largest_sector = drives
+        let largest_bpb_sector = drives
             .iter()
             .filter_map(|entry| entry.geometry)
-            .map(|geometry| geometry.bpb.bytes_per_sector)
+            .map(|geometry| geometry.bpb.bytes_per_sector);
+        let largest_format_sector =
+            drives
+                .iter()
+                .filter_map(|entry| match (entry.device, entry.partition_scheme) {
+                    (
+                        drive_map::DriveDevice::FixedDisk { device_id },
+                        drive_map::PartitionScheme::Pc98,
+                    ) => commands::format::fixed_disk_format_sector_size(disk, device_id),
+                    _ => None,
+                });
+        let largest_sector = largest_bpb_sector
+            .chain(largest_format_sector)
             .max()
             .unwrap_or(0);
         system_data::SystemDataArea::new(
@@ -3756,7 +3770,7 @@ mod tests {
             drive_map::VIRTUAL_DRIVE_INDEX,
             drive_map::DriveEntry::virtual_drive(),
         );
-        let system_data = dos.state.system_data_area();
+        let system_data = dos.state.system_data_area(&test_support::NoDrives);
         dos.state.platform.placement.first_mcb_segment =
             system_data.first_mcb_segment(dos.state.dos_data_segment());
         dos.write_dos_data_structures(&mut memory, &system_data, false);

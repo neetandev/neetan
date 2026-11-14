@@ -141,11 +141,11 @@ impl SasiController {
         self.insert_drive_backed(drive, image, path.into());
     }
 
-    /// Inserts a hard disk image with the requested backing. An image that
-    /// neetan formatted with its partition in cylinder 0 is migrated to the
-    /// NEC layout, and a
-    /// file-backed mount writes the migrated image to its file at once. When
-    /// that write fails, the mount keeps its changes in memory only.
+    /// Inserts a hard disk image with the requested backing. The volume of an
+    /// image that neetan formatted with its partition in cylinder 0 is
+    /// migrated to a partition on cylinder 1, and a file-backed mount writes
+    /// the migrated image to its file at once. When that write fails, the
+    /// mount keeps its changes in memory only.
     /// Installs the expansion ROM on the first insertion.
     pub fn insert_drive_backed(
         &mut self,
@@ -159,7 +159,7 @@ impl SasiController {
         self.drives[drive] = Some(crate::disk::mounted_hdd_with_migration(
             image,
             backing,
-            pc98_sasi::migrate_to_nec_layout,
+            pc98_sasi::relocate_volume_to_cylinder_1,
         ));
         if self.rom.is_none() {
             self.rom = Some(Box::new(*ROM_IMAGE));

@@ -1,6 +1,10 @@
 use std::fs;
 
 use common::temporary::TemporaryFolder;
+use device::disk::HddSizeType;
+use dos::tables::{
+    DPB_OFF_BYTES_PER_SECTOR, DPB_OFF_DRIVE_NUM, SYSVARS_OFF_DPB_PTR, SYSVARS_OFF_MAX_SECTOR,
+};
 
 use crate::{file_copy_harness::*, harness::*};
 
@@ -279,5 +283,41 @@ fn format_sasi_hdd_supports_multicluster_file_copy_after_format() {
     assert_eq!(
         copied_bytes, source_bytes,
         "formatted HDD should preserve copied file contents"
+    );
+}
+
+#[test]
+fn format_of_a_blank_ide80_disk_keeps_its_sector_size_within_the_list_of_lists() {
+    let mut machine =
+        boot_hle_with_ide_hdd_image(device::disk::blank_hdd_image(HddSizeType::IdeMb80));
+    let list_of_lists = dos_data_address(pc98_data_area().list_of_lists.data_offset);
+    let largest_sector = read_word(&machine.bus, list_of_lists + SYSVARS_OFF_MAX_SECTOR);
+
+    type_string_long_ap(&mut machine, b"FORMAT A:\r");
+    machine.run_for(10_000_000);
+    type_string(&mut machine.bus, b"Y");
+    run_until_prompt_ap(&mut machine);
+    type_string(&mut machine.bus, b"DIR A:\r");
+    run_until_prompt_ap(&mut machine);
+
+    let (segment, offset) = read_far_ptr(&machine.bus, list_of_lists + SYSVARS_OFF_DPB_PTR);
+    let parameter_block = far_to_linear(segment, offset);
+    assert_eq!(
+        read_byte(&machine.bus, parameter_block + DPB_OFF_DRIVE_NUM),
+        0,
+        "DPB of drive A:"
+    );
+    let sector_size = read_word(&machine.bus, parameter_block + DPB_OFF_BYTES_PER_SECTOR);
+    assert_eq!(
+        sector_size, 2048,
+        "logical sector size of the formatted volume"
+    );
+    assert!(
+        sector_size <= largest_sector,
+        "DPB sector size {sector_size} above the list of lists value {largest_sector}"
+    );
+    assert_eq!(
+        read_word(&machine.bus, list_of_lists + SYSVARS_OFF_MAX_SECTOR),
+        largest_sector
     );
 }

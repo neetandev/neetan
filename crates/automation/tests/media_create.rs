@@ -21,7 +21,7 @@ use device::{
         HddGeometry, HddImage, HddSizeType, blank_hdd_image,
         format::{
             PartitionTableType, at_master_boot_record, fat_region, format_hdd_image,
-            hdd_boot_sector, hdd_bpb_params, pc98_nec_partition_table_sector,
+            hdd_boot_sector, hdd_bpb_params, pc98_nec_layout,
         },
         load_hdd_image, pc98_ide,
     },
@@ -236,47 +236,105 @@ fn parse_image(size: HddSizeType, bytes: &[u8]) -> HddImage {
     load_hdd_image(Path::new(&name), bytes).expect("parse disk image")
 }
 
-/// Asserts that `image` holds the layout the disk image tooling builds for
-/// `table` in the BIOS geometry `geometry`: the partition table, the boot
-/// record with its BPB, both FAT copies and the empty root directory.
-fn assert_layout(image: &HddImage, table: PartitionTableType, geometry: HddGeometry, tag: &str) {
+/// Reads `length` bytes from the physical sectors of `image` from `lba` on.
+fn read_bytes(image: &HddImage, lba: u32, length: usize) -> Vec<u8> {
+    let sector_size = usize::from(image.geometry.sector_size);
+    (0..length.div_ceil(sector_size) as u32)
+        .flat_map(|offset| {
+            image
+                .read_sector(lba + offset)
+                .expect("sector in range")
+                .to_vec()
+        })
+        .take(length)
+        .collect()
+}
+
+/// Asserts that `image` holds the NEC layout of a PC-98 disk with the BIOS
+/// geometry `geometry`: the partition table, the reserved area with its BPB,
+/// both FAT copies and the empty root directory.
+fn assert_pc98_layout(image: &HddImage, geometry: HddGeometry, tag: &str) {
+    let layout = pc98_nec_layout(geometry).expect("NEC layout");
+    let sector = |lba: u32| image.read_sector(lba).expect("sector in range").to_vec();
+    assert!(sector(0).iter().all(|&byte| byte == 0), "{tag}: empty IPL");
+    assert_eq!(
+        sector(1),
+        layout.partition_table_sector(),
+        "{tag}: partition table"
+    );
+    assert_eq!(
+        &sector(1)[8..12],
+        &[0, 0, 1, 0],
+        "{tag}: start on cylinder 1"
+    );
+
+    let partition_start = u32::from(geometry.heads) * u32::from(geometry.sectors_per_track);
+    assert_eq!(layout.partition_start(), partition_start, "{tag}");
+    let reserved_area = layout.reserved_area();
+    assert_eq!(
+        read_bytes(image, partition_start, reserved_area.len()),
+        reserved_area,
+        "{tag}: reserved area"
+    );
+    assert_eq!(
+        u16::from_le_bytes([reserved_area[11], reserved_area[12]]),
+        layout.bpb.bytes_per_sector,
+        "{tag}: BPB bytes per sector"
+    );
+    assert_eq!(
+        u16::from_le_bytes([reserved_area[24], reserved_area[25]]),
+        u16::from(geometry.sectors_per_track),
+        "{tag}: BPB sectors per track"
+    );
+    assert_eq!(
+        u16::from_le_bytes([reserved_area[26], reserved_area[27]]),
+        u16::from(geometry.heads),
+        "{tag}: BPB heads"
+    );
+    assert_eq!(
+        u32::from_le_bytes(reserved_area[28..32].try_into().unwrap()),
+        partition_start,
+        "{tag}: BPB hidden sectors"
+    );
+
+    let fat = layout.fat();
+    assert_eq!(fat[0], 0xFE, "{tag}: FAT ID");
+    for copy in 0..layout.bpb.num_fats {
+        assert_eq!(
+            read_bytes(image, layout.fat_lba(copy), fat.len()),
+            fat,
+            "{tag}: FAT copy {copy}"
+        );
+    }
+    let root_directory = layout.root_directory();
+    assert_eq!(
+        read_bytes(image, layout.root_directory_lba(), root_directory.len()),
+        root_directory,
+        "{tag}: root directory"
+    );
+}
+
+/// Asserts that `image` holds the layout the disk image tooling builds for a
+/// PC/AT disk of `geometry`: the master boot record, the boot record with its
+/// BPB, both FAT copies and the empty root directory.
+fn assert_at_layout(image: &HddImage, geometry: HddGeometry, tag: &str) {
     let sector_size = geometry.sector_size;
     let sectors_per_track = geometry.sectors_per_track;
-    let partition_start = match table {
-        PartitionTableType::Pc98 => u32::from(geometry.heads) * u32::from(sectors_per_track),
-        PartitionTableType::At => u32::from(sectors_per_track),
-    };
+    let partition_start = u32::from(sectors_per_track);
     let partition_sectors = geometry.total_sectors() - partition_start;
     let sector = |lba: u32| image.read_sector(lba).expect("sector in range").to_vec();
 
-    match table {
-        PartitionTableType::Pc98 => {
-            assert!(sector(0).iter().all(|&byte| byte == 0), "{tag}: empty IPL");
-            assert_eq!(
-                sector(1),
-                pc98_nec_partition_table_sector(sector_size, geometry.cylinders - 1),
-                "{tag}: partition table"
-            );
-            assert_eq!(
-                &sector(1)[8..12],
-                &[0, 0, 1, 0],
-                "{tag}: start on cylinder 1"
-            );
-        }
-        PartitionTableType::At => {
-            assert_eq!(
-                sector(0),
-                at_master_boot_record(
-                    sector_size,
-                    partition_start,
-                    partition_sectors,
-                    geometry.heads,
-                    sectors_per_track
-                ),
-                "{tag}: master boot record"
-            );
-        }
-    }
+    assert_eq!(
+        sector(0),
+        at_master_boot_record(
+            sector_size,
+            partition_start,
+            partition_sectors,
+            geometry.heads,
+            sectors_per_track
+        ),
+        "{tag}: master boot record"
+    );
 
     let bpb = hdd_bpb_params(sector_size, partition_sectors);
     let boot_record = sector(partition_start);
@@ -292,33 +350,16 @@ fn assert_layout(image: &HddImage, table: PartitionTableType, geometry: HddGeome
         ),
         "{tag}: boot record"
     );
-    assert_eq!(
-        u16::from_le_bytes([boot_record[24], boot_record[25]]),
-        u16::from(sectors_per_track),
-        "{tag}: BPB sectors per track"
-    );
-    assert_eq!(
-        u16::from_le_bytes([boot_record[26], boot_record[27]]),
-        u16::from(geometry.heads),
-        "{tag}: BPB heads"
-    );
-    assert_eq!(
-        u32::from_le_bytes(boot_record[28..32].try_into().unwrap()),
-        partition_start,
-        "{tag}: BPB hidden sectors"
-    );
 
     let fat = fat_region(&bpb, sector_size);
     let fat_start = partition_start + u32::from(bpb.reserved_sectors);
     for copy in 0..u32::from(bpb.num_fats) {
         let copy_start = fat_start + copy * u32::from(bpb.sectors_per_fat);
-        for (index, expected) in fat.chunks_exact(usize::from(sector_size)).enumerate() {
-            assert_eq!(
-                sector(copy_start + index as u32),
-                expected,
-                "{tag}: FAT copy {copy} sector {index}"
-            );
-        }
+        assert_eq!(
+            read_bytes(image, copy_start, fat.len()),
+            fat,
+            "{tag}: FAT copy {copy}"
+        );
     }
 
     let root_start = fat_start + u32::from(bpb.num_fats) * u32::from(bpb.sectors_per_fat);
@@ -355,21 +396,67 @@ fn check_pc98_disk(model: MachineModel, size: HddSizeType, bios_geometry: HddGeo
     let formatted = session
         .media_image_bytes(MediaKind::Hdd, 0)
         .expect("formatted disk");
-    assert_layout(
-        &parse_image(size, &formatted),
-        PartitionTableType::Pc98,
-        bios_geometry,
-        &tag,
-    );
+    assert_pc98_layout(&parse_image(size, &formatted), bios_geometry, &tag);
 
     wait_for_last_line(&mut session, DRIVE_A_PROMPT);
-    type_command(&mut session, "MD NEETAN\n", DRIVE_A_PROMPT);
+    write_and_list_through_the_hle_dos(&mut session, &tag);
     let written = session
         .media_image_bytes(MediaKind::Hdd, 0)
         .expect("written disk");
     drop(session);
+    check_written_volume(size, &written, bios_geometry, &tag);
+
+    let mut session = open_session(MachineSelection::Pc98(model), BootDevice::Dos);
+    create_hdd(&mut session, size).expect("create disk");
+    wait_for_last_line(&mut session, DRIVE_A_PROMPT);
+    type_command(&mut session, "FORMAT A: /Q\n", FORMAT_QUESTION);
+    type_command(&mut session, "Y\n", DRIVE_A_PROMPT);
+    let dos_formatted = session
+        .media_image_bytes(MediaKind::Hdd, 0)
+        .expect("disk formatted by DOS");
+    assert!(
+        formatted == dos_formatted,
+        "{tag}: media-format! and the FORMAT command write different disks"
+    );
+
+    let tag = format!("{tag} FORMAT");
+    write_and_list_through_the_hle_dos(&mut session, &tag);
+    let written = session
+        .media_image_bytes(MediaKind::Hdd, 0)
+        .expect("written disk");
+    drop(session);
+    check_written_volume(size, &written, bios_geometry, &tag);
+}
+
+/// Creates a directory and a file on drive A: through the shell of the HLE
+/// DOS, reads the file back with TYPE and lists it with DIR.
+fn write_and_list_through_the_hle_dos(session: &mut AutomationSession, tag: &str) {
+    type_command(session, "MD NEETAN\n", DRIVE_A_PROMPT);
+    type_command(session, "ECHO NEETAN>TEST.TXT\n", DRIVE_A_PROMPT);
+    type_command(session, "CLS\n", DRIVE_A_PROMPT);
+    type_command(session, "TYPE TEST.TXT\n", DRIVE_A_PROMPT);
+    let lines = session.text_screen_lines("display.main").expect("screen");
+    assert!(
+        lines.iter().any(|line| line.trim() == "NEETAN"),
+        "{tag}: TYPE shows the file written by ECHO: {lines:?}"
+    );
+    type_command(session, "CLS\n", DRIVE_A_PROMPT);
+    type_command(session, "DIR\n", DRIVE_A_PROMPT);
+    let lines = session.text_screen_lines("display.main").expect("screen");
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.starts_with("TEST") && line.contains("TXT")),
+        "{tag}: DIR lists the file written by ECHO: {lines:?}"
+    );
+}
+
+/// Mounts the volume of a disk the HLE DOS wrote with the FAT code of the HLE
+/// DOS and checks the directory and the file of
+/// `write_and_list_through_the_hle_dos`.
+fn check_written_volume(size: HddSizeType, written: &[u8], bios_geometry: HddGeometry, tag: &str) {
     let mut disk = ImageDisk {
-        image: parse_image(size, &written),
+        image: parse_image(size, written),
         bios_geometry,
     };
     let (volume_start, mut volume) = mount_volume(&mut disk, PartitionScheme::Pc98);
@@ -386,19 +473,22 @@ fn check_pc98_disk(model: MachineModel, size: HddSizeType, bios_geometry: HddGeo
         directory.is_dir(),
         "{tag}: directory created by the HLE DOS"
     );
-    drop(disk);
-
-    let mut session = open_session(MachineSelection::Pc98(model), BootDevice::Dos);
-    create_hdd(&mut session, size).expect("create disk");
-    wait_for_last_line(&mut session, DRIVE_A_PROMPT);
-    type_command(&mut session, "FORMAT A: /Q\n", FORMAT_QUESTION);
-    type_command(&mut session, "Y\n", DRIVE_A_PROMPT);
-    let dos_formatted = session
-        .media_image_bytes(MediaKind::Hdd, 0)
-        .expect("disk formatted by DOS");
-    assert!(
-        formatted == dos_formatted,
-        "{tag}: media-format! and the FORMAT command write different disks"
+    assert_eq!(
+        volume.read_file(TEST_FILE).expect("read file"),
+        TEST_CONTENTS,
+        "{tag}: file written by the HLE DOS"
+    );
+    let mut names: Vec<Vec<u8>> = volume
+        .list_dir(b"")
+        .expect("list root")
+        .into_iter()
+        .map(|entry| entry.name)
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        [TEST_DIRECTORY.to_vec(), TEST_FILE.to_vec()],
+        "{tag}"
     );
 }
 
@@ -444,7 +534,7 @@ fn media_format_writes_a_master_boot_record_on_every_at_disk() {
         drop(tooling);
 
         let image = parse_image(size, &formatted);
-        assert_layout(&image, PartitionTableType::At, geometry, tag);
+        assert_at_layout(&image, geometry, tag);
         let mut disk = ImageDisk {
             image,
             bios_geometry: geometry,

@@ -1,15 +1,18 @@
-//! PC-98 SASI disks and the migration of their images to the NEC layout.
+//! PC-98 SASI disks and the migration of their volumes to cylinder 1.
 //!
 //! A PC-98 disk with 256-byte sectors is a SASI disk. Its NEC layout uses
 //! the image geometry. Cylinder 0 holds the IPL and the partition table. The
-//! partition starts on cylinder 1 and ends on the last cylinder.
+//! partition starts on cylinder 1.
 //!
 //! The migration relocates the FAT12 or FAT16 volume of an image that neetan
-//! formatted with its partition in cylinder 0 to cylinder 1. The partition
-//! name of such an image is the neetan partition name. A volume larger than its new span shrinks: every used
-//! cluster past the new end takes a free cluster of the volume, and the FAT
-//! chains and the directory entries follow it. The FAT keeps its size and
-//! its type. An image the migration cannot relocate safely stays unchanged.
+//! formatted with its partition in cylinder 0. The partition name of such an
+//! image is the neetan partition name. The migrated partition spans cylinder
+//! 1 to the last cylinder. The volume keeps its BPB. The hidden sectors
+//! change to the new partition start. A volume larger than its new span
+//! shrinks: every used cluster past the new end takes a free cluster of the
+//! volume, the FAT chains and the directory entries follow it, and the total
+//! sectors of the BPB drop to the new span. The FAT keeps its size and its
+//! type. An image the migration cannot relocate safely stays unchanged.
 
 use std::ops::Range;
 
@@ -79,7 +82,7 @@ const ATTRIBUTE_DIRECTORY: u8 = 0x10;
 /// Attribute of a long file name entry.
 const ATTRIBUTE_LONG_NAME: u8 = 0x0F;
 
-/// The relocated volume and its place in the NEC layout.
+/// The relocated volume and its place on cylinder 1.
 struct Migration {
     entry_index: usize,
     new_start: u32,
@@ -109,11 +112,13 @@ pub fn is_sasi_sector_size(sector_size: u16) -> bool {
 }
 
 /// Relocates the FAT volume of a SASI image that neetan formatted with its
-/// only partition in cylinder 0 into the NEC layout. Returns whether the
-/// image changed. An image in the NEC layout, from another tool, with
+/// only partition in cylinder 0 to a partition from cylinder 1 to the last
+/// cylinder. The volume keeps its BPB with the new hidden sectors and, for a
+/// shrunk volume, the new total sectors. Returns whether the image changed.
+/// An image with its partition on cylinder 1, from another tool, with
 /// another partition table, with a volume that is not readable, or with too
 /// few free clusters to shrink the volume stays unchanged.
-pub fn migrate_to_nec_layout(image: &mut HddImage) -> bool {
+pub fn relocate_volume_to_cylinder_1(image: &mut HddImage) -> bool {
     let Some(migration) = plan_migration(image) else {
         return false;
     };
@@ -625,14 +630,14 @@ mod tests {
     /// Asserts that a second migration leaves the image unchanged.
     fn assert_idempotent(image: &mut HddImage) {
         let migrated = image.clone();
-        assert!(!migrate_to_nec_layout(image));
+        assert!(!relocate_volume_to_cylinder_1(image));
         assert_eq!(image.data(), migrated.data());
     }
 
     /// Asserts that the migration leaves the image unchanged.
     fn assert_unchanged(mut image: HddImage) {
         let original = image.clone();
-        assert!(!migrate_to_nec_layout(&mut image));
+        assert!(!relocate_volume_to_cylinder_1(&mut image));
         assert_eq!(image.data(), original.data());
     }
 
@@ -643,7 +648,7 @@ mod tests {
         let new_start = new_start(&original);
         let mut image = original.clone();
 
-        assert!(migrate_to_nec_layout(&mut image), "{geometry:?}");
+        assert!(relocate_volume_to_cylinder_1(&mut image), "{geometry:?}");
         let table = image.read_sector(PARTITION_TABLE_LBA).unwrap();
         assert_eq!(&table[..2], &[0x21, 0x81]);
         assert_eq!(&table[4..8], &[0, 0, 1, 0]);
@@ -746,7 +751,7 @@ mod tests {
         root.extend(directory_entry(b"SUB        ", 0x10, tail_cluster(3), 0));
         write_root(&mut image, &root);
 
-        assert!(migrate_to_nec_layout(&mut image));
+        assert!(relocate_volume_to_cylinder_1(&mut image));
         let start = new_start(&image);
 
         assert_eq!(read_file(&image, start, &[b"KEEP    BIN"]), keep);
@@ -864,7 +869,7 @@ mod tests {
         boot_record[0x3E..0x42].copy_from_slice(&OLD_START.to_le_bytes());
         image.write_sector(OLD_START, &boot_record);
 
-        assert!(migrate_to_nec_layout(&mut image));
+        assert!(relocate_volume_to_cylinder_1(&mut image));
         let boot_record = image.read_sector(264).unwrap();
         assert_eq!(read_double_word(boot_record, 0x3E), 264);
     }

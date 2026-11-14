@@ -174,11 +174,11 @@ impl IdeController {
 
     /// Inserts a hard disk image with the requested backing on channel 0.
     /// An image laid out in its image geometry is migrated to the BIOS
-    /// geometry. A SASI image that neetan formatted with its partition in
-    /// cylinder 0 is migrated to the NEC layout. A file-backed mount writes
-    /// the migrated image to its file at once. When that write fails, the
-    /// mount keeps its changes in memory only. The drive takes the CHS
-    /// translation of the BIOS geometry.
+    /// geometry. The volume of a SASI image that neetan formatted with its
+    /// partition in cylinder 0 is migrated to a partition on cylinder 1. A
+    /// file-backed mount writes the migrated image to its file at once. When
+    /// that write fails, the mount keeps its changes in memory only. The
+    /// drive takes the CHS translation of the BIOS geometry.
     /// Installs the expansion ROM on the first insertion.
     pub fn insert_drive_backed(
         &mut self,
@@ -194,7 +194,8 @@ impl IdeController {
             image,
             backing,
             |image| {
-                pc98_ide::migrate_to_bios_geometry(image) || pc98_sasi::migrate_to_nec_layout(image)
+                pc98_ide::migrate_to_bios_geometry(image)
+                    || pc98_sasi::relocate_volume_to_cylinder_1(image)
             },
         ));
         self.lle_controller

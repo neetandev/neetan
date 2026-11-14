@@ -186,12 +186,16 @@ pub(crate) fn neetan_formatted_in_image_geometry(size: crate::disk::HddSizeType)
     image
 }
 
+/// Sectors per cluster of the volume neetan formatted on a SASI disk in
+/// cylinder 0: 2 KiB clusters of 256-byte sectors.
+const SASI_CYLINDER_0_SECTORS_PER_CLUSTER: u8 = 8;
+
 /// Builds an empty HDI image of a SASI disk with 256-byte sectors and the
 /// neetan partition name. Its volume starts on head 1 of cylinder 0 and
 /// fills the rest of the disk.
 pub(crate) fn neetan_formatted_sasi_in_cylinder_0(geometry: HddGeometry) -> HddImage {
     use crate::disk::format::{
-        fat_region, hdd_boot_sector, hdd_bpb_params, pc98_partition_table_sector,
+        fat_region, hdd_boot_sector, pc98_partition_table_sector, whole_partition_bpb,
     };
 
     let mut image = HddImage::from_raw(
@@ -211,7 +215,7 @@ pub(crate) fn neetan_formatted_sasi_in_cylinder_0(geometry: HddGeometry) -> HddI
             geometry.sectors_per_track,
         ),
     );
-    let bpb = hdd_bpb_params(256, partition_sectors);
+    let bpb = whole_partition_bpb(256, partition_sectors, SASI_CYLINDER_0_SECTORS_PER_CLUSTER);
     let boot = hdd_boot_sector(
         &bpb,
         256,

@@ -1,7 +1,7 @@
 //! FORMAT command.
 
 use device::{
-    disk::{format as disk_format, pc98_ide, pc98_sasi},
+    disk::{HddGeometry, format as disk_format, pc98_ide, pc98_sasi},
     floppy::{FloppyGeometry, format as floppy_format},
 };
 
@@ -68,40 +68,52 @@ fn uses_nec_layout(sector_size: u16) -> bool {
     pc98_ide::is_ide_sector_size(sector_size) || pc98_sasi::is_sasi_sector_size(sector_size)
 }
 
-/// Returns the LBA of the partition FORMAT writes on a fixed disk: the
-/// start of cylinder 1 in the NEC layout, the second track otherwise.
-fn hdd_partition_offset(sector_size: u16, heads: u8, sectors_per_track: u8) -> u32 {
-    if uses_nec_layout(sector_size) {
-        u32::from(disk_format::PC98_NEC_PARTITION_START_CYLINDER)
-            * u32::from(heads)
-            * u32::from(sectors_per_track)
-    } else {
-        u32::from(sectors_per_track)
-    }
-}
-
-/// Builds the PC-98 partition table FORMAT writes on a fixed disk: one
-/// partition from cylinder 1 to the last cylinder in the NEC layout, one
-/// partition from the second track otherwise.
-fn pc98_partition_table(
-    sector_size: u16,
+/// Returns the NEC layout of a fixed disk with `total_sectors` sectors in the
+/// geometry of `heads`, `sectors_per_track` and `sector_size`, or `None` for
+/// a disk outside the NEC layout. A disk too small for the layout fails.
+fn fixed_disk_nec_layout(
     total_sectors: u32,
     heads: u8,
     sectors_per_track: u8,
-) -> Vec<u8> {
-    if uses_nec_layout(sector_size) {
-        let sectors_per_cylinder = u32::from(heads) * u32::from(sectors_per_track);
-        disk_format::pc98_nec_partition_table_sector(
-            sector_size,
-            (total_sectors / sectors_per_cylinder - 1) as u16,
-        )
-    } else {
-        disk_format::pc98_partition_table_sector(
-            sector_size,
-            total_sectors,
-            heads,
-            sectors_per_track,
-        )
+    sector_size: u16,
+) -> Option<Result<disk_format::Pc98NecLayout, disk_format::FormatError>> {
+    if !uses_nec_layout(sector_size) {
+        return None;
+    }
+    let sectors_per_cylinder = u32::from(heads) * u32::from(sectors_per_track);
+    let cylinders = total_sectors.checked_div(sectors_per_cylinder).unwrap_or(0);
+    Some(disk_format::pc98_nec_layout(HddGeometry {
+        cylinders: u16::try_from(cylinders).unwrap_or(u16::MAX),
+        heads,
+        sectors_per_track,
+        sector_size,
+    }))
+}
+
+/// Returns the NEC layout FORMAT writes, or `None` for a floppy and for a
+/// fixed disk outside the NEC layout.
+fn nec_layout(format_state: &FormatState) -> Option<disk_format::Pc98NecLayout> {
+    if !format_state.is_hdd {
+        return None;
+    }
+    fixed_disk_nec_layout(
+        format_state.total_sectors,
+        format_state.heads,
+        format_state.sectors_per_track,
+        format_state.sector_size,
+    )?
+    .ok()
+}
+
+/// Returns the logical sector size of the volume FORMAT writes on the fixed
+/// disk `device_id`, or `None` for a disk FORMAT cannot lay out.
+pub(crate) fn fixed_disk_format_sector_size(disk: &dyn DiskIo, device_id: u8) -> Option<u16> {
+    let (cylinders, heads, sectors_per_track) = disk.drive_geometry(device_id)?;
+    let sector_size = disk.sector_size(device_id)?;
+    let total_sectors = u32::from(cylinders) * u32::from(heads) * u32::from(sectors_per_track);
+    match fixed_disk_nec_layout(total_sectors, heads, sectors_per_track, sector_size) {
+        Some(layout) => layout.ok().map(|layout| layout.bpb.bytes_per_sector),
+        None => Some(sector_size),
     }
 }
 
@@ -300,12 +312,15 @@ impl RunningFormat {
         }
 
         // Sector 1: PC-98 partition table
-        let part_sector = pc98_partition_table(
-            format_state.sector_size,
-            format_state.total_sectors,
-            format_state.heads,
-            format_state.sectors_per_track,
-        );
+        let part_sector = match nec_layout(&format_state) {
+            Some(layout) => layout.partition_table_sector(),
+            None => disk_format::pc98_partition_table_sector(
+                format_state.sector_size,
+                format_state.total_sectors,
+                format_state.heads,
+                format_state.sectors_per_track,
+            ),
+        };
 
         if drive
             .write_sectors(format_state.device_id, 1, &part_sector)
@@ -325,7 +340,19 @@ impl RunningFormat {
         io: &mut IoAccess,
         disk: &mut dyn DiskIo,
     ) -> StepResult {
-        if format_state.is_hdd {
+        if let Some(layout) = nec_layout(&format_state) {
+            if disk
+                .write_sectors(
+                    format_state.device_id,
+                    layout.partition_start(),
+                    &layout.reserved_area(),
+                )
+                .is_err()
+            {
+                io.println(b"Write error");
+                return StepResult::Done(1);
+            }
+        } else if format_state.is_hdd {
             let partition_sectors = format_state.total_sectors - format_state.partition_offset;
             let bpb = disk_format::hdd_bpb_params(format_state.sector_size, partition_sectors);
             let boot = disk_format::hdd_boot_sector(
@@ -374,6 +401,21 @@ impl RunningFormat {
         io: &mut IoAccess,
         disk: &mut dyn DiskIo,
     ) -> StepResult {
+        if let Some(layout) = nec_layout(&format_state) {
+            let fat_data = layout.fat();
+            for copy in 0..layout.bpb.num_fats {
+                if disk
+                    .write_sectors(format_state.device_id, layout.fat_lba(copy), &fat_data)
+                    .is_err()
+                {
+                    io.println(b"Write error");
+                    return StepResult::Done(1);
+                }
+            }
+            self.phase = FormatPhase::WriteRootDir(format_state);
+            return StepResult::Continue;
+        }
+
         let (bpb, fat_base) = if format_state.is_hdd {
             let partition_sectors = format_state.total_sectors - format_state.partition_offset;
             let bpb = disk_format::hdd_bpb_params(format_state.sector_size, partition_sectors);
@@ -408,6 +450,22 @@ impl RunningFormat {
         io: &mut IoAccess,
         disk: &mut dyn DiskIo,
     ) -> StepResult {
+        if let Some(layout) = nec_layout(&format_state) {
+            if disk
+                .write_sectors(
+                    format_state.device_id,
+                    layout.root_directory_lba(),
+                    &layout.root_directory(),
+                )
+                .is_err()
+            {
+                io.println(b"Write error");
+                return StepResult::Done(1);
+            }
+            self.phase = FormatPhase::Summary(format_state);
+            return StepResult::Continue;
+        }
+
         let (bpb, root_base) = if format_state.is_hdd {
             let partition_sectors = format_state.total_sectors - format_state.partition_offset;
             let bpb = disk_format::hdd_bpb_params(format_state.sector_size, partition_sectors);
@@ -479,27 +537,7 @@ impl RunningFormat {
         state: &mut DosState,
         io: &mut IoAccess,
     ) -> StepResult {
-        let bpb = if format_state.is_hdd {
-            let partition_sectors = format_state.total_sectors - format_state.partition_offset;
-            disk_format::hdd_bpb_params(format_state.sector_size, partition_sectors)
-        } else {
-            floppy_bpb_params(&format_state.floppy_bpb)
-        };
-
-        let volume_sectors = if format_state.is_hdd {
-            format_state.total_sectors - format_state.partition_offset
-        } else {
-            format_state.total_sectors
-        };
-        let total_bytes = volume_sectors as u64 * format_state.sector_size as u64;
-
-        let root_dir_sectors =
-            (bpb.root_entry_count as u32 * 32).div_ceil(format_state.sector_size as u32);
-        let system_sectors = bpb.reserved_sectors as u32
-            + bpb.num_fats as u32 * bpb.sectors_per_fat as u32
-            + root_dir_sectors;
-        let data_sectors = volume_sectors.saturating_sub(system_sectors);
-        let available_bytes = data_sectors as u64 * format_state.sector_size as u64;
+        let (total_bytes, available_bytes) = summary_bytes(&format_state);
 
         io.println(b"Format complete.");
         io.println(b"");
@@ -535,6 +573,63 @@ impl RunningCommand for RunningFormat {
             FormatPhase::Summary(fs) => self.step_summary(fs, state, io),
         }
     }
+}
+
+/// Returns the bytes of `data_sectors` sectors of `bytes_per_sector` bytes
+/// that whole clusters of `sectors_per_cluster` sectors hold.
+fn cluster_bytes(data_sectors: u32, sectors_per_cluster: u8, bytes_per_sector: u16) -> u64 {
+    let sectors_per_cluster = u32::from(sectors_per_cluster.max(1));
+    u64::from(data_sectors / sectors_per_cluster * sectors_per_cluster)
+        * u64::from(bytes_per_sector)
+}
+
+/// Returns the total bytes of the formatted volume and the bytes of its data
+/// clusters.
+fn summary_bytes(format_state: &FormatState) -> (u64, u64) {
+    match nec_layout(format_state) {
+        Some(layout) => (
+            u64::from(layout.volume_sectors) * u64::from(layout.bpb.bytes_per_sector),
+            cluster_bytes(
+                layout.data_sectors(),
+                layout.bpb.sectors_per_cluster,
+                layout.bpb.bytes_per_sector,
+            ),
+        ),
+        None => whole_disk_summary(format_state),
+    }
+}
+
+/// Returns the total bytes and the bytes of the data clusters of a floppy or
+/// of a fixed disk volume that spans the disk from its second track.
+fn whole_disk_summary(format_state: &FormatState) -> (u64, u64) {
+    let bpb = if format_state.is_hdd {
+        let partition_sectors = format_state.total_sectors - format_state.partition_offset;
+        disk_format::hdd_bpb_params(format_state.sector_size, partition_sectors)
+    } else {
+        floppy_bpb_params(&format_state.floppy_bpb)
+    };
+
+    let volume_sectors = if format_state.is_hdd {
+        format_state.total_sectors - format_state.partition_offset
+    } else {
+        format_state.total_sectors
+    };
+    let total_bytes = volume_sectors as u64 * format_state.sector_size as u64;
+
+    let root_dir_sectors =
+        (bpb.root_entry_count as u32 * 32).div_ceil(format_state.sector_size as u32);
+    let system_sectors = bpb.reserved_sectors as u32
+        + bpb.num_fats as u32 * bpb.sectors_per_fat as u32
+        + root_dir_sectors;
+    let data_sectors = volume_sectors.saturating_sub(system_sectors);
+    (
+        total_bytes,
+        cluster_bytes(
+            data_sectors,
+            bpb.sectors_per_cluster,
+            format_state.sector_size,
+        ),
+    )
 }
 
 fn print_help(io: &mut IoAccess) {
@@ -605,10 +700,14 @@ fn init_format(
     let total_sectors = cylinders as u32 * heads as u32 * sectors_per_track as u32;
     let total_tracks = cylinders as u32 * heads as u32;
 
-    let partition_offset = if is_hdd {
-        hdd_partition_offset(sector_size, heads, sectors_per_track)
-    } else {
+    let partition_offset = if !is_hdd {
         0
+    } else {
+        match fixed_disk_nec_layout(total_sectors, heads, sectors_per_track, sector_size) {
+            Some(Ok(layout)) => layout.partition_start(),
+            Some(Err(_)) => return Err(b"Invalid media or Track 0 bad - disk unusable\r\n"),
+            None => u32::from(sectors_per_track),
+        }
     };
 
     Ok(FormatState {
@@ -633,18 +732,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ide_disk_takes_the_nec_layout() {
-        let total_sectors = 7522 * 136;
-        assert_eq!(hdd_partition_offset(512, 8, 17), 136);
-        let table = pc98_partition_table(512, total_sectors, 8, 17);
+    fn ide_disk_takes_the_nec_layout_of_the_bios_geometry() {
+        let layout = fixed_disk_nec_layout(7522 * 136, 8, 17, 512)
+            .unwrap()
+            .unwrap();
+        assert_eq!(layout.partition_start(), 136);
+        assert_eq!(layout.end_cylinder, 7515);
+        assert_eq!(layout.bpb.bytes_per_sector, 512);
+        let table = layout.partition_table_sector();
         assert_eq!(&table[4..8], &[0, 0, 1, 0], "IPL on cylinder 1");
         assert_eq!(&table[8..12], &[0, 0, 1, 0], "data start on cylinder 1");
-        let [cylinder_low, cylinder_high] = 7521u16.to_le_bytes();
-        assert_eq!(&table[12..16], &[0, 0, cylinder_low, cylinder_high]);
-
-        let partition_sectors = total_sectors - 136;
-        let bpb = disk_format::hdd_bpb_params(512, partition_sectors);
-        let boot = disk_format::hdd_boot_sector(&bpb, 512, partition_sectors, 17, 8, 136);
+        let boot = layout.reserved_area();
         assert_eq!(&boot[24..28], &[17, 0, 8, 0]);
         assert_eq!(
             u32::from_le_bytes([boot[28], boot[29], boot[30], boot[31]]),
@@ -653,31 +751,57 @@ mod tests {
     }
 
     #[test]
-    fn sasi_disk_takes_the_nec_layout() {
-        let total_sectors = 615 * 8 * 33;
-        assert_eq!(hdd_partition_offset(256, 8, 33), 264);
-        let table = pc98_partition_table(256, total_sectors, 8, 33);
-        assert_eq!(&table[4..8], &[0, 0, 1, 0], "IPL on cylinder 1");
-        assert_eq!(&table[8..12], &[0, 0, 1, 0], "data start on cylinder 1");
-        let [cylinder_low, cylinder_high] = 614u16.to_le_bytes();
-        assert_eq!(&table[12..16], &[0, 0, cylinder_low, cylinder_high]);
-
-        let partition_sectors = total_sectors - 264;
-        let bpb = disk_format::hdd_bpb_params(256, partition_sectors);
-        let boot = disk_format::hdd_boot_sector(&bpb, 256, partition_sectors, 33, 8, 264);
+    fn sasi_disk_takes_the_nec_layout_of_the_image_geometry() {
+        let layout = fixed_disk_nec_layout(615 * 8 * 33, 8, 33, 256)
+            .unwrap()
+            .unwrap();
+        assert_eq!(layout.partition_start(), 264);
+        assert_eq!(layout.end_cylinder, 600);
+        assert_eq!(layout.bpb.bytes_per_sector, 1024);
+        assert_eq!(layout.fat_lba(0), 268);
+        let boot = layout.reserved_area();
         assert_eq!(&boot[24..28], &[33, 0, 8, 0]);
+    }
+
+    #[test]
+    fn fixed_disk_too_small_for_the_nec_layout_fails() {
+        assert!(matches!(
+            fixed_disk_nec_layout(20 * 8 * 17, 8, 17, 256),
+            Some(Err(disk_format::FormatError::ImageTooSmall))
+        ));
+    }
+
+    /// Returns the format state of a fixed disk with `cylinders` cylinders of
+    /// 8 heads and 17 sectors of 512 bytes.
+    fn ide_format_state(cylinders: u32) -> FormatState {
+        let total_sectors = cylinders * 136;
+        FormatState {
+            drive_index: 0,
+            device_id: 0x80,
+            floppy_bpb: crate::drive_map::pc98::FIXED_DISK_BPB,
+            heads: 8,
+            sectors_per_track: 17,
+            sector_size: 512,
+            total_sectors,
+            total_tracks: cylinders * 8,
+            current_track: 0,
+            partition_offset: 136,
+            is_hdd: true,
+            quick: true,
+            verify: false,
+        }
+    }
+
+    #[test]
+    fn summary_counts_the_bytes_of_whole_clusters() {
         assert_eq!(
-            u32::from_le_bytes([boot[28], boot[29], boot[30], boot[31]]),
-            264
+            summary_bytes(&ide_format_state(3017)),
+            (409_600 * 512, 51_125 * 4096)
         );
     }
 
     #[test]
-    fn non_standard_sasi_geometry_takes_the_nec_layout() {
-        let total_sectors = 320 * 4 * 33;
-        assert_eq!(hdd_partition_offset(256, 4, 33), 132);
-        let table = pc98_partition_table(256, total_sectors, 4, 33);
-        assert_eq!(&table[8..12], &[0, 0, 1, 0]);
-        assert_eq!(&table[12..16], &[0, 0, 63, 1]);
+    fn fixed_disk_with_another_sector_size_spans_the_disk() {
+        assert!(fixed_disk_nec_layout(615 * 8 * 8, 8, 8, 1024).is_none());
     }
 }
