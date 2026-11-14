@@ -5,7 +5,7 @@ use common::{
     TraceSink, temporary::TemporaryFolder,
 };
 use device::{
-    disk::{HddFormat, HddGeometry, HddImage},
+    disk::{HddFormat, HddGeometry, HddImage, HddSizeType},
     floppy::d88::{D88Disk, D88MediaType, D88Sector},
 };
 
@@ -1491,15 +1491,20 @@ pub fn boot_hle_with_ide_hdd(sector_size: u16) -> machine_98::Pc9821Ap {
     machine
 }
 
-/// Creates an empty (all-zeros) HDD image suitable for testing FORMAT.
+/// Creates an empty (all-zeros) HDD image suitable for testing FORMAT. A
+/// disk with 256-byte sectors takes the geometry of the 5 MB SASI disk type.
 pub fn create_empty_hdd(sector_size: u16) -> device::disk::HddImage {
-    let data = vec![0u8; total_hdd_sectors() as usize * sector_size as usize];
-    let geometry = HddGeometry {
-        cylinders: HDD_CYLINDERS,
-        heads: HDD_HEADS,
-        sectors_per_track: HDD_SECTORS_PER_TRACK,
-        sector_size,
+    let geometry = if sector_size == 256 {
+        HddSizeType::Mb5.geometry().0
+    } else {
+        HddGeometry {
+            cylinders: HDD_CYLINDERS,
+            heads: HDD_HEADS,
+            sectors_per_track: HDD_SECTORS_PER_TRACK,
+            sector_size,
+        }
     };
+    let data = vec![0u8; geometry.total_bytes() as usize];
     HddImage::from_raw(geometry, HddFormat::Nhd, data)
 }
 
@@ -1522,10 +1527,14 @@ pub fn boot_hle_with_empty_sasi_hdd() -> machine_98::Pc9801Ra {
 
 /// Boots an HLE machine (PC-9821AP / IDE) with an empty HDD for format testing.
 pub fn boot_hle_with_empty_ide_hdd() -> machine_98::Pc9821Ap {
+    boot_hle_with_ide_hdd_image(create_empty_hdd(512))
+}
+
+/// Boots an HLE machine (PC-9821AP / IDE) with `hdd` as its only drive.
+pub fn boot_hle_with_ide_hdd_image(hdd: device::disk::HddImage) -> machine_98::Pc9821Ap {
     let mut machine = create_hle_machine_ap();
     write_disk_equipment(&mut machine.bus, 0x00, 0x01);
 
-    let hdd = create_empty_hdd(512);
     machine.bus.insert_hdd(0, hdd, None);
     wait_for_prompt(
         &mut machine,

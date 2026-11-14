@@ -8,7 +8,9 @@ use device::{
         HddFormat, HddGeometry, HddImage, HddSizeType, blank_hdd_image,
         format::{
             PartitionTableType, fat_region, format_hdd_image, hdd_boot_sector, hdd_bpb_params,
+            pc98_nec_layout,
         },
+        pc98_ide,
     },
     floppy::{
         FloppyFormat, FloppyGeometry, FloppyImage,
@@ -909,21 +911,52 @@ fn build_image_geometry_layout_hdi(cylinders: u16, heads: u8, sectors_per_track:
 }
 
 #[test]
-fn ide_image_formatted_in_the_bios_geometry_roundtrips_a_file() {
-    let folder = TemporaryFolder::new("copy_ide_bios_geometry");
-    let dir = folder.path();
-    let mut disk = blank_hdd_image(HddSizeType::IdeMb500);
-    format_hdd_image(&mut disk, PartitionTableType::Pc98).unwrap();
-    let image_path = dir.join("disk.hdi");
-    std::fs::write(&image_path, disk.to_bytes()).unwrap();
-    let src = dir.join("input.txt");
-    std::fs::write(&src, b"bios geometry\n").unwrap();
+fn pc98_images_in_the_nec_layout_roundtrip_files_of_every_logical_sector_size() {
+    let sizes = [
+        (HddSizeType::Mb20, 1024),
+        (HddSizeType::IdeMb40, 1024),
+        (HddSizeType::IdeMb80, 2048),
+        (HddSizeType::IdeMb500, 512),
+    ];
+    for (size, logical_sector_size) in sizes {
+        let tag = size.as_token();
+        let folder = TemporaryFolder::new("copy_pc98_nec_layout");
+        let dir = folder.path();
+        let mut disk = blank_hdd_image(size);
+        format_hdd_image(&mut disk, PartitionTableType::Pc98).unwrap();
+        let layout = pc98_nec_layout(pc98_ide::bios_geometry(disk.geometry)).unwrap();
+        let boot_record = disk.read_sector(layout.partition_start()).unwrap();
+        assert_eq!(
+            u16::from_le_bytes([boot_record[11], boot_record[12]]),
+            logical_sector_size,
+            "{tag}: logical sector size"
+        );
+        let image_path = dir.join("disk.hdi");
+        std::fs::write(&image_path, disk.to_bytes()).unwrap();
+        let small = dir.join("small.txt");
+        std::fs::write(&small, b"nec layout\n").unwrap();
+        let large = dir.join("large.bin");
+        let large_contents = payload(40_000);
+        std::fs::write(&large, &large_contents).unwrap();
 
-    copy(host(&src), image(&image_path, b"C:\\OUT.TXT".to_vec())).expect("write into image");
-    let out = dir.join("out.txt");
-    copy(image(&image_path, b"C:\\OUT.TXT".to_vec()), host(&out)).expect("read from image");
+        copy(host(&small), image(&image_path, b"C:\\OUT.TXT".to_vec())).expect("write file");
+        copy(
+            host(&large),
+            image(&image_path, b"C:\\SUB\\LARGE.BIN".to_vec()),
+        )
+        .expect("write file into a directory");
+        let out = dir.join("out.txt");
+        copy(image(&image_path, b"C:\\OUT.TXT".to_vec()), host(&out)).expect("read file");
+        let out_large = dir.join("out.bin");
+        copy(
+            image(&image_path, b"C:\\SUB\\LARGE.BIN".to_vec()),
+            host(&out_large),
+        )
+        .expect("read file from a directory");
 
-    assert_eq!(std::fs::read(&out).unwrap(), b"bios geometry\n");
+        assert_eq!(std::fs::read(&out).unwrap(), b"nec layout\n", "{tag}");
+        assert_eq!(std::fs::read(&out_large).unwrap(), large_contents, "{tag}");
+    }
 }
 
 #[test]

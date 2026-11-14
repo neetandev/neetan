@@ -503,7 +503,7 @@ impl NeetanDos {
         self.state.fat_volumes.fill(None);
         self.state.mount_drive_volumes(disk);
 
-        let system_data = self.state.system_data_area();
+        let system_data = self.state.system_data_area(&*disk);
         let first_mcb_segment = system_data.first_mcb_segment(dos_data_segment);
         self.state.platform.placement.first_mcb_segment = first_mcb_segment;
         memory.write_word(
