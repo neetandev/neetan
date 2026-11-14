@@ -1374,6 +1374,29 @@ mod tests {
         assert!(parse_error(&["--dos-version", "7"]).starts_with("--dos-version: "));
     }
 
+    /// Verifies that the line doubling defaults to auto, parses from a flag and from a settings
+    /// file and rejects an unknown mode.
+    #[test]
+    fn line_doubling_parses_from_a_flag_and_from_a_file() {
+        assert_eq!(
+            parse_run_config(&[]).0.line_doubling,
+            common::LineDoubling::Auto
+        );
+        assert_eq!(
+            parse_run_config(&["--line-doubling", "off"])
+                .0
+                .line_doubling,
+            common::LineDoubling::Off
+        );
+        let test = TestLocations::new("line_doubling");
+        let config = test.parse_settings("line_doubling.conf", "line-doubling = on\n");
+        assert_eq!(config.line_doubling, common::LineDoubling::On);
+        assert_eq!(
+            parse_error(&["--line-doubling", "double"]),
+            "--line-doubling: unknown value 'double', expected auto, on or off"
+        );
+    }
+
     #[test]
     fn cdrom_compat_flag_parses_on_and_off() {
         assert!(!parse_run_config(&[]).0.cdrom_compat);

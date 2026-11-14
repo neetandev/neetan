@@ -696,6 +696,8 @@ const MIDI_FAMILIES: Families = Families::PC98
 const BOOT_DEVICE_FAMILIES: Families = Families::PC98.with(Families::TOWNS).with(Families::AT);
 /// Families with a boot device selection beyond the PC/AT boot orders.
 const FULL_BOOT_DEVICE_FAMILIES: Families = Families::PC98.with(Families::TOWNS);
+/// Families with gap rasters between the picture lines of a 200-line picture.
+const LINE_DOUBLING_FAMILIES: Families = Families::PC98.with(Families::PC88VA);
 
 /// The boot modes that the machines take without `boot-mode`.
 const BOOT_MODE_UNSET: &[UnsetValue] = &[
@@ -1060,6 +1062,22 @@ const SCALING_CHOICES: &[Choice] = &[
     },
     Choice {
         value: "pixelart",
+        families: Families::ALL,
+    },
+];
+
+/// Line doubling modes of 200-line pictures.
+const LINE_DOUBLING_CHOICES: &[Choice] = &[
+    Choice {
+        value: "auto",
+        families: Families::ALL,
+    },
+    Choice {
+        value: "on",
+        families: Families::ALL,
+    },
+    Choice {
+        value: "off",
         families: Families::ALL,
     },
 ];
@@ -1715,6 +1733,25 @@ pub static SETTINGS: &[Setting] = &[
         format: |config| format_value(config.scaling),
     },
     Setting {
+        key: "line-doubling",
+        scope: Scope::System,
+        kind: ValueKind::Choice(LINE_DOUBLING_CHOICES),
+        families: LINE_DOUBLING_FAMILIES,
+        model_limits: &[],
+        section: Some(Section::Display),
+        explicit: None,
+        file_types: &[],
+        unset_values: &[],
+        fact: ChoiceFact::None,
+        frontend_only: false,
+        clear: None,
+        apply: |config, value| {
+            config.line_doubling = parse_choice(value, LINE_DOUBLING_CHOICES)?;
+            Ok(())
+        },
+        format: |config| format_value(config.line_doubling),
+    },
+    Setting {
         key: "pc6000-phase",
         scope: Scope::System,
         kind: ValueKind::Number(COMPOSITE_PHASE_RANGE),
@@ -2201,7 +2238,7 @@ pub static SETTINGS: &[Setting] = &[
 mod tests {
     use std::collections::BTreeSet;
 
-    use common::HleDosVersion;
+    use common::{HleDosVersion, LineDoubling};
 
     use super::{
         super::{first_system_config, systems::compiled_systems},
@@ -2556,6 +2593,44 @@ mod tests {
         assert_eq!(dos_version.families, Families::PC98);
         assert_eq!(dos_version.choices_for_families(Families::TOWNS).count(), 0);
         assert_eq!(dos_version.choices_for_families(Families::AT).count(), 0);
+    }
+
+    /// Verifies that the line doubling parses and formats its three values, defaults to auto and
+    /// rejects other values.
+    #[test]
+    fn line_doubling_parses_and_formats_its_values() {
+        let line_doubling = find_setting("line-doubling").expect("line-doubling is a table key");
+        assert_eq!(first_system_config().line_doubling, LineDoubling::Auto);
+        assert_eq!((line_doubling.format)(&first_system_config()), ["auto"]);
+        for (value, expected) in [
+            ("auto", LineDoubling::Auto),
+            ("on", LineDoubling::On),
+            ("off", LineDoubling::Off),
+        ] {
+            let mut config = first_system_config();
+            (line_doubling.apply)(&mut config, value).expect("line doubling applies");
+            assert_eq!(config.line_doubling, expected);
+            assert_eq!((line_doubling.format)(&config), [value]);
+        }
+        let mut config = first_system_config();
+        assert_eq!(
+            (line_doubling.apply)(&mut config, "double"),
+            Err(ValueError::unknown_choice("double", LINE_DOUBLING_CHOICES))
+        );
+    }
+
+    /// Verifies that the line doubling belongs to the PC-98 and the PC-88VA families and to the
+    /// display section, has the system scope and is no frontend-only setting.
+    #[test]
+    fn line_doubling_belongs_to_the_pc98_and_pc88va_families() {
+        let line_doubling = find_setting("line-doubling").expect("line-doubling is a table key");
+        assert_eq!(
+            line_doubling.families,
+            Families::PC98.with(Families::PC88VA)
+        );
+        assert_eq!(line_doubling.section, Some(Section::Display));
+        assert_eq!(line_doubling.scope, Scope::System);
+        assert!(!line_doubling.frontend_only);
     }
 
     #[cfg(feature = "pc98")]

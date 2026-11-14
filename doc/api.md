@@ -176,8 +176,8 @@ Every other key is a machine setting of the configuration file, with the same
 name and the same values: `cpu-mode`, `boot-mode`, `boot-device`,
 `dos-version`, `bios`, `ems`, `xms`, `monitor`, `pc88-memory-wait`,
 `pc88-8mhz-wait`, `x1-keyboard`, `towns-pad`, `cdrom-compat`, `soundboard`,
-`adpcm-ram`, `midi`, `force-gdc-clock` and `graphicboard`. See
-[`configuration/default.conf`](../configuration/default.conf) for their values.
+`adpcm-ram`, `midi`, `force-gdc-clock`, `graphicboard` and `line-doubling`.
+See [`configuration/default.conf`](../configuration/default.conf) for their values.
 A value is a symbol, for example `(soundboard . |86+26k|)` or `(bios . on)`.
 
 The specification rejects these keys of the configuration file:

@@ -11,7 +11,7 @@ pub enum LineDoubling {
     Auto,
     /// Repeats the picture line in the gap raster.
     On,
-    /// Draws the gap raster black.
+    /// Blanks the gap raster.
     Off,
 }
 

@@ -73,6 +73,7 @@ single family are listed on the page of that family:
 | `--aspect-mode <MODE>`      | All                                                               | Display aspect mode: `4:3` or `1:1`                                             | `4:3`                        |
 | `--crt [on\|off]`           | All                                                               | Enable the CRT effect. The legacy backend has no CRT effect                     | `on`                         |
 | `--scaling <MODE>`          | All                                                               | Scaling method: `nearest`, `bilinear`, `pixelart`                               | `pixelart`                   |
+| `--line-doubling <MODE>`    | PC-98, PC-88VA                                                    | Gap lines of 200-line pictures: `auto`, `on`, `off`                             | `auto`                       |
 | `--backend <BACKEND>`       | All                                                               | Rendering backend: `modern` or `legacy`                                         | `modern`                     |
 | `--window-mode <MODE>`      | All                                                               | Window mode: `windowed` or `fullscreen`                                         | `windowed`                   |
 | `-h, --help`                | All                                                               | Print help                                                                      | -                            |
