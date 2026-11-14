@@ -46,10 +46,10 @@ pub(super) const METADATA_CONTROL_BREAK_HELPER: usize = 10;
 pub(super) const METADATA_PAUSE_WAIT_LOOP: usize = 12;
 /// Stub ROM metadata word: INT 1Eh diskette parameter table offset.
 pub(super) const METADATA_DISKETTE_PARAMETER_TABLE: usize = 14;
-/// Stub ROM metadata word: INT 41h fixed disk parameter table offset.
-pub(super) const METADATA_FDPT_DRIVE_0: usize = 16;
-/// Stub ROM metadata word: INT 46h fixed disk parameter table offset.
-pub(super) const METADATA_FDPT_DRIVE_1: usize = 18;
+/// Stub ROM metadata word: INT 41h hard disk parameter table offset.
+pub(super) const METADATA_HARD_DISK_PARAMETER_TABLE_DRIVE_0: usize = 16;
+/// Stub ROM metadata word: INT 46h hard disk parameter table offset.
+pub(super) const METADATA_HARD_DISK_PARAMETER_TABLE_DRIVE_1: usize = 18;
 /// Stub ROM metadata word: INT 70h alarm int 4Ah helper offset.
 pub(super) const METADATA_RTC_ALARM_HELPER: usize = 20;
 

@@ -52,7 +52,7 @@ fn chs_to_lba(cylinder: u16, head: u8, sector: u8, heads: u8, sectors_per_track:
 }
 
 /// Returns the first physical sector of the first active DOS partition of a
-/// fixed disk, or `None` for a disk without an active DOS partition.
+/// hard disk, or `None` for a disk without an active DOS partition.
 pub(crate) fn find_active_partition_start(
     device_id: u8,
     disk: &mut dyn DiskIo,

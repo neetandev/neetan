@@ -776,7 +776,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
             }
         }
         if let Some(dos) = self.dos.as_mut() {
-            dos.invalidate_drive_caches(pc98_drives::FIXED_DISK_CLASS | drive as u8);
+            dos.invalidate_drive_caches(pc98_drives::HARD_DISK_CLASS | drive as u8);
         }
     }
 

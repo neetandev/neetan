@@ -56,8 +56,8 @@ metadata:
     dw control_break_helper         ; +10: Ctrl-Break int 1Bh helper offset
     dw pause_wait_loop              ; +12: pause hold loop offset
     dw diskette_parameter_table     ; +14: INT 1Eh diskette parameter table offset
-    dw fixed_disk_parameter_table_0 ; +16: INT 41h fixed disk parameter table offset
-    dw fixed_disk_parameter_table_1 ; +18: INT 46h fixed disk parameter table offset
+    dw hard_disk_parameter_table_0  ; +16: INT 41h hard disk parameter table offset
+    dw hard_disk_parameter_table_1  ; +18: INT 46h hard disk parameter table offset
     dw rtc_alarm_helper             ; +20: INT 70h alarm int 4Ah helper offset
 
 ; --- Shared IRET stub ---
@@ -146,7 +146,7 @@ int_0eh_handler:
     pop  ax
     iret
 
-; INT 76h (IRQ 14) fixed disk completion: the HLE trap sets the operation
+; INT 76h (IRQ 14) hard disk completion: the HLE trap sets the operation
 ; complete flag (BDA 40:8E), then the stub acknowledges both PICs itself so
 ; the EOIs are visible on the guest bus. The Rust handler must not edit the
 ; IRET frame.
@@ -311,15 +311,16 @@ halt_loop:
 rom_data_placeholder:
     times 16 db 0x00
 
-; --- Fixed disk parameter tables (INT 41h/46h) ---
-; Standard 16-byte AT FDPT blocks, one per drive. They are patched with the
-; mounted drive geometry through AtMemory::set_bios_byte before the POST
-; shadows the ROM, so the vectors always describe the attached disks.
+; --- Hard disk parameter tables (INT 41h/46h) ---
+; Standard 16-byte AT hard disk parameter tables, one per drive. They are
+; patched with the mounted drive geometry through AtMemory::set_bios_byte
+; before the POST shadows the ROM, so the vectors always describe the
+; attached disks.
 
-fixed_disk_parameter_table_0:
+hard_disk_parameter_table_0:
     times 16 db 0x00
 
-fixed_disk_parameter_table_1:
+hard_disk_parameter_table_1:
     times 16 db 0x00
 
 ; --- INT 13h AH=08h diskette parameter table ---
@@ -417,12 +418,12 @@ vector_table:
 %endrep
 
     dw 0x40, int_40h_handler        ; INT 40h - Diskette services alias
-    dw 0x41, fixed_disk_parameter_table_0 ; INT 41h - Fixed disk parameter table 0
+    dw 0x41, hard_disk_parameter_table_0 ; INT 41h - Hard disk parameter table 0
     dw 0x42, iret_stub              ; INT 42h - Relocated video services
     dw 0x43, rom_data_placeholder   ; INT 43h - Character generator font
     dw 0x44, iret_stub              ; INT 44h - Unused
     dw 0x45, iret_stub              ; INT 45h - Unused
-    dw 0x46, fixed_disk_parameter_table_1 ; INT 46h - Fixed disk parameter table 1
+    dw 0x46, hard_disk_parameter_table_1 ; INT 46h - Hard disk parameter table 1
 
 ; INT 47h-5Fh: parked on the dummy IRET handler like the real AMI BIOS.
 ; INT 60h-67h stay empty (reserved for user programs).
@@ -444,7 +445,7 @@ vector_table:
     dw 0x73, eoi_slave_stub         ; INT 73h - Reserved (IRQ 11)
     dw 0x74, eoi_slave_stub         ; INT 74h - PS/2 mouse (IRQ 12)
     dw 0x75, int_75h_handler        ; INT 75h - FPU error (IRQ 13)
-    dw 0x76, int_76h_handler        ; INT 76h - Fixed disk (IRQ 14)
+    dw 0x76, int_76h_handler        ; INT 76h - Hard disk (IRQ 14)
     dw 0x77, eoi_slave_stub         ; INT 77h - Reserved (IRQ 15)
     dw 0xFFFF                       ; Sentinel
 

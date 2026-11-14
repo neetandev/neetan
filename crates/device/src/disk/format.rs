@@ -230,7 +230,7 @@ pub fn pc98_ipl_sector(sector_size: u16) -> Vec<u8> {
     sector
 }
 
-/// First cylinder of the partition in the NEC layout of a PC-98 fixed disk.
+/// First cylinder of the partition in the NEC layout of a PC-98 hard disk.
 pub const PC98_NEC_PARTITION_START_CYLINDER: u16 = 1;
 
 /// MID byte of the partition neetan writes into a PC-98 partition table.
@@ -257,10 +257,10 @@ const PC98_ENTRY_SID_OFFSET: usize = 1;
 /// Partition table entry offset of the partition name.
 const PC98_ENTRY_NAME_OFFSET: usize = 16;
 
-/// Bytes of one size unit of a PC-98 fixed disk sized in units of 990 KiB.
+/// Bytes of one size unit of a PC-98 hard disk sized in units of 990 KiB.
 const NEC_SMALL_UNIT_BYTES: u64 = 1_013_760;
 
-/// Bytes of one size unit of a PC-98 fixed disk sized in units of 1 MiB.
+/// Bytes of one size unit of a PC-98 hard disk sized in units of 1 MiB.
 const NEC_LARGE_UNIT_BYTES: u64 = 1_048_576;
 
 /// Cylinders the NEC FORMAT never allocates: cylinder 0 with the IPL and the
@@ -312,7 +312,7 @@ const NEC_BOOT_BLOCK_BYTES: usize = 512;
 /// Number of FAT copies.
 const NEC_FAT_COUNT: u8 = 2;
 
-/// Media descriptor byte of the BPB of a fixed disk.
+/// Media descriptor byte of the BPB of a hard disk.
 const NEC_MEDIA_DESCRIPTOR: u8 = 0xF8;
 
 /// FAT ID byte in entry 0 of both FAT copies.
@@ -354,7 +354,7 @@ const NEC_FAT16_CLUSTER_STEPS: [(u64, u8); 1] = [(u64::MAX, 2)];
 /// with 512-byte sectors.
 const NEC_FAT16_LARGE_VOLUME_CLUSTER_STEPS: [(u64, u8); 2] = [(255, 8), (u64::MAX, 16)];
 
-/// The size class of a PC-98 fixed disk in the NEC FORMAT.
+/// The size class of a PC-98 hard disk in the NEC FORMAT.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NecDiskClass {
     /// At most 615 cylinders: FAT12 at every size, sized in 990 KiB units.
@@ -373,7 +373,7 @@ fn step_value<T: Copy>(steps: &[(u64, T)], units: u64) -> T {
         .map_or(steps[steps.len() - 1].1, |(_, value)| *value)
 }
 
-/// The layout the NEC MS-DOS 6.20 FORMAT writes on a PC-98 fixed disk: the
+/// The layout the NEC MS-DOS 6.20 FORMAT writes on a PC-98 hard disk: the
 /// partition extent, the SID of the partition entry and the BPB of the FAT
 /// volume. The partition starts on cylinder 1. The volume can be smaller
 /// than the partition. Its logical sector size can differ from the
@@ -396,7 +396,7 @@ pub struct Pc98NecLayout {
     pub volume_sectors: u32,
 }
 
-/// Resolves the layout of the NEC MS-DOS 6.20 FORMAT for a PC-98 fixed disk
+/// Resolves the layout of the NEC MS-DOS 6.20 FORMAT for a PC-98 hard disk
 /// of `geometry`, the geometry the BIOS addresses the disk in. The partition
 /// takes the largest size the NEC FORMAT offers. The rules were measured
 /// against the NEC MS-DOS 6.20 FORMAT on SASI and IDE disks.

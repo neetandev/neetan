@@ -354,7 +354,7 @@ impl DosState {
             Some(
                 DriveDevice::Cdrom
                 | DriveDevice::Floppy { .. }
-                | DriveDevice::FixedDisk { .. }
+                | DriveDevice::HardDisk { .. }
                 | DriveDevice::MemoryImage { .. }
                 | DriveDevice::GuestDriver(_)
                 | DriveDevice::Virtual,
@@ -401,7 +401,7 @@ impl DosState {
             }
             DriveDevice::Cdrom
             | DriveDevice::Floppy { .. }
-            | DriveDevice::FixedDisk { .. }
+            | DriveDevice::HardDisk { .. }
             | DriveDevice::MemoryImage { .. }
             | DriveDevice::GuestDriver(_)
             | DriveDevice::Virtual => None,

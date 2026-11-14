@@ -19,7 +19,7 @@ use super::AtBus;
 
 /// BIOS data area: hard disk status of the last operation.
 const BDA_HDD_STATUS: u32 = 0x474;
-/// BIOS data area: number of fixed disks.
+/// BIOS data area: number of hard disks.
 const BDA_HDD_COUNT: u32 = 0x475;
 /// BIOS data area: hard disk operation-complete interrupt flag.
 const BDA_HDD_INTERRUPT_FLAG: u32 = 0x48E;
@@ -27,8 +27,8 @@ const BDA_HDD_INTERRUPT_FLAG: u32 = 0x48E;
 /// Hard disk status: success.
 const STATUS_OK: u8 = 0x00;
 /// Hard disk status: invalid function or parameter. Also reported for
-/// requests to absent drives and cylinders past the FDPT count, matching
-/// the probed AMI handler.
+/// requests to absent drives and cylinders past the cylinder count of the
+/// hard disk parameter table, matching the probed AMI handler.
 const STATUS_BAD_COMMAND: u8 = 0x01;
 /// Hard disk status: sector not found, the controller's IDNF error.
 const STATUS_SECTOR_NOT_FOUND: u8 = 0x04;
@@ -39,8 +39,8 @@ const STATUS_WRITE_FAULT: u8 = 0xCC;
 
 /// INT 13h AH=15h: no drive present.
 const DISK_TYPE_NONE: u8 = 0x00;
-/// INT 13h AH=15h: fixed disk.
-const DISK_TYPE_FIXED: u8 = 0x03;
+/// INT 13h AH=15h: hard disk.
+const DISK_TYPE_HARD_DISK: u8 = 0x03;
 
 /// IDE status register value of a ready drive: DRDY and DSC. AH=10h returns
 /// it in AL like the probed AMI handler.
@@ -281,10 +281,10 @@ impl<T: TraceSink> AtBus<T> {
 
     /// AH=08h: returns the drive geometry in the CHS register packing. The
     /// probed AMI handler never fails for the two drive slots: the values
-    /// come from the FDPT, which stays zeroed for an absent drive, and AL
-    /// carries the sectors per track. The last cylinder is reserved for
-    /// diagnostics, so the maximum usable cylinder number is the count
-    /// minus two.
+    /// come from the hard disk parameter table, which stays zeroed for an
+    /// absent drive, and AL carries the sectors per track. The last cylinder
+    /// is reserved for diagnostics, so the maximum usable cylinder number is
+    /// the count minus two.
     fn int13h_hdd_drive_parameters(&mut self, cpu: &mut impl Cpu) {
         let drive = usize::from(cpu.dl() & 0x7F);
         if drive >= HARD_DISK_DRIVE_COUNT {
@@ -308,7 +308,7 @@ impl<T: TraceSink> AtBus<T> {
         self.set_iret_cf(cpu, false);
     }
 
-    /// AH=09h: set drive parameters from the fixed disk parameter table.
+    /// AH=09h: set drive parameters from the hard disk parameter table.
     /// The geometry lives in the device, so a present drive succeeds
     /// without further work.
     fn int13h_hdd_set_parameters(&mut self, cpu: &mut impl Cpu) {
@@ -372,7 +372,7 @@ impl<T: TraceSink> AtBus<T> {
                 cpu.set_cx((sectors >> 16) as u16);
                 cpu.set_dx(sectors as u16);
                 cpu.set_al(sectors as u8);
-                cpu.set_ah(DISK_TYPE_FIXED);
+                cpu.set_ah(DISK_TYPE_HARD_DISK);
                 self.write_mem_byte(BDA_HDD_STATUS, STATUS_OK);
                 self.set_iret_cf(cpu, false);
             }

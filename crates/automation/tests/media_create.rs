@@ -62,8 +62,8 @@ const FORMAT_QUESTION: &str = "Proceed with Format (Y/N)?";
 /// Frames between two typed characters.
 const TYPING_SPACING_FRAMES: u64 = 2;
 
-/// Device id of the first fixed disk in the HLE DOS.
-const FIRST_FIXED_DISK: u8 = 0x80;
+/// Device id of the first hard disk in the HLE DOS.
+const FIRST_HARD_DISK: u8 = 0x80;
 
 /// Disk status of a failed sector access.
 const SECTOR_ACCESS_ERROR: u8 = 0x40;
@@ -121,7 +121,7 @@ struct ImageDisk {
 
 impl DiskIo for ImageDisk {
     fn read_sectors(&mut self, device_id: u8, lba: u32, count: u32) -> Result<Vec<u8>, u8> {
-        if device_id != FIRST_FIXED_DISK {
+        if device_id != FIRST_HARD_DISK {
             return Err(SECTOR_ACCESS_ERROR);
         }
         let mut data = Vec::new();
@@ -136,7 +136,7 @@ impl DiskIo for ImageDisk {
     }
 
     fn write_sectors(&mut self, device_id: u8, lba: u32, data: &[u8]) -> Result<(), u8> {
-        if device_id != FIRST_FIXED_DISK {
+        if device_id != FIRST_HARD_DISK {
             return Err(SECTOR_ACCESS_ERROR);
         }
         let sector_size = usize::from(self.image.geometry.sector_size);
@@ -149,15 +149,15 @@ impl DiskIo for ImageDisk {
     }
 
     fn sector_size(&self, device_id: u8) -> Option<u16> {
-        (device_id == FIRST_FIXED_DISK).then_some(self.image.geometry.sector_size)
+        (device_id == FIRST_HARD_DISK).then_some(self.image.geometry.sector_size)
     }
 
     fn total_sectors(&self, device_id: u8) -> Option<u32> {
-        (device_id == FIRST_FIXED_DISK).then_some(self.image.geometry.total_sectors())
+        (device_id == FIRST_HARD_DISK).then_some(self.image.geometry.total_sectors())
     }
 
     fn drive_geometry(&self, device_id: u8) -> Option<(u16, u8, u8)> {
-        (device_id == FIRST_FIXED_DISK).then_some((
+        (device_id == FIRST_HARD_DISK).then_some((
             self.bios_geometry.cylinders,
             self.bios_geometry.heads,
             self.bios_geometry.sectors_per_track,
@@ -379,10 +379,10 @@ fn assert_at_layout(image: &HddImage, geometry: HddGeometry, tag: &str) {
 /// Mounts the volume of `disk` with the FAT code of the HLE DOS and returns
 /// the volume start the partition scheme finds.
 fn mount_volume(disk: &mut ImageDisk, scheme: PartitionScheme) -> (u32, FatFs<'_>) {
-    let mut entry = pc98::drive_entry(FIRST_FIXED_DISK).expect("fixed disk entry");
+    let mut entry = pc98::drive_entry(FIRST_HARD_DISK).expect("hard disk entry");
     entry.partition_scheme = scheme;
     let volume_start = scheme
-        .volume_start(FIRST_FIXED_DISK, disk)
+        .volume_start(FIRST_HARD_DISK, disk)
         .expect("volume start");
     let volume = FatFs::mount(disk, &entry).expect("mount FAT volume");
     (volume_start, volume)

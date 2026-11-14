@@ -359,7 +359,7 @@ impl DosState {
             Some(drive_map::DriveDevice::GuestDriver(_)) => self.fail_guest_volume(drive_index),
             Some(
                 drive_map::DriveDevice::Floppy { .. }
-                | drive_map::DriveDevice::FixedDisk { .. }
+                | drive_map::DriveDevice::HardDisk { .. }
                 | drive_map::DriveDevice::MemoryImage { .. },
             ) => self.media_failed |= bit,
             Some(drive_map::DriveDevice::Cdrom | drive_map::DriveDevice::Virtual) | None => {}

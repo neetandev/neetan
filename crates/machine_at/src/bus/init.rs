@@ -52,9 +52,9 @@ const WARM_BOOT_FLAG: u16 = 0x1234;
 const WARM_BOOT_RESIDUE: u16 = 0x1200;
 /// End of conventional memory zeroed by the POST memory test.
 const CONVENTIONAL_MEMORY_END: u32 = 0xA0000;
-/// BIOS data area: fixed disk last operation status.
+/// BIOS data area: hard disk last operation status.
 const BDA_DISK_STATUS: u32 = 0x474;
-/// BIOS data area: number of fixed disk drives.
+/// BIOS data area: number of hard disk drives.
 const BDA_DISK_COUNT: u32 = 0x475;
 /// BIOS data area: LPT1-LPT4 timeout values.
 const BDA_LPT_TIMEOUT: u32 = 0x478;
@@ -360,9 +360,9 @@ impl<T: TraceSink> AtBus<T> {
         self.drain_kbc_output();
         self.io_write(0x64, 0xAE);
 
-        // Fixed disk parameter tables: patched into the stub ROM image
+        // Hard disk parameter tables: patched into the stub ROM image
         // before it is shadowed, so INT 41h/46h describe the mounted disks.
-        self.patch_fixed_disk_parameter_tables();
+        self.patch_hard_disk_parameter_tables();
 
         // Shadow the system and video BIOS like the real POST: enable shadow
         // writes for the C0000/C4000/F0000 regions, copy the ROM images into

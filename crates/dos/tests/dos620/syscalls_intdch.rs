@@ -194,7 +194,7 @@ fn disk_information_lists_the_drives_and_the_partition_start() {
 }
 
 #[test]
-fn disk_information_lists_the_second_fixed_disk_unit() {
+fn disk_information_lists_the_second_hard_disk_unit() {
     let mut machine = harness::boot_hle_with_two_hdds(
         harness::create_test_hdd(512),
         harness::create_test_hdd(512),
@@ -210,7 +210,7 @@ fn disk_information_lists_the_second_fixed_disk_unit() {
 }
 
 #[test]
-fn disk_information_skips_a_fixed_disk_without_an_active_partition() {
+fn disk_information_skips_a_hard_disk_without_an_active_partition() {
     let mut machine = harness::boot_hle_with_empty_sasi_hdd();
     let (_, buffer) = call_disk_information(&mut machine, 0x0000);
     assert_eq!(buffer, vec![0u8; DISK_INFO_BUFFER_SIZE]);

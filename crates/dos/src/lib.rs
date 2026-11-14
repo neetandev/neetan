@@ -2381,7 +2381,7 @@ impl NeetanDos {
                     (unit.header_segment, unit.header_offset)
                 }
                 drive_map::DriveDevice::Floppy { .. }
-                | drive_map::DriveDevice::FixedDisk { .. }
+                | drive_map::DriveDevice::HardDisk { .. }
                 | drive_map::DriveDevice::MemoryImage { .. }
                 | drive_map::DriveDevice::Cdrom
                 | drive_map::DriveDevice::GuestCdrom(_)
@@ -2999,7 +2999,7 @@ impl DosState {
 
     /// Returns the placement of the first disk buffer and the DPBs for the
     /// drives of the drive map. The buffer holds the largest sector of the
-    /// BPBs of the drive map and of the volume FORMAT writes on each fixed
+    /// BPBs of the drive map and of the volume FORMAT writes on each hard
     /// disk of `disk`.
     pub(crate) fn system_data_area(&self, disk: &dyn DiskIo) -> system_data::SystemDataArea {
         let drives: Vec<&drive_map::DriveEntry> = self
@@ -3016,9 +3016,9 @@ impl DosState {
                 .iter()
                 .filter_map(|entry| match (entry.device, entry.partition_scheme) {
                     (
-                        drive_map::DriveDevice::FixedDisk { device_id },
+                        drive_map::DriveDevice::HardDisk { device_id },
                         drive_map::PartitionScheme::Pc98,
-                    ) => commands::format::fixed_disk_format_sector_size(disk, device_id),
+                    ) => commands::format::hard_disk_format_sector_size(disk, device_id),
                     _ => None,
                 });
         let largest_sector = largest_bpb_sector
@@ -3227,7 +3227,7 @@ impl DosState {
         let device_id = match entry.device {
             drive_map::DriveDevice::GuestDriver(_) => self.require_guest_volume(drive_index)?,
             drive_map::DriveDevice::Floppy { .. }
-            | drive_map::DriveDevice::FixedDisk { .. }
+            | drive_map::DriveDevice::HardDisk { .. }
             | drive_map::DriveDevice::MemoryImage { .. }
             | drive_map::DriveDevice::Cdrom
             | drive_map::DriveDevice::GuestCdrom(_)
@@ -3289,7 +3289,7 @@ impl DosState {
                 guest_volume::image_device_id(drive_index)
             }
             drive_map::DriveDevice::Floppy { .. }
-            | drive_map::DriveDevice::FixedDisk { .. }
+            | drive_map::DriveDevice::HardDisk { .. }
             | drive_map::DriveDevice::MemoryImage { .. }
             | drive_map::DriveDevice::Cdrom
             | drive_map::DriveDevice::GuestCdrom(_)

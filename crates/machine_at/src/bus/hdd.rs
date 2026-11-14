@@ -13,17 +13,19 @@ use device::{
 use crate::{
     bus::{
         AtBus, IRQ_IDE_PRIMARY,
-        bios::{METADATA_FDPT_DRIVE_0, METADATA_FDPT_DRIVE_1},
+        bios::{
+            METADATA_HARD_DISK_PARAMETER_TABLE_DRIVE_0, METADATA_HARD_DISK_PARAMETER_TABLE_DRIVE_1,
+        },
     },
     cmos::{hard_disk_control_byte, set_boot_sequence, set_hard_disk_user_type},
     config::AtBootDevice,
     scheduler::EventAt,
 };
 
-/// Builds the 16-byte fixed disk parameter table for a drive geometry. The
+/// Builds the 16-byte hard disk parameter table for a drive geometry. The
 /// values must agree with the CMOS type 47 user parameter block written by
 /// `set_hard_disk_user_type`.
-fn fixed_disk_parameter_table(geometry: &HddGeometry) -> [u8; 16] {
+fn hard_disk_parameter_table(geometry: &HddGeometry) -> [u8; 16] {
     let mut table = [0u8; 16];
     let cylinders = geometry.cylinders.to_le_bytes();
     let write_precompensation = 0xFFFFu16.to_le_bytes();
@@ -170,25 +172,28 @@ impl<T: TraceSink> AtBus<T> {
         let geometry = image.geometry;
         self.ide.insert_drive_backed(drive, image, backing);
         set_hard_disk_user_type(&mut self.rtc.cmos, drive, &geometry);
-        self.patch_fixed_disk_parameter_tables();
+        self.patch_hard_disk_parameter_tables();
         Ok(())
     }
 
-    /// Writes the mounted drive geometries into the fixed disk parameter
+    /// Writes the mounted drive geometries into the hard disk parameter
     /// tables of the stub BIOS image (zeros for absent drives). Runs on
     /// every insert and again at POST before the ROM is shadowed, so the
     /// INT 41h/46h vectors always describe the attached disks. Real ROM
     /// images carry their own tables and are never patched.
-    pub(super) fn patch_fixed_disk_parameter_tables(&mut self) {
+    pub(super) fn patch_hard_disk_parameter_tables(&mut self) {
         if !self.hle_bios {
             return;
         }
-        for (drive, metadata_offset) in [(0, METADATA_FDPT_DRIVE_0), (1, METADATA_FDPT_DRIVE_1)] {
+        for (drive, metadata_offset) in [
+            (0, METADATA_HARD_DISK_PARAMETER_TABLE_DRIVE_0),
+            (1, METADATA_HARD_DISK_PARAMETER_TABLE_DRIVE_1),
+        ] {
             let table_offset = usize::from(self.stub_rom_metadata_word(metadata_offset));
             let table = self
                 .ide
                 .drive_geometry(drive)
-                .map(|geometry| fixed_disk_parameter_table(&geometry))
+                .map(|geometry| hard_disk_parameter_table(&geometry))
                 .unwrap_or_default();
             for (index, byte) in table.iter().enumerate() {
                 self.memory.set_bios_byte(table_offset + index, *byte);

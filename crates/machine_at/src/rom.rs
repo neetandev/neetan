@@ -48,7 +48,7 @@ pub struct LoadedRoms {
     pub system_bios: Vec<u8>,
     /// ET4000AX VGA BIOS ROM (32 KiB), mapped at 0xC0000.
     pub vga_bios: Vec<u8>,
-    /// Whether the set is the HLE stub pair. HLE-only paths like the fixed
+    /// Whether the set is the HLE stub pair. HLE-only paths like the hard
     /// disk parameter table patching stay away from real ROM images.
     pub hle: bool,
 }

@@ -361,7 +361,7 @@ pub const fn scsi_partition_entry(
     bpb: Bpb,
 ) -> DriveEntry {
     DriveEntry {
-        device: DriveDevice::FixedDisk {
+        device: DriveDevice::HardDisk {
             device_id: scsi_device_id(target),
         },
         unit,
@@ -810,7 +810,7 @@ mod tests {
     #[test]
     fn scsi_partition_takes_the_driver_bpb() {
         let entry = scsi_partition_entry(0, 0, 3, PARTITION_BPB);
-        assert_eq!(entry.device, DriveDevice::FixedDisk { device_id: 0xB0 });
+        assert_eq!(entry.device, DriveDevice::HardDisk { device_id: 0xB0 });
         assert_eq!(
             entry.partition_scheme,
             PartitionScheme::FmTowns { partition_index: 0 }

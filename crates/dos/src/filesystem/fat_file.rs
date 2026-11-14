@@ -493,7 +493,7 @@ mod tests {
         let volume = FatVolume::mount(
             device_id,
             0,
-            &crate::drive_map::pc98::fixed_disk_geometry(),
+            &crate::drive_map::pc98::hard_disk_geometry(),
             &mut mount_disk,
         )
         .expect("mount FAT12");
@@ -581,7 +581,7 @@ mod tests {
         let volume = FatVolume::mount(
             device_id,
             0,
-            &crate::drive_map::pc98::fixed_disk_geometry(),
+            &crate::drive_map::pc98::hard_disk_geometry(),
             &mut mount_disk,
         )
         .expect("mount FAT16");

@@ -210,7 +210,7 @@ pub fn set_hard_disk_user_type(cmos: &mut [u8; CMOS_SIZE], drive: usize, geometr
 }
 
 /// Returns the drive control byte shared by the CMOS user parameter block
-/// and the fixed disk parameter table: disabled retries plus the
+/// and the hard disk parameter table: disabled retries plus the
 /// more-than-8-heads bit.
 pub fn hard_disk_control_byte(geometry: &HddGeometry) -> u8 {
     0xC0 | if geometry.heads > 8 { 0x08 } else { 0x00 }

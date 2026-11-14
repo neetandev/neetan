@@ -25,8 +25,8 @@ pub const FLOPPY_2HD_CLASS: u8 = 0x90;
 /// Device class of the 640 KB (2DD) floppy drives.
 pub const FLOPPY_2DD_CLASS: u8 = 0x70;
 
-/// Device class of the fixed disks (SASI and IDE).
-pub const FIXED_DISK_CLASS: u8 = 0x80;
+/// Device class of the hard disks (SASI and IDE).
+pub const HARD_DISK_CLASS: u8 = 0x80;
 
 /// Units per device class in the BDA disk equipment word.
 const UNITS_PER_CLASS: u8 = 4;
@@ -34,8 +34,8 @@ const UNITS_PER_CLASS: u8 = 4;
 /// Bit of unit 0 of the 2HD floppy drives in the disk equipment word.
 const EQUIPMENT_FLOPPY_2HD_SHIFT: u8 = 0;
 
-/// Bit of unit 0 of the fixed disks in the disk equipment word.
-const EQUIPMENT_FIXED_DISK_SHIFT: u8 = 8;
+/// Bit of unit 0 of the hard disks in the disk equipment word.
+const EQUIPMENT_HARD_DISK_SHIFT: u8 = 8;
 
 /// Bit of unit 0 of the 2DD floppy drives in the disk equipment word.
 const EQUIPMENT_FLOPPY_2DD_SHIFT: u8 = 12;
@@ -79,9 +79,9 @@ pub const FLOPPY_2DD_BPB: Bpb = Bpb {
     total_sectors_32: 0,
 };
 
-/// BPB of a fixed disk partition before its volume mounts: a 4080 cluster
+/// BPB of a hard disk partition before its volume mounts: a 4080 cluster
 /// FAT12 volume with 2 KB clusters.
-pub const FIXED_DISK_BPB: Bpb = Bpb {
+pub const HARD_DISK_BPB: Bpb = Bpb {
     bytes_per_sector: 512,
     sectors_per_cluster: 4,
     reserved_sectors: 1,
@@ -109,9 +109,9 @@ pub const fn floppy_2dd_geometry() -> DriveGeometry {
     DriveGeometry::new(BpbSource::BootRecord, FLOPPY_2DD_BPB)
 }
 
-/// Returns the geometry of a fixed disk partition.
-pub const fn fixed_disk_geometry() -> DriveGeometry {
-    DriveGeometry::new(BpbSource::BootRecord, FIXED_DISK_BPB)
+/// Returns the geometry of a hard disk partition.
+pub const fn hard_disk_geometry() -> DriveGeometry {
+    DriveGeometry::new(BpbSource::BootRecord, HARD_DISK_BPB)
 }
 
 /// Returns the drive entry of a DA/UA, or `None` for an unknown class.
@@ -128,10 +128,10 @@ pub fn drive_entry(device_id: u8) -> Option<DriveEntry> {
             PartitionScheme::Unpartitioned,
             floppy_2dd_geometry(),
         ),
-        FIXED_DISK_CLASS => (
-            DriveDevice::FixedDisk { device_id },
+        HARD_DISK_CLASS => (
+            DriveDevice::HardDisk { device_id },
             PartitionScheme::Pc98,
-            fixed_disk_geometry(),
+            hard_disk_geometry(),
         ),
         _ => return None,
     };
@@ -162,29 +162,29 @@ pub fn floppy_devices(disk_equipment: u16) -> Vec<u8> {
     devices
 }
 
-/// Returns the fixed disk DA/UAs of the disk equipment word.
-pub fn fixed_disk_devices(disk_equipment: u16) -> Vec<u8> {
-    equipped_units(disk_equipment, FIXED_DISK_CLASS, EQUIPMENT_FIXED_DISK_SHIFT)
+/// Returns the hard disk DA/UAs of the disk equipment word.
+pub fn hard_disk_devices(disk_equipment: u16) -> Vec<u8> {
+    equipped_units(disk_equipment, HARD_DISK_CLASS, EQUIPMENT_HARD_DISK_SHIFT)
 }
 
 /// Builds the drive map of the physical drives from the BDA disk equipment
 /// word.
 ///
 /// The floppy drives come first when a floppy holds `AUTOEXEC.BAT` in its
-/// root. Otherwise the fixed disks come first when there are any. The second
+/// root. Otherwise the hard disks come first when there are any. The second
 /// class starts at C: or behind the drives of the first class.
 pub fn discover_drive_map(memory: &dyn MemoryAccess, disk: &mut dyn DiskIo) -> DriveMap {
     let disk_equipment = memory.read_word(tables::BDA_DISK_EQUIP);
     let floppies = floppy_devices(disk_equipment);
-    let fixed_disks = fixed_disk_devices(disk_equipment);
+    let hard_disks = hard_disk_devices(disk_equipment);
     let floppy_has_autoexec = floppies
         .iter()
         .any(|&device_id| drive_has_root_autoexec(device_id, disk));
 
-    let (first_class, second_class) = if floppy_has_autoexec || fixed_disks.is_empty() {
-        (floppies, fixed_disks)
+    let (first_class, second_class) = if floppy_has_autoexec || hard_disks.is_empty() {
+        (floppies, hard_disks)
     } else {
-        (fixed_disks, floppies)
+        (hard_disks, floppies)
     };
     drive_map_from_classes(&first_class, &second_class)
 }
@@ -277,8 +277,8 @@ mod tests {
     const FLOPPY_2HD_UNIT_0: u16 = 1 << EQUIPMENT_FLOPPY_2HD_SHIFT;
     /// Disk equipment bit of 2HD unit 1.
     const FLOPPY_2HD_UNIT_1: u16 = 1 << (EQUIPMENT_FLOPPY_2HD_SHIFT + 1);
-    /// Disk equipment bit of fixed disk unit 0.
-    const FIXED_DISK_UNIT_0: u16 = 1 << EQUIPMENT_FIXED_DISK_SHIFT;
+    /// Disk equipment bit of hard disk unit 0.
+    const HARD_DISK_UNIT_0: u16 = 1 << EQUIPMENT_HARD_DISK_SHIFT;
     /// Disk equipment bit of 2DD unit 0.
     const FLOPPY_2DD_UNIT_0: u16 = 1 << EQUIPMENT_FLOPPY_2DD_SHIFT;
 
@@ -333,7 +333,7 @@ mod tests {
         let equipment = FLOPPY_2HD_UNIT_0 | FLOPPY_2HD_UNIT_1 | FLOPPY_2DD_UNIT_0;
         assert_eq!(floppy_devices(equipment), vec![0x90, 0x91, 0x70]);
         assert_eq!(
-            fixed_disk_devices(FIXED_DISK_UNIT_0 | 0x0200),
+            hard_disk_devices(HARD_DISK_UNIT_0 | 0x0200),
             vec![0x80, 0x81]
         );
     }
@@ -345,8 +345,8 @@ mod tests {
     }
 
     #[test]
-    fn fixed_disk_comes_first_without_a_floppy_autoexec() {
-        let map = discover(FLOPPY_2HD_UNIT_0 | FLOPPY_2HD_UNIT_1 | FIXED_DISK_UNIT_0);
+    fn hard_disk_comes_first_without_a_floppy_autoexec() {
+        let map = discover(FLOPPY_2HD_UNIT_0 | FLOPPY_2HD_UNIT_1 | HARD_DISK_UNIT_0);
         assert_eq!(
             assignment(&map),
             vec![(0, Some(0x80)), (2, Some(0x90)), (3, Some(0x91))]
@@ -382,10 +382,10 @@ mod tests {
             BpbSource::BootRecord
         );
 
-        let fixed = drive_entry(0x81).unwrap();
-        assert_eq!(fixed.device, DriveDevice::FixedDisk { device_id: 0x81 });
-        assert_eq!(fixed.unit, 1);
-        assert_eq!(fixed.partition_scheme, PartitionScheme::Pc98);
+        let hard_disk = drive_entry(0x81).unwrap();
+        assert_eq!(hard_disk.device, DriveDevice::HardDisk { device_id: 0x81 });
+        assert_eq!(hard_disk.unit, 1);
+        assert_eq!(hard_disk.partition_scheme, PartitionScheme::Pc98);
 
         assert!(drive_entry(0x00).is_none());
         assert!(drive_entry(0xA0).is_none());
@@ -395,10 +395,10 @@ mod tests {
     fn default_bpbs_describe_the_standard_media() {
         assert_eq!(FLOPPY_2HD_BPB.total_sectors(), 77 * 2 * 8);
         assert_eq!(FLOPPY_2DD_BPB.total_sectors(), 80 * 2 * 8);
-        let fixed = crate::layout::DpbGeometry::from_bpb(&FIXED_DISK_BPB);
-        assert_eq!(fixed.first_root_sector, 17);
-        assert_eq!(fixed.first_data_sector, 49);
-        assert_eq!(fixed.max_cluster, 4080);
+        let hard_disk = crate::layout::DpbGeometry::from_bpb(&HARD_DISK_BPB);
+        assert_eq!(hard_disk.first_root_sector, 17);
+        assert_eq!(hard_disk.first_data_sector, 49);
+        assert_eq!(hard_disk.max_cluster, 4080);
     }
 
     #[test]
