@@ -299,12 +299,12 @@ impl RunningFormat {
         io: &mut IoAccess,
         drive: &mut dyn DriveIo,
     ) -> StepResult {
-        let ss = format_state.sector_size as usize;
-
-        // Sector 0: IPL (clear to zeros)
-        let ipl = vec![0u8; ss];
         if drive
-            .write_sectors(format_state.device_id, 0, &ipl)
+            .write_sectors(
+                format_state.device_id,
+                0,
+                &disk_format::pc98_ipl_sector(format_state.sector_size),
+            )
             .is_err()
         {
             io.println(b"Write error");

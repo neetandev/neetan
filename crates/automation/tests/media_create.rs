@@ -21,7 +21,7 @@ use device::{
         HddGeometry, HddImage, HddSizeType, blank_hdd_image,
         format::{
             PartitionTableType, at_master_boot_record, fat_region, format_hdd_image,
-            hdd_boot_sector, hdd_bpb_params, pc98_nec_layout,
+            hdd_boot_sector, hdd_bpb_params, pc98_ipl_sector, pc98_nec_layout,
         },
         load_hdd_image, pc98_ide,
     },
@@ -256,7 +256,11 @@ fn read_bytes(image: &HddImage, lba: u32, length: usize) -> Vec<u8> {
 fn assert_pc98_layout(image: &HddImage, geometry: HddGeometry, tag: &str) {
     let layout = pc98_nec_layout(geometry).expect("NEC layout");
     let sector = |lba: u32| image.read_sector(lba).expect("sector in range").to_vec();
-    assert!(sector(0).iter().all(|&byte| byte == 0), "{tag}: empty IPL");
+    assert_eq!(
+        sector(0),
+        pc98_ipl_sector(image.geometry.sector_size),
+        "{tag}: IPL"
+    );
     assert_eq!(
         sector(1),
         layout.partition_table_sector(),
