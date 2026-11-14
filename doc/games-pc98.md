@@ -21,7 +21,7 @@ AS and AP machines do not support loading a real BIOS yet. But HLE BIOS and HLE 
 | Dragon Slayer: The Legend of Heroes II                   | ドラゴンスレイヤー英雄伝説II      |      RS      |    ✅    |    ✅    |   ✅   | Runs on HLE DOS 3.1. Choose analog colors in the settings of the start menu |
 | Edge                                                     | エッジ                            |      AP      |    ❌️    |    ✅    |   ✅   | Best sound with 86 and SC-55                                                |
 | EVE Burst Error                                          | EVE Burst Error                   |      RA      |    ✅    |    ✅    |   ✅   |                                                                             |
-| Illusion City                                            | 幻影都市 ILLUSION CITY            |      RA      |    ✅    |    ✅    |   ✅   |                                                                             |
+| Illusion City                                            | 幻影都市 ILLUSION CITY            |      RA      |    ✅    |    ✅    |   ✅   | Supports MT-32 (LA)                                                         |
 | Love Escalator                                           | ラブ・エスカレーター              |      AS      |    ❌️    |    ✅    |   ✅   |                                                                             |
 | Mujintou Monogatari                                      | 無人島物語                        |      RA      |    ✅    |    ✅    |   ✅   | Must load STMOUSE.DRV in CONFIG.SYS                                         |
 | Mujintou Monogatari 2                                    | 無人島物語 ２                     |      RA      |    ✅    |    ✅    |   ✅   | Must load STMOUSE.DRV in CONFIG.SYS                                         |
@@ -38,6 +38,7 @@ AS and AP machines do not support loading a real BIOS yet. But HLE BIOS and HLE 
 | Tamashii no Mon - Dante Shinkyoku yori                   | 魂の門 ダンテ「神曲」より         |      VX      |    ✅    |    ✅    |   ✅   |                                                                             |
 | Teitoku no Ketsudan                                      | 提督の決断                        |      VX      |    ✅    |    ✅    |   ⁿ̸ₐ   |                                                                             |
 | TFX                                                      | TFX                               |      AP      |    ❌️    |    ✅    |   ✅   | Must load RMOUSE.SYS in CONFIG.SYS and SET DOS16M=1 in AUTOEXEC.BAT         |
+| The Legend of Heroes III: White Witch                    | 英雄伝説III 白き魔女              |      RS      |    ✅    |    ✅    |   ✅   | Runs on HLE DOS 3.1. Choose analog colors in the settings of the start menu |
 | Travel Junction                                          | トラベル　ジャンクション          |      RA      |    ✅    |    ✅    |   ✅   |                                                                             |
 | YU-NO: A Girl Who Chants Love at the Bound of this World | この世の果てで恋を唄う少女YU-NO   |      RA      |    ✅    |    ✅    |   ✅   |                                                                             |
 
