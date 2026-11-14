@@ -16,6 +16,7 @@ Left Ctrl.
 | Right Ctrl + C     | Toggle CRT effect                                      |
 | Right Ctrl + S     | Cycle scaling method                                   |
 | Right Ctrl + P     | Cycle composite phase (PC-6000)                        |
+| Right Ctrl + L     | Cycle line doubling (PC-98, PC-88VA)                   |
 | Right Ctrl + 1     | Open floppy selector for drive 1                       |
 | Right Ctrl + 2     | Open floppy selector for drive 2                       |
 | Right Ctrl + 3     | Open CD-ROM selector                                   |

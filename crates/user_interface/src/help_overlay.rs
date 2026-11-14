@@ -19,7 +19,7 @@ use crate::{
 
 /// The size of the overlay panel in logical units: the header and one row
 /// for each hotkey.
-const PANEL_SIZE: (f32, f32) = (560.0, 500.0);
+const PANEL_SIZE: (f32, f32) = (560.0, 530.0);
 
 /// The id of the modal layer of the overlay.
 const HELP_LAYER_ID: &str = "help";
@@ -219,16 +219,21 @@ mod tests {
         host::SESSION_MINIMUM_WINDOW_SIZE,
         hotkeys::HotkeyFeatures,
         media_dialog::available_drives,
-        texts::repository::{RepositoryLanguage, repository_languages},
+        texts::{
+            LanguageCatalog,
+            repository::{RepositoryLanguage, repository_languages},
+        },
     };
 
-    /// The hotkeys of a PC-98 with two floppy drives, a CD-ROM drive and the CRT effect.
+    /// The hotkeys of a PC-98 with two floppy drives, a CD-ROM drive, the CRT effect and line
+    /// doubling.
     fn pc98_hotkeys() -> HotkeyList {
         HotkeyFeatures {
             drives: available_drives(2, true),
             mouse: true,
             crt_effect: true,
             composite_video: false,
+            line_doubling: true,
         }
         .hotkeys()
     }
@@ -297,28 +302,39 @@ mod tests {
     }
 
     /// Verifies that the window of the minimum size of a session shows every hotkey without
-    /// scrolling, and that its rows fill the panel.
+    /// scrolling at a whole and a fractional scale, and that its rows fill the panel.
     #[test]
     fn the_smallest_session_window_shows_every_row() {
         let (width, height) = SESSION_MINIMUM_WINDOW_SIZE;
-        let mut gui = GuiHarness::new(width, height);
-        let mut overlay = HelpOverlay::new(
-            HotkeyFeatures {
-                drives: available_drives(2, true),
-                mouse: true,
-                crt_effect: true,
-                composite_video: true,
-            }
-            .hotkeys(),
-        );
-        assert_eq!(overlay.hotkeys.len(), Hotkey::ALL.len());
-        pass(&mut gui, &mut overlay);
-        gui.input.navigation = Some(Navigation::End);
-        pass(&mut gui, &mut overlay);
-        assert_eq!(overlay.scroll.offset, 0.0);
-        let rows = Hotkey::ALL.len() as f32 * gui.theme.row_height;
-        let content = PANEL_SIZE.1 - HEADER_HEIGHT - gui.theme.padding - gui.theme.gap * 0.5;
-        assert!(content - rows < gui.theme.row_height, "{content} {rows}");
+        for scale in [1.0, 1.25] {
+            let mut gui = GuiHarness::with_viewport(
+                Viewport::new(
+                    (width as f32 * scale) as u32,
+                    (height as f32 * scale) as u32,
+                    scale,
+                ),
+                ThemeKind::Dark,
+                LanguageCatalog::English,
+            );
+            let mut overlay = HelpOverlay::new(
+                HotkeyFeatures {
+                    drives: available_drives(2, true),
+                    mouse: true,
+                    crt_effect: true,
+                    composite_video: true,
+                    line_doubling: true,
+                }
+                .hotkeys(),
+            );
+            assert_eq!(overlay.hotkeys.len(), Hotkey::ALL.len());
+            pass(&mut gui, &mut overlay);
+            gui.input.navigation = Some(Navigation::End);
+            pass(&mut gui, &mut overlay);
+            assert_eq!(overlay.scroll.offset, 0.0, "{scale}");
+            let rows = Hotkey::ALL.len() as f32 * gui.theme.row_height;
+            let content = PANEL_SIZE.1 - HEADER_HEIGHT - gui.theme.padding - gui.theme.gap * 0.5;
+            assert!(content - rows < gui.theme.row_height, "{content} {rows}");
+        }
     }
 
     #[test]

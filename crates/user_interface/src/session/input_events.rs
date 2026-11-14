@@ -10,7 +10,7 @@ use sdl3::{
     mouse::MouseButton,
 };
 
-use super::{Session, SessionExit};
+use super::{Session, SessionExit, display::reads_line_doubling};
 use crate::{
     config::Backend,
     gui_host::keys::pointer_or_text_event,
@@ -139,6 +139,7 @@ impl Session {
             Hotkey::Crt => self.toggle_crt(),
             Hotkey::Scaling => self.toggle_scaling(host),
             Hotkey::CompositePhase => self.cycle_composite_phase(),
+            Hotkey::LineDoubling => self.cycle_line_doubling(),
             Hotkey::Media(drive) => self.media_hotkey(drive, host),
             Hotkey::QuickSave => self.quick_save(),
             Hotkey::QuickLoad => self.quick_load(host),
@@ -153,6 +154,7 @@ impl Session {
             mouse: self.machine.startup_capabilities().mouse,
             crt_effect: host.backend == Backend::Modern,
             composite_video: self.config.target.has_composite_video(),
+            line_doubling: reads_line_doubling(&self.config),
         }
     }
 

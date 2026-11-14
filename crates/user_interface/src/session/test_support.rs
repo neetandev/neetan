@@ -2,7 +2,7 @@
 
 use std::{cell::RefCell, path::Path, rc::Rc, time::Instant};
 
-use common::{FlushError, JoystickState, Machine, MediaBacking, MediaImage};
+use common::{FlushError, JoystickState, LineDoubling, Machine, MediaBacking, MediaImage};
 
 use super::Session;
 use crate::{
@@ -13,8 +13,8 @@ use crate::{
 /// The calls a fake machine records.
 pub(super) type CallLog = Rc<RefCell<Vec<&'static str>>>;
 
-/// A machine that records its flushes and its media changes and panics on
-/// request.
+/// A machine that records its flushes, its media changes and its line
+/// doubling and panics on request.
 pub(super) struct FakeMachine {
     /// The recorded calls.
     pub(super) log: CallLog,
@@ -118,6 +118,14 @@ impl Machine for FakeMachine {
     fn flush_printer(&mut self) -> Result<(), FlushError> {
         self.log.borrow_mut().push("printer");
         Ok(())
+    }
+
+    fn set_line_doubling(&mut self, line_doubling: LineDoubling) {
+        self.log.borrow_mut().push(match line_doubling {
+            LineDoubling::Auto => "line doubling auto",
+            LineDoubling::On => "line doubling on",
+            LineDoubling::Off => "line doubling off",
+        });
     }
 }
 
