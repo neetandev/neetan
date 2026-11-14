@@ -84,6 +84,7 @@ pub(crate) struct ProcessContext {
     pub return_flags: u16,
     pub return_si: u16,
     pub return_di: u16,
+    pub return_bp: u16,
     pub return_ds: u16,
     pub return_es: u16,
     pub saved_dta_seg: u16,
@@ -105,6 +106,7 @@ state_struct_codec!(ProcessContext {
     return_flags,
     return_si,
     return_di,
+    return_bp,
     return_ds,
     return_es,
     saved_dta_seg,
@@ -1353,6 +1355,7 @@ impl NeetanDos {
             return_flags,
             return_si: cpu.si(),
             return_di: cpu.di(),
+            return_bp: cpu.bp(),
             return_ds: cpu.ds(),
             return_es: cpu.es(),
             saved_dta_seg: self.state.dta_segment,
@@ -1483,6 +1486,7 @@ impl NeetanDos {
         cpu.set_dx(parent.return_dx);
         cpu.set_si(parent.return_si);
         cpu.set_di(parent.return_di);
+        cpu.set_bp(parent.return_bp);
         cpu.set_ds(parent.return_ds);
         cpu.set_es(parent.return_es);
         cpu.set_ss(parent.return_ss);
@@ -1681,6 +1685,7 @@ impl NeetanDos {
         cpu.set_dx(parent.return_dx);
         cpu.set_si(parent.return_si);
         cpu.set_di(parent.return_di);
+        cpu.set_bp(parent.return_bp);
         cpu.set_ds(parent.return_ds);
         cpu.set_es(parent.return_es);
         cpu.set_ss(parent.return_ss);
@@ -1785,6 +1790,7 @@ mod tests {
             return_flags: 0x0243,
             return_si: 0x4444,
             return_di: 0x5555,
+            return_bp: 0x5A5A,
             return_ds: 0x6666,
             return_es: 0x7777,
             saved_dta_seg: parent_psp,
@@ -1814,6 +1820,7 @@ mod tests {
         let mut cpu = MockCpu {
             eax: 0x4C7F,
             ebx: 0xAAAA,
+            bp: 0xBEEF,
             ss: 0x1110,
             sp: 0x0100,
             ..MockCpu::default()
@@ -1825,6 +1832,7 @@ mod tests {
         assert_eq!(dos.state.last_return_code, 0x7F);
         assert_eq!(cpu.ax(), 0x4B00);
         assert_eq!(cpu.bx(), 0x1111);
+        assert_eq!(cpu.bp(), 0x5A5A);
         assert_eq!(cpu.ss(), 0x1040);
         assert_eq!(cpu.sp(), 0x0100);
         let frame = cpu.linear_address(SegmentRegister::SS, cpu.sp());

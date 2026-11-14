@@ -2619,6 +2619,7 @@ impl NeetanDos {
             return_flags: 0,
             return_si: 0,
             return_di: 0,
+            return_bp: 0,
             return_ds: 0,
             return_es: 0,
             saved_dta_seg: self.state.dta_segment,
