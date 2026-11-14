@@ -21,3 +21,5 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: release-drafter/release-drafter/autolabeler@v7
+        with:
+          config-name: release-drafter.yml@master
