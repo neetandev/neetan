@@ -78,6 +78,14 @@ const MMD_BLAKE3: [u8; 32] = [
     0x07, 0x52, 0xEB, 0x07, 0x4A, 0x09, 0xEA, 0x3B, 0xD3, 0xCB, 0x2D, 0x11, 0x42, 0x9E, 0x67, 0xFA,
 ];
 
+/// File size of MOUSE.SYS 7.02, the NEC version of the Microsoft mouse driver.
+const MSMOUSE_SIZE: usize = 12391;
+/// BLAKE3 digest of MOUSE.SYS 7.02.
+const MSMOUSE_BLAKE3: [u8; 32] = [
+    0xC1, 0x47, 0x83, 0x52, 0xF5, 0xCA, 0xB7, 0xE0, 0xF1, 0x73, 0x5B, 0xC7, 0x30, 0x39, 0xF4, 0x66,
+    0x1F, 0x0B, 0xEE, 0xBE, 0xC2, 0x90, 0x5F, 0xB3, 0x54, 0x6C, 0x3D, 0xC6, 0x3F, 0xE4, 0x3A, 0xFB,
+];
+
 #[derive(Clone, Copy)]
 struct NativeDriverSpec {
     basename: &'static [u8],
@@ -135,7 +143,26 @@ const MMD_SPEC: NativeDriverSpec = NativeDriverSpec {
     mcb_name: b"MMD     ",
 };
 
-const WHITELIST: &[NativeDriverSpec] = &[STMOUSE_SPEC, RMOUSE_SPEC, GABIOS_SPEC, MMD_SPEC];
+/// Whitelist entry of MOUSE.SYS 7.02.
+const MSMOUSE_SPEC: NativeDriverSpec = NativeDriverSpec {
+    basename: b"MOUSE.SYS",
+    size: MSMOUSE_SIZE,
+    blake3: MSMOUSE_BLAKE3,
+    device_name: b"MS$MOUSE",
+    strategy_offset: 0x0016,
+    interrupt_offset: 0x0021,
+    attributes: tables::DEVATTR_CHAR,
+    mcb_name: b"MOUSE   ",
+};
+
+const WHITELIST: &[NativeDriverSpec] = &[
+    STMOUSE_SPEC,
+    RMOUSE_SPEC,
+    GABIOS_SPEC,
+    MMD_SPEC,
+    MSMOUSE_SPEC,
+];
+
 const IGNORED_NATIVE_DRIVER_PATTERNS: &[&[u8]] = &[b"HIMEM.SYS", b"EMM386.EXE", b"VEM486.EXE"];
 
 struct NativeDriverImage {
