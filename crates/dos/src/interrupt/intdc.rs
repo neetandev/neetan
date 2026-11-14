@@ -44,11 +44,11 @@ const FEP_ABSENT: u16 = 0x0000;
 /// Size of the buffer of CL=80h AX=0000h and AX=0001h.
 const DISK_INFORMATION_BUFFER_SIZE: u32 = 0x100;
 
-/// Fixed disk units with a partition count and partition start slots in the
+/// Hard disk units with a partition count and partition start slots in the
 /// CL=80h buffer (SASI and IDE #0 to #3).
-const DISK_INFORMATION_FIXED_DISK_UNITS: usize = 4;
+const DISK_INFORMATION_HARD_DISK_UNITS: usize = 4;
 
-/// Buffer offset of the active partition count of fixed disk unit 0. The
+/// Buffer offset of the active partition count of hard disk unit 0. The
 /// counts of the units 1 to 3 follow.
 const DISK_INFORMATION_OFF_PARTITION_COUNTS: u32 = 0x00;
 
@@ -58,14 +58,14 @@ const DISK_INFORMATION_OFF_FLOPPY_2HD_DRIVES: u32 = 0x0C;
 /// Buffer offset of the number of 640 KB floppy drives.
 const DISK_INFORMATION_OFF_FLOPPY_2DD_DRIVES: u32 = 0x0D;
 
-/// Buffer offset of the number of fixed disk drives.
-const DISK_INFORMATION_OFF_FIXED_DISK_DRIVES: u32 = 0x0E;
+/// Buffer offset of the number of hard disk drives.
+const DISK_INFORMATION_OFF_HARD_DISK_DRIVES: u32 = 0x0E;
 
-/// Buffer offset of the first physical sector of partition 1 of fixed disk
+/// Buffer offset of the first physical sector of partition 1 of hard disk
 /// unit 0.
 const DISK_INFORMATION_OFF_PARTITION_STARTS: u32 = 0x10;
 
-/// Size of the partition start slots of one fixed disk unit (4 partitions).
+/// Size of the partition start slots of one hard disk unit (4 partitions).
 const DISK_INFORMATION_UNIT_STARTS_SIZE: u32 = 0x10;
 
 /// Bytes of the work area from `0060:0106h` that CL=80h AX=0001h copies.
@@ -330,9 +330,9 @@ impl NeetanDos {
     }
 
     /// Writes the CL=80h AX=0000h buffer at `buffer`: the partition count of
-    /// each fixed disk unit, the drive count of each drive class and the
-    /// partition start of each fixed disk unit. The drive map holds one
-    /// volume per fixed disk unit: the first active DOS partition. A unit
+    /// each hard disk unit, the drive count of each drive class and the
+    /// partition start of each hard disk unit. The drive map holds one
+    /// volume per hard disk unit: the first active DOS partition. A unit
     /// without an active DOS partition counts no partition and no drive.
     fn write_disk_information(
         &self,
@@ -342,7 +342,7 @@ impl NeetanDos {
     ) {
         let mut floppy_2hd_drives = 0u8;
         let mut floppy_2dd_drives = 0u8;
-        let mut partition_starts = [None; DISK_INFORMATION_FIXED_DISK_UNITS];
+        let mut partition_starts = [None; DISK_INFORMATION_HARD_DISK_UNITS];
         for drive_index in 0..drive_map::DRIVE_LETTER_COUNT as u8 {
             let Some(entry) = self.state.drive_map.entry(drive_index) else {
                 continue;
@@ -355,7 +355,7 @@ impl NeetanDos {
                         _ => {}
                     }
                 }
-                drive_map::DriveDevice::FixedDisk { device_id } => {
+                drive_map::DriveDevice::HardDisk { device_id } => {
                     let unit = usize::from(device_id & pc98_drives::UNIT_MASK);
                     if let Some(slot) = partition_starts.get_mut(unit) {
                         *slot = active_partition_start(entry.partition_scheme, device_id, disk);
@@ -370,12 +370,12 @@ impl NeetanDos {
         }
 
         clear_disk_information_buffer(memory, buffer);
-        let mut fixed_disk_drives = 0u8;
+        let mut hard_disk_drives = 0u8;
         for (unit, start) in partition_starts.iter().enumerate() {
             let Some(start) = start else {
                 continue;
             };
-            fixed_disk_drives += 1;
+            hard_disk_drives += 1;
             memory.write_byte(
                 buffer + DISK_INFORMATION_OFF_PARTITION_COUNTS + unit as u32,
                 1,
@@ -395,8 +395,8 @@ impl NeetanDos {
             floppy_2dd_drives,
         );
         memory.write_byte(
-            buffer + DISK_INFORMATION_OFF_FIXED_DISK_DRIVES,
-            fixed_disk_drives,
+            buffer + DISK_INFORMATION_OFF_HARD_DISK_DRIVES,
+            hard_disk_drives,
         );
     }
 
@@ -618,7 +618,7 @@ fn clear_disk_information_buffer(memory: &mut dyn MemoryAccess, buffer: u32) {
 }
 
 /// Returns the first physical sector of the first active DOS partition of
-/// the fixed disk `device_id`, or `None` when the disk has none.
+/// the hard disk `device_id`, or `None` when the disk has none.
 fn active_partition_start(
     partition_scheme: drive_map::PartitionScheme,
     device_id: u8,

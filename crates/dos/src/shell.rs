@@ -1226,7 +1226,7 @@ pub(crate) fn guest_resources_ready(state: &mut DosState, drives: u32) -> bool {
             }
             Some(
                 drive_map::DriveDevice::Floppy { .. }
-                | drive_map::DriveDevice::FixedDisk { .. }
+                | drive_map::DriveDevice::HardDisk { .. }
                 | drive_map::DriveDevice::MemoryImage { .. }
                 | drive_map::DriveDevice::Cdrom
                 | drive_map::DriveDevice::Virtual,

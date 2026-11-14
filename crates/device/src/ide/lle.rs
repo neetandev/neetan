@@ -1072,7 +1072,7 @@ impl Controller {
 
         let buf = &mut drive.buffer;
 
-        // Word 0: General configuration (fixed drive, non-removable).
+        // Word 0: General configuration (non-removable hard disk).
         set_word(buf, 0, 0x0040);
         // Word 1: Number of cylinders.
         set_word(buf, 1, geometry.cylinders);

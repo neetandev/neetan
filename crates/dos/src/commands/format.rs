@@ -61,17 +61,17 @@ state_struct_codec!(FormatState {
     verify,
 });
 
-/// Returns whether FORMAT lays a fixed disk with this sector size out in
+/// Returns whether FORMAT lays a hard disk with this sector size out in
 /// the NEC layout: a PC-98 IDE disk in its BIOS geometry, a SASI disk in its
 /// image geometry.
 fn uses_nec_layout(sector_size: u16) -> bool {
     pc98_ide::is_ide_sector_size(sector_size) || pc98_sasi::is_sasi_sector_size(sector_size)
 }
 
-/// Returns the NEC layout of a fixed disk with `total_sectors` sectors in the
+/// Returns the NEC layout of a hard disk with `total_sectors` sectors in the
 /// geometry of `heads`, `sectors_per_track` and `sector_size`, or `None` for
 /// a disk outside the NEC layout. A disk too small for the layout fails.
-fn fixed_disk_nec_layout(
+fn hard_disk_nec_layout(
     total_sectors: u32,
     heads: u8,
     sectors_per_track: u8,
@@ -91,12 +91,12 @@ fn fixed_disk_nec_layout(
 }
 
 /// Returns the NEC layout FORMAT writes, or `None` for a floppy and for a
-/// fixed disk outside the NEC layout.
+/// hard disk outside the NEC layout.
 fn nec_layout(format_state: &FormatState) -> Option<disk_format::Pc98NecLayout> {
     if !format_state.is_hdd {
         return None;
     }
-    fixed_disk_nec_layout(
+    hard_disk_nec_layout(
         format_state.total_sectors,
         format_state.heads,
         format_state.sectors_per_track,
@@ -105,13 +105,13 @@ fn nec_layout(format_state: &FormatState) -> Option<disk_format::Pc98NecLayout> 
     .ok()
 }
 
-/// Returns the logical sector size of the volume FORMAT writes on the fixed
+/// Returns the logical sector size of the volume FORMAT writes on the hard
 /// disk `device_id`, or `None` for a disk FORMAT cannot lay out.
-pub(crate) fn fixed_disk_format_sector_size(disk: &dyn DiskIo, device_id: u8) -> Option<u16> {
+pub(crate) fn hard_disk_format_sector_size(disk: &dyn DiskIo, device_id: u8) -> Option<u16> {
     let (cylinders, heads, sectors_per_track) = disk.drive_geometry(device_id)?;
     let sector_size = disk.sector_size(device_id)?;
     let total_sectors = u32::from(cylinders) * u32::from(heads) * u32::from(sectors_per_track);
-    match fixed_disk_nec_layout(total_sectors, heads, sectors_per_track, sector_size) {
+    match hard_disk_nec_layout(total_sectors, heads, sectors_per_track, sector_size) {
         Some(layout) => layout.ok().map(|layout| layout.bpb.bytes_per_sector),
         None => Some(sector_size),
     }
@@ -600,7 +600,7 @@ fn summary_bytes(format_state: &FormatState) -> (u64, u64) {
 }
 
 /// Returns the total bytes and the bytes of the data clusters of a floppy or
-/// of a fixed disk volume that spans the disk from its second track.
+/// of a hard disk volume that spans the disk from its second track.
 fn whole_disk_summary(format_state: &FormatState) -> (u64, u64) {
     let bpb = if format_state.is_hdd {
         let partition_sectors = format_state.total_sectors - format_state.partition_offset;
@@ -686,7 +686,7 @@ fn init_format(
         .ok_or(&b"Invalid drive specification\r\n"[..])?;
     let (device_id, is_hdd) = match (entry.device, entry.partition_scheme) {
         (DriveDevice::Floppy { device_id }, _) => (device_id, false),
-        (DriveDevice::FixedDisk { device_id }, PartitionScheme::Pc98) => (device_id, true),
+        (DriveDevice::HardDisk { device_id }, PartitionScheme::Pc98) => (device_id, true),
         _ => return Err(b"Invalid drive specification\r\n"),
     };
 
@@ -703,7 +703,7 @@ fn init_format(
     let partition_offset = if !is_hdd {
         0
     } else {
-        match fixed_disk_nec_layout(total_sectors, heads, sectors_per_track, sector_size) {
+        match hard_disk_nec_layout(total_sectors, heads, sectors_per_track, sector_size) {
             Some(Ok(layout)) => layout.partition_start(),
             Some(Err(_)) => return Err(b"Invalid media or Track 0 bad - disk unusable\r\n"),
             None => u32::from(sectors_per_track),
@@ -733,7 +733,7 @@ mod tests {
 
     #[test]
     fn ide_disk_takes_the_nec_layout_of_the_bios_geometry() {
-        let layout = fixed_disk_nec_layout(7522 * 136, 8, 17, 512)
+        let layout = hard_disk_nec_layout(7522 * 136, 8, 17, 512)
             .unwrap()
             .unwrap();
         assert_eq!(layout.partition_start(), 136);
@@ -752,7 +752,7 @@ mod tests {
 
     #[test]
     fn sasi_disk_takes_the_nec_layout_of_the_image_geometry() {
-        let layout = fixed_disk_nec_layout(615 * 8 * 33, 8, 33, 256)
+        let layout = hard_disk_nec_layout(615 * 8 * 33, 8, 33, 256)
             .unwrap()
             .unwrap();
         assert_eq!(layout.partition_start(), 264);
@@ -764,21 +764,21 @@ mod tests {
     }
 
     #[test]
-    fn fixed_disk_too_small_for_the_nec_layout_fails() {
+    fn hard_disk_too_small_for_the_nec_layout_fails() {
         assert!(matches!(
-            fixed_disk_nec_layout(20 * 8 * 17, 8, 17, 256),
+            hard_disk_nec_layout(20 * 8 * 17, 8, 17, 256),
             Some(Err(disk_format::FormatError::ImageTooSmall))
         ));
     }
 
-    /// Returns the format state of a fixed disk with `cylinders` cylinders of
+    /// Returns the format state of a hard disk with `cylinders` cylinders of
     /// 8 heads and 17 sectors of 512 bytes.
     fn ide_format_state(cylinders: u32) -> FormatState {
         let total_sectors = cylinders * 136;
         FormatState {
             drive_index: 0,
             device_id: 0x80,
-            floppy_bpb: crate::drive_map::pc98::FIXED_DISK_BPB,
+            floppy_bpb: crate::drive_map::pc98::HARD_DISK_BPB,
             heads: 8,
             sectors_per_track: 17,
             sector_size: 512,
@@ -801,7 +801,7 @@ mod tests {
     }
 
     #[test]
-    fn fixed_disk_with_another_sector_size_spans_the_disk() {
-        assert!(fixed_disk_nec_layout(615 * 8 * 8, 8, 8, 1024).is_none());
+    fn hard_disk_with_another_sector_size_spans_the_disk() {
+        assert!(hard_disk_nec_layout(615 * 8 * 8, 8, 8, 1024).is_none());
     }
 }

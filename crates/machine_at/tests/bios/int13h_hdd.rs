@@ -179,7 +179,7 @@ fn drive_parameters_case(size: HddSizeType) {
     assert_eq!(read_ram_u16(&machine, slot_base(0) + 12), 0x5678, "BX kept");
     assert_slot_status(&machine, 0, 0x00, "AH=08h");
 
-    // AH=15h: fixed disk, CX:DX = the sector count of the usable cylinders,
+    // AH=15h: hard disk, CX:DX = the sector count of the usable cylinders,
     // the count's low byte left in AL like the probed AMI handler.
     let sectors = u32::from(geometry.cylinders - 1)
         * u32::from(geometry.heads)
@@ -405,7 +405,8 @@ fn error_paths_and_status_byte() {
         di: 0,
     };
     let script = int13h_snapshot_script(&[
-        // Cylinder past the end fails with a bad command against the FDPT.
+        // Cylinder past the end fails with a bad command against the hard disk
+        // parameter table.
         read(0x0201, chs_cx(2, 1), 0x0080),
         // AH=01h returns the stored status in AL and consumes it: the
         // second read returns zero.

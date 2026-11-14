@@ -13,7 +13,7 @@ use std::path::PathBuf;
 pub enum MediaKind {
     /// A removable floppy disk (two drives).
     Floppy,
-    /// A fixed hard disk (two drives).
+    /// A hard disk (two drives).
     Hdd,
     /// A CD-ROM disc.
     Cdrom,

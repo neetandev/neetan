@@ -141,20 +141,20 @@ fn check_post_state(machine: &mut AtMachine<NoTrace>, label: &str) {
         check!(f, segment, 0xF000, format!("IVT {vector:02X} segment"));
     }
 
-    // INT 41h/46h point at the fixed disk parameter tables published by the
+    // INT 41h/46h point at the hard disk parameter tables published by the
     // stub ROM metadata words 16 and 18.
-    let fdpt_0 = read_ram_u16(machine, 0xF0010);
-    let fdpt_1 = read_ram_u16(machine, 0xF0012);
+    let hard_disk_parameter_table_0 = read_ram_u16(machine, 0xF0010);
+    let hard_disk_parameter_table_1 = read_ram_u16(machine, 0xF0012);
     check!(
         f,
         read_ivt_vector(machine, 0x41),
-        (0xF000, fdpt_0),
+        (0xF000, hard_disk_parameter_table_0),
         "IVT 41h"
     );
     check!(
         f,
         read_ivt_vector(machine, 0x46),
-        (0xF000, fdpt_1),
+        (0xF000, hard_disk_parameter_table_1),
         "IVT 46h"
     );
 
@@ -295,7 +295,7 @@ fn check_post_state(machine: &mut AtMachine<NoTrace>, label: &str) {
 }
 
 #[test]
-fn post_fdpt_describes_the_mounted_disks() {
+fn post_hard_disk_parameter_table_describes_the_mounted_disks() {
     let mut machine =
         harness::machine_with_roms::<NoTrace>(AtModel::At486Dx50, LoadedRoms::hle_stub_set());
     machine
@@ -316,7 +316,7 @@ fn post_fdpt_describes_the_mounted_disks() {
         assert_eq!(
             read_ram_u8(&machine, 0xF0000 + u32::from(table_offset) + index as u32),
             byte,
-            "FDPT drive 0 byte {index}"
+            "hard disk parameter table drive 0 byte {index}"
         );
     }
     // The second table stays zeroed without a second drive.
@@ -325,7 +325,7 @@ fn post_fdpt_describes_the_mounted_disks() {
         assert_eq!(
             read_ram_u8(&machine, 0xF0000 + u32::from(table_offset) + index),
             0,
-            "FDPT drive 1 byte {index}"
+            "hard disk parameter table drive 1 byte {index}"
         );
     }
     assert_eq!(read_ram_u8(&machine, 0x475), 1, "BDA 40:75 disk count");

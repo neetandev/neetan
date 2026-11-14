@@ -162,7 +162,7 @@ impl AtMemory {
     }
 
     /// Patches a byte of the system BIOS ROM image. The POST patches the
-    /// fixed disk parameter tables with the mounted drive geometry.
+    /// hard disk parameter tables with the mounted drive geometry.
     pub(crate) fn set_bios_byte(&mut self, offset: usize, value: u8) {
         self.bios[offset] = value;
     }

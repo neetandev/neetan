@@ -68,8 +68,8 @@ pub enum DriveDevice {
         /// `DiskIo` device id.
         device_id: u8,
     },
-    /// Partition of a fixed disk read through `DiskIo`.
-    FixedDisk {
+    /// Partition of a hard disk read through `DiskIo`.
+    HardDisk {
         /// `DiskIo` device id.
         device_id: u8,
     },
@@ -90,8 +90,8 @@ pub enum DriveDevice {
 
 /// Save state tag of `DriveDevice::Floppy`.
 const DEVICE_TAG_FLOPPY: u8 = 0;
-/// Save state tag of `DriveDevice::FixedDisk`.
-const DEVICE_TAG_FIXED_DISK: u8 = 1;
+/// Save state tag of `DriveDevice::HardDisk`.
+const DEVICE_TAG_HARD_DISK: u8 = 1;
 /// Save state tag of `DriveDevice::MemoryImage`.
 const DEVICE_TAG_MEMORY_IMAGE: u8 = 2;
 /// Save state tag of `DriveDevice::Cdrom`.
@@ -110,8 +110,8 @@ impl save_state::StateEncode for DriveDevice {
                 save_state::StateEncode::encode_state(&DEVICE_TAG_FLOPPY, output);
                 save_state::StateEncode::encode_state(device_id, output);
             }
-            Self::FixedDisk { device_id } => {
-                save_state::StateEncode::encode_state(&DEVICE_TAG_FIXED_DISK, output);
+            Self::HardDisk { device_id } => {
+                save_state::StateEncode::encode_state(&DEVICE_TAG_HARD_DISK, output);
                 save_state::StateEncode::encode_state(device_id, output);
             }
             Self::MemoryImage { device_id } => {
@@ -140,7 +140,7 @@ impl save_state::StateDecode for DriveDevice {
             DEVICE_TAG_FLOPPY => Ok(Self::Floppy {
                 device_id: save_state::StateDecode::decode_state(decoder)?,
             }),
-            DEVICE_TAG_FIXED_DISK => Ok(Self::FixedDisk {
+            DEVICE_TAG_HARD_DISK => Ok(Self::HardDisk {
                 device_id: save_state::StateDecode::decode_state(decoder)?,
             }),
             DEVICE_TAG_MEMORY_IMAGE => Ok(Self::MemoryImage {
@@ -164,7 +164,7 @@ impl DriveDevice {
     pub const fn disk_device_id(&self) -> Option<u8> {
         match self {
             Self::Floppy { device_id }
-            | Self::FixedDisk { device_id }
+            | Self::HardDisk { device_id }
             | Self::MemoryImage { device_id } => Some(*device_id),
             Self::Cdrom | Self::GuestDriver(_) | Self::GuestCdrom(_) | Self::Virtual => None,
         }
@@ -174,7 +174,7 @@ impl DriveDevice {
     pub const fn is_floppy(&self) -> bool {
         match self {
             Self::Floppy { .. } => true,
-            Self::FixedDisk { .. }
+            Self::HardDisk { .. }
             | Self::MemoryImage { .. }
             | Self::Cdrom
             | Self::GuestDriver(_)
@@ -187,7 +187,7 @@ impl DriveDevice {
     pub const fn is_removable(&self) -> bool {
         match self {
             Self::Floppy { .. } | Self::Cdrom | Self::GuestDriver(_) | Self::GuestCdrom(_) => true,
-            Self::FixedDisk { .. } | Self::MemoryImage { .. } | Self::Virtual => false,
+            Self::HardDisk { .. } | Self::MemoryImage { .. } | Self::Virtual => false,
         }
     }
 
@@ -195,7 +195,7 @@ impl DriveDevice {
     pub const fn has_drive_parameter_block(&self) -> bool {
         match self {
             Self::Floppy { .. }
-            | Self::FixedDisk { .. }
+            | Self::HardDisk { .. }
             | Self::MemoryImage { .. }
             | Self::GuestDriver(_)
             | Self::Virtual => true,
@@ -208,7 +208,7 @@ impl DriveDevice {
         match self {
             Self::Cdrom | Self::GuestCdrom(_) => true,
             Self::Floppy { .. }
-            | Self::FixedDisk { .. }
+            | Self::HardDisk { .. }
             | Self::MemoryImage { .. }
             | Self::GuestDriver(_)
             | Self::Virtual => false,
@@ -707,7 +707,7 @@ mod tests {
         assert!(guest.is_removable());
         assert!(guest.has_drive_parameter_block());
         assert!(!DriveDevice::Cdrom.has_drive_parameter_block());
-        assert!(!DriveDevice::FixedDisk { device_id: 0x80 }.is_removable());
+        assert!(!DriveDevice::HardDisk { device_id: 0x80 }.is_removable());
         assert_eq!(
             DriveDevice::MemoryImage { device_id: 0x42 }.disk_device_id(),
             Some(0x42)
@@ -735,7 +735,7 @@ mod tests {
         map.set(
             3,
             DriveEntry {
-                device: DriveDevice::FixedDisk { device_id: 0xB0 },
+                device: DriveDevice::HardDisk { device_id: 0xB0 },
                 unit: 3,
                 partition_scheme: PartitionScheme::FmTowns { partition_index: 1 },
                 geometry: Some(DriveGeometry::new(BpbSource::Default, VIRTUAL_DRIVE_BPB)),

@@ -481,7 +481,7 @@ impl DosState {
         match self.drive_map.entry(drive_index)?.device {
             DriveDevice::GuestDriver(unit) => Some(unit),
             DriveDevice::Floppy { .. }
-            | DriveDevice::FixedDisk { .. }
+            | DriveDevice::HardDisk { .. }
             | DriveDevice::MemoryImage { .. }
             | DriveDevice::Cdrom
             | DriveDevice::GuestCdrom(_)
