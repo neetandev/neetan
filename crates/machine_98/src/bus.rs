@@ -663,7 +663,9 @@ impl<T: TraceSink> Pc9801Bus<T> {
         self.insert_floppy_backed(drive, image, path.into());
     }
 
-    /// Inserts a floppy disk image with the requested backing (drive 0-3).
+    /// Inserts a floppy disk image with the requested backing (drive 0-3). A
+    /// disk that replaces another one drops the ready line first, like the
+    /// removal of a physical disk.
     pub fn insert_floppy_backed(
         &mut self,
         drive: usize,
@@ -672,6 +674,9 @@ impl<T: TraceSink> Pc9801Bus<T> {
     ) {
         let install_fdd640k_hle = self.machine_model == MachineModel::PC9801F;
         let interface = self.floppy.port_interface();
+        if self.floppy.has_drive(drive) {
+            self.signal_floppy_ready_change(interface, drive, false);
+        }
         self.floppy.insert_drive_backed(drive, image, backing);
         self.signal_floppy_ready_change(interface, drive, true);
         if install_fdd640k_hle {
