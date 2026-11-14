@@ -182,7 +182,7 @@ pub fn pc98_partition_table_sector(
 ) -> Vec<u8> {
     let mut sector = vec![0u8; sector_size as usize];
 
-    // MID: 0x21 = DOS type (0x20) | subtype 0x01 (FAT16), not bootable (bit 7 clear).
+    // MID 0x21: bit 7 is the boot flag and is clear.
     sector[0] = 0x21;
     // SID: 0x81 = active (bit 7) | system ID 0x01.
     sector[1] = 0x81;
@@ -210,10 +210,31 @@ pub fn pc98_partition_table_sector(
     sector
 }
 
+/// Boot code of the IPL sector: the far return instruction RETF. The BIOS
+/// far-calls the IPL, so the RETF hands control back to the BIOS.
+const PC98_IPL_FAR_RETURN: u8 = 0xCB;
+
+/// Signature at the end of the IPL sector. NEC MS-DOS 6.20 assigns drive
+/// letters to the partitions of a hard disk only when the IPL sector of the
+/// disk ends in this signature.
+const PC98_IPL_SIGNATURE: [u8; 2] = [0x55, 0xAA];
+
+/// Builds the IPL sector (disk sector 0) of a PC-98 hard disk. Offset 0
+/// holds a far return to the BIOS. The last two bytes hold the `55 AA`
+/// signature. All other bytes are zero.
+pub fn pc98_ipl_sector(sector_size: u16) -> Vec<u8> {
+    let mut sector = vec![0u8; usize::from(sector_size)];
+    sector[0] = PC98_IPL_FAR_RETURN;
+    let signature_offset = sector.len() - PC98_IPL_SIGNATURE.len();
+    sector[signature_offset..].copy_from_slice(&PC98_IPL_SIGNATURE);
+    sector
+}
+
 /// First cylinder of the partition in the NEC layout of a PC-98 fixed disk.
 pub const PC98_NEC_PARTITION_START_CYLINDER: u16 = 1;
 
 /// MID byte of the partition neetan writes into a PC-98 partition table.
+/// Bit 7 is the boot flag and is clear.
 const PC98_PARTITION_MID: u8 = 0x21;
 
 /// SID byte of an active partition with a FAT12 volume.
@@ -874,8 +895,7 @@ pub fn format_hdd_image(
 /// Writes the IPL sector, the partition table, the reserved area, both FAT
 /// copies and the empty root directory of `layout` to `image`.
 fn format_pc98_nec_layout(image: &mut HddImage, layout: &Pc98NecLayout) -> Result<(), FormatError> {
-    let ipl = vec![0u8; usize::from(layout.physical_sector_size)];
-    write_sectors(image, 0, &ipl)?;
+    write_sectors(image, 0, &pc98_ipl_sector(layout.physical_sector_size))?;
     write_sectors(image, 1, &layout.partition_table_sector())?;
     write_sectors(image, layout.partition_start(), &layout.reserved_area())?;
     let fat = layout.fat();
@@ -905,8 +925,7 @@ fn format_whole_disk_layout(
 
     match table {
         PartitionTableType::Pc98 => {
-            let ipl = vec![0u8; sector_size as usize];
-            write_sectors(image, 0, &ipl)?;
+            write_sectors(image, 0, &pc98_ipl_sector(sector_size))?;
             let part = pc98_partition_table_sector(
                 sector_size,
                 total_sectors,
@@ -1060,6 +1079,13 @@ mod tests {
             let sector_size = u32::from(image.geometry.sector_size);
             let sectors_per_cylinder =
                 u32::from(expected.heads) * u32::from(expected.sectors_per_track);
+
+            let ipl = image.read_sector(0).unwrap();
+            assert_eq!(
+                &ipl[ipl.len() - 2..],
+                &PC98_IPL_SIGNATURE,
+                "{tag}: IPL signature at the end of sector 0"
+            );
 
             let table = image.read_sector(1).unwrap();
             assert_eq!(table[0], PC98_PARTITION_MID, "{tag}: MID");
@@ -1297,6 +1323,17 @@ mod tests {
     }
 
     #[test]
+    fn pc98_ipl_sector_returns_to_the_bios_and_ends_in_the_signature() {
+        for sector_size in [256u16, 512] {
+            let sector = pc98_ipl_sector(sector_size);
+            assert_eq!(sector.len(), usize::from(sector_size));
+            assert_eq!(sector[0], PC98_IPL_FAR_RETURN);
+            assert_eq!(&sector[sector.len() - 2..], &[0x55, 0xAA]);
+            assert!(sector[1..sector.len() - 2].iter().all(|&byte| byte == 0));
+        }
+    }
+
+    #[test]
     fn nec_layout_needs_a_usable_cylinder() {
         let geometry = HddGeometry {
             cylinders: 2,
@@ -1321,6 +1358,7 @@ mod tests {
         let mut image = blank_hdd_image(HddSizeType::ScsiMb20);
         format_hdd_image(&mut image, PartitionTableType::Pc98).unwrap();
         let geometry = image.geometry;
+        assert_eq!(image.read_sector(0).unwrap(), pc98_ipl_sector(512));
         let start = u32::from(geometry.sectors_per_track);
         let partition_sectors = geometry.total_sectors() - start;
         assert_eq!(
