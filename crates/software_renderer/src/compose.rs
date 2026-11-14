@@ -25,6 +25,8 @@ mod neon;
 
 use alloc::boxed::Box;
 
+use common::LineDoubling;
+
 use super::{
     GdcGraphicsInput, GraphicsInput, PegcRenderInputs, RenderInputs, SoftwareRenderer,
     TEXT_CELL_COUNT,
@@ -32,10 +34,13 @@ use super::{
 
 const BLACK: u32 = 0xFF00_0000;
 const BLACK_PALETTE: [u32; 16] = [BLACK; 16];
+/// Monochrome lookup with every graphics color off.
+const BLANK_MONO_LOOKUP: [u8; 16] = [0; 16];
 
 const VIDEO_MODE_MONOCHROME: u32 = 0x02;
 const VIDEO_MODE_WIDTH_40: u32 = 0x04;
 const VIDEO_MODE_FONTSEL_8X16: u32 = 0x08;
+const VIDEO_MODE_HIDE_ODD_RASTERS: u32 = 0x10;
 
 const DIGITAL_GRAPHICS_PALETTE_BASE: u32 = 8;
 const MONOCHROME_GRAPHICS_COLOR: u32 = 7;
@@ -376,8 +381,11 @@ fn compose_digital(
         is_16_color,
     };
 
-    // Skipline is gated on the GDC line-repeat factor only.
-    let skipline_enabled = gdc.lines_per_row > 1;
+    let blank_gap_rasters = gdc.lines_per_row > 1
+        && gap_rasters_are_blank(
+            inputs.line_doubling,
+            (video_mode & VIDEO_MODE_HIDE_ODD_RASTERS) != 0,
+        );
 
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     let digital_simd_palette = if has_simd {
@@ -391,11 +399,11 @@ fn compose_digital(
         None
     };
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-    let digital_simd_palette_dim = if has_simd && skipline_enabled {
+    let digital_simd_palette_blank = if has_simd && blank_gap_rasters {
         Some(DigitalSimdPalette::new(
             &BLACK_PALETTE,
             &inputs.palette_rgba,
-            &mono_lookup,
+            &BLANK_MONO_LOOKUP,
             mode,
         ))
     } else {
@@ -422,8 +430,8 @@ fn compose_digital(
         let cursor_active_for_scanline = font_line >= cursor_top && font_line <= cursor_bottom;
         let text_cell_base = text_scroll_start.wrapping_add(row.wrapping_mul(text_pitch));
 
-        let (graphics_byte_base, is_first_raster) = graphics_byte_iter.next();
-        let is_skipline = skipline_enabled && !is_first_raster;
+        let graphics_byte_base = graphics_byte_iter.next();
+        let is_gap_raster_blanked = blank_gap_rasters && (y & 1) != 0;
 
         if text_enabled {
             decode_text_row(
@@ -469,8 +477,8 @@ fn compose_digital(
 
         #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
         if let Some(palette) = digital_simd_palette.as_ref() {
-            let active_palette = if is_skipline {
-                digital_simd_palette_dim.as_ref().unwrap_or(palette)
+            let active_palette = if is_gap_raster_blanked {
+                digital_simd_palette_blank.as_ref().unwrap_or(palette)
             } else {
                 palette
             };
@@ -495,19 +503,30 @@ fn compose_digital(
             continue;
         }
 
-        let active_graphics_palette = if is_skipline {
-            &BLACK_PALETTE
+        let (active_graphics_palette, active_mono_lookup) = if is_gap_raster_blanked {
+            (&BLACK_PALETTE, &BLANK_MONO_LOOKUP)
         } else {
-            &inputs.palette_rgba
+            (&inputs.palette_rgba, &mono_lookup)
         };
         combine_cells_digital(
             row_buf,
             scratch,
             active_graphics_palette,
             &inputs.palette_rgba,
-            &mono_lookup,
+            active_mono_lookup,
             mode,
         );
+    }
+}
+
+/// Returns whether the odd display rasters of a repeated graphics row show
+/// no graphics. `hide_odd_rasters` is the mode flip-flop that port 68h
+/// commands 08h and 09h select.
+fn gap_rasters_are_blank(line_doubling: LineDoubling, hide_odd_rasters: bool) -> bool {
+    match line_doubling {
+        LineDoubling::Auto => hide_odd_rasters,
+        LineDoubling::On => false,
+        LineDoubling::Off => true,
     }
 }
 
@@ -754,11 +773,9 @@ impl GraphicsByteBaseIter {
         }
     }
 
-    /// Returns the byte base for the current raster and whether this raster is
-    /// the first of a fresh VRAM row cycle (i.e. not a repeat).
-    fn next(&mut self) -> (u32, bool) {
-        let is_first = self.repeat_remaining == 0;
-        if is_first {
+    /// Returns the byte base for the current raster.
+    fn next(&mut self) -> u32 {
+        if self.repeat_remaining == 0 {
             let (start_address, scanline) = self.scroll_iter.next();
             // `repeat` folds together GDC lines-per-row and zoom so each VRAM
             // scanline can be reused for multiple output scanlines.
@@ -769,7 +786,7 @@ impl GraphicsByteBaseIter {
         }
 
         self.repeat_remaining = self.repeat_remaining.wrapping_sub(1);
-        (self.current_byte_base, is_first)
+        self.current_byte_base
     }
 }
 
@@ -870,8 +887,8 @@ fn combine_pixel_digital(
     mode: CombineMode,
 ) -> u32 {
     // `is_text_pixel` carries whether the resolved color comes from the text
-    // plane. On skip rasters the graphics palette is dimmed but the text
-    // palette stays at full brightness.
+    // plane. A blanked gap raster passes a black graphics palette and a
+    // blank monochrome lookup, while the text palette stays unchanged.
     let (use_fixed_color, is_text_pixel, color_index) =
         if mode.is_monochrome && mode.graphics_enabled {
             let graphics_on = mono_lookup[graphics_color as usize] != 0;
@@ -1166,5 +1183,327 @@ fn fill_black(buffer: &mut [u8]) {
     debug_assert_eq!(buffer.len() % PIXEL_BYTES, 0);
     for chunk in buffer.as_chunks_mut::<PIXEL_BYTES>().0 {
         chunk.copy_from_slice(&BLACK.to_le_bytes());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::{vec, vec::Vec};
+
+    use common::LineDoubling;
+
+    use super::{
+        BLACK, GRAPHICS_PLANE_SIZE, VIDEO_MODE_FONTSEL_8X16, VIDEO_MODE_HIDE_ODD_RASTERS,
+        VIDEO_MODE_MONOCHROME,
+    };
+    use crate::{GdcGraphicsInput, GraphicsInput, RenderInputs, SoftwareRenderer, TEXT_VRAM_BYTES};
+
+    /// Text color index of every text cell.
+    const TEXT_COLOR_INDEX: usize = 2;
+    /// Palette color of the text color index.
+    const TEXT_RGBA: u32 = 0xFF00_00FF;
+    /// Palette index of digital graphics color 1, the color of the lit B plane.
+    const GRAPHICS_PALETTE_INDEX: usize = 9;
+    /// Palette color of the graphics palette index.
+    const GRAPHICS_RGBA: u32 = 0xFF00_FF00;
+    /// Fixed white of monochrome graphics without text.
+    const MONOCHROME_GRAPHICS_RGBA: u32 = 0xFFFF_FFFF;
+    /// Monochrome mask that turns graphics color 1 on.
+    const MONOCHROME_MASK_COLOR_1: u32 = 0x02;
+    /// X of a pixel lit by the glyph of the first text column.
+    const TEXT_PIXEL_X: usize = 0;
+    /// X of a pixel that no glyph lights.
+    const GRAPHICS_PIXEL_X: usize = 8;
+    /// Display rasters that show the graphics row.
+    const PICTURE_RASTERS: [usize; 4] = [0, 2, 100, 398];
+    /// Odd display rasters, the gap rasters of a repeated graphics row.
+    const GAP_RASTERS: [usize; 4] = [1, 3, 101, 399];
+
+    /// Display setup of one render.
+    #[derive(Clone, Copy)]
+    struct Setup {
+        line_doubling: LineDoubling,
+        hide_odd_rasters: bool,
+        lines_per_row: u32,
+        zoom_display: u32,
+        monochrome: bool,
+        text_enabled: bool,
+    }
+
+    impl Setup {
+        /// Returns a color setup with text and no zoom.
+        fn color(line_doubling: LineDoubling, hide_odd_rasters: bool, lines_per_row: u32) -> Self {
+            Self {
+                line_doubling,
+                hide_odd_rasters,
+                lines_per_row,
+                zoom_display: 0,
+                monochrome: false,
+                text_enabled: true,
+            }
+        }
+
+        /// Returns a 200-line monochrome setup.
+        fn monochrome(
+            line_doubling: LineDoubling,
+            hide_odd_rasters: bool,
+            text_enabled: bool,
+        ) -> Self {
+            Self {
+                monochrome: true,
+                text_enabled,
+                ..Self::color(line_doubling, hide_odd_rasters, 2)
+            }
+        }
+    }
+
+    /// Font ROM, text VRAM and graphics planes shared by the renders.
+    struct Fixture {
+        font_rom: Vec<u8>,
+        text_vram: [u8; TEXT_VRAM_BYTES],
+        filled_plane: Vec<u8>,
+        empty_plane: Vec<u8>,
+    }
+
+    impl Fixture {
+        /// Builds a first text column whose glyphs light the left pixel on
+        /// every glyph line, text cells with the text color, and a B plane
+        /// with every graphics pixel lit.
+        fn new() -> Self {
+            let mut font_rom = vec![0u8; 0x83000];
+            for line in 0..16 {
+                font_rom[0x80000 + usize::from(b'A') * 16 + line] = 0x80;
+            }
+            let mut text_vram = [0u8; TEXT_VRAM_BYTES];
+            for row in 0..25 {
+                text_vram[row * 80 * 2] = b'A';
+                for column in 0..80 {
+                    let cell_offset = (row * 80 + column) * 2;
+                    text_vram[0x2000 + cell_offset] = ((TEXT_COLOR_INDEX as u8) << 5) | 0x01;
+                }
+            }
+            Self {
+                font_rom,
+                text_vram,
+                filled_plane: vec![0xFF; GRAPHICS_PLANE_SIZE],
+                empty_plane: vec![0x00; GRAPHICS_PLANE_SIZE],
+            }
+        }
+
+        /// Returns the render inputs of a 400-raster screen for `setup`.
+        fn inputs(&self, setup: Setup) -> RenderInputs<'_> {
+            let mut palette_rgba = [BLACK; 16];
+            palette_rgba[TEXT_COLOR_INDEX] = TEXT_RGBA;
+            palette_rgba[GRAPHICS_PALETTE_INDEX] = GRAPHICS_RGBA;
+            let mut video_mode = VIDEO_MODE_FONTSEL_8X16;
+            if setup.hide_odd_rasters {
+                video_mode |= VIDEO_MODE_HIDE_ODD_RASTERS;
+            }
+            if setup.monochrome {
+                video_mode |= VIDEO_MODE_MONOCHROME;
+            }
+            let graphics_rows = 400 / (setup.lines_per_row * (setup.zoom_display + 1));
+            RenderInputs {
+                text_vram: &self.text_vram,
+                gdc_text_pitch: 80,
+                gdc_scroll_start_line: [400 << 16, 0, 0, 0],
+                video_mode,
+                line_doubling: setup.line_doubling,
+                crtc_pl_bl: 15 << 16,
+                crtc_cl_ssl: 16,
+                crtc_sur_sdr: 0,
+                kanji_high_mask: 0xFF,
+                attr_semigraphics_mode: false,
+                fontsel_8x16: true,
+                blink_visible: true,
+                cursor_visible: false,
+                cursor_addr: 0,
+                cursor_top: 0,
+                cursor_bottom: 0,
+                gdc_graphics_pitch: 80,
+                gdc_graphics_scroll: [graphics_rows << 16, 0, 0, 0],
+                gdc_graphics_display_mode_is_graphics: true,
+                gdc_graphics_al: 400,
+                crt_31khz_enabled: false,
+                palette_rgba,
+                global_enabled: true,
+                text_enabled: setup.text_enabled,
+                graphics_enabled: true,
+                graphics: GraphicsInput::Gdc(GdcGraphicsInput {
+                    b_plane: &self.filled_plane,
+                    r_plane: &self.empty_plane,
+                    g_plane: &self.empty_plane,
+                    e_plane: &self.empty_plane,
+                    lines_per_row: setup.lines_per_row,
+                    zoom_display: setup.zoom_display,
+                    monochrome_mask: MONOCHROME_MASK_COLOR_1,
+                    is_16_color: false,
+                }),
+            }
+        }
+    }
+
+    /// Returns the packed `0xAA_BB_GG_RR` pixel at `x`, `y`.
+    fn pixel_at(framebuffer: &[u8], x: usize, y: usize) -> u32 {
+        let offset = (y * SoftwareRenderer::WIDTH + x) * SoftwareRenderer::PIXEL_BYTES;
+        u32::from_le_bytes(
+            framebuffer[offset..offset + SoftwareRenderer::PIXEL_BYTES]
+                .try_into()
+                .expect("four pixel bytes"),
+        )
+    }
+
+    /// Renders `setup` with the scalar and the SIMD path and checks the
+    /// graphics pixels of picture and gap rasters. With text enabled it also
+    /// checks that the text pixels keep their color on every raster.
+    fn assert_gap_rasters(
+        setup: Setup,
+        expected_picture_graphics: u32,
+        expected_gap_graphics: u32,
+    ) {
+        let fixture = Fixture::new();
+        let inputs = fixture.inputs(setup);
+        for simd_enabled in [false, true] {
+            let mut renderer = SoftwareRenderer::new(&fixture.font_rom);
+            renderer.set_simd_enabled(simd_enabled);
+            renderer.render(&inputs);
+            let framebuffer = renderer.framebuffer();
+            let context = format!(
+                "line doubling {}, hide odd rasters {}, lines per row {}, zoom {}, \
+                 monochrome {}, text {}, SIMD {simd_enabled}",
+                setup.line_doubling,
+                setup.hide_odd_rasters,
+                setup.lines_per_row,
+                setup.zoom_display,
+                setup.monochrome,
+                setup.text_enabled,
+            );
+            for (rasters, expected_graphics, kind) in [
+                (PICTURE_RASTERS, expected_picture_graphics, "picture"),
+                (GAP_RASTERS, expected_gap_graphics, "gap"),
+            ] {
+                for y in rasters {
+                    assert_eq!(
+                        pixel_at(framebuffer, GRAPHICS_PIXEL_X, y),
+                        expected_graphics,
+                        "{context}: graphics on {kind} raster {y}",
+                    );
+                    if setup.text_enabled {
+                        assert_eq!(
+                            pixel_at(framebuffer, TEXT_PIXEL_X, y),
+                            TEXT_RGBA,
+                            "{context}: text on {kind} raster {y}",
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn auto_blanks_gap_rasters_when_odd_rasters_are_hidden() {
+        assert_gap_rasters(
+            Setup::color(LineDoubling::Auto, true, 2),
+            GRAPHICS_RGBA,
+            BLACK,
+        );
+    }
+
+    #[test]
+    fn auto_repeats_graphics_row_when_odd_rasters_are_shown() {
+        assert_gap_rasters(
+            Setup::color(LineDoubling::Auto, false, 2),
+            GRAPHICS_RGBA,
+            GRAPHICS_RGBA,
+        );
+    }
+
+    #[test]
+    fn on_repeats_graphics_row_on_gap_rasters() {
+        for hide_odd_rasters in [true, false] {
+            assert_gap_rasters(
+                Setup::color(LineDoubling::On, hide_odd_rasters, 2),
+                GRAPHICS_RGBA,
+                GRAPHICS_RGBA,
+            );
+        }
+    }
+
+    #[test]
+    fn off_blanks_gap_rasters() {
+        for hide_odd_rasters in [true, false] {
+            assert_gap_rasters(
+                Setup::color(LineDoubling::Off, hide_odd_rasters, 2),
+                GRAPHICS_RGBA,
+                BLACK,
+            );
+        }
+    }
+
+    #[test]
+    fn rasters_of_unrepeated_rows_keep_their_graphics() {
+        for line_doubling in [LineDoubling::Auto, LineDoubling::On, LineDoubling::Off] {
+            for hide_odd_rasters in [true, false] {
+                assert_gap_rasters(
+                    Setup::color(line_doubling, hide_odd_rasters, 1),
+                    GRAPHICS_RGBA,
+                    GRAPHICS_RGBA,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn zoomed_rows_blank_only_odd_display_rasters() {
+        for (line_doubling, expected_gap_graphics) in [
+            (LineDoubling::Auto, BLACK),
+            (LineDoubling::On, GRAPHICS_RGBA),
+            (LineDoubling::Off, BLACK),
+        ] {
+            let setup = Setup {
+                zoom_display: 1,
+                ..Setup::color(line_doubling, true, 2)
+            };
+            assert_gap_rasters(setup, GRAPHICS_RGBA, expected_gap_graphics);
+        }
+    }
+
+    #[test]
+    fn zoomed_unrepeated_rows_keep_their_graphics() {
+        for line_doubling in [LineDoubling::Auto, LineDoubling::On, LineDoubling::Off] {
+            let setup = Setup {
+                zoom_display: 1,
+                ..Setup::color(line_doubling, true, 1)
+            };
+            assert_gap_rasters(setup, GRAPHICS_RGBA, GRAPHICS_RGBA);
+        }
+    }
+
+    #[test]
+    fn monochrome_graphics_follow_line_doubling() {
+        for (text_enabled, picture_graphics) in
+            [(true, TEXT_RGBA), (false, MONOCHROME_GRAPHICS_RGBA)]
+        {
+            assert_gap_rasters(
+                Setup::monochrome(LineDoubling::Off, false, text_enabled),
+                picture_graphics,
+                BLACK,
+            );
+            assert_gap_rasters(
+                Setup::monochrome(LineDoubling::Auto, true, text_enabled),
+                picture_graphics,
+                BLACK,
+            );
+            assert_gap_rasters(
+                Setup::monochrome(LineDoubling::Auto, false, text_enabled),
+                picture_graphics,
+                picture_graphics,
+            );
+            assert_gap_rasters(
+                Setup::monochrome(LineDoubling::On, true, text_enabled),
+                picture_graphics,
+                picture_graphics,
+            );
+        }
     }
 }

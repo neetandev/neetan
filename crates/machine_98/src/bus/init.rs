@@ -1,4 +1,4 @@
-use common::{BeeperKind, CpuMode, CpuType, MachineModel};
+use common::{BeeperKind, CpuMode, CpuType, LineDoubling, MachineModel};
 use device::{
     beeper::Beeper,
     cgrom::Cgrom,
@@ -241,6 +241,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
             // `load_font_rom` (or first VSYNC after CG-RAM dirties) will
             // refresh the renderer's copy.
             software_renderer: Box::new(SoftwareRenderer::new(&[])),
+            line_doubling: LineDoubling::default(),
             display_width: SoftwareRenderer::WIDTH as u32,
             display_height: 400,
             presented_frames: 0,

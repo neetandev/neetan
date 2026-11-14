@@ -16,10 +16,10 @@ mod io_write;
 use std::path::PathBuf;
 
 use common::{
-    BootDevice, CpuType, HleDosVersion, MachineModel, SharedHostDateTimeSource, TraceAccessKind,
-    TraceAccessWidth, TraceAddressSpace, TraceCall, TraceCallInterface, TraceCallPhase,
-    TraceContext, TraceEvent, TraceEventKey, TraceField, TraceInterruptAction, TraceInterruptKind,
-    TracePresentation, TraceValue, trace_id,
+    BootDevice, CpuType, HleDosVersion, LineDoubling, MachineModel, SharedHostDateTimeSource,
+    TraceAccessKind, TraceAccessWidth, TraceAddressSpace, TraceCall, TraceCallInterface,
+    TraceCallPhase, TraceContext, TraceEvent, TraceEventKey, TraceField, TraceInterruptAction,
+    TraceInterruptKind, TracePresentation, TraceValue, trace_id,
 };
 use device::{
     beeper::Beeper,
@@ -486,6 +486,9 @@ pub struct Pc9801Bus<T: TraceSink = NoTrace> {
     /// CPU-side software renderer that produces the composed framebuffer
     /// uploaded by the graphics engine..
     software_renderer: Box<SoftwareRenderer>,
+    /// Treatment of the gap rasters of a repeated graphics row. A presentation
+    /// option outside the save state.
+    line_doubling: LineDoubling,
     /// Active output width in pixels from the most recent composed frame.
     display_width: u32,
     /// Active output height in pixels from the most recent composed frame.
@@ -1071,6 +1074,11 @@ impl<T: TraceSink> Pc9801Bus<T> {
     pub(crate) fn set_host_date_time_source(&mut self, source: SharedHostDateTimeSource) {
         self.memory.state.text_vram[0x3FFE] = source.now().to_bcd_bytes()[0];
         self.host_date_time_source = source;
+    }
+
+    /// Sets the treatment of the gap rasters of a repeated graphics row.
+    pub(crate) fn set_line_doubling(&mut self, line_doubling: LineDoubling) {
+        self.line_doubling = line_doubling;
     }
 
     /// Returns the number of frames presented within the current epoch.
@@ -1818,6 +1826,7 @@ impl<T: TraceSink> Pc9801Bus<T> {
             gdc_text_pitch,
             gdc_scroll_start_line,
             video_mode: u32::from(video_mode),
+            line_doubling: self.line_doubling,
             crtc_pl_bl,
             crtc_cl_ssl,
             crtc_sur_sdr,
@@ -3787,8 +3796,8 @@ impl<T: TraceSink> Pc9801Bus<T> {
 #[cfg(test)]
 mod tests {
     use common::{
-        Bus, CpuMode, MachineModel, TraceAccess, TraceAccessKind, TraceAccessWidth, TraceContext,
-        TraceEvent, TraceInterrupt, TraceInterruptAction, TraceSink,
+        Bus, CpuMode, LineDoubling, MachineModel, TraceAccess, TraceAccessKind, TraceAccessWidth,
+        TraceContext, TraceEvent, TraceInterrupt, TraceInterruptAction, TraceSink,
     };
     use device::disk::{HddFormat, HddGeometry, HddImage};
 
@@ -4204,6 +4213,50 @@ mod tests {
         bus.render_display_frame();
         let fb = bus.display_framebuffer();
         assert_eq!(&fb[0..4], &[0x00, 0x00, 0x00, 0xFF], "page 1 black pixel");
+    }
+
+    #[test]
+    fn line_doubling_selects_gap_raster_and_survives_state_restore() {
+        const RED: [u8; 4] = [0xFF, 0x00, 0x00, 0xFF];
+        const BLACK: [u8; 4] = [0x00, 0x00, 0x00, 0xFF];
+        const GAP_RASTER_OFFSET: usize = 640 * 4;
+
+        let mut bus = Pc9801Bus::<NoTrace>::new(MachineModel::PC9801VM, CpuMode::Low, 48000);
+        bus.display_control.state.video_mode = 0x80;
+        bus.display_control.state.mode2 |= 0x01;
+        bus.gdc_slave.state.display_enabled = true;
+        bus.gdc_slave.state.pitch = 40;
+        bus.gdc_slave.state.scroll[0].line_count = 200;
+        bus.gdc_slave.state.lines_per_row = 2;
+        bus.palette.state.analog[2] = [0x00, 0x0F, 0x00];
+        bus.memory.state.graphics_vram[0x8000] = 0x80;
+
+        let gap_raster_pixel = |bus: &mut Pc9801Bus<NoTrace>| -> [u8; 4] {
+            bus.render_display_frame();
+            let framebuffer = bus.display_framebuffer();
+            assert_eq!(&framebuffer[0..4], &RED, "picture raster");
+            framebuffer[GAP_RASTER_OFFSET..GAP_RASTER_OFFSET + 4]
+                .try_into()
+                .expect("four pixel bytes")
+        };
+
+        assert_eq!(gap_raster_pixel(&mut bus), RED, "auto with 08h");
+        bus.io_write_byte(0x68, 0x09);
+        assert_eq!(gap_raster_pixel(&mut bus), BLACK, "auto with 09h");
+        bus.set_line_doubling(LineDoubling::On);
+        assert_eq!(gap_raster_pixel(&mut bus), RED, "on with 09h");
+        bus.io_write_byte(0x68, 0x08);
+        bus.set_line_doubling(LineDoubling::Off);
+        assert_eq!(gap_raster_pixel(&mut bus), BLACK, "off with 08h");
+
+        let state = bus
+            .capture_runtime_state()
+            .expect("capture of the bus state");
+        bus.set_line_doubling(LineDoubling::On);
+        bus.restore_runtime_state(state)
+            .expect("restore of the bus state");
+        assert_eq!(bus.line_doubling, LineDoubling::On);
+        assert_eq!(gap_raster_pixel(&mut bus), RED, "on after restore");
     }
 
     #[test]

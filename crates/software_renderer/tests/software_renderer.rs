@@ -1,6 +1,6 @@
 use std::fs;
 
-use common::temporary::TemporaryFolder;
+use common::{LineDoubling, temporary::TemporaryFolder};
 use sdl3::surface::Surface;
 use software_renderer::{
     GdcGraphicsInput, GraphicsInput, PegcRenderInputs, RenderInputs, SoftwareRenderer,
@@ -21,6 +21,7 @@ fn base_inputs<'a>(
         gdc_text_pitch: 0,
         gdc_scroll_start_line: [0; 4],
         video_mode: 0,
+        line_doubling: LineDoubling::Auto,
         crtc_pl_bl: 0,
         crtc_cl_ssl: 0,
         crtc_sur_sdr: 0,

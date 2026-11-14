@@ -38,7 +38,7 @@ pub use automation::{
     TraceActionCatalog, TraceCatalog, TraceDeviceCatalog, TraceFieldDescriptor, TraceFieldType,
     TraceProviderCatalog, drive_automation, trace_action, trace_field, trace_field_range,
 };
-pub use display::{FramebufferVa, HighResCursor, TownsLayer};
+pub use display::{FramebufferVa, HighResCursor, LineDoubling, TownsLayer};
 pub use dos::{
     AudioChannelInfo, CdAudioState, CdAudioStatus, CdromIo, CdromTrackInfo, CdromTrackType,
     ConsoleIo, CpuAccess, CpuRegisterAccess, CursorAccess, DiskIo, DriveIo, HardwareCursorState,
@@ -2142,6 +2142,11 @@ pub trait Machine {
 
     /// Sets the host date and time source used by this machine's RTC.
     fn set_host_date_time_source(&mut self, _source: SharedHostDateTimeSource) {}
+
+    /// Sets the treatment of the gap rasters between the picture lines of a
+    /// 200-line graphics mode on a 400-line monitor. The default is a no-op
+    /// for machines without such gap rasters.
+    fn set_line_doubling(&mut self, _line_doubling: LineDoubling) {}
 
     /// Returns the startup peripherals supported by this machine.
     fn startup_capabilities(&self) -> StartupCapabilities {
