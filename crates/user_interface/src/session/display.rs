@@ -1,17 +1,34 @@
 //! The display settings of a session and the frame of its machine.
 
-use common::info;
+use common::{LineDoubling, info};
+use machine_factory::config::settings::{LINE_DOUBLING_KEY, find_setting};
 use sdl3_backend::RenderInstructions;
 
 use super::{Session, catch_panic};
 use crate::{
-    config::ScalingMode,
+    config::{EmulatorConfig, ScalingMode},
     host::{Host, graphics_scaling},
     on_off,
 };
 
 /// The number of composite artifact phases.
 const COMPOSITE_PHASE_COUNT: u32 = 4;
+
+/// Whether the machine of `config` reads the line doubling setting.
+pub(super) fn reads_line_doubling(config: &EmulatorConfig) -> bool {
+    let model = config.model();
+    find_setting(LINE_DOUBLING_KEY)
+        .is_some_and(|setting| setting.is_read_by(model.target(), model.name()))
+}
+
+/// The line doubling mode after `line_doubling`: auto, on, off and auto again.
+fn next_line_doubling(line_doubling: LineDoubling) -> LineDoubling {
+    match line_doubling {
+        LineDoubling::Auto => LineDoubling::On,
+        LineDoubling::On => LineDoubling::Off,
+        LineDoubling::Off => LineDoubling::Auto,
+    }
+}
 
 impl Session {
     /// The frame of the machine for the graphics engine, or the message of a
@@ -42,6 +59,14 @@ impl Session {
         info!("Composite artifact phase set to {}", self.composite_phase);
     }
 
+    /// Selects the next line doubling mode on the machine. The session
+    /// configuration keeps the mode for the machine of a hard reset.
+    pub(super) fn cycle_line_doubling(&mut self) {
+        self.config.line_doubling = next_line_doubling(self.config.line_doubling);
+        self.machine.set_line_doubling(self.config.line_doubling);
+        info!("Line doubling set to {}", self.config.line_doubling);
+    }
+
     /// Selects the next scaling method of the native texture.
     pub(super) fn toggle_scaling(&mut self, host: &mut Host) {
         self.scaling = match self.scaling {
@@ -57,7 +82,57 @@ impl Session {
 
 #[cfg(test)]
 mod tests {
-    use crate::session::test_support::{CallLog, FakeMachine, fake_machine, session_with};
+    use common::LineDoubling;
+    use machine_factory::config::settings::{Families, compiled_model_names};
+
+    use super::{next_line_doubling, reads_line_doubling};
+    use crate::{
+        config::EmulatorConfig,
+        session::test_support::{CallLog, FakeMachine, fake_machine, session_with},
+    };
+
+    #[test]
+    fn line_doubling_cycles_from_auto_to_on_to_off_and_back_to_auto() {
+        assert_eq!(next_line_doubling(LineDoubling::Auto), LineDoubling::On);
+        assert_eq!(next_line_doubling(LineDoubling::On), LineDoubling::Off);
+        assert_eq!(next_line_doubling(LineDoubling::Off), LineDoubling::Auto);
+    }
+
+    #[test]
+    fn cycling_the_line_doubling_sets_the_machine_and_the_configuration_of_a_hard_reset() {
+        let log = CallLog::default();
+        let mut session = session_with(fake_machine(&log));
+        assert_eq!(session.config.line_doubling, LineDoubling::Auto);
+
+        session.cycle_line_doubling();
+        assert_eq!(session.config.line_doubling, LineDoubling::On);
+        session.cycle_line_doubling();
+        assert_eq!(session.config.line_doubling, LineDoubling::Off);
+        session.cycle_line_doubling();
+        assert_eq!(session.config.line_doubling, LineDoubling::Auto);
+
+        assert_eq!(
+            *log.borrow(),
+            [
+                "line doubling on",
+                "line doubling off",
+                "line doubling auto"
+            ]
+        );
+    }
+
+    #[test]
+    fn only_the_pc98_and_the_pc88va_models_read_the_line_doubling() {
+        let families = Families::PC98.with(Families::PC88VA);
+        for name in compiled_model_names() {
+            let config = EmulatorConfig::for_model(name.parse().expect("the model is compiled"));
+            assert_eq!(
+                reads_line_doubling(&config),
+                families.contains_target(config.target),
+                "{name}"
+            );
+        }
+    }
 
     #[test]
     fn reading_the_frame_reports_a_panic() {

@@ -27,6 +27,9 @@ pub(crate) struct HotkeyFeatures {
     pub(crate) crt_effect: bool,
     /// Whether the machine drives a composite monitor.
     pub(crate) composite_video: bool,
+    /// Whether the machine shows 200-line pictures with gap lines on a
+    /// 400-line surface.
+    pub(crate) line_doubling: bool,
 }
 
 impl HotkeyFeatures {
@@ -61,6 +64,8 @@ pub(crate) enum Hotkey {
     Scaling,
     /// Selects the next composite artifact phase.
     CompositePhase,
+    /// Selects the next line doubling mode: auto, on and off.
+    LineDoubling,
     /// Opens the media dialog on the drive: Right Ctrl with 1 for floppy
     /// drive 1, 2 for floppy drive 2 and 3 for the CD-ROM drive.
     Media(Drive),
@@ -72,7 +77,7 @@ pub(crate) enum Hotkey {
 
 impl Hotkey {
     /// Every hotkey in the order of the help list.
-    pub(crate) const ALL: [Hotkey; 14] = [
+    pub(crate) const ALL: [Hotkey; 15] = [
         Hotkey::Help,
         Hotkey::Exit,
         Hotkey::Fullscreen,
@@ -82,6 +87,7 @@ impl Hotkey {
         Hotkey::Crt,
         Hotkey::Scaling,
         Hotkey::CompositePhase,
+        Hotkey::LineDoubling,
         Hotkey::Media(Drive::Floppy(0)),
         Hotkey::Media(Drive::Floppy(1)),
         Hotkey::Media(Drive::CdRom),
@@ -108,6 +114,7 @@ impl Hotkey {
             Hotkey::Crt => Scancode::C,
             Hotkey::Scaling => Scancode::S,
             Hotkey::CompositePhase => Scancode::P,
+            Hotkey::LineDoubling => Scancode::L,
             Hotkey::Media(Drive::Floppy(0)) => Scancode::_1,
             Hotkey::Media(Drive::Floppy(_)) => Scancode::_2,
             Hotkey::Media(Drive::CdRom) => Scancode::_3,
@@ -128,6 +135,7 @@ impl Hotkey {
             Hotkey::Crt => HintKey::Text("C"),
             Hotkey::Scaling => HintKey::Text("S"),
             Hotkey::CompositePhase => HintKey::Text("P"),
+            Hotkey::LineDoubling => HintKey::Text("L"),
             Hotkey::Media(Drive::Floppy(0)) => HintKey::Text("1"),
             Hotkey::Media(Drive::Floppy(_)) => HintKey::Text("2"),
             Hotkey::Media(Drive::CdRom) => HintKey::Text("3"),
@@ -148,6 +156,7 @@ impl Hotkey {
             Hotkey::Crt => labels::CRT,
             Hotkey::Scaling => labels::SCALING,
             Hotkey::CompositePhase => labels::COMPOSITE_PHASE,
+            Hotkey::LineDoubling => labels::LINE_DOUBLING,
             Hotkey::Media(Drive::Floppy(0)) => labels::FLOPPY_1,
             Hotkey::Media(Drive::Floppy(_)) => labels::FLOPPY_2,
             Hotkey::Media(Drive::CdRom) => labels::CD_ROM,
@@ -162,6 +171,7 @@ impl Hotkey {
             Hotkey::MouseCapture => features.mouse,
             Hotkey::Crt => features.crt_effect,
             Hotkey::CompositePhase => features.composite_video,
+            Hotkey::LineDoubling => features.line_doubling,
             Hotkey::Media(drive) => features.drives.contains(&drive),
             Hotkey::Help
             | Hotkey::Exit
@@ -185,6 +195,7 @@ impl Hotkey {
             | Hotkey::Crt
             | Hotkey::Scaling
             | Hotkey::CompositePhase
+            | Hotkey::LineDoubling
             | Hotkey::QuickSave
             | Hotkey::QuickLoad => false,
         }
@@ -197,41 +208,57 @@ mod tests {
     use crate::{media_dialog::available_drives, texts::english};
 
     /// The features of a machine with `floppy_drives` floppy drives, a CD-ROM drive when
-    /// `cdrom` is set, a mouse when `mouse` is set, the CRT effect when `crt_effect` is set and
-    /// composite video when `composite_video` is set.
+    /// `cdrom` is set, a mouse when `mouse` is set, the CRT effect when `crt_effect` is set,
+    /// composite video when `composite_video` is set and line doubling when `line_doubling` is
+    /// set.
     fn features(
         floppy_drives: u8,
         cdrom: bool,
         mouse: bool,
         crt_effect: bool,
         composite_video: bool,
+        line_doubling: bool,
     ) -> HotkeyFeatures {
         HotkeyFeatures {
             drives: available_drives(floppy_drives, cdrom),
             mouse,
             crt_effect,
             composite_video,
+            line_doubling,
         }
     }
 
     #[test]
-    fn a_pc6000_with_two_drives_has_every_hotkey_but_the_mouse_and_the_cdrom() {
-        let hotkeys = features(2, false, false, true, true).hotkeys();
+    fn a_pc6000_with_two_drives_has_every_hotkey_but_the_mouse_the_cdrom_and_line_doubling() {
+        let hotkeys = features(2, false, false, true, true, false).hotkeys();
         let expected: Vec<Hotkey> = Hotkey::ALL
             .into_iter()
             .filter(|&hotkey| {
-                hotkey != Hotkey::Media(Drive::CdRom) && hotkey != Hotkey::MouseCapture
+                hotkey != Hotkey::Media(Drive::CdRom)
+                    && hotkey != Hotkey::MouseCapture
+                    && hotkey != Hotkey::LineDoubling
             })
             .collect();
         assert_eq!(*hotkeys, *expected);
     }
 
     #[test]
+    fn a_pc98_lists_the_line_doubling_hotkey_after_the_scaling_hotkey() {
+        let hotkeys = features(2, true, true, true, false, true).hotkeys();
+        let scaling = hotkeys
+            .iter()
+            .position(|&hotkey| hotkey == Hotkey::Scaling)
+            .expect("scaling is always available");
+        assert_eq!(hotkeys[scaling + 1], Hotkey::LineDoubling);
+    }
+
+    #[test]
     fn missing_features_leave_their_hotkeys_out() {
-        let hotkeys = features(1, true, true, false, false).hotkeys();
+        let hotkeys = features(1, true, true, false, false, false).hotkeys();
         for missing in [
             Hotkey::CompositePhase,
             Hotkey::Crt,
+            Hotkey::LineDoubling,
             Hotkey::Media(Drive::Floppy(1)),
         ] {
             assert!(!hotkeys.contains(&missing), "{missing:?}");
@@ -245,7 +272,7 @@ mod tests {
         ] {
             assert!(hotkeys.contains(&present), "{present:?}");
         }
-        let hotkeys = features(0, false, false, true, false).hotkeys();
+        let hotkeys = features(0, false, false, true, false, false).hotkeys();
         assert!(hotkeys.contains(&Hotkey::Crt));
         assert!(
             hotkeys

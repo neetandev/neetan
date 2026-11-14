@@ -524,6 +524,8 @@ pub const GUI_LANGUAGE_KEY: &str = "gui-language";
 pub const AUDIO_VOLUME_KEY: &str = "audio-volume";
 /// Key of the window mode.
 pub const WINDOW_MODE_KEY: &str = "window-mode";
+/// Key of the line doubling of the gap lines of 200-line pictures.
+pub const LINE_DOUBLING_KEY: &str = "line-doubling";
 
 /// Returns the settings table entry of `key`.
 #[must_use]
@@ -1733,7 +1735,7 @@ pub static SETTINGS: &[Setting] = &[
         format: |config| format_value(config.scaling),
     },
     Setting {
-        key: "line-doubling",
+        key: LINE_DOUBLING_KEY,
         scope: Scope::System,
         kind: ValueKind::Choice(LINE_DOUBLING_CHOICES),
         families: LINE_DOUBLING_FAMILIES,
