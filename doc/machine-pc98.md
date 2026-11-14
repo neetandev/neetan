@@ -52,6 +52,7 @@ The MT-32 and SC-55 modules are configured separately via `--midi`; see
 | `--ems [on\|off]`            | Enable EMS expanded memory                                            | `on`     |
 | `--xms [on\|off]`            | Enable XMS extended memory                                            | `on`     |
 | `--force-gdc-clock <2.5\|5>` | Force GDC clock to 2.5 or 5 MHz (VX and later only)                   | auto     |
+| `--line-doubling <MODE>`     | Gap lines of 200-line graphics: `auto`, `on`, `off`                   | `auto`   |
 | `--graphicboard <TYPE>`      | Graphics accelerator board: `none`, `ga1280a`                         | `none`   |
 | `--pc98-roms <PATH>`         | Directory with the PC-98 ROM set (BIOS, font, sound), by content hash | -        |
 | `--bios [on\|off]`           | Boot the real BIOS from `--pc98-roms` instead of the HLE BIOS         | HLE BIOS |

@@ -409,6 +409,12 @@ pub(crate) mod tests {
                 "{}",
                 system.name
             );
+            assert_eq!(
+                keys(target, EditorSection::Display).contains(&"line-doubling"),
+                matches!(system.name, "pc98" | "pc88va"),
+                "{}",
+                system.name
+            );
         }
     }
 
@@ -444,6 +450,7 @@ pub(crate) mod tests {
                 "window-mode",
                 "crt",
                 "scaling",
+                "line-doubling",
                 "force-gdc-clock",
                 "graphicboard"
             ]

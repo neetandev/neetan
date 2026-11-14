@@ -7,7 +7,7 @@ pub mod systems;
 
 use std::{fmt, path::PathBuf, str::FromStr};
 
-use common::{BootDevice, CpuMode, HleDosVersion, MachineModel, MonitorTiming};
+use common::{BootDevice, CpuMode, HleDosVersion, LineDoubling, MachineModel, MonitorTiming};
 #[cfg(feature = "pc88")]
 use common::{EightMhzWaitMode, MemoryWaitSwitch};
 use device::{gameport_towns::TownsPadType, subcontroller_x1::X1KeyboardMode};
@@ -271,6 +271,8 @@ pub struct EmulatorConfig {
     pub aspect_mode: AspectMode,
     pub crt: bool,
     pub scaling: ScalingMode,
+    /// Treatment of the gap rasters between the picture lines of a 200-line picture.
+    pub line_doubling: LineDoubling,
     pub window_mode: WindowMode,
     pub audio_volume: f32,
     /// Folder of the system defaults and the game files. A relative folder lies below the root.
@@ -366,6 +368,7 @@ impl EmulatorConfig {
             aspect_mode: AspectMode::Aspect4By3,
             crt: true,
             scaling: ScalingMode::Pixelart,
+            line_doubling: LineDoubling::Auto,
             window_mode: DEFAULT_WINDOW_MODE,
             audio_volume: DEFAULT_AUDIO_VOLUME,
             config_folder: PathBuf::from(DEFAULT_CONFIG_FOLDER),

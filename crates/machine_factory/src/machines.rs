@@ -77,13 +77,14 @@ pub fn initialize_machine(
     Ok(machine)
 }
 
-/// Applies shared host services and startup peripherals after construction.
+/// Applies shared host services, the line doubling and startup peripherals after construction.
 fn configure_machine(
     machine: &mut dyn Machine,
     config: &EmulatorConfig,
     rtc: SharedHostDateTimeSource,
 ) -> Result<(), InitError> {
     machine.set_host_date_time_source(rtc);
+    machine.set_line_doubling(config.line_doubling);
     let capabilities = machine.startup_capabilities();
 
     if let Some(cassette_path) = config.cassette.as_ref() {
@@ -231,13 +232,14 @@ pub fn initialize_automated_machine(
     Ok(machine)
 }
 
-/// Applies the host date-time source and MIDI module to a machine.
+/// Applies the host date-time source, the line doubling and the MIDI module to a machine.
 fn configure_common(
     machine: &mut dyn Machine,
     config: &EmulatorConfig,
     rtc: SharedHostDateTimeSource,
 ) {
     machine.set_host_date_time_source(rtc);
+    machine.set_line_doubling(config.line_doubling);
     let capabilities = machine.startup_capabilities();
     match config.midi {
         config::MidiDevice::None => {}
@@ -1357,5 +1359,92 @@ mod tests {
             .expect("a real-BIOS PC-9821 without a font ROM must fail");
 
         assert!(error.to_string().contains("no font ROM"), "{error}");
+    }
+
+    /// A machine that records the line doubling it receives.
+    struct LineDoublingProbe {
+        line_doubling: Option<common::LineDoubling>,
+    }
+
+    impl common::Machine for LineDoublingProbe {
+        fn cpu_clock_hz(&self) -> f64 {
+            1.0
+        }
+
+        fn run_for(&mut self, budget: u64) -> u64 {
+            budget
+        }
+
+        fn shutdown_requested(&self) -> bool {
+            false
+        }
+
+        fn display_framebuffer(&self) -> &[u8] {
+            &[]
+        }
+
+        fn display_dimensions(&self) -> (u32, u32) {
+            (0, 0)
+        }
+
+        fn push_keyboard_scancode(&mut self, _code: u8) {}
+
+        fn generate_audio_samples(&mut self, _volume: f32, _output: &mut [f32]) -> usize {
+            0
+        }
+
+        fn set_line_doubling(&mut self, line_doubling: common::LineDoubling) {
+            self.line_doubling = Some(line_doubling);
+        }
+
+        fn insert_floppy(
+            &mut self,
+            _drive: usize,
+            _image: common::MediaImage<'_>,
+            _backing: common::MediaBacking,
+        ) -> Result<String, String> {
+            Err("no floppy drive".to_owned())
+        }
+
+        fn eject_floppy(&mut self, _drive: usize) {}
+
+        fn flush_floppies(&mut self) -> Result<(), common::FlushError> {
+            Ok(())
+        }
+    }
+
+    /// Verifies that the interactive and the headless configuration both hand the configured line
+    /// doubling to the machine.
+    #[test]
+    fn configuration_applies_the_line_doubling() {
+        for line_doubling in [
+            common::LineDoubling::Auto,
+            common::LineDoubling::On,
+            common::LineDoubling::Off,
+        ] {
+            let mut config = crate::config::first_system_config();
+            config.line_doubling = line_doubling;
+
+            let mut interactive = LineDoublingProbe {
+                line_doubling: None,
+            };
+            super::configure_machine(
+                &mut interactive,
+                &config,
+                common::default_host_date_time_source(),
+            )
+            .expect("the probe configures");
+            assert_eq!(interactive.line_doubling, Some(line_doubling));
+
+            let mut headless = LineDoublingProbe {
+                line_doubling: None,
+            };
+            super::configure_common(
+                &mut headless,
+                &config,
+                common::default_host_date_time_source(),
+            );
+            assert_eq!(headless.line_doubling, Some(line_doubling));
+        }
     }
 }
