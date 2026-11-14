@@ -1,5 +1,45 @@
 //! Renderer-neutral display descriptors shared by devices and renderers.
 
+use alloc::{format, string::String};
+
+/// Treatment of the gap rasters between the picture lines of a 200-line
+/// graphics mode shown on a 400-line monitor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LineDoubling {
+    /// Follows the guest setting of the machine.
+    #[default]
+    Auto,
+    /// Repeats the picture line in the gap raster.
+    On,
+    /// Draws the gap raster black.
+    Off,
+}
+
+impl core::fmt::Display for LineDoubling {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Auto => formatter.write_str("auto"),
+            Self::On => formatter.write_str("on"),
+            Self::Off => formatter.write_str("off"),
+        }
+    }
+}
+
+impl core::str::FromStr for LineDoubling {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        match text.to_ascii_lowercase().as_str() {
+            "auto" => Ok(Self::Auto),
+            "on" => Ok(Self::On),
+            "off" => Ok(Self::Off),
+            _ => Err(format!(
+                "unknown line doubling '{text}', expected auto, on or off"
+            )),
+        }
+    }
+}
+
 /// A resolved FM Towns display layer.
 #[derive(Clone, Copy, Default)]
 pub struct TownsLayer {
@@ -90,5 +130,43 @@ impl FramebufferVa {
             offset_y: 0xFFFF,
             ..Self::default()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::string::ToString;
+
+    use super::LineDoubling;
+
+    #[test]
+    fn line_doubling_defaults_to_auto() {
+        assert_eq!(LineDoubling::default(), LineDoubling::Auto);
+    }
+
+    #[test]
+    fn line_doubling_display_and_from_str_round_trip() {
+        for (value, name) in [
+            (LineDoubling::Auto, "auto"),
+            (LineDoubling::On, "on"),
+            (LineDoubling::Off, "off"),
+        ] {
+            assert_eq!(value.to_string(), name);
+            assert_eq!(name.parse::<LineDoubling>(), Ok(value));
+        }
+    }
+
+    #[test]
+    fn line_doubling_from_str_ignores_case() {
+        assert_eq!("AUTO".parse::<LineDoubling>(), Ok(LineDoubling::Auto));
+        assert_eq!("On".parse::<LineDoubling>(), Ok(LineDoubling::On));
+        assert_eq!("oFF".parse::<LineDoubling>(), Ok(LineDoubling::Off));
+    }
+
+    #[test]
+    fn line_doubling_from_str_rejects_unknown_names() {
+        assert!("".parse::<LineDoubling>().is_err());
+        assert!("yes".parse::<LineDoubling>().is_err());
+        assert!("double".parse::<LineDoubling>().is_err());
     }
 }

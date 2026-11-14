@@ -10,6 +10,7 @@ use alloc::{boxed::Box, vec};
 #[cfg(feature = "write_png")]
 use std::{fs, io, path::Path};
 
+use common::LineDoubling;
 #[cfg(feature = "write_png")]
 use sdl3::surface::Surface;
 
@@ -139,6 +140,8 @@ pub struct RenderInputs<'a> {
     pub gdc_scroll_start_line: [u32; 4],
     /// Video mode register (port 0x68 value).
     pub video_mode: u32,
+    /// Treatment of the gap rasters of a repeated graphics row.
+    pub line_doubling: LineDoubling,
     /// CRTC PL (low 16) and BL (high 16).
     pub crtc_pl_bl: u32,
     /// CRTC CL (low 16) and SSL (high 16).

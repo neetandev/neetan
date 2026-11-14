@@ -105,7 +105,7 @@ fn gdc_mode_3_8color_digital_200_line() {
     let (framebuffer, height) = run_mode(3);
     assert_eq!(
         height, 400,
-        "mode 3 still produces 400 output rasters; skipline dims, doesn't reduce height",
+        "mode 3 produces 400 output rasters with black gap rasters",
     );
 
     // Bright rasters: every even output line (lines_per_row = 2).
@@ -121,7 +121,7 @@ fn gdc_mode_3_8color_digital_200_line() {
         );
     }
 
-    // Skipline rasters: every odd output line must be black regardless
+    // Gap rasters: every odd output line must be black regardless
     // of band color. Exercise the top, middle, and bottom of the
     // active area.
     for &y in &[1u32, 101, 201] {
@@ -132,7 +132,7 @@ fn gdc_mode_3_8color_digital_200_line() {
                 x,
                 y,
                 [0, 0, 0],
-                &format!("mode 3 band {band} skipline y={y}"),
+                &format!("mode 3 band {band} gap raster y={y}"),
             );
         }
     }
@@ -143,7 +143,7 @@ fn gdc_mode_4_16color_analog_200_line() {
     let (framebuffer, height) = run_mode(4);
     assert_eq!(
         height, 400,
-        "mode 4 still produces 400 output rasters; skipline dims, doesn't reduce height",
+        "mode 4 produces 400 output rasters with black gap rasters",
     );
 
     for band in 0..16u32 {
@@ -166,7 +166,7 @@ fn gdc_mode_4_16color_analog_200_line() {
                 x,
                 y,
                 [0, 0, 0],
-                &format!("mode 4 band {band} skipline y={y}"),
+                &format!("mode 4 band {band} gap raster y={y}"),
             );
         }
     }
