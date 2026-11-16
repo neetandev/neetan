@@ -39,6 +39,7 @@ AS and AP machines do not support loading a real BIOS yet. But HLE BIOS and HLE 
 | Teitoku no Ketsudan                                      | 提督の決断                        |      VX      |    ✅    |    ✅    |   ⁿ̸ₐ   |                                                                             |
 | TFX                                                      | TFX                               |      AP      |    ❌️    |    ✅    |   ✅   | Must load RMOUSE.SYS in CONFIG.SYS and SET DOS16M=1 in AUTOEXEC.BAT         |
 | The Legend of Heroes III: White Witch                    | 英雄伝説III 白き魔女              |      RS      |    ✅    |    ✅    |   ✅   | Runs on HLE DOS 3.1. Choose analog colors in the settings of the start menu |
+| The Legend of Heroes IV: A Tear of Vermillion            | 英雄伝説IV 朱紅い雫               |      AS      |    ❌️    |    ✅    |   ✅   | Best sound with 86 or SC-55 (GS)                                            |
 | Travel Junction                                          | トラベル　ジャンクション          |      RA      |    ✅    |    ✅    |   ✅   |                                                                             |
 | YU-NO: A Girl Who Chants Love at the Bound of this World | この世の果てで恋を唄う少女YU-NO   |      RA      |    ✅    |    ✅    |   ✅   |                                                                             |
 
